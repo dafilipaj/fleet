@@ -588,9 +588,10 @@ fn start(j: &Job, trigger: &str, slot: Option<i64>, branch: Option<&Branch>) -> 
         harness,
         Some(&tag),
     ) {
-        Ok((_, tmux)) => {
+        Ok(spawned) => {
             if let Some(on) = &j.slack {
-                let linked = tmux
+                let linked = spawned
+                    .tmux_session
                     .ok_or_else(|| Error::Other("the session has no tmux session to link".into()))
                     .and_then(|t| {
                         crate::cli::slack::link_spawned(&t, &resident_link(j, on), &text)
