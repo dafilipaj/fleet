@@ -86,7 +86,8 @@ Every machine runs the same `server.mjs`. It:
 - serves the static UI, installable as a PWA: the React app built to `web/ui/dist/`
   (`fleet web build`; until then `/` is a "not built" placeholder);
 - exposes **its own** sessions, discovered with `fleet list --json` (cached ~2 s);
-- drives its own backends directly for peek/send/keys (it needs untruncated, header-free output);
+- drives its own backends directly for peek/send/keys (it needs untruncated, header-free output —
+  which the CLI now also gives, as `fleet peek --json` and `fleet keys`);
 - reads chat transcripts from `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`;
 - for the whole-fleet view, fetches each peer's local list over HTTP and merges.
 
