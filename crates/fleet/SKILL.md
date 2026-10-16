@@ -17,6 +17,7 @@ A firstmate-style orchestrator for the many Claude Code sessions the user runs i
 | "tell X to … / steer X" | `fleet send <target> "<text>"` |
 | "tell me when X is done" | `fleet ask-done <target>` — the session runs `fleet done` once finished and shows as Done |
 | "tell me when you're done" (said to you) | finish, run `fleet done --note "<what you did>"`, then end with a short final message — only if nothing waits on the user; Fleet shows the session as Done, the user closes it |
+| "what exactly is on X's screen" (to parse) | `fleet peek <target> --json [--lines N]` — the lines whole: no header, not cut to your terminal's width |
 | "stop X / interrupt X" | `fleet keys <target> Escape` — presses keys (`Escape Enter Up Down Left Right Tab BTab Space C-c`); `--json` to parse |
 | "rename X / call it …" | `fleet rename <target> "<name>" [--no-tmux-sync] [--force]` |
 | "name X / what should this be called" | `fleet name <target>` — suggests; add `--apply` to send it |

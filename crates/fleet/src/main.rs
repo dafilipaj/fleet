@@ -129,6 +129,12 @@ enum Commands {
         /// How many trailing lines to show
         #[arg(long, default_value_t = 40)]
         lines: usize,
+        /// One JSON object: the screen unclipped (`lines`, `cols`, `rows`, `status`), no header
+        #[arg(long)]
+        json: bool,
+        /// With --json: keep the escape sequences (colours) in `lines`
+        #[arg(long, requires = "json")]
+        ansi: bool,
     },
 
     /// Type text into a session and submit it
@@ -1434,7 +1440,18 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
                 commands::list(json)?;
             }
         }
-        Commands::Peek { target, lines } => commands::peek(&target, lines)?,
+        Commands::Peek {
+            target,
+            lines,
+            json,
+            ansi,
+        } => {
+            if json {
+                commands::peek_json(&target, lines, ansi)?
+            } else {
+                commands::peek(&target, lines)?
+            }
+        }
         Commands::Usage { json, refresh } => usage_cmd::run(json, refresh)?,
         Commands::Slack { cmd } => match cmd.unwrap_or(SlackCmd::List { json: false }) {
             SlackCmd::List { json } => slack_cmd::list(json)?,
