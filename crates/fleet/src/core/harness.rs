@@ -88,6 +88,13 @@ impl Harness {
         matches!(self, Harness::Claude | Harness::Pi)
     }
 
+    /// Whether its CLI ends options at `--`, so a prompt that starts with `-` (or is a
+    /// subcommand's name, like Codex's `resume`) still arrives as the prompt. Claude and Codex
+    /// do; pi's parser has no `--` (it would read it as a flag and swallow the prompt).
+    pub fn ends_options_at_double_dash(self) -> bool {
+        matches!(self, Harness::Claude | Harness::Codex)
+    }
+
     /// The slash command that renames a live session.
     pub fn rename_command(self, title: &str) -> String {
         match self {

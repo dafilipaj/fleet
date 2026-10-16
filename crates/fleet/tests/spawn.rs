@@ -413,3 +413,82 @@ fn spawn_json_on_another_host_is_still_one_object() {
     assert_eq!(out.status.code(), Some(1));
     assert_eq!(v["kind"], "dir_invalid", "{v}");
 }
+
+// A prompt that looks like a flag reaches the agent as its prompt, behind `--` — typed into a
+// real shell, quoting and all.
+#[test]
+fn a_flag_shaped_prompt_arrives_as_the_prompt() {
+    let Some(r) = Rig::new() else { return };
+    let work = r.s("work");
+    let (out, v) = r.spawn_json(&["--dir", &work, "--name", "fleet-test-e", "--", "--help me"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        v["command"].as_str().unwrap().ends_with(" -- '--help me'"),
+        "{v}"
+    );
+    assert_eq!(r.agent_argv(), ["-n", "fleet-test-e", "--", "--help me"]);
+}
+
+/// Spawn `prompt` (after `--`) as `fleet-test-<name>`; the JSON and the agent's argv.
+fn spawn_prompt(r: &Rig, name: &str, prompt: &str) -> (Value, Vec<String>) {
+    let work = r.s("work");
+    let (out, v) = r.spawn_json(&["--dir", &work, "--name", name, "--", prompt]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    (v, r.agent_argv())
+}
+
+// Quotes, `$`, backticks, backslashes, newlines, tabs and non-ASCII survive the shell, typed
+// inline and read from a prompt file alike.
+#[test]
+fn any_prompt_text_arrives_byte_for_byte() {
+    let Some(r) = Rig::new() else { return };
+    let text = "it's \"quoted\" $HOME `id` \\ back\nline two\tü 🚀\n";
+    let (v, argv) = spawn_prompt(&r, "fleet-test-q1", text);
+    assert_eq!(v["prompt_file"], Value::Null, "{v}");
+    assert_eq!(argv, ["-n", "fleet-test-q1", "--", text]);
+    let long = format!("{}{text}", "x".repeat(1000));
+    let (v, argv) = spawn_prompt(&r, "fleet-test-q2", &long);
+    assert!(v["prompt_file"].is_string(), "{v}");
+    assert_eq!(argv, ["-n", "fleet-test-q2", "--", long.as_str()]);
+}
+
+// A prompt just under the typed-line limit goes inline, one byte more goes through a file:
+// either way it arrives whole, its trailing newline included.
+#[test]
+fn a_prompt_at_the_typed_line_limit_arrives_whole() {
+    let Some(r) = Rig::new() else { return };
+    let work = r.s("work");
+    let prompt = |n: usize| format!("{}\n", "x".repeat(n));
+    let dry_len = |n: usize| {
+        let (_, v) = r.spawn_json(&[
+            "-n",
+            "--dir",
+            &work,
+            "--name",
+            "fleet-test-c0",
+            "--",
+            &prompt(n),
+        ]);
+        v["command"].as_str().unwrap().len()
+    };
+    // The longest prompt whose launch line still fits in 900 bytes.
+    let (mut n, mut over) = (0, 900);
+    assert!(
+        dry_len(n) <= 900,
+        "the temp paths alone fill the typed line"
+    );
+    while over - n > 1 {
+        let mid = (n + over) / 2;
+        if dry_len(mid) <= 900 {
+            n = mid;
+        } else {
+            over = mid;
+        }
+    }
+    let (v, argv) = spawn_prompt(&r, "fleet-test-c1", &prompt(n));
+    assert_eq!(v["prompt_file"], Value::Null, "{v}");
+    assert_eq!(argv, ["-n", "fleet-test-c1", "--", prompt(n).as_str()]);
+    let (v, argv) = spawn_prompt(&r, "fleet-test-c2", &prompt(n + 1));
+    assert!(v["prompt_file"].is_string(), "{v}");
+    assert_eq!(argv, ["-n", "fleet-test-c2", "--", prompt(n + 1).as_str()]);
+}

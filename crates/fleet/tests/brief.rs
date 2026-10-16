@@ -351,7 +351,11 @@ fn spawn_from_honours_dry_run_and_uses_the_sessions_cwd() {
     assert!(out.status.success(), "{}", stderr(&out));
     let text = stdout(&out);
     assert!(
-        text.contains(&format!("cd '{}' && claude", t.cwd())),
+        text.contains(&format!("cd '{}' && fleet_prompt=", t.cwd())),
+        "{text}"
+    );
+    assert!(
+        text.contains(r#"&& claude -- "${fleet_prompt%.}""#),
         "{text}"
     );
     assert!(text.contains("Continue the work of session"), "{text}");
