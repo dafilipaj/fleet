@@ -236,6 +236,154 @@ end run"#
     }
 }
 
+/// A named key `fleet keys` may send — an allowlist, so nothing beyond what a person
+/// steering a TUI presses (no `C-d`, no `C-z`, no arbitrary escape sequences).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Key {
+    Escape,
+    Enter,
+    Up,
+    Down,
+    Left,
+    Right,
+    Tab,
+    /// Shift-Tab.
+    BTab,
+    Space,
+    /// Ctrl-C.
+    CtrlC,
+}
+
+impl Key {
+    pub const ALL: [Key; 10] = [
+        Key::Escape,
+        Key::Enter,
+        Key::Up,
+        Key::Down,
+        Key::Left,
+        Key::Right,
+        Key::Tab,
+        Key::BTab,
+        Key::Space,
+        Key::CtrlC,
+    ];
+
+    /// The name `fleet keys` takes and reports — also the `tmux send-keys` key name.
+    pub fn name(self) -> &'static str {
+        match self {
+            Key::Escape => "Escape",
+            Key::Enter => "Enter",
+            Key::Up => "Up",
+            Key::Down => "Down",
+            Key::Left => "Left",
+            Key::Right => "Right",
+            Key::Tab => "Tab",
+            Key::BTab => "BTab",
+            Key::Space => "Space",
+            Key::CtrlC => "C-c",
+        }
+    }
+
+    /// Exactly one of [`Key::ALL`]'s names (case-sensitive, as tmux's are).
+    pub fn parse(name: &str) -> Option<Key> {
+        Key::ALL.into_iter().find(|k| k.name() == name)
+    }
+
+    /// What a terminal sends for the key in normal (not application) cursor mode — what
+    /// iTerm is given to type, since it has no key names.
+    pub fn bytes(self) -> &'static [u8] {
+        match self {
+            Key::Escape => b"\x1b",
+            Key::Enter => b"\r",
+            Key::Up => b"\x1b[A",
+            Key::Down => b"\x1b[B",
+            Key::Right => b"\x1b[C",
+            Key::Left => b"\x1b[D",
+            Key::Tab => b"\t",
+            Key::BTab => b"\x1b[Z",
+            Key::Space => b" ",
+            Key::CtrlC => b"\x03",
+        }
+    }
+}
+
+/// Gap between two keys. One burst would let a TUI read `Escape` + `Up` as Alt-Up; the web
+/// server's answer keys use the same beat.
+const KEY_GAP: std::time::Duration = std::time::Duration::from_millis(80);
+
+/// Press `keys` in the session's terminal, one at a time, [`KEY_GAP`] apart. Not atomic:
+/// on a failure the keys before it stay pressed and the rest are not sent (iTerm types them
+/// in one AppleScript run, which stops the same way at the key that fails).
+pub fn keys(s: &Session, keys: &[Key]) -> Result<()> {
+    deny_fixture()?;
+    let handle = require_handle(s).map_err(|e| e.tag("backend_unsupported"))?;
+    match s.backend {
+        Backend::Iterm => {
+            // Each key as its byte values ("27,91,65"), typed with `character id` so no
+            // control character has to survive argv.
+            let codes: Vec<String> = keys
+                .iter()
+                .map(|k| {
+                    k.bytes()
+                        .iter()
+                        .map(u8::to_string)
+                        .collect::<Vec<_>>()
+                        .join(",")
+                })
+                .collect();
+            let mut args = vec![handle];
+            args.extend(codes.iter().map(String::as_str));
+            osa(
+                &format!(
+                    r#"{ITERM_FIND}
+on run argv
+  set s to findSession(item 1 of argv)
+  if s is missing value then error "session not found — 0 of " & ((count of argv) - 1) & " keys pressed before it"
+  set AppleScript's text item delimiters to ","
+  set total to (count of argv) - 1
+  repeat with i from 2 to count of argv
+    set seq to ""
+    repeat with c in text items of (item i of argv)
+      set seq to seq & (character id (c as integer))
+    end repeat
+    try
+      tell application "iTerm2" to tell s to write text seq without newline
+    on error errMsg
+      error errMsg & " — " & (i - 2) & " of " & total & " keys pressed before it"
+    end try
+    if i < (count of argv) then delay {gap}
+  end repeat
+end run"#,
+                    gap = KEY_GAP.as_secs_f32()
+                ),
+                &args,
+            )
+            .map_err(|e| e.tag("backend_failed"))?;
+            Ok(())
+        }
+        Backend::Tmux => {
+            for (i, k) in keys.iter().enumerate() {
+                if i > 0 {
+                    std::thread::sleep(KEY_GAP);
+                }
+                // Stop at the first failure: the keys before it are already pressed (nothing can
+                // take them back), the ones after it are not.
+                send_keys(handle, &[k.name()]).map_err(|e| {
+                    Error::tagged(
+                        "backend_failed",
+                        format!("{e} — {i} of {} keys pressed before it", keys.len()),
+                    )
+                })?;
+            }
+            Ok(())
+        }
+        Backend::Unknown => Err(Error::tagged(
+            "backend_unsupported",
+            format!("session {} has no controllable backend", s.label()),
+        )),
+    }
+}
+
 /// Bring a session's terminal to the front (its iTerm tab, or its tmux window/pane).
 pub fn focus(s: &Session) -> Result<()> {
     deny_fixture()?;
@@ -1488,6 +1636,36 @@ mod tests {
     fn send_keys_reports_what_tmux_says_went_wrong() {
         let e = send_keys("%999999", &["-l", "hi"]).unwrap_err();
         assert!(e.to_string().contains("send-keys"), "{e}");
+    }
+
+    #[test]
+    fn keys_are_an_exact_allowlist_of_tmux_names() {
+        for k in Key::ALL {
+            assert_eq!(Key::parse(k.name()), Some(k), "{k:?} round-trips");
+            assert!(!k.bytes().is_empty());
+        }
+        assert_eq!(Key::parse("C-c"), Some(Key::CtrlC));
+        assert_eq!(Key::parse("BTab"), Some(Key::BTab));
+        // Not on the list, or not spelled as tmux spells it.
+        for bad in ["C-d", "C-z", "escape", "ESC", "Esc", "Home", "", "Enter "] {
+            assert_eq!(Key::parse(bad), None, "{bad:?}");
+        }
+        // What iTerm types: a terminal's own sequences, in normal cursor mode.
+        assert_eq!(Key::Escape.bytes(), b"\x1b");
+        assert_eq!(Key::Up.bytes(), b"\x1b[A");
+        assert_eq!(Key::BTab.bytes(), b"\x1b[Z");
+        assert_eq!(Key::CtrlC.bytes(), b"\x03");
+        assert_eq!(Key::Enter.bytes(), b"\r");
+    }
+
+    #[test]
+    fn keys_refuse_a_session_without_a_backend() {
+        let s = Session {
+            pid: 1,
+            ..Default::default()
+        };
+        let e = keys(&s, &[Key::Escape]).unwrap_err();
+        assert_eq!(e.kind(), "backend_unsupported", "{e}");
     }
 
     #[test]

@@ -64,15 +64,15 @@ or its id.
   the harness processes are listed (one `ps`, one `lsof`) and paired with their transcripts, then
   only the named one is inspected and read. Either way no context usage is read.
 
-Every verb that takes a session `<target>` accepts them (`peek`, `send`, `rename`, `name`,
+Every verb that takes a session `<target>` accepts them (`peek`, `send`, `keys`, `rename`, `name`,
 `brief`, `spawn --from`, `stack …`). A **gone** session's brief is found by `id:<id>` too, but only
 when no live session matches — an ambiguous or malformed target stays an error.
 
 With `--json`, a target that does not resolve prints `{ ok: false, host, kind, error }` on stdout:
-`rename`, `brief` (every mode) and every `stack` verb that takes a `<stack>` or `<target>`. `kind`
+`rename`, `keys`, `brief` (every mode) and every `stack` verb that takes a `<stack>` or `<target>`. `kind`
 is `target_not_found`, `target_ambiguous`, `target_invalid` (`pid:abc`, `id:`), or for a
 `<stack>`, `stack_not_found` / `stack_ambiguous`. The exit code is the command's own: 1 for
-`rename` and `brief`; `stack` keeps its codes — 2 for anything ambiguous, 3 for a `<stack>` that
+`rename`, `keys` and `brief`; `stack` keeps its codes — 2 for anything ambiguous, 3 for a `<stack>` that
 matches nothing (a `pid:` / `id:` given as `<stack>` included), 1 for a session `<target>` that
 matches nothing, and 3 (`target_not_found`) for `stack remove` given a live session that is not a
 member (see [Stacks](#stacks)).
@@ -86,6 +86,7 @@ member (see [Stacks](#stacks)).
 | `fleet done [--note <text>] [--cancel]` | run by an agent **inside its own session** (by `$TMUX_PANE`; never sent over ssh): its work is finished and nothing waits on the user. Fleet shows the session as done (nothing closes it) — see [Ask done](#ask-done). `--cancel` takes the mark back |
 | `fleet sleep <target> [--json]` (alias `deactivate`) | close a session but keep it [dormant](#session-recovery) (Deactivate in the app, which lists dormant sessions as **Inactive**): SIGTERM (then SIGKILL) its agent, kill its tmux window (or its tmux session when that was the only window; an iTerm tab is left — the app closes it), and put it in the dormant list, marked `slept`, instead of recently closed. `fleet restore <target>` (or `enter`, or Resume in the app) brings it back with `--resume`; `--all` and `restore.onBoot` leave it be. `--json`: `{ host, sessionId, title, process, terminal, dormant: DormantView, dryRun }` |
 | `fleet ask-done <target>` | ask a tmux session to report itself done once finished: types the [instruction](#ask-done) into it. A session waiting on a prompt is refused |
+| `fleet keys <target> <key>... [--json]` | press named keys in the session's terminal, in order (80 ms apart): `Escape` (interrupt a turn), `Enter`, `Up`, `Down`, `Left`, `Right`, `Tab`, `BTab` (Shift-Tab), `Space`, `C-c`. Names are tmux's, case-sensitive; any other name is refused (exit 1, kind `invalid_key`) and nothing is pressed. tmux sessions get one `send-keys` per key, iTerm sessions the bytes a terminal sends for the key. **Not atomic:** the first key that fails stops the call — the keys before it stay pressed (nothing can take them back), the rest are not sent, and the error says how many got through (`… — 1 of 3 keys pressed before it`). `--json`: `{ ok: true, host, target: { session_id, pid }, keys: [...] }`, or `{ ok: false, host, kind, error }` (exit 1) — kind `invalid_key`, `target_not_found`, `target_ambiguous`, `target_invalid`, `backend_unsupported` (no tmux pane or iTerm session to drive) or `backend_failed` |
 | `fleet rename <target> <title> [--no-tmux-sync] [--force] [--json]` | rename the session's one title: Claude's `/rename` (the source of truth), then its tmux session follows as a slug of it (`Fix Login` → `fix-login`, `-2` on a collision) when the tmux session is that Claude session's own (one window, one pane). A session **waiting on a prompt** is held (exit 1; `--json`: exit 3) — typed keys would be its answer; busy sessions are fine (Claude runs `/rename` mid-turn without disturbing the turn). Codex gets `/rename`, pi `/name`; a busy Codex / pi session is held too (`held: "busy"`) — they would queue the text as a message. `--force` overrides the hold. `--json` prints `{ ok, result: renamed\|sent\|held, session_id, pid, host, from, title, held, tmux: { renamed, from, to, note }, message }` |
 | `fleet name [<target> \| --all [--settled]] [--apply] [--refresh] [--no-tmux-sync]` | suggest a name from what the session is doing; only `--apply` sends it (through the same path as `rename`, tmux included). `--all` = every session with a derived (cwd+hash) name. A derived-name session alone in a tmux session somebody named (`fleet new fix-login`) adopts that name (`(tmux)`, no model call) instead of getting a generated one. `--settled` (with `--all`) skips sessions with one prompt and no brief yet — the model reads the brief's Summary and the first three prompts, and a lone first prompt is often just a link. `--refresh` ignores the cache |
 | `fleet group [-a, --all-hosts] [--json] [--apply] [--refresh] [--consolidate] [--input <file\|->] [--cached]` | sort sessions into work-stream groups (the web Board view) — see [Grouping](#grouping). Reads sessions and asks `claude -p`; never sends anything to a session |

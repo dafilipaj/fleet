@@ -337,6 +337,60 @@ pub fn sleep(target: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// `fleet keys <target> <key>...`: press named keys in the session's terminal — Escape to
+/// interrupt a turn, arrows and Enter to answer a menu. `--json`: `{ ok, host, target:
+/// { session_id, pid }, keys }`, or `{ ok: false, host, kind, error }` (exit 1).
+pub fn keys(target: &str, names: &[String], json: bool) -> Result<()> {
+    let run = || -> Result<(Session, Vec<backend::Key>)> {
+        let keys = parse_keys(names)?;
+        let s = discovery::resolve_target(target)?;
+        backend::keys(&s, &keys)?;
+        Ok((s, keys))
+    };
+    let (s, keys) = match run() {
+        Ok(done) => done,
+        Err(e) if json => return Err(json_failure(e)),
+        Err(e) => return Err(e),
+    };
+    let names: Vec<&str> = keys.iter().map(|k| k.name()).collect();
+    if json {
+        let v = serde_json::json!({
+            "ok": true,
+            "host": host_label(),
+            "target": { "session_id": s.session_id, "pid": s.pid },
+            "keys": names,
+        });
+        println!("{}", serde_json::to_string_pretty(&v)?);
+    } else {
+        println!(
+            "keys to {} ({}): {}",
+            s.headline().bold(),
+            s.backend.label(),
+            names.join(" ")
+        );
+    }
+    Ok(())
+}
+
+/// Every name must be one of [`backend::Key::ALL`]; one that is not sends nothing at all.
+fn parse_keys(names: &[String]) -> Result<Vec<backend::Key>> {
+    if names.is_empty() {
+        return Err(Error::tagged("invalid_key", "no keys given"));
+    }
+    names
+        .iter()
+        .map(|n| {
+            backend::Key::parse(n).ok_or_else(|| {
+                let all: Vec<&str> = backend::Key::ALL.iter().map(|k| k.name()).collect();
+                Error::tagged(
+                    "invalid_key",
+                    format!("unknown key \"{n}\" — one of {}", all.join(", ")),
+                )
+            })
+        })
+        .collect()
+}
+
 pub use crate::core::title::{
     Hold, MAX_TITLE as MAX_RENAME, RenameOpts, RenameOutcome, apply_rename,
     clean_title as clean_name,
