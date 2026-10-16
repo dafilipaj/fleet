@@ -70,9 +70,49 @@ pub fn tmux() -> &'static str {
 /// escapes non-ASCII and control characters in its output — `-F` tab separators come
 /// back as `_`, so pane discovery found nothing — and mangles UTF-8 typed via send-keys.
 pub fn tmux_cmd() -> std::process::Command {
+    #[cfg(not(test))]
     let mut cmd = std::process::Command::new(tmux());
+    #[cfg(test)]
+    let mut cmd = test_tmux::command();
     cmd.arg("-u");
     cmd
+}
+
+/// Unit tests never reach the user's tmux server: every [`tmux_cmd`] a test builds goes to a
+/// private socket (`-L fleet-test-unit`) under a private `TMUX_TMPDIR`, with `TMUX` and
+/// `TMUX_PANE` cleared so an outer tmux cannot redirect it. Nothing starts a server there,
+/// so each call fails like "no server running" — which is what the tests that poke tmux with
+/// made-up targets expect, now independent of whatever the machine runs.
+#[cfg(test)]
+pub(crate) mod test_tmux {
+    use std::path::{Path, PathBuf};
+    use std::sync::OnceLock;
+
+    pub const SOCKET: &str = "fleet-test-unit";
+
+    /// `$TMPDIR/fleet-test-unit`: short enough for a socket path, and one dir for every test
+    /// run — no server is ever started in it, so concurrent runs cannot collide, and repeated
+    /// runs leave nothing new behind.
+    pub fn dir() -> &'static Path {
+        static DIR: OnceLock<PathBuf> = OnceLock::new();
+        DIR.get_or_init(|| {
+            let d = std::env::temp_dir().join(SOCKET);
+            std::fs::create_dir_all(&d).unwrap();
+            d
+        })
+    }
+
+    /// The real tmux binary — never `FLEET_TMUX` or the config's `tmux`, which may be a
+    /// wrapper pinning `-S <socket>` (that beats `-L`) — on the private socket.
+    pub fn command() -> std::process::Command {
+        let bin = super::find_binary("tmux").unwrap_or_else(|| PathBuf::from("tmux"));
+        let mut cmd = std::process::Command::new(bin);
+        cmd.env("TMUX_TMPDIR", dir())
+            .env_remove("TMUX")
+            .env_remove("TMUX_PANE")
+            .args(["-L", SOCKET]);
+        cmd
+    }
 }
 
 /// The `claude` binary used for headless naming calls.
@@ -168,6 +208,54 @@ pub fn short_hostname() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Guard: a unit test's tmux command never goes to the default socket, nor to the server an
+    // outer `$TMUX` names. If this fails, tests are poking the user's live tmux sessions.
+    #[test]
+    fn unit_tests_never_reach_the_users_tmux_server() {
+        let cmd = tmux_cmd();
+        // The real binary, whatever FLEET_TMUX / the config would pick.
+        if let Some(real) = find_binary("tmux") {
+            assert_eq!(cmd.get_program(), real.as_os_str());
+        }
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args[..2], ["-L", test_tmux::SOCKET], "{args:?}");
+        let envs: Vec<(String, Option<String>)> = cmd
+            .get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        let dir = test_tmux::dir().display().to_string();
+        assert!(
+            envs.contains(&("TMUX_TMPDIR".into(), Some(dir))),
+            "{envs:?}"
+        );
+        assert!(
+            envs.contains(&("TMUX".into(), None)),
+            "TMUX cleared: {envs:?}"
+        );
+        assert!(envs.contains(&("TMUX_PANE".into(), None)), "{envs:?}");
+        // …and that private server is never running, so nothing a test sends lands anywhere,
+        // and no default socket ever appears next to it.
+        if find_binary("tmux").is_some() {
+            let out = tmux_cmd().arg("list-sessions").output().unwrap();
+            assert!(!out.status.success(), "a private server is running");
+        }
+        let uid_dir = std::fs::read_dir(test_tmux::dir()).unwrap();
+        for d in uid_dir.flatten() {
+            assert!(
+                !d.path().join("default").exists(),
+                "default socket appeared"
+            );
+        }
+    }
 
     #[test]
     fn quoting() {

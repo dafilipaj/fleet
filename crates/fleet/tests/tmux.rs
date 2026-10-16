@@ -1,5 +1,6 @@
-//! `fleet tmux …` against a private tmux server (TMUX_TMPDIR in a temp dir), so
-//! the user's own sessions are never visible, let alone touched.
+//! `fleet tmux …` against a private tmux server (`common::Env`: `tmux -L fleet-test-<rand>`
+//! under a private TMUX_TMPDIR), so the user's own sessions are never visible, let alone
+//! touched. The Env kills that server when it drops.
 
 mod common;
 
@@ -13,34 +14,17 @@ impl Server {
     /// `None` when tmux isn't installed — the tests then pass vacuously.
     fn new() -> Option<Self> {
         fleet::core::tools::find_binary("tmux")?;
-        let env = Env::new();
-        std::fs::create_dir_all(env.path("tmux")).unwrap();
-        std::fs::create_dir_all(env.path("home")).unwrap();
-        Some(Server { env })
+        Some(Server { env: Env::new() })
     }
 
     fn cmd(&self) -> assert_cmd::Command {
         let mut c = self.env.cmd();
-        c.env("TMUX_TMPDIR", self.env.path("tmux"))
-            .env("HOME", self.env.path("home"))
-            .env_remove("TMUX")
-            .env_remove("TMUX_PANE")
-            .timeout(std::time::Duration::from_secs(20));
+        c.timeout(std::time::Duration::from_secs(20));
         c
     }
 
     fn fleet(&self, args: &[&str]) -> std::process::Output {
         self.cmd().args(args).output().unwrap()
-    }
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = std::process::Command::new(fleet::core::tools::find_binary("tmux").unwrap())
-            .arg("kill-server")
-            .env("TMUX_TMPDIR", self.env.path("tmux"))
-            .env_remove("TMUX")
-            .output();
     }
 }
 
