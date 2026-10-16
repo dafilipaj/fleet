@@ -631,14 +631,15 @@ end run"#,
 }
 
 /// Open a new iTerm tab (a window with `window`, or when none is open) and run `line` in it.
-pub fn iterm_run(line: &str, window: bool) -> Result<()> {
+/// Returns the new session's id (the handle `list` reports for it), when iTerm gave one.
+pub fn iterm_run(line: &str, window: bool) -> Result<Option<String>> {
     deny_fixture()?;
     // A fresh tab's shell is still sourcing the login profile (which on
     // this stack loads secrets), so a single `write text` — text plus its
     // implicit newline in one chunk — can land before the prompt is ready
     // and never submit. Type without a newline, let the shell settle, then
     // send a bare Enter, the same reliable two-write dance `send` uses.
-    osa(
+    let out = osa(
         r#"on run argv
   set theCmd to item 1 of argv
   set makeWindow to (item 2 of argv is "1")
@@ -649,17 +650,49 @@ pub fn iterm_run(line: &str, window: bool) -> Result<()> {
     else
       tell current window to create tab with default profile
     end if
-    tell (current session of current tab of current window)
-      delay 0.5
-      write text theCmd without newline
-      delay 0.3
-      write text ""
-    end tell
+    -- Held from here on: a click elsewhere during the delays must not redirect the typing.
+    set s to current session of current tab of current window
+    try
+      tell s
+        delay 0.5
+        write text theCmd without newline
+        delay 0.3
+        write text ""
+      end tell
+    on error msg
+      -- The tab exists: say which one, so the caller can find and close it.
+      return (id of s) & tab & "error" & tab & msg
+    end try
+    return id of s
   end tell
 end run"#,
         &[line, if window { "1" } else { "0" }],
-    )?;
-    Ok(())
+    )
+    .map_err(|e| e.tag("backend_failed"))?;
+    match parse_iterm_result(&out) {
+        (id, None) => Ok(id),
+        (id, Some(why)) => Err(Error::tagged(
+            "backend_failed",
+            format!("iTerm: typing into the new tab failed: {why}"),
+        )
+        .with_partial_handle(id)),
+    }
+}
+
+/// The AppleScript's answer: `<session id>`, or `<id>\terror\t<message>` when the tab
+/// opened but typing into it failed.
+fn parse_iterm_result(out: &str) -> (Option<String>, Option<String>) {
+    let out = out.trim_end_matches(['\n', '\r']);
+    let mut parts = out.splitn(3, '\t');
+    let id = parts
+        .next()
+        .map(str::trim)
+        .filter(|i| !i.is_empty())
+        .map(String::from);
+    match (parts.next(), parts.next()) {
+        (Some("error"), why) => (id, Some(why.unwrap_or("").trim().to_string())),
+        _ => (id, None),
+    }
 }
 
 /// Longest launch line typed into a shell; a longer prompt goes through a file
@@ -680,8 +713,33 @@ fn write_prompt_file(text: &str) -> Result<String> {
     Ok(path.display().to_string())
 }
 
-/// Spawn a fresh session and return a human description of where it landed. Spawned from
-/// inside a job run (`FLEET_JOB_RUN` set), the new session joins that run.
+/// Where a spawn landed. `Display` is the one-line human description.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Spawned {
+    pub backend: Backend,
+    pub desc: String,
+    /// The tmux session it runs in (`None` for iTerm).
+    pub tmux_session: Option<String>,
+    /// Its tmux window, `session:index`.
+    pub tmux_window: Option<String>,
+    /// The control handle `list` reports for it: tmux pane id (`%12`) or iTerm session id.
+    pub handle: Option<String>,
+    /// tmux: a new session was created for it (false: a window in an existing one).
+    pub created_session: bool,
+    /// The shell line typed into the new terminal.
+    pub command: String,
+    /// The file the first prompt was read from, when it went through one.
+    pub prompt_file: Option<String>,
+}
+
+impl std::fmt::Display for Spawned {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.desc)
+    }
+}
+
+/// Spawn a fresh session and say where it landed. Spawned from inside a job run
+/// (`FLEET_JOB_RUN` set), the new session joins that run.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn(
     backend: Backend,
@@ -692,7 +750,7 @@ pub fn spawn(
     window: bool,
     launcher: &str,
     harness: Harness,
-) -> Result<String> {
+) -> Result<Spawned> {
     let tag = crate::core::jobs::Tag::from_env();
     // What a bot session spawns closes itself when finished, like the bot session.
     let file = match (&tag, prompt) {
@@ -719,13 +777,25 @@ pub fn spawn(
         harness,
         tag.as_ref(),
     )
-    .map(|(desc, _)| desc)
 }
 
-/// [`spawn`] with an explicit job tag (`None` = untagged). Returns the description and the
-/// tmux session it landed in (`None` for iTerm). A tagged session must land in tmux: the tag
+/// The backend a spawn really uses. A session tagged for a job run must land in tmux: the tag
 /// lives in the tmux session's environment and the pane's `@fleet_job_run` option, and the
 /// run records the session there.
+pub fn effective_backend(backend: Backend, tagged: bool) -> Backend {
+    match (backend, tagged) {
+        (Backend::Iterm, true) => Backend::Tmux,
+        (b, _) => b,
+    }
+}
+
+/// [`effective_backend`] for a spawn from this process (tagged when `FLEET_JOB_RUN` is set):
+/// what [`spawn`] will use, for a dry run to report.
+pub fn spawn_backend(backend: Backend) -> Backend {
+    effective_backend(backend, crate::core::jobs::Tag::from_env().is_some())
+}
+
+/// [`spawn`] with an explicit job tag (`None` = untagged); see [`effective_backend`].
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_tagged(
     backend: Backend,
@@ -737,11 +807,8 @@ pub fn spawn_tagged(
     launcher: &str,
     harness: Harness,
     tag: Option<&crate::core::jobs::Tag>,
-) -> Result<(String, Option<String>)> {
-    let backend = match (backend, tag) {
-        (Backend::Iterm, Some(_)) => Backend::Tmux,
-        (b, _) => b,
-    };
+) -> Result<Spawned> {
+    let backend = effective_backend(backend, tag.is_some());
     // A long prompt typed onto the command line is slow and fragile (the web spawn has the
     // same limit): it goes through a file the shell expands at launch instead.
     let long_file = match prompt {
@@ -757,13 +824,30 @@ pub fn spawn_tagged(
         None => prompt,
     };
     let line = launch_command(dir, prompt, name, launcher, harness);
+    let prompt_file = match prompt {
+        Prompt::File(f) => Some(f.to_string()),
+        _ => None,
+    };
     match backend {
         Backend::Iterm => {
-            iterm_run(&line, window)?;
-            Ok((
-                format!("spawned iTerm {}", if window { "window" } else { "tab" }),
-                None,
-            ))
+            let spawned = |handle| Spawned {
+                backend,
+                desc: format!("spawned iTerm {}", if window { "window" } else { "tab" }),
+                tmux_session: None,
+                tmux_window: None,
+                handle,
+                created_session: false,
+                command: line.clone(),
+                prompt_file: prompt_file.clone(),
+            };
+            match iterm_run(&line, window) {
+                Ok(handle) => Ok(spawned(handle)),
+                Err(Error::Partial { source, partial }) => Err(Error::Partial {
+                    source,
+                    partial: Box::new(spawned(partial.handle)),
+                }),
+                Err(e) => Err(e),
+            }
         }
         Backend::Tmux => {
             let (session, exists) =
@@ -774,43 +858,69 @@ pub fn spawn_tagged(
             if let Some(t) = tag {
                 args.extend(t.env().into_iter().flat_map(|kv| ["-e".to_string(), kv]));
             }
-            let out = crate::core::tools::tmux_cmd().args(&args).output()?;
+            let out = crate::core::tools::tmux_cmd()
+                .args(&args)
+                .output()
+                .map_err(|e| Error::tagged("backend_failed", format!("cannot run tmux: {e}")))?;
             if !out.status.success() {
-                return Err(Error::Other(format!(
-                    "tmux: {}",
-                    String::from_utf8_lossy(&out.stderr).trim()
-                )));
+                return Err(Error::tagged(
+                    "backend_failed",
+                    format!("tmux: {}", String::from_utf8_lossy(&out.stderr).trim()),
+                ));
             }
-            let win = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            let (pane, win) = parse_spawn_target(&String::from_utf8_lossy(&out.stdout));
             if let Some(id) = crate::core::gh_identity::in_launcher(launcher) {
-                crate::core::gh_identity::tag_pane(&win, id);
+                crate::core::gh_identity::tag_pane(&pane, id);
             }
             if let Some(t) = tag {
-                tag_pane(&win, t, &session, exists, name);
+                tag_pane(&pane, t, &session, exists, name);
             }
-            // Window already opened in `dir`; just run the launcher in it.
-            let run = run_command(prompt, name, launcher, harness);
-            crate::core::tools::tmux_cmd()
-                .args(["send-keys", "-t", &win, "-l", &run])
-                .status()?;
-            crate::core::tools::tmux_cmd()
-                .args(["send-keys", "-t", &win, "Enter"])
-                .status()?;
             let desc = if exists {
                 format!("spawned tmux window {win}  (attach: tmux attach -t {session})")
             } else {
                 format!("spawned tmux session {session}  (attach: tmux attach -t {session})")
             };
-            Ok((desc, Some(session)))
+            let spawned = Spawned {
+                backend,
+                desc,
+                tmux_session: Some(session),
+                tmux_window: Some(win),
+                handle: Some(pane.clone()),
+                created_session: !exists,
+                command: line,
+                prompt_file,
+            };
+            // Window already opened in `dir`; just run the launcher in it. From here on the
+            // terminal exists: a failure says where it is, so the caller can clean it up.
+            let run = run_command(prompt, name, launcher, harness);
+            let typed =
+                send_keys(&pane, &["-l", "--", &run]).and_then(|()| send_keys(&pane, &["Enter"]));
+            match typed {
+                Ok(()) => Ok(spawned),
+                Err(e) => Err(Error::Partial {
+                    source: Box::new(e.tag("backend_failed")),
+                    partial: Box::new(spawned),
+                }),
+            }
         }
         Backend::Unknown => Err(Error::Other("unknown backend".into())),
+    }
+}
+
+/// What [`tmux_spawn_args`] prints: `<pane id> <session>:<window index>`. The pane id leads
+/// because a session name (`--tmux-session`) can hold a space; it never does.
+fn parse_spawn_target(out: &str) -> (String, String) {
+    let out = out.trim();
+    match out.split_once(' ') {
+        Some((pane, win)) => (pane.to_string(), win.to_string()),
+        None => (out.to_string(), out.to_string()),
     }
 }
 
 /// Mark the new pane as part of the job run and note it in the run's record. Best effort:
 /// the environment already carries the tag, so a failure here only costs the `origin` label.
 fn tag_pane(
-    win: &str,
+    pane: &str,
     tag: &crate::core::jobs::Tag,
     session: &str,
     exists: bool,
@@ -821,7 +931,7 @@ fn tag_pane(
             "set-option",
             "-p",
             "-t",
-            win,
+            pane,
             crate::core::jobs::PANE_OPTION,
             &tag.run,
         ])
@@ -869,15 +979,19 @@ pub fn plan_tmux_target(
     if let Some(n) = name {
         let n = crate::core::tmux::sanitize_name(n);
         if n.is_empty() {
-            return Err(Error::Other(
-                "--name is empty after sanitising for tmux".into(),
+            return Err(Error::tagged(
+                "name_invalid",
+                "--name is empty after sanitising for tmux",
             ));
         }
         if existing.contains(&n) {
-            return Err(Error::Other(format!(
-                "tmux session `{n}` already exists — pick another --name, or pass \
-                 --tmux-session {n} to open a window in it"
-            )));
+            return Err(Error::tagged(
+                "name_taken",
+                format!(
+                    "tmux session `{n}` already exists — pick another --name, or pass \
+                     --tmux-session {n} to open a window in it"
+                ),
+            ));
         }
         return Ok((n, false));
     }
@@ -893,8 +1007,9 @@ pub fn plan_tmux_target(
 /// key, eating the first character of the launch line typed into it (`laude: command not found`).
 pub const SPAWN_SHELL_ENV: &str = "DISABLE_AUTO_UPDATE=true";
 
-/// The tmux command that opens the spawn's window in `dir`, printing its target:
-/// a new window in an existing `session` (matched exactly), or the session itself.
+/// The tmux command that opens the spawn's window in `dir`, printing its pane id and
+/// window (see [`parse_spawn_target`]): a new window in an existing `session` (matched
+/// exactly), or the session itself.
 fn tmux_spawn_args(session: &str, dir: &str, exists: bool) -> Vec<String> {
     let mut a: Vec<String> = if exists {
         vec!["new-window".into(), "-t".into(), format!("={session}:")]
@@ -910,7 +1025,7 @@ fn tmux_spawn_args(session: &str, dir: &str, exists: bool) -> Vec<String> {
         [
             "-P",
             "-F",
-            "#{session_name}:#{window_index}",
+            "#{pane_id} #{session_name}:#{window_index}",
             "-c",
             dir,
             "-e",
@@ -960,6 +1075,48 @@ mod tests {
             SPAWN_SHELL_ENV.to_string()
         ]));
         assert!(fresh.contains(&"-P".to_string()));
+    }
+
+    #[test]
+    fn a_job_run_moves_an_iterm_spawn_to_tmux() {
+        assert_eq!(effective_backend(Backend::Iterm, true), Backend::Tmux);
+        assert_eq!(effective_backend(Backend::Iterm, false), Backend::Iterm);
+        assert_eq!(effective_backend(Backend::Tmux, true), Backend::Tmux);
+    }
+
+    #[test]
+    fn the_iterm_answer_names_the_tab_even_when_typing_failed() {
+        assert_eq!(
+            parse_iterm_result("ABC-123\n"),
+            (Some("ABC-123".into()), None)
+        );
+        assert_eq!(
+            parse_iterm_result("ABC-123\terror\tsession is gone\n"),
+            (Some("ABC-123".into()), Some("session is gone".into()))
+        );
+        assert_eq!(parse_iterm_result(""), (None, None));
+    }
+
+    #[test]
+    fn the_spawn_target_is_read_as_pane_then_window() {
+        assert_eq!(
+            parse_spawn_target("%12 api:3\n"),
+            ("%12".to_string(), "api:3".to_string())
+        );
+        // A `--tmux-session` name may hold a space; the pane id never does.
+        assert_eq!(
+            parse_spawn_target("%7 my work:0"),
+            ("%7".to_string(), "my work:0".to_string())
+        );
+    }
+
+    #[test]
+    fn spawn_failures_are_tagged_for_json_callers() {
+        let live = vec!["api".to_string()];
+        let e = plan_tmux_target(None, Some("api"), "/x", &live).unwrap_err();
+        assert_eq!(e.kind(), "name_taken");
+        let e = plan_tmux_target(None, Some("::"), "/x", &live).unwrap_err();
+        assert_eq!(e.kind(), "name_invalid");
     }
 
     #[test]

@@ -51,9 +51,9 @@ the first rung with hits wins. Two hits on the same rung is an error that lists 
 | `fleet name [<target> \| --all [--settled]] [--apply] [--refresh] [--no-tmux-sync]` | suggest a name from what the session is doing; only `--apply` sends it (through the same path as `rename`, tmux included). `--all` = every session with a derived (cwd+hash) name. A derived-name session alone in a tmux session somebody named (`fleet new fix-login`) adopts that name (`(tmux)`, no model call) instead of getting a generated one. `--settled` (with `--all`) skips sessions with one prompt and no brief yet — the model reads the brief's Summary and the first three prompts, and a lone first prompt is often just a link. `--refresh` ignores the cache |
 | `fleet group [-a, --all-hosts] [--json] [--apply] [--refresh] [--consolidate] [--input <file\|->] [--cached]` | sort sessions into work-stream groups (the web Board view) — see [Grouping](#grouping). Reads sessions and asks `claude -p`; never sends anything to a session |
 | `fleet group --rename <group id> --label <l>` / `--move <host/id> (--to <group id> \| --label <l>)` / `--create --label <l>` / `--delete <group id>` | edit the stored groups by hand (the Board's rename / drag'n'drop) — see [Grouping](#grouping) |
-| `fleet spawn [prompt] --dir <path> [--harness claude\|codex\|pi] [--name <n>] [--model <id>] [--backend iterm\|tmux] [--tmux-session <s>] [--window]` | start a new agent session in a new tab/pane. `--harness` picks the coding agent (default `claude`; see [Harnesses](#harnesses)). `--model <id>` runs `<harness> --model '<id>'` (letters, digits and `._[]-/:` only — pi's ids are `provider/model`; blank = the harness's default). `--name` is passed as `-n` to Claude and pi; Codex has no such flag (the tmux session carries the name). Default backend: tmux inside tmux, over ssh or off macOS; else iTerm. With tmux, each spawn gets its own tmux session (one session per job) named from `--name` or the dir's basename, sanitised like `fleet new`; a taken `--name` is an error, a taken basename is uniquified (`app-2`). `--tmux-session <s>` opens a window in `s` instead (created if missing). `--ask-done`: the [instruction](#ask-done) goes below the prompt and the session runs in tmux. `--slack <slack-url \| @person> [--slack-for 2h] [--slack-task <instructions>] [--slack-proactive]`: start [linked to Slack](#slack-links) (tmux, only on `slack.host`; checked before anything opens). The session starts with no prompt and is linked once it has registered (≤ ~45 s); the prompt goes in last in the link's intro, as the owner's request to start on — so it never works on it, or reaches Slack another way, before it knows it is linked. Max 4000 chars. If the link fails, the session stays, idle, and the prompt was not sent |
+| `fleet spawn [prompt] --dir <path> [--harness claude\|codex\|pi] [--name <n>] [--model <id>] [--backend iterm\|tmux] [--tmux-session <s>] [--window] [--json]` | start a new agent session in a new tab/pane. `--json`: one object saying where it landed, or why it did not — see [Spawning](#spawning) (not with `--slack`). `--harness` picks the coding agent (default `claude`; see [Harnesses](#harnesses)). `--model <id>` runs `<harness> --model '<id>'` (letters, digits and `._[]-/:` only — pi's ids are `provider/model`; blank = the harness's default). `--name` is passed as `-n` to Claude and pi; Codex has no such flag (the tmux session carries the name). Default backend: tmux inside tmux, over ssh or off macOS; else iTerm. With tmux, each spawn gets its own tmux session (one session per job) named from `--name` or the dir's basename, sanitised like `fleet new`; a taken `--name` is an error, a taken basename is uniquified (`app-2`). `--tmux-session <s>` opens a window in `s` instead (created if missing). `--ask-done`: the [instruction](#ask-done) goes below the prompt and the session runs in tmux. `--slack <slack-url \| @person> [--slack-for 2h] [--slack-task <instructions>] [--slack-proactive]`: start [linked to Slack](#slack-links) (tmux, only on `slack.host`; checked before anything opens). The session starts with no prompt and is linked once it has registered (≤ ~45 s); the prompt goes in last in the link's intro, as the owner's request to start on — so it never works on it, or reaches Slack another way, before it knows it is linked. Max 4000 chars. If the link fails, the session stays, idle, and the prompt was not sent |
 | `fleet harness list [--json] [--no-models]` | the [harnesses](#harnesses) on this host: id, label, launch command, `installed`, and the models each offers for a picker. `-H <host>` asks another machine |
-| `fleet spawn --from <target> [prompt] [--name <n>] [--model <id>] [--backend …]` | continue a session's work in a new one: same host (with `-H`, the host the session is on) and its cwd (`--dir` overrides), first prompt = its [brief](#briefs)'s continue prompt (summary, origin, PRs, worktree, then a `---` line), then a blank line and `prompt` — the task (default: pick up where it left off). The prompt goes through a file under `~/.claude/fleet-handoffs/`, like a handoff. Errors when the session has no brief yet. `-n` prints the launch command and the prompt and writes nothing |
+| `fleet spawn --from <target> [prompt] [--name <n>] [--model <id>] [--backend …] [--json]` | continue a session's work in a new one: same host (with `-H`, the host the session is on) and its cwd (`--dir` overrides), first prompt = its [brief](#briefs)'s continue prompt (summary, origin, PRs, worktree, then a `---` line), then a blank line and `prompt` — the task (default: pick up where it left off). The prompt goes through a file under `~/.claude/fleet-handoffs/`, like a handoff. Errors when the session has no brief yet. `-n` prints the launch command and the prompt and writes nothing |
 | `fleet handoff [brief] [--file <f\|->] --dir <path> [--harness <h>] [--name <n>] [--model <id>] [--tmux-session <s>] [--tab] [--no-wait]` | start a new session in another window seeded with a brief (saved under `~/.claude/fleet-handoffs/`); waits until it registers. Same tmux placement as `spawn` |
 | `fleet brief <target> [--json \| --prompt]` | print the session's [brief](#briefs) — its body (Summary / Resources / Todos, no frontmatter); `--json` the parsed shape; `--prompt` only the continue prompt |
 | `fleet brief <target> --edit` / `--set [--expect-updated <iso>]` / `--regenerate` / `--open` | edit it in `$VISUAL`/`$EDITOR`; save markdown from stdin; ask the web server to regenerate it; open the session's checkout in VS Code — see [Briefs](#briefs) |
@@ -65,6 +65,72 @@ the first rung with hits wins. Two hits on the same rung is an error that lists 
 
 `send`, `rename --force`, `name --apply` and `spawn` change a live agent's state — scripts and agents
 should confirm before running them.
+
+### Spawning
+
+Before anything opens, `spawn` checks that the directory exists, the name and model are valid,
+the tmux session name is free, and the launcher can start: its first word must be an executable
+path, or a command found on `PATH`, in the usual install dirs or — failing those — by
+`command -v` in a login shell of `$SHELL` (a launcher it cannot judge, such as `VAR=1 claude`,
+goes ahead as before). It is judged from `--dir`, where the shell will run it: `./agent` is the
+`agent` in that directory, and the login shell starts there.
+
+`spawn --json` (also with `--from`) prints one object on stdout. On success (exit 0):
+
+```json
+{ "ok": true, "dry_run": false, "host": "laptop", "backend": "tmux",
+  "tmux_session": "auth-fix", "tmux_window": "auth-fix:0", "handle": "%12",
+  "created_session": true, "dir": "/work/project", "harness": "codex",
+  "model": "gpt-6", "name": "auth-fix", "command": "cd '/work/project' && codex --model 'gpt-6' 'fix the login'",
+  "prompt_file": null, "from": null }
+```
+
+| field | notes |
+| --- | --- |
+| `host` | this machine's name, as in `list --json` |
+| `backend` | `tmux` \| `iterm` — the one used (inside a [job](#jobs) run an iTerm spawn lands in tmux; a dry run reports the same) |
+| `tmux_session`, `tmux_window` | where it runs (`session:index`); `null` for iTerm |
+| `handle` | the pane id (`%12`) or iTerm session id — the `handle` `list --json` will report for the session once it registers; `null` when iTerm gave none |
+| `created_session` | a new tmux session was made for it (`false`: a window in an existing one, `--tmux-session`) |
+| `dir`, `harness`, `model`, `name` | as resolved (`model` / `name` `null` when not given) |
+| `command` | the shell line typed into the new terminal |
+| `prompt_file` | the file the first prompt was read from (a long prompt, `--from`), else `null` |
+| `from` | `--from`: `{ session_id, label }` of the session it continues, else `null` |
+| `dry_run` | `-n`: nothing ran; `command` is what would be typed and the terminal fields are `null` |
+
+On failure the exit code is 1 (unless noted below), stderr carries the message as usual, and
+stdout carries `{ "ok": false, "host", "kind", "error", "partial" }`. `partial` is `null` unless
+the terminal was created before the spawn failed (typing the launch line into it failed): then it
+says where that terminal is — `{ backend, tmux_session, tmux_window, handle, created_session,
+command, prompt_file }` as above (iTerm: only `backend` and `handle`) — so the caller can find it
+and close it. `kind` is one of:
+
+| kind | when |
+| --- | --- |
+| `dir_missing` | `--dir` does not exist (with `--from`: no working directory known) |
+| `name_invalid` | `--name` is empty, multi-line, or empty after sanitising for tmux |
+| `name_taken` | a tmux session already has that `--name` |
+| `model_invalid` | `--model` has characters outside the allowed set |
+| `harness_missing` | the launcher cannot start on this host |
+| `no_brief` | `--from`: the session has no brief to continue from |
+| `backend_failed` | tmux or iTerm refused (the message carries what it said); see `partial` |
+| `host_unknown` | `-H`: the host cannot be resolved |
+| `dir_invalid` | `-H`: `--dir` is not absolute or `~/…`, so it cannot name a path there |
+| `host_unreachable` | `-H`: ssh could not connect (exit 4) |
+| `fleet_missing` | `-H`: fleet is not installed there (exit 127) |
+| `remote_timeout` | `-H`: no answer within 90 s |
+| `remote_failed` | `-H`: the host answered with something that is not a JSON object (an older fleet) |
+| `ssh_failed` | `-H`: `ssh` could not be started at all (not installed, not on `PATH`) |
+| `io`, `json`, `other` | anything else |
+
+With `-H <host>` the object comes from that host's own `spawn --json` (its exit code too), with
+`host` the name this machine knows it by; only a failure to get that answer is reported here.
+`-n -H <host>` contacts nothing and prints `{ "ok": true, "dry_run": true, "host", "remote": true,
+"command" }`, `command` being the ssh line that would run.
+
+New kinds may be added; treat an unknown one like `other`. The session itself starts after
+`spawn` returns: it shows up in `list --json` once its agent has started (Codex and pi: once the
+process is up; Claude: once it has registered).
 
 ### Harnesses
 

@@ -677,10 +677,18 @@ impl SpawnOpts {
                     .unwrap_or_else(|_| ".".into())
             });
         if !Path::new(&dir).exists() {
-            return Err(Error::Other(format!("dir does not exist: {dir}")));
+            return Err(Error::tagged(
+                "dir_missing",
+                format!("dir does not exist: {dir}"),
+            ));
         }
         let backend = self.backend.unwrap_or_else(default_backend);
-        let name = self.name.as_deref().map(clean_name).transpose()?;
+        let name = self
+            .name
+            .as_deref()
+            .map(clean_name)
+            .transpose()
+            .map_err(|e| e.tag("name_invalid"))?;
         Ok((dir, backend, name))
     }
 }
@@ -699,17 +707,186 @@ fn default_backend() -> Backend {
     }
 }
 
-pub fn spawn(prompt: Option<String>, from: Option<String>, opts: SpawnOpts) -> Result<()> {
-    if let Some(src) = from {
-        return spawn_from(&src, prompt, opts);
+/// `fleet spawn`. With `json`, stdout carries one object either way: what was spawned
+/// ([`spawned_json`]), or `{ ok: false, kind, error }` — and the exit code is non-zero.
+pub fn spawn(
+    prompt: Option<String>,
+    from: Option<String>,
+    opts: SpawnOpts,
+    json: bool,
+) -> Result<()> {
+    let out = match from {
+        Some(src) => spawn_from(&src, prompt, opts, json),
+        None => spawn_new(prompt, opts, json),
+    };
+    if json && let Err(e) = &out {
+        println!("{}", spawn_error_json(e, &host_label()));
     }
-    let (dir, backend_kind, name) = opts.resolve()?;
-    let model = opts
-        .model
+    out
+}
+
+/// The model id a spawn runs, validated (`None` = the harness's default).
+fn spawn_model(opts: &SpawnOpts) -> Result<Option<String>> {
+    opts.model
         .as_deref()
         .map(clean_model)
-        .transpose()?
-        .flatten();
+        .transpose()
+        .map(Option::flatten)
+        .map_err(|e| e.tag("model_invalid"))
+}
+
+/// Refuse to type a launcher that cannot start: the shell would just print "command not
+/// found" in a session that looks spawned. Judged from `dir`, where the shell will run it.
+fn require_launcher(harness: Harness, launcher: &str, dir: &str) -> Result<()> {
+    if harness::check_launcher(launcher, Path::new(dir)) != harness::LauncherCheck::Missing {
+        return Ok(());
+    }
+    let word = launcher.split_whitespace().next().unwrap_or(launcher);
+    let why = if word.contains('/') {
+        "is not an executable file (relative to the spawn's --dir)"
+    } else {
+        "is neither on PATH nor known to a login shell"
+    };
+    Err(Error::tagged(
+        "harness_missing",
+        format!(
+            "{} cannot start here: `{word}` {why} (launcher `{launcher}`)",
+            harness.label()
+        ),
+    ))
+}
+
+/// `fleet spawn --json` on success. `backend_kind` is the backend a dry run would use; a real
+/// spawn reports the one it used.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spawned_json(
+    host: &str,
+    s: Option<&backend::Spawned>,
+    backend_kind: Backend,
+    dir: &str,
+    harness: Harness,
+    model: Option<&str>,
+    name: Option<&str>,
+    command: &str,
+    from: Option<serde_json::Value>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "ok": true,
+        "dry_run": s.is_none(),
+        "host": host,
+        "backend": s.map_or(backend_kind, |s| s.backend).label(),
+        "tmux_session": s.and_then(|s| s.tmux_session.clone()),
+        "tmux_window": s.and_then(|s| s.tmux_window.clone()),
+        "handle": s.and_then(|s| s.handle.clone()),
+        "created_session": s.is_some_and(|s| s.created_session),
+        "dir": dir,
+        "harness": harness.id(),
+        "model": model,
+        "name": name,
+        "command": s.map(|s| s.command.as_str()).unwrap_or(command),
+        "prompt_file": s.and_then(|s| s.prompt_file.clone()),
+        "from": from,
+    })
+}
+
+/// `spawn --json` failed before it reached a host (an unknown `-H`, a `--dir` that cannot
+/// travel): print the failure object for `host` and hand the error back.
+pub fn spawn_json_failure(e: Error, host: &str) -> Error {
+    println!("{}", spawn_error_json(&e, host));
+    e
+}
+
+/// Longest a remote `spawn --json` may take: the ssh hop, plus a login-shell launcher check.
+const REMOTE_SPAWN_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// `fleet -H <host> spawn --json`: run it there and print exactly one object here.
+///
+/// - `-n`: nothing is contacted; the object names the command that would run.
+/// - The host's own `--json` answer is passed through as it is (with its exit code).
+/// - ssh failing to connect: `host_unreachable` (exit 4); fleet missing there:
+///   `fleet_missing` (127); a hop over [`REMOTE_SPAWN_TIMEOUT`]: `remote_timeout`; anything
+///   else that is not a JSON object (an older fleet without `--json`): `remote_failed`; ssh
+///   that cannot even be started (not on PATH): `ssh_failed` (exit 1).
+pub fn spawn_remote_json(r: &crate::core::hosts::Remote, args: &[String]) -> Result<i32> {
+    use crate::core::hosts;
+    let c = hosts::ssh_command(
+        &r.dest,
+        &hosts::remote_fleet_command(r, args),
+        hosts::Tty::Never,
+    );
+    if hosts::dry_run() {
+        let v = serde_json::json!({
+            "ok": true,
+            "dry_run": true,
+            "host": r.name,
+            "remote": true,
+            "command": hosts::display_command(&c),
+        });
+        println!("{}", serde_json::to_string_pretty(&v)?);
+        return Ok(0);
+    }
+    let out = match hosts::capture_remote(r, args, REMOTE_SPAWN_TIMEOUT) {
+        Ok(out) => out,
+        // ssh itself could not be started (not installed, not on PATH): still one object.
+        Err(e) => {
+            return Err(spawn_json_failure(
+                Error::tagged("ssh_failed", format!("spawn on {}: {e}", r.name)),
+                &r.name,
+            ));
+        }
+    };
+    if !out.stderr.trim().is_empty() {
+        eprint!("{}", out.stderr);
+    }
+    let answer = serde_json::from_str::<serde_json::Value>(out.stdout.trim())
+        .ok()
+        .filter(serde_json::Value::is_object);
+    if let (Some(v), false) = (answer, out.timed_out) {
+        println!("{}", serde_json::to_string_pretty(&v)?);
+        return Ok(out.code.unwrap_or(1));
+    }
+    let (kind, code) = match (out.timed_out, out.code) {
+        (true, _) => ("remote_timeout", 1),
+        (_, Some(255)) => ("host_unreachable", hosts::EXIT_UNREACHABLE),
+        (_, Some(127)) => ("fleet_missing", 127),
+        (_, c) => ("remote_failed", c.filter(|c| *c != 0).unwrap_or(1)),
+    };
+    let msg = if kind == "host_unreachable" {
+        hosts::unreachable_message(r)
+    } else {
+        format!("spawn on {}: {}", r.name, out.why(r))
+    };
+    println!(
+        "{}",
+        spawn_error_json(&Error::tagged(kind, msg.clone()), &r.name)
+    );
+    eprintln!("fleet: {msg}");
+    Ok(code)
+}
+
+/// `fleet spawn --json` on failure. `partial`: where the terminal is when it was created before
+/// the spawn failed (so the caller can find and close it), else `null`.
+pub(crate) fn spawn_error_json(e: &Error, host: &str) -> serde_json::Value {
+    serde_json::json!({
+        "ok": false,
+        "host": host,
+        "kind": e.kind(),
+        "error": e.to_string(),
+        "partial": e.partial().map(|p| serde_json::json!({
+            "backend": p.backend.label(),
+            "tmux_session": p.tmux_session,
+            "tmux_window": p.tmux_window,
+            "handle": p.handle,
+            "created_session": p.created_session,
+            "command": p.command,
+            "prompt_file": p.prompt_file,
+        })),
+    })
+}
+
+fn spawn_new(prompt: Option<String>, opts: SpawnOpts, json: bool) -> Result<()> {
+    let (dir, backend_kind, name) = opts.resolve()?;
+    let model = spawn_model(&opts)?;
     let prompt = prompt.unwrap_or_default();
     let (prompt, backend_kind) = if opts.ask_done {
         (crate::core::done::with_instruction(&prompt), Backend::Tmux)
@@ -738,12 +915,29 @@ pub fn spawn(prompt: Option<String>, from: Option<String>, opts: SpawnOpts) -> R
             &launcher,
             opts.harness,
         );
-        println!(
-            "dry-run: would spawn a {} session: {line}",
-            backend_kind.label()
-        );
+        let backend_kind = backend::spawn_backend(backend_kind);
+        if json {
+            let v = spawned_json(
+                &host_label(),
+                None,
+                backend_kind,
+                &dir,
+                opts.harness,
+                model.as_deref(),
+                name.as_deref(),
+                &line,
+                None,
+            );
+            println!("{}", serde_json::to_string_pretty(&v)?);
+        } else {
+            println!(
+                "dry-run: would spawn a {} session: {line}",
+                backend_kind.label()
+            );
+        }
         return Ok(());
     }
+    require_launcher(opts.harness, &launcher, &dir)?;
     let desc = backend::spawn(
         backend_kind,
         &dir,
@@ -754,7 +948,20 @@ pub fn spawn(prompt: Option<String>, from: Option<String>, opts: SpawnOpts) -> R
         &launcher,
         opts.harness,
     )?;
-    if prompt.is_empty() {
+    if json {
+        let v = spawned_json(
+            &host_label(),
+            Some(&desc),
+            backend_kind,
+            &dir,
+            opts.harness,
+            model.as_deref(),
+            name.as_deref(),
+            "",
+            None,
+        );
+        println!("{}", serde_json::to_string_pretty(&v)?);
+    } else if prompt.is_empty() {
         println!("{desc} in {}", home_rel(&dir));
     } else {
         println!("{desc} in {} — \"{prompt}\"", home_rel(&dir));
@@ -787,7 +994,7 @@ fn spawn_linked(
     }
     crate::cli::slack::check_linkable()?;
     let tag = crate::core::jobs::Tag::from_env();
-    let (desc, tmux) = backend::spawn_tagged(
+    let spawned = backend::spawn_tagged(
         Backend::Tmux,
         dir,
         Prompt::Inline(""),
@@ -798,9 +1005,10 @@ fn spawn_linked(
         opts.harness,
         tag.as_ref(),
     )?;
-    println!("{desc} in {}", home_rel(dir));
-    let tmux =
-        tmux.ok_or_else(|| Error::Other("the session has no tmux session to link".into()))?;
+    println!("{spawned} in {}", home_rel(dir));
+    let tmux = spawned
+        .tmux_session
+        .ok_or_else(|| Error::Other("the session has no tmux session to link".into()))?;
     crate::cli::slack::link_spawned(&tmux, link, prompt)
 }
 
@@ -808,23 +1016,19 @@ fn spawn_linked(
 /// brought us to the source's host) whose first prompt is the brief's continue prompt, plus
 /// `extra` (the task; the default one when empty) below its separator. The prompt goes through a file, like a handoff brief: it is
 /// multi-line, and the file stays as the record of what was handed on.
-fn spawn_from(source: &str, extra: Option<String>, mut opts: SpawnOpts) -> Result<()> {
+fn spawn_from(source: &str, extra: Option<String>, mut opts: SpawnOpts, json: bool) -> Result<()> {
     let c = crate::cli::brief::continue_from(source)?;
     if opts.dir.is_none() {
         opts.dir = Some(c.cwd.clone().ok_or_else(|| {
-            Error::Other(format!(
-                "no working directory known for {} — pass --dir",
-                c.label
-            ))
+            Error::tagged(
+                "dir_missing",
+                format!("no working directory known for {} — pass --dir", c.label),
+            )
         })?);
     }
     let (dir, backend_kind, name) = opts.resolve()?;
-    let model = opts
-        .model
-        .as_deref()
-        .map(clean_model)
-        .transpose()?
-        .flatten();
+    let model = spawn_model(&opts)?;
+    let from = serde_json::json!({ "session_id": c.id, "label": c.label });
     let task = extra.as_deref().map(str::trim).filter(|e| !e.is_empty());
     let text = format!(
         "{}\n\n{}",
@@ -850,6 +1054,23 @@ fn spawn_from(source: &str, extra: Option<String>, mut opts: SpawnOpts) -> Resul
             &launcher,
             opts.harness,
         );
+        let backend_kind = backend::spawn_backend(backend_kind);
+        if json {
+            let mut v = spawned_json(
+                &host_label(),
+                None,
+                backend_kind,
+                &dir,
+                opts.harness,
+                model.as_deref(),
+                name.as_deref(),
+                &line,
+                Some(from),
+            );
+            v["prompt_file"] = path_s.clone().into();
+            println!("{}", serde_json::to_string_pretty(&v)?);
+            return Ok(());
+        }
         println!(
             "dry-run: would spawn a {} session continuing {}: {line}",
             backend_kind.label(),
@@ -861,6 +1082,7 @@ fn spawn_from(source: &str, extra: Option<String>, mut opts: SpawnOpts) -> Resul
         );
         return Ok(());
     }
+    require_launcher(opts.harness, &launcher, &dir)?;
     std::fs::create_dir_all(handoff_dir())?;
     std::fs::write(&path, &text)?;
     let desc = backend::spawn(
@@ -873,6 +1095,21 @@ fn spawn_from(source: &str, extra: Option<String>, mut opts: SpawnOpts) -> Resul
         &launcher,
         opts.harness,
     )?;
+    if json {
+        let v = spawned_json(
+            &host_label(),
+            Some(&desc),
+            backend_kind,
+            &dir,
+            opts.harness,
+            model.as_deref(),
+            name.as_deref(),
+            "",
+            Some(from),
+        );
+        println!("{}", serde_json::to_string_pretty(&v)?);
+        return Ok(());
+    }
     println!(
         "{} {desc} in {} — continuing {} (prompt: {})",
         "→".cyan(),
@@ -1080,6 +1317,70 @@ pub fn handoff(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spawn_json_has_the_contract_fields() {
+        let s = backend::Spawned {
+            backend: Backend::Tmux,
+            desc: "spawned tmux session api".into(),
+            tmux_session: Some("api".into()),
+            tmux_window: Some("api:0".into()),
+            handle: Some("%3".into()),
+            created_session: true,
+            command: "cd '/w' && codex -- 'go'".into(),
+            prompt_file: None,
+        };
+        let v = spawned_json(
+            "laptop",
+            Some(&s),
+            Backend::Tmux,
+            "/w",
+            Harness::Codex,
+            Some("gpt-6"),
+            Some("api"),
+            "",
+            None,
+        );
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "ok": true, "dry_run": false, "host": "laptop", "backend": "tmux",
+                "tmux_session": "api", "tmux_window": "api:0", "handle": "%3",
+                "created_session": true, "dir": "/w", "harness": "codex", "model": "gpt-6",
+                "name": "api", "command": "cd '/w' && codex -- 'go'", "prompt_file": null,
+                "from": null,
+            })
+        );
+        let e = Error::tagged("name_taken", "taken");
+        assert_eq!(
+            spawn_error_json(&e, "laptop"),
+            serde_json::json!({ "ok": false, "host": "laptop", "kind": "name_taken", "error": "taken", "partial": null })
+        );
+        // The terminal exists although the spawn failed: where it is comes along.
+        let e = Error::Partial {
+            source: Box::new(Error::tagged("backend_failed", "send-keys failed")),
+            partial: Box::new(s.clone()),
+        };
+        let v = spawn_error_json(&e, "laptop");
+        assert_eq!(v["kind"], "backend_failed");
+        assert_eq!(v["error"], "send-keys failed");
+        assert_eq!(
+            v["partial"],
+            serde_json::json!({
+                "backend": "tmux", "tmux_session": "api", "tmux_window": "api:0", "handle": "%3",
+                "created_session": true, "command": "cd '/w' && codex -- 'go'", "prompt_file": null,
+            })
+        );
+        assert_eq!(e.tag("other").kind(), "backend_failed");
+        // Untagged failures still say what they are.
+        let e = Error::Other("boom".into());
+        assert_eq!(spawn_error_json(&e, "laptop")["kind"], "other");
+        assert_eq!(e.tag("backend_failed").kind(), "backend_failed");
+        assert_eq!(
+            Error::tagged("dir_missing", "x").tag("other").kind(),
+            "dir_missing"
+        );
+    }
 
     // `enabled = false` printed "nothing will happen here" and then spawned a
     // `claude` per session anyway: nothing carried the setting past this point.

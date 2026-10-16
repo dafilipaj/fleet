@@ -320,6 +320,86 @@ pub fn info(h: Harness, with_models: bool) -> HarnessInfo {
     }
 }
 
+/// Whether a spawn's launcher can start, asked before it is typed into a shell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LauncherCheck {
+    Found,
+    Missing,
+    /// Can't tell (a launcher that starts with `VAR=…`, an unusual shell, a slow profile):
+    /// the spawn goes ahead, as it always did.
+    Unknown,
+}
+
+/// Look for the launcher's first word: a path must be executable; a bare name is looked up
+/// on `PATH` and the usual install dirs, then — since the spawned shell is a login shell whose
+/// profile may add to `PATH` or define the command as a function (nvm, a telemetry wrapper) —
+/// in a login shell of `$SHELL`. Only a shell that answered "not found" makes it `Missing`.
+/// Everything is judged from `dir`, where the spawned shell will run the launcher: a relative
+/// path (`./agent`, `bin/agent`) is resolved there, and the login shell starts there.
+pub fn check_launcher(launcher: &str, dir: &Path) -> LauncherCheck {
+    let Some(word) = launcher.split_whitespace().next() else {
+        return LauncherCheck::Unknown;
+    };
+    if word.starts_with('-')
+        || !word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._/~+-".contains(c))
+    {
+        return LauncherCheck::Unknown;
+    }
+    if word.contains('/') {
+        let p = PathBuf::from(crate::core::tools::expand_tilde(word));
+        // Relative to where the shell will be, not to where fleet runs.
+        let p = if p.is_absolute() { p } else { dir.join(p) };
+        return if crate::core::tools::is_executable(&p) {
+            LauncherCheck::Found
+        } else {
+            LauncherCheck::Missing
+        };
+    }
+    if crate::core::tools::find_binary(word).is_some()
+        || (word == "claude" && crate::core::tools::claude().is_some())
+    {
+        return LauncherCheck::Found;
+    }
+    login_shell_has(word, dir)
+}
+
+/// `command -v <word>` in an interactive login shell of `$SHELL` (sh-family shells only).
+fn login_shell_has(word: &str, dir: &Path) -> LauncherCheck {
+    let shell = std::env::var("SHELL")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "/bin/sh".into());
+    let base = Path::new(&shell)
+        .file_name()
+        .map(|b| b.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if !matches!(base.as_str(), "sh" | "bash" | "zsh" | "dash" | "ksh") {
+        return LauncherCheck::Unknown;
+    }
+    let mut cmd = Command::new(&shell);
+    cmd.args([
+        "-l",
+        "-i",
+        "-c",
+        r#"if command -v "$1" >/dev/null 2>&1; then echo fleet:found; else echo fleet:missing; fi"#,
+        "fleet",
+        word,
+    ])
+    .env("DISABLE_AUTO_UPDATE", "true")
+    .current_dir(dir);
+    // A profile may print too; only the line that starts with `fleet:` is ours.
+    match run_with_timeout(&mut cmd, Duration::from_secs(15))
+        .as_deref()
+        .and_then(|out| out.lines().rev().find(|l| l.starts_with("fleet:")))
+    {
+        Some("fleet:found") => LauncherCheck::Found,
+        Some("fleet:missing") => LauncherCheck::Missing,
+        _ => LauncherCheck::Unknown,
+    }
+}
+
 // --- processes ----------------------------------------------------------------
 
 /// A live interactive Codex or pi process.
@@ -1238,6 +1318,29 @@ mod tests {
             first_prompt(Harness::Codex, &cf).as_deref(),
             Some("reply pong")
         );
+    }
+
+    #[test]
+    fn a_launcher_path_must_be_executable() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("agent");
+        std::fs::write(&exe, "#!/bin/sh\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let exe = exe.display().to_string();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let check = |l: &str| check_launcher(l, elsewhere.path());
+        assert_eq!(check(&exe), LauncherCheck::Found);
+        assert_eq!(check(&format!("{exe} --model 'x'")), LauncherCheck::Found);
+        let missing = dir.path().join("nope").display().to_string();
+        assert_eq!(check(&missing), LauncherCheck::Missing);
+        // A relative path is judged from the spawn's dir, not from where fleet runs.
+        assert_eq!(check_launcher("./agent", dir.path()), LauncherCheck::Found);
+        assert_eq!(check("./agent"), LauncherCheck::Missing);
+        // Not a plain command word: no way to tell, so the spawn goes ahead.
+        assert_eq!(check("FOO=1 claude"), LauncherCheck::Unknown);
+        assert_eq!(check("$HOME/bin/x"), LauncherCheck::Unknown);
+        assert_eq!(check(""), LauncherCheck::Unknown);
     }
 
     #[test]

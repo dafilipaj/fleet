@@ -1125,10 +1125,10 @@ pub fn spawn(a: SpawnArgs) -> Result<()> {
             "generated": e.generated,
             "warning": e.warning,
             "spawned": {
-                "desc": desc,
+                "desc": desc.desc,
                 "dir": dir,
                 "promptFile": pf,
-                "tmuxSession": tmux_session_of(&desc),
+                "tmuxSession": desc.tmux_session,
             },
             "session": joined.as_ref().map(|s| json!({
                 "session_id": s.session_id, "pid": s.pid, "display_title": s.headline(),

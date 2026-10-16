@@ -305,7 +305,7 @@ pub fn spawn(
         return Ok(());
     }
     opts.dir = Some(wt.path.clone());
-    crate::cli::commands::spawn(Some(first), None, opts)
+    crate::cli::commands::spawn(Some(first), None, opts, false)
 }
 
 /// `fleet pr cleanup-worktrees [--apply]`: the worktrees under `prs.worktrees` whose PR is done

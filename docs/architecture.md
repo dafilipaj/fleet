@@ -372,6 +372,18 @@ result is cached in-process per `(path, size, mtime)`, so the `watch` dashboard 
 transcript only after it has grown. Views colour `pct` in the same bands: under 60 dim, 60–85
 amber, over 85 red.
 
+### `fleet spawn --json`
+
+One object: where the new session landed (`host`, `backend`, `tmux_session`, `tmux_window`,
+`handle`, `created_session`, `dir`, `harness`, `model`, `name`, `command`, `prompt_file`, `from`,
+`dry_run`, `ok: true`), or why it failed (`ok: false`, `kind`, `error`, `host`, `partial`; exit 1,
+4 for an unreachable `-H` host). `partial` (`Error::Partial`) says where the terminal is when it was
+created before the failure. With `-H`, the dispatch in `main` captures the host's own object and
+passes it through, or prints the failure to reach it, so the output is one object either way.
+`kind` is a stable `snake_case` code (`dir_missing`, `name_taken`, `harness_missing`, …) carried by
+`Error::Tagged` from where the failure happens (`core::backend`, `SpawnOpts::resolve`); untagged
+errors report `io` / `json` / `other`. See [cli.md](cli.md#spawning) for every field and kind.
+
 ### `fleet group --json`
 
 See [cli.md](cli.md#grouping) for the shape. State file: `groups.json` (below).

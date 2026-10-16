@@ -334,6 +334,9 @@ enum Commands {
         /// The --slack link sees every message and steps in when it should (default: woken when mentioned)
         #[arg(long, requires = "slack")]
         slack_proactive: bool,
+        /// Print one JSON object: where it landed, or `{ ok: false, kind, error }` on failure
+        #[arg(long, conflicts_with = "slack")]
+        json: bool,
     },
 
     /// Coding-agent harnesses on this host (claude, codex, pi): installed, command, models
@@ -1366,11 +1369,37 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
     }
 
     if let Placement::Dispatch(scope) = placement(&command) {
-        let t = target(cli.host.as_deref(), cli.local, scope)?;
+        // `spawn --json` promises one object on stdout whatever happens, the hop included.
+        let spawn_json = matches!(&command, Commands::Spawn { json: true, .. });
+        let requested = || {
+            cli.host
+                .clone()
+                .or_else(|| std::env::var("FLEET_HOST").ok())
+                .unwrap_or_else(commands::host_label)
+        };
+        let t = match target(cli.host.as_deref(), cli.local, scope) {
+            Ok(t) => t,
+            Err(e) if spawn_json => {
+                return Err(commands::spawn_json_failure(
+                    e.tag("host_unknown"),
+                    &requested(),
+                ));
+            }
+            Err(e) => return Err(e),
+        };
         hosts::debug(&format!("target: {t:?}"));
         if let Target::Remote(r) = t {
             let raw: Vec<String> = std::env::args().skip(1).collect();
-            let args = hosts::remap_dir_args(&hosts::strip_host_flags(&raw))?;
+            let args = match hosts::remap_dir_args(&hosts::strip_host_flags(&raw)) {
+                Ok(a) => a,
+                Err(e) if spawn_json => {
+                    return Err(commands::spawn_json_failure(e.tag("dir_invalid"), &r.name));
+                }
+                Err(e) => return Err(e),
+            };
+            if spawn_json {
+                return commands::spawn_remote_json(&r, &args);
+            }
             return hosts::run_remote(&r, &args, false);
         }
     }
@@ -1530,6 +1559,7 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
             slack_for,
             slack_task,
             slack_proactive,
+            json,
         } => commands::spawn(
             prompt,
             from,
@@ -1549,6 +1579,7 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
                     proactive: slack_proactive,
                 }),
             },
+            json,
         )?,
         Commands::Harness { cmd } => match cmd {
             HarnessCmd::List { json, no_models } => commands::harness_list(json, !no_models)?,
