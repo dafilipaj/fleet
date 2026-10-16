@@ -161,7 +161,9 @@ fleet drives three coding agents: **Claude Code** (`claude`, the default), **Cod
 `--harness`. Codex and pi have no live registry like Claude's, so they are found with `ps`
 (interactive runs with a terminal — `codex exec`, `pi -p` and the like are not sessions) and
 matched to their transcript by cwd and start time (see
-[architecture](architecture.md#other-harnesses)). Peek, send, keys, kill, rename (`/rename` in
+[architecture](architecture.md#other-harnesses)). A Codex session sitting on an approval prompt is
+`waiting` (`waiting_for`: `exec approval`, `patch approval`, …): Codex does not record the
+prompt, so fleet reads it off the tmux pane. Peek, send, keys, kill, rename (`/rename` in
 Codex, `/name` in pi — held while the session is busy) and restore (`codex resume <id>`,
 `pi --session <id>`) work the same; briefs, naming and the web's question answering are
 Claude-only for now.
