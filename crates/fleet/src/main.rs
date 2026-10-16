@@ -4,9 +4,9 @@ use clap::{CommandFactory, Parser, Subcommand};
 use colored::Colorize;
 
 use fleet::cli::{
-    brief as brief_cmd, commands, config_cmd, group, hosts as host_cmds, init, jobs as jobs_cmd,
-    mcp, messages as messages_cmd, prs as prs_cmd, repos as repos_cmd, restore, skill,
-    stack as stack_cmds, tmux as tmux_cmds, usage as usage_cmd, web,
+    answer as answer_cmd, brief as brief_cmd, commands, config_cmd, group, hosts as host_cmds,
+    init, jobs as jobs_cmd, mcp, messages as messages_cmd, prs as prs_cmd, repos as repos_cmd,
+    restore, skill, stack as stack_cmds, tmux as tmux_cmds, usage as usage_cmd, web,
 };
 use fleet::core::config;
 use fleet::core::discovery::Backend;
@@ -147,6 +147,33 @@ enum Commands {
         /// How many entries (default 100, max 500; --after returns all unless given)
         #[arg(long, value_name = "N")]
         limit: Option<String>,
+    },
+
+    /// Answer the prompt a session waits on: a question (--question), a permission or approval prompt (--choice)
+    Answer {
+        /// generated title, session name, sessionId prefix, or pid
+        target: String,
+        /// One JSON object (failures: { ok: false, kind, error })
+        #[arg(long)]
+        json: bool,
+        /// Only show the prompt on screen: its answers and id (types nothing)
+        #[arg(long)]
+        list: bool,
+        /// Pick this numbered answer of the permission / approval prompt on screen
+        #[arg(long, value_name = "N")]
+        choice: Option<String>,
+        /// With --choice: only if the screen still shows this prompt (its id from --list)
+        #[arg(long, value_name = "ID")]
+        prompt: Option<String>,
+        /// The AskUserQuestion to answer (its tool_use id, from `fleet messages`)
+        #[arg(long, value_name = "TOOL_USE_ID")]
+        question: Option<String>,
+        /// With --question: `[{"options":[index…],"text":"…"}]`, one per question, in order
+        #[arg(long, value_name = "JSON")]
+        answers: Option<String>,
+        /// Answer even with a terminal attached to the session (a human could be typing)
+        #[arg(long)]
+        allow_attached: bool,
     },
 
     /// Type text into a session and submit it
@@ -1172,6 +1199,25 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
             before,
             limit,
         })?,
+        Commands::Answer {
+            target,
+            json,
+            list,
+            choice,
+            prompt,
+            question,
+            answers,
+            allow_attached,
+        } => answer_cmd::run(answer_cmd::Opts {
+            target,
+            json,
+            list,
+            choice,
+            prompt,
+            question,
+            answers,
+            allow_attached,
+        })?,
         Commands::Send { target, text } => commands::send(&target, &text)?,
         Commands::Keys { target, keys, json } => commands::keys(&target, &keys, json)?,
         Commands::Rename {
@@ -1661,7 +1707,7 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
 
 /// Commands whose `--json` failures are one `{ ok: false, kind, error }` object — usage
 /// errors clap catches included.
-const JSON_FAILURE_COMMANDS: &[&str] = &["messages"];
+const JSON_FAILURE_COMMANDS: &[&str] = &["messages", "answer"];
 
 /// The subcommand of [`JSON_FAILURE_COMMANDS`] the command line names with `--json`, read by
 /// clap itself with the error set aside — global flags in any spelling (`-nH host`,

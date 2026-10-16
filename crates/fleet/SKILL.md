@@ -18,6 +18,7 @@ A firstmate-style orchestrator for the many Claude Code sessions the user runs i
 | "tell X to … / steer X" | `fleet send <target> "<text>"` |
 | "what exactly is on X's screen" (to parse) | `fleet peek <target> --json [--lines N]` — the lines whole: no header, not cut to your terminal's width |
 | "stop X / interrupt X" | `fleet keys <target> Escape` — presses keys (`Escape Enter Up Down Left Right Tab BTab Space C-c`); `--json` to parse |
+| "X is asking for permission / answer X's question / approve it" | `fleet answer <target> --list` shows the prompt and its numbered answers; `--choice <n> --prompt <id>` picks one; `--question <tool_use_id> --answers '[{"options":[0]}]'` answers an AskUserQuestion. Types only while the terminal still shows that prompt untouched, checking the screen before every key (`prompt_changed` stops it) and after it (`outcome_uncertain` if it cannot tell); refuses while a terminal is attached (`human_attached`; `--allow-attached` overrides) or another fleet command types into it (`busy`); `-n` shows the keys without typing — confirm the answer with the user first, like `send` |
 | "rename X / call it …" | `fleet rename <target> "<name>" [--no-tmux-sync] [--force]` |
 | "name X / what should this be called" | `fleet name <target>` — suggests; add `--apply` to send it |
 | "name all the unnamed ones" | `fleet name --all [--apply] [--no-tmux-sync]` |

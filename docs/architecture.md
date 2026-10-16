@@ -452,6 +452,26 @@ See [cli.md](cli.md#messages) for the shape. The parser (`core::transcript`) is 
   by a typed prefilter without building a JSON value; on real transcripts the initial tail (2 MiB,
   doubled up to 64 MiB until it holds `--limit` entries) parses in ~10 ms on average.
 
+### `fleet answer --json`
+
+See [cli.md](cli.md#answering-prompts) for the shapes and kinds. `core::prompt` reads prompts off
+the screen; `core::questions` ports the web's `validateAnswer` / `answerSteps` as a plan whose every
+step carries the state the form must be in before it (`At`: cursor row, ticked rows, typed text,
+answered tabs; for the final Enter the whole review). `core::lock` is the per-session typing lock.
+
+- A capture is the scrollback, a mark, then the visible screen. A prompt is live only when its
+  numbered answers are on the visible screen and end it (≤ 4 footer lines after them, no input
+  box); the scrollback only extends a prompt upward.
+- Claude Code's permission prompt is framed: a solid rule above it, dashed rules in pairs inside
+  setting off the command; everything in the frame is its detail. No frame in the capture, or an odd
+  number of dashed rules between the rule found and the title (that rule is inside the command):
+  incomplete. Codex's has no frame: its detail is what lies between the title and the answers. The
+  `id` is `p1.<FNV-1a of title, detail and answers>`.
+- A question form is parsed whole (tabs with ☐/☒, the active question, rows with checkboxes and
+  descriptions, "Type something", Submit/Next, "Chat about this") and matched against the
+  transcript's one active question; the review screen (`● question` / `→ answer`, multi-select picks
+  and typed text joined with `", "`, wrapped lines rejoined at a space) is compared exactly.
+
 ### `fleet group --json`
 
 See [cli.md](cli.md#grouping) for the shape. State file: `groups.json` (below).

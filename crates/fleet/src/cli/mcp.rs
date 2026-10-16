@@ -67,8 +67,8 @@ Every tool takes `host` (a configured host name or ssh destination; default: thi
 defaultHost for tmux commands) and `dry_run`. Pass `json: true` where offered for machine-readable \
 output. Session targets: a title, session name, session-id prefix or pid; `pid:<n>` and \
 `id:<session id>` match exactly and never fall through; an ambiguous target errors with \
-candidates — never guess, re-ask with a more specific one. `send`, `keys`, `rename`, `spawn` \
-and `handoff` type into live agents.";
+candidates — never guess, re-ask with a more specific one. `send`, `keys`, `answer`, `rename`, \
+`spawn` and `handoff` type into live agents.";
 
 #[derive(Debug, Clone)]
 enum Kind {
