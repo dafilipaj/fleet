@@ -46,6 +46,7 @@ const STDIN_COMMANDS: &[&str] = &["brief", "stack set", "handoff", "group"];
 const READ_ONLY: &[&str] = &[
     "list",
     "peek",
+    "messages",
     "usage",
     "doctor",
     "prs",
