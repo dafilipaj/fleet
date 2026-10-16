@@ -13,9 +13,11 @@ use std::time::{Duration, Instant};
 use common::{Env, stderr, stdout};
 use serde_json::Value;
 
-/// A stand-in for an agent: its argv, NUL-separated (so `--`, spaces, quotes and newlines all
-/// come back exactly), written whole to `agent.argv`; then idle.
+/// A stand-in for an agent: its environment to `agent.env`, then its argv, NUL-separated (so
+/// `--`, spaces, quotes and newlines all come back exactly), written whole to `agent.argv`
+/// (once that exists, both are complete); then idle.
 const FAKE_AGENT: &str = r#"#!/bin/sh
+env > "$HOME/agent.env"
 printf '%s\0' "$@" > "$HOME/agent.argv.tmp" && mv "$HOME/agent.argv.tmp" "$HOME/agent.argv"
 trap 'exit 0' HUP TERM INT
 while :; do sleep 1; done
@@ -491,4 +493,144 @@ fn a_prompt_at_the_typed_line_limit_arrives_whole() {
     let (v, argv) = spawn_prompt(&r, "fleet-test-c2", &prompt(n + 1));
     assert!(v["prompt_file"].is_string(), "{v}");
     assert_eq!(argv, ["-n", "fleet-test-c2", "--", prompt(n + 1).as_str()]);
+}
+
+/// The fake agent's environment, as `NAME=value` lines (read after [`Rig::agent_argv`]).
+fn agent_env(r: &Rig) -> String {
+    std::fs::read_to_string(r.p("home/agent.env")).unwrap()
+}
+
+/// `FLEET_TEST_DC` in an environment dump: which `default-command` started the pane.
+fn dc_of(env: &str) -> Option<&str> {
+    env.lines().find_map(|l| l.strip_prefix("FLEET_TEST_DC="))
+}
+
+fn has_var(env: &str, name: &str) -> bool {
+    env.lines().any(|l| l.starts_with(&format!("{name}=")))
+}
+
+/// What a spawned agent must not inherit, and what it must keep (set in fleet's environment
+/// and, below, in the tmux server's).
+const MARKERS: [(&str, &str); 5] = [
+    ("CLAUDECODE", "1"),
+    ("CLAUDE_CODE_SESSION_ID", "parent-session"),
+    ("CLAUDE_CODE_ENTRYPOINT", "cli"),
+    ("CODEX_THREAD_ID", "parent-thread"),
+    (
+        "TRACEPARENT",
+        "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+    ),
+];
+const CONFIG: [(&str, &str); 5] = [
+    ("CLAUDE_CODE_OAUTH_TOKEN", "token-for-test"),
+    ("CLAUDE_CODE_USE_BEDROCK", "1"),
+    ("CLAUDE_CODE_USE_VERTEX", "1"),
+    (
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "http://collector.invalid:4318",
+    ),
+    ("OTEL_EXPORTER_OTLP_HEADERS", "x-team=test"),
+];
+
+fn assert_clean(env: &str) {
+    for (k, _) in MARKERS {
+        assert!(!has_var(env, k), "{k} leaked into the agent");
+    }
+    for (k, v) in CONFIG {
+        assert!(env.contains(&format!("{k}={v}\n")), "{k} lost");
+    }
+    // Started through the login shell: the profile ran, and what it sets stays.
+    for k in [
+        "FLEET_TEST_PROFILE",
+        "CODEX_CI_FROM_PROFILE",
+        "DISABLE_AUTO_UPDATE",
+    ] {
+        assert!(has_var(env, k), "{k} missing from the agent");
+    }
+}
+
+// A session spawned from inside an agent must not act as part of it: the agent's own markers
+// (`CLAUDECODE`, its session id, `CODEX_THREAD_ID`, `TRACEPARENT`, …) never reach it — not from
+// fleet's environment, not from a tmux server whose global environment already holds them.
+// Configuration does: auth, provider and OTel exporter settings. The login profile still runs.
+#[test]
+fn a_spawned_agent_keeps_the_users_config_but_not_the_parent_agents_markers() {
+    let Some(r) = Rig::new() else { return };
+    std::fs::write(
+        r.p("home/.profile"),
+        "export FLEET_TEST_PROFILE=1\nexport CODEX_CI_FROM_PROFILE=1\n",
+    )
+    .unwrap();
+    let work = r.s("work");
+    let spawn = |extra: &[&str]| {
+        let mut c = r.cmd();
+        c.envs(MARKERS).envs(CONFIG);
+        c.args(["spawn", "--backend", "tmux", "--json", "--dir", &work])
+            .args(extra);
+        let (out, v) = r.json_of(&mut c);
+        assert!(out.status.success(), "{v} / {}", stderr(&out));
+        r.agent_argv();
+        agent_env(&r)
+    };
+
+    // 1. fleet starts the server itself: its markers stay out of the server too.
+    assert_clean(&spawn(&["--name", "fleet-test-g"]));
+    let global = r.tmux(&["show-environment", "-g"]);
+    for (k, _) in MARKERS {
+        assert!(!has_var(&global, k), "{k} reached the server");
+    }
+
+    // 2. A server whose global environment already carries them (started from an agent).
+    for (k, v) in MARKERS {
+        r.tmux(&["set-environment", "-g", k, v]);
+    }
+    assert_clean(&spawn(&["--name", "fleet-test-h"]));
+    // A window in an existing session gets the same.
+    assert_clean(&spawn(&["--tmux-session", "fleet-test-h"]));
+}
+
+// The pane becomes what tmux itself would start: the effective `default-command` — from the
+// config a fresh server loads, or a session's own — else the login shell.
+#[test]
+fn the_spawned_pane_honours_the_effective_default_command() {
+    let Some(r) = Rig::new() else { return };
+    std::fs::write(
+        r.p("home/.tmux.conf"),
+        "set -g default-command 'FLEET_TEST_DC=conf exec /bin/sh -l'\n",
+    )
+    .unwrap();
+    let work = r.s("work");
+    let spawn = |extra: &[&str]| {
+        let mut c = r.cmd();
+        c.env("CLAUDECODE", "1")
+            .args(["spawn", "--backend", "tmux", "--json", "--dir", &work])
+            .args(extra);
+        let (out, v) = r.json_of(&mut c);
+        assert!(out.status.success(), "{v} / {}", stderr(&out));
+        r.agent_argv();
+        agent_env(&r)
+    };
+    // No server yet: fleet's spawn starts it, and the config it loads applies.
+    let env = spawn(&["--name", "fleet-test-dc"]);
+    assert_eq!(
+        dc_of(&env),
+        Some("conf"),
+        "the config's default-command did not run"
+    );
+    assert!(!has_var(&env, "CLAUDECODE"));
+    // A session's own setting wins over the global one.
+    r.tmux(&[
+        "set-option",
+        "-t",
+        "fleet-test-dc",
+        "default-command",
+        "FLEET_TEST_DC=session exec /bin/sh -l",
+    ]);
+    let env = spawn(&["--tmux-session", "fleet-test-dc"]);
+    assert_eq!(
+        dc_of(&env),
+        Some("session"),
+        "the session's default-command did not run"
+    );
+    assert!(!has_var(&env, "CLAUDECODE"));
 }
