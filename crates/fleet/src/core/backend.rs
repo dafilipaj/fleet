@@ -66,6 +66,18 @@ fn require_handle(s: &Session) -> Result<&str> {
     })
 }
 
+/// What a tmux pane shows now (no scrollback), or `None` when tmux would not say — within
+/// [`SCREEN_DEADLINE`], so a hung tmux cannot stall the discovery that asks.
+pub fn tmux_screen(pane: &str) -> Option<String> {
+    let mut cmd = crate::core::tools::tmux_cmd();
+    cmd.args(["capture-pane", "-p", "-t", pane]);
+    let out = crate::core::hosts::capture(cmd, SCREEN_DEADLINE).ok()?;
+    out.ok().then_some(out.stdout)
+}
+
+/// How long one `capture-pane` for discovery may take.
+pub const SCREEN_DEADLINE: std::time::Duration = std::time::Duration::from_millis(500);
+
 pub fn peek(s: &Session) -> Result<String> {
     deny_fixture()?;
     let handle = require_handle(s)?;

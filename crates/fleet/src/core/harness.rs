@@ -836,6 +836,11 @@ pub struct State {
     pub waiting_for: Option<String>,
     pub model: Option<String>,
     pub context: Option<ContextUsage>,
+    /// Codex: a `busy` turn's last command asked to leave the sandbox
+    /// (`sandbox_permissions: "require_escalated"`) and has no output yet — most likely an
+    /// approval prompt on screen (Codex records none in the transcript). Only a hint: a
+    /// command approved earlier for the session runs without one. See [`codex_screen_waits_for`].
+    pub escalation_pending: bool,
 }
 
 /// The last `max` bytes of a file, starting at a line boundary.
@@ -877,6 +882,8 @@ fn codex_state(text: &str) -> State {
     };
     let mut window = None;
     let mut used = None;
+    // Tool calls that asked to leave the sandbox and have no output yet.
+    let mut escalations: HashSet<String> = HashSet::new();
     for line in text.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
@@ -887,6 +894,27 @@ fn codex_state(text: &str) -> State {
             .and_then(|p| p.get("type"))
             .and_then(Value::as_str)
             .unwrap_or("");
+        let call_id = || {
+            p.and_then(|p| p.get("call_id"))
+                .and_then(Value::as_str)
+                .map(String::from)
+        };
+        match (kind, ptype) {
+            ("response_item", "function_call" | "custom_tool_call") => {
+                if p.is_some_and(asks_escalation)
+                    && let Some(id) = call_id()
+                {
+                    escalations.insert(id);
+                }
+            }
+            ("response_item", "function_call_output" | "custom_tool_call_output") => {
+                if let Some(id) = call_id() {
+                    escalations.remove(&id);
+                }
+            }
+            ("event_msg", "task_started" | "task_complete" | "turn_aborted") => escalations.clear(),
+            _ => {}
+        }
         match (kind, ptype) {
             ("turn_context", _) => {
                 if let Some(m) = p.and_then(|p| p.get("model")).and_then(Value::as_str) {
@@ -934,7 +962,185 @@ fn codex_state(text: &str) -> State {
     if let (Some(u), Some(w)) = (used, window) {
         st.context = Some(ContextUsage::new(u, w, st.model.clone()));
     }
+    st.escalation_pending = st.status == "busy" && !escalations.is_empty();
     st
+}
+
+/// A Codex tool call asking to run outside the sandbox: its `sandbox_permissions` argument is
+/// `"require_escalated"`. Read from the arguments themselves, never from text inside them — a
+/// command that merely mentions the words (`rg 'sandbox_permissions: require_escalated'`) is
+/// not a request.
+///
+/// - `function_call`: `arguments` is JSON; the top-level field decides.
+/// - `custom_tool_call` (`exec`, Codex's code mode): `input` is JavaScript; an object key
+///   `sandbox_permissions` followed by `:` and the string `"require_escalated"`, with string
+///   literals and comments read as data.
+fn asks_escalation(payload: &Value) -> bool {
+    const KEY: &str = "sandbox_permissions";
+    const ESCALATED: &str = "require_escalated";
+    if let Some(args) = payload.get("arguments").and_then(Value::as_str) {
+        return serde_json::from_str::<Value>(args)
+            .ok()
+            .and_then(|a| a.get(KEY).and_then(Value::as_str).map(|v| v == ESCALATED))
+            .unwrap_or(false);
+    }
+    let Some(js) = payload.get("input").and_then(Value::as_str) else {
+        return false;
+    };
+    js_tokens(js).windows(3).any(|w| {
+        matches!(&w[0], JsTok::Word(k) if *k == KEY)
+            || matches!(&w[0], JsTok::Str(k) if k == KEY)
+    } && w[1] == JsTok::Punct(':')
+        && w[2] == JsTok::Str(ESCALATED.into()))
+}
+
+/// Just enough JavaScript tokenizing to tell code from data: words, string literals (their
+/// contents, escapes resolved) and single punctuation; whitespace and comments are skipped.
+#[derive(Debug, PartialEq)]
+enum JsTok<'a> {
+    Word(&'a str),
+    Str(String),
+    Punct(char),
+}
+
+fn js_tokens(src: &str) -> Vec<JsTok<'_>> {
+    let mut out = Vec::new();
+    let mut it = src.char_indices().peekable();
+    while let Some((i, c)) = it.next() {
+        match c {
+            c if c.is_whitespace() => {}
+            '/' if it.peek().is_some_and(|(_, n)| *n == '/') => {
+                for (_, n) in it.by_ref() {
+                    if n == '\n' {
+                        break;
+                    }
+                }
+            }
+            '/' if it.peek().is_some_and(|(_, n)| *n == '*') => {
+                it.next();
+                let mut star = false;
+                for (_, n) in it.by_ref() {
+                    if star && n == '/' {
+                        break;
+                    }
+                    star = n == '*';
+                }
+            }
+            '"' | '\'' | '`' => {
+                let mut text = String::new();
+                while let Some((_, n)) = it.next() {
+                    match n {
+                        '\\' => {
+                            if let Some((_, e)) = it.next() {
+                                text.push(e);
+                            }
+                        }
+                        n if n == c => break,
+                        n => text.push(n),
+                    }
+                }
+                out.push(JsTok::Str(text));
+            }
+            c if c.is_alphanumeric() || c == '_' || c == '$' => {
+                let mut end = i + c.len_utf8();
+                while let Some((j, n)) = it.peek().copied() {
+                    if n.is_alphanumeric() || n == '_' || n == '$' {
+                        end = j + n.len_utf8();
+                        it.next();
+                    } else {
+                        break;
+                    }
+                }
+                out.push(JsTok::Word(&src[i..end]));
+            }
+            c => out.push(JsTok::Punct(c)),
+        }
+    }
+    out
+}
+
+/// What a Codex screen (`tmux capture-pane -p`) is waiting on, when it shows one of its
+/// approval prompts: `exec approval` (run a command), `patch approval` (edits),
+/// `permissions approval`, `network approval`, `terminal input approval`, `mcp approval`.
+///
+/// Codex 0.162 writes no approval event to its transcript, so the screen is the only place
+/// the prompt shows. Codex draws it at the bottom, in place of the composer: a head (its title,
+/// then what it is about), then numbered answers (`› 1. Yes, proceed (y)` …), then at most a
+/// footer (`Press enter to confirm or esc to cancel`). So only the bottom-most block of answers
+/// counts, and only when nothing but its own wrapped lines, the footer and blank lines follow
+/// it: the composer (`› …`), a working indicator or any later conversation item (`• …`,
+/// `✔ …`) means the dialog on screen was quoted, or already answered. The head is joined
+/// into one line before the title is looked for, so a title wrapped in a narrow pane still
+/// counts.
+pub fn codex_screen_waits_for(screen: &str) -> Option<&'static str> {
+    const TITLES: [(&str, &str); 6] = [
+        (
+            "Would you like to run the following command?",
+            "exec approval",
+        ),
+        (
+            "Would you like to make the following edits?",
+            "patch approval",
+        ),
+        (
+            "Would you like to grant these permissions?",
+            "permissions approval",
+        ),
+        (
+            "Do you want to approve network access to",
+            "network approval",
+        ),
+        ("Would you like to send input to", "terminal input approval"),
+        ("needs your approval.", "mcp approval"),
+    ];
+    let lines: Vec<&str> = screen.lines().collect();
+    let last = lines.iter().rposition(|l| is_answer_line(l))?;
+    // Below the answers: only their own wrapped text, the footer, blank lines.
+    if lines[last + 1..].iter().any(|l| starts_an_item(l)) {
+        return None;
+    }
+    // Up over the answers and their wrapped lines to the first answer.
+    let mut first = last;
+    for (i, l) in lines[..last].iter().enumerate().rev() {
+        if is_answer_line(l) {
+            first = i;
+        } else if !l.starts_with("   ") || l.trim().is_empty() {
+            // Not a wrapped answer line: the answers start below it.
+            break;
+        }
+    }
+    // The head: everything between the last conversation item and the answers.
+    let start = lines[..first]
+        .iter()
+        .rposition(|l| starts_an_item(l))
+        .map_or(0, |i| i + 1);
+    let head = lines[start..first]
+        .iter()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    TITLES
+        .iter()
+        .find(|(t, _)| head.contains(t))
+        .map(|(_, what)| *what)
+}
+
+/// A line that starts something of its own: Codex draws every conversation item, the composer
+/// and the working indicator from the first column (`• …`, `› …`, `✔ …`), and everything
+/// inside the approval prompt indented — its selected answer (`› 1. …`) aside.
+fn starts_an_item(line: &str) -> bool {
+    line.starts_with(|c: char| !c.is_whitespace()) && !is_answer_line(line)
+}
+
+/// `› 1. Yes, proceed (y)` / `  3. No, and tell Codex what to do differently (esc)`.
+fn is_answer_line(line: &str) -> bool {
+    let l = line.trim_start().trim_start_matches('›').trim_start();
+    let digits = l.chars().take_while(char::is_ascii_digit).count();
+    digits > 0
+        && l[digits..]
+            .strip_prefix(". ")
+            .is_some_and(|rest| rest.starts_with("Yes,") || rest.starts_with("No,"))
 }
 
 fn pi_state(text: &str) -> State {
@@ -1212,6 +1418,119 @@ mod tests {
         let c = st.context.unwrap();
         assert_eq!((c.used, c.window, c.pct), (25840, 258400, 10));
         assert_eq!(st.model.as_deref(), Some("gpt-6"));
+    }
+
+    fn exec_asks(js: &str) -> bool {
+        asks_escalation(&serde_json::json!({"type": "custom_tool_call", "input": js}))
+    }
+
+    // Codex 0.162 records no approval event: the only trace is a tool call that asked to leave
+    // the sandbox and has no output yet.
+    #[test]
+    fn a_pending_escalated_codex_call_is_flagged() {
+        let ev = |t: &str| format!(r#"{{"type":"event_msg","payload":{{"type":"{t}"}}}}"#);
+        let exec = |id: &str, js: &str| {
+            serde_json::json!({"type":"response_item","payload":{
+                "type":"custom_tool_call","name":"exec","call_id":id,"input":js}})
+            .to_string()
+        };
+        let out = |id: &str| {
+            serde_json::json!({"type":"response_item","payload":{
+                "type":"custom_tool_call_output","call_id":id,"output":"done"}})
+            .to_string()
+        };
+        let asks = r#"text(await tools.exec_command({cmd:"touch x",sandbox_permissions:"require_escalated",justification:"May I?"}));"#;
+        let plain = r#"text(await tools.exec_command({cmd:"ls"}));"#;
+        let st = codex_state(&[ev("task_started"), exec("c1", asks)].join("\n"));
+        assert_eq!((st.status.as_str(), st.escalation_pending), ("busy", true));
+        // Answered (approved or denied): output arrives.
+        let st = codex_state(&[ev("task_started"), exec("c1", asks), out("c1")].join("\n"));
+        assert!(!st.escalation_pending);
+        let st = codex_state(&[ev("task_started"), exec("c2", plain)].join("\n"));
+        assert!(!st.escalation_pending);
+        // The function-call form, with JSON arguments.
+        let fc = serde_json::json!({"type":"response_item","payload":{"type":"function_call",
+            "name":"exec_command","call_id":"c3",
+            "arguments":"{\"cmd\":\"git fetch\",\"sandbox_permissions\":\"require_escalated\"}"}})
+        .to_string();
+        assert!(codex_state(&[ev("task_started"), fc.clone()].join("\n")).escalation_pending);
+        // An interrupted turn leaves nothing pending.
+        let st = codex_state(&[ev("task_started"), fc, ev("turn_aborted")].join("\n"));
+        assert!(!st.escalation_pending);
+        // Words inside a command are data, not a request: an `rg` for the very field.
+        let rg = r#"text(await tools.exec_command({cmd:"rg 'sandbox_permissions: require_escalated' ."}));"#;
+        let st = codex_state(&[ev("task_started"), exec("c4", rg)].join("\n"));
+        assert!(!st.escalation_pending);
+        let rg_fc = serde_json::json!({"type":"response_item","payload":{"type":"function_call",
+            "name":"exec_command","call_id":"c5",
+            "arguments": serde_json::json!({"cmd": "rg '\"sandbox_permissions\": \"require_escalated\"' ."}).to_string()}})
+        .to_string();
+        assert!(!codex_state(&[ev("task_started"), rg_fc].join("\n")).escalation_pending);
+        // A comment saying it is not one either; a quoted key with spacing is.
+        assert!(!exec_asks(
+            "// sandbox_permissions: \"require_escalated\"\nrun()"
+        ));
+        assert!(exec_asks(
+            "f({ 'sandbox_permissions' : 'require_escalated' })"
+        ));
+        assert!(!exec_asks("f({ sandbox_permissions: 'use_default' })"));
+    }
+
+    // Recorded from Codex 0.162 sitting on "Would you like to run the following command?":
+    // the transcript says only `busy` (no approval event), with the escalated call pending.
+    #[test]
+    fn a_recorded_codex_approval_is_busy_in_the_transcript_with_an_escalation_pending() {
+        let rollout = include_str!("../../../../testdata/codex/exec-approval-rollout.jsonl");
+        let st = codex_state(rollout);
+        assert_eq!(st.status, "busy");
+        assert_eq!(st.waiting_for, None);
+        assert!(st.escalation_pending);
+    }
+
+    #[test]
+    fn codex_approval_prompts_are_read_off_the_screen() {
+        let screen = include_str!("../../../../testdata/codex/exec-approval-pane.txt");
+        assert_eq!(codex_screen_waits_for(screen), Some("exec approval"));
+        // The same prompt in narrow panes: at 40 columns the title wraps onto two lines.
+        for narrow in [
+            include_str!("../../../../testdata/codex/exec-approval-pane-60.txt"),
+            include_str!("../../../../testdata/codex/exec-approval-pane-40.txt"),
+        ] {
+            assert_eq!(codex_screen_waits_for(narrow), Some("exec approval"));
+        }
+        // Answered, and the turn went on: the dialog may still be on screen above it.
+        let answered = format!(
+            "{screen}\n✔ You approved codex to run touch approval-probe.txt this time\n\n\
+             • Ran touch approval-probe.txt\n\n› Ask Codex to do anything\n\n  gpt-6 · 10% used\n"
+        );
+        assert_eq!(codex_screen_waits_for(&answered), None);
+        let working = format!("{screen}\n• Working (3s • esc to interrupt)\n");
+        assert_eq!(codex_screen_waits_for(&working), None);
+        // A whole dialog pasted into the conversation, as the user's message.
+        let pasted = "› Would you like to run the following command?\n\n\
+                      \x20 $ touch x\n\n\
+                      \x20 › 1. Yes, proceed (y)\n\
+                      \x20 2. No, and tell Codex what to do differently (esc)\n\n\
+                      • That looks like an approval prompt.\n\n\
+                      › Ask Codex to do anything\n\n  gpt-6 · 10% used\n";
+        assert_eq!(codex_screen_waits_for(pasted), None);
+        // Answered: the prompt is gone, the turn goes on.
+        let after = "• Ran touch approval-probe.txt\n\n› Ask Codex to do anything\n";
+        assert_eq!(codex_screen_waits_for(after), None);
+        // The same title quoted in the conversation, with the composer below it, is no prompt.
+        let quoted = "• Codex asks \"Would you like to run the following command?\" first.\n\n\
+                      › Ask Codex to do anything\n\n  gpt-6 medium · 0% used\n";
+        assert_eq!(codex_screen_waits_for(quoted), None);
+        let edits = "  Would you like to make the following edits?\n\n  › 1. Yes, proceed (y)\n\
+                       2. No, and tell Codex what to do differently (esc)\n";
+        assert_eq!(codex_screen_waits_for(edits), Some("patch approval"));
+        assert_eq!(codex_screen_waits_for(""), None);
+        assert!(is_answer_line("› 1. Yes, proceed (y)"));
+        assert!(is_answer_line(
+            "  3. No, and tell Codex what to do differently (esc)"
+        ));
+        assert!(!is_answer_line("1. Yesterday's notes"));
+        assert!(!is_answer_line("  2. Keep current model"));
     }
 
     #[test]

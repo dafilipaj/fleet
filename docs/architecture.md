@@ -202,7 +202,23 @@ prompt has no transcript yet: `session_id` is `null` and its title `<cwd>-codex`
 
 Status from the transcript tail (512 KiB): Codex is `busy` from `task_started` until
 `task_complete` / `turn_aborted`, `waiting` on an `*_approval_request` (until anything else
-happens); pi is `busy` while the last message is the user's, a tool result, or an assistant turn
+happens). Codex 0.162 records no approval event, so a `busy` Codex session in a tmux pane also
+has its screen read (`capture-pane -p`, at most 500 ms, so a hung tmux cannot stall a poll). An
+approval prompt is the bottom-most block of numbered `Yes, …` / `No, …` answers with nothing but
+its own wrapped lines, its footer (`Press enter to confirm or esc to cancel`) and blank lines below
+it — the composer, a working indicator or any later conversation item below means the dialog was
+quoted or already answered — whose head (the lines between the last conversation item and the
+answers, joined, so a title wrapped in a narrow pane still counts) holds a title: `Would you like
+to run the following command?`, `… make the following edits?`, `… grant these permissions?`, `Do
+you want to approve network access to …`, `… needs your approval.`. It makes the session
+`waiting`, `waiting_for` `exec approval` / `patch approval` / `permissions approval` / `network
+approval` / `terminal input approval` / `mcp approval`; a screen without one leaves it `busy`.
+Without a readable screen (iTerm, a pane that does not answer in time), a tool call whose
+`sandbox_permissions` argument is `"require_escalated"` and has no output yet counts as `exec
+approval` — the field itself, read from the call's JSON arguments or, for the code-mode `exec`
+tool, from its JavaScript with string literals treated as data, so a command that only mentions
+the words is no request (it is briefly wrong for a command approved earlier for the session,
+while it runs); pi is `busy` while the last message is the user's, a tool result, or an assistant turn
 that stopped for a tool call. `context` comes from Codex's last `token_count`
 (`last_token_usage.input_tokens` of `model_context_window`); pi records no window, so it is `null`.
 

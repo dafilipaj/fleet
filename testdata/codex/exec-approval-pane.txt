@@ -1,0 +1,24 @@
+› Run the shell command: touch approval-probe.txt
+
+
+• I’ll run touch approval-probe.txt in the current directory.
+
+• Running touch approval-probe.txt
+
+
+  Would you like to run the following command?
+
+  Environment: local
+
+  Reason: May I create approval-probe.txt in the current directory? The
+  workspace is read-only, so this requires approval.
+
+  $ touch approval-probe.txt
+
+
+› 1. Yes, proceed (y)
+  2. Yes, and don't ask again for commands that start with `touch approval-
+     probe.txt` (p)
+  3. No, and tell Codex what to do differently (esc)
+
+  Press enter to confirm or esc to cancel

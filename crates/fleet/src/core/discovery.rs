@@ -391,12 +391,15 @@ fn harness_session(
     let pane = (backend == Backend::Tmux)
         .then(|| panes.get(&format!("/dev/{}", p.tty)))
         .flatten();
-    let state = t
+    let mut state = t
         .map(|t| harness::state(p.harness, &t.path))
         .unwrap_or_else(|| harness::State {
             status: "idle".into(),
             ..Default::default()
         });
+    if p.harness == Harness::Codex && state.status == "busy" {
+        codex_prompt_from_screen(&mut state, handle.as_deref().filter(|_| pane.is_some()));
+    }
     Session {
         pid: p.pid,
         name_source: state.name.is_some().then(|| "user".to_string()),
@@ -422,6 +425,21 @@ fn harness_session(
         harness: p.harness,
         transcript: t.map(|t| t.path.display().to_string()),
         ..Default::default()
+    }
+}
+
+/// A busy Codex session may be sitting on an approval prompt that its transcript does not
+/// record (Codex 0.162). In a tmux pane the screen says so: it decides, either way. Elsewhere
+/// (iTerm, a pane that would not answer) a pending escalated command is the best guess.
+fn codex_prompt_from_screen(state: &mut harness::State, tmux_pane: Option<&str>) {
+    let screen = tmux_pane.and_then(crate::core::backend::tmux_screen);
+    let waits_for = match &screen {
+        Some(s) => harness::codex_screen_waits_for(s),
+        None => state.escalation_pending.then_some("exec approval"),
+    };
+    if let Some(w) = waits_for {
+        state.status = "waiting".into();
+        state.waiting_for = Some(w.into());
     }
 }
 
@@ -792,6 +810,28 @@ fn title_for(cwd: &str, session_id: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Without a screen to read (iTerm, a pane tmux would not capture), a pending escalated
+    // command is taken as the approval prompt it almost always is.
+    #[test]
+    fn a_codex_session_without_a_readable_screen_waits_on_a_pending_escalation() {
+        let busy = |pending| harness::State {
+            status: "busy".into(),
+            escalation_pending: pending,
+            ..Default::default()
+        };
+        let mut st = busy(true);
+        codex_prompt_from_screen(&mut st, None);
+        assert_eq!(st.status, "waiting");
+        assert_eq!(st.waiting_for.as_deref(), Some("exec approval"));
+        let mut st = busy(false);
+        codex_prompt_from_screen(&mut st, None);
+        assert_eq!(st.status, "busy");
+        // A pane that does not exist cannot be read: the hint still decides.
+        let mut st = busy(true);
+        codex_prompt_from_screen(&mut st, Some("%999999"));
+        assert_eq!(st.status, "waiting");
+    }
 
     // `ask_claude` shells out to `claude -p`, and that child registers itself as a
     // live `interactive` session in `$TMPDIR`. Titling the fleet would otherwise
