@@ -64,7 +64,8 @@ pub struct Account {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Limit {
-    /// `session`, `weekly_all`, `weekly_scoped`, … (the endpoint's `kind`).
+    /// `session`, `weekly_all`, `weekly_scoped`, … — Claude: the endpoint's `kind`;
+    /// Codex: `session`, `weekly_all`, `session_scoped`, `weekly_scoped` (fleet's own).
     pub kind: String,
     /// `session` or `weekly`.
     pub group: String,
@@ -90,6 +91,117 @@ pub struct ExtraUsage {
     pub limit: Option<f64>,
     pub currency: Option<String>,
     pub percent: Option<f64>,
+}
+
+/// One provider's limits in a shape shared by every provider: `providers[]` of
+/// `fleet usage --json`. Claude's entry repeats the top-level fields; Codex's
+/// comes from [`crate::core::usage_codex`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProviderUsage {
+    /// The harness id: `claude`, `codex`.
+    pub id: String,
+    /// Display name: `Claude`, `Codex`.
+    pub label: String,
+    /// `ok`, `stale` (a refresh failed; these are the last good numbers),
+    /// `no_data` (installed, but no limits recorded yet), `not_installed`, `error`.
+    pub status: String,
+    /// Human plan name when known: `Team · Max 5x`, `Plus`.
+    pub plan: Option<String>,
+    /// Every window, in the same item shape as the top-level `limits`.
+    pub limits: Vec<Limit>,
+    /// When fleet read the source (RFC 3339).
+    pub fetched_at: Option<String>,
+    /// When the provider recorded these numbers (RFC 3339): the endpoint read for
+    /// Claude, the transcript event for Codex. Its age is how stale they may be.
+    pub observed_at: Option<String>,
+    /// Why the numbers are missing or stale.
+    pub error: Option<String>,
+    /// Prepaid credits, when the provider reports them (Codex).
+    pub credits: Option<Credits>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Credits {
+    pub has_credits: bool,
+    pub unlimited: bool,
+    /// Balance as the provider records it (Codex: a decimal string, e.g. `"0"`).
+    pub balance: Option<String>,
+}
+
+impl ProviderUsage {
+    /// Claude's entry: the same numbers as the top-level fields.
+    pub fn claude(u: &Usage) -> ProviderUsage {
+        ProviderUsage {
+            id: "claude".into(),
+            label: "Claude".into(),
+            status: if u.stale { "stale" } else { "ok" }.into(),
+            plan: u.account.as_ref().and_then(|a| a.plan_label.clone()),
+            limits: u.limits.clone(),
+            fetched_at: Some(u.fetched_at.clone()),
+            observed_at: Some(u.fetched_at.clone()),
+            error: u.error.clone(),
+            credits: None,
+        }
+    }
+}
+
+/// `fleet usage --json`: Claude's fields at the top level (the original shape,
+/// unchanged), plus `providers` — Claude and Codex in one shape.
+#[derive(Debug, Clone, Serialize)]
+pub struct Report {
+    #[serde(flatten)]
+    pub claude: Usage,
+    pub providers: Vec<ProviderUsage>,
+}
+
+impl Report {
+    pub fn new(claude: Usage, codex: ProviderUsage) -> Report {
+        Report {
+            providers: vec![ProviderUsage::claude(&claude), codex],
+            claude,
+        }
+    }
+}
+
+/// `fleet usage --json` when Claude has no read at all: printed on stdout before the
+/// command fails (exit 1), so a caller still gets Codex. None of the Claude fields.
+#[derive(Debug, Clone, Serialize)]
+pub struct FailedReport {
+    pub error: String,
+    pub providers: Vec<ProviderUsage>,
+}
+
+impl FailedReport {
+    pub fn new(error: &str, codex: ProviderUsage) -> FailedReport {
+        let claude = ProviderUsage {
+            id: "claude".into(),
+            label: "Claude".into(),
+            status: "error".into(),
+            plan: None,
+            limits: Vec::new(),
+            fetched_at: None,
+            observed_at: None,
+            error: Some(error.to_string()),
+            credits: None,
+        };
+        FailedReport {
+            error: error.to_string(),
+            providers: vec![claude, codex],
+        }
+    }
+}
+
+/// The bands fleet colours limits in (the CLI's bars, the web's `usageLevel`):
+/// `normal` below 70%, `warning` from 70%, `critical` from 90%. Codex's `severity`;
+/// Claude's comes from its endpoint.
+pub fn severity_for(percent: f64) -> &'static str {
+    if percent >= 90.0 {
+        "critical"
+    } else if percent >= 70.0 {
+        "warning"
+    } else {
+        "normal"
+    }
 }
 
 /// On-disk cache: the last good read plus the last failure.
@@ -559,6 +671,60 @@ mod tests {
         // After the backoff a good read clears the error.
         assert!(!get_with(d.path(), false, secs(300), &ok).unwrap().stale);
         assert_eq!(calls.get(), 3);
+    }
+
+    #[test]
+    fn the_report_keeps_the_claude_shape_and_adds_providers() {
+        let mut claude = parse(&sample(), None, now());
+        claude.stale = true;
+        claude.error = Some("usage endpoint is rate-limited (HTTP 429)".into());
+        let codex = ProviderUsage {
+            id: "codex".into(),
+            label: "Codex".into(),
+            status: "no_data".into(),
+            plan: None,
+            limits: vec![],
+            fetched_at: None,
+            observed_at: None,
+            error: Some("no Codex sessions yet".into()),
+            credits: None,
+        };
+        let v = serde_json::to_value(Report::new(claude.clone(), codex)).unwrap();
+        let mut keys: Vec<_> = v.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            [
+                "account",
+                "error",
+                "extra_usage",
+                "fetched_at",
+                "limits",
+                "providers",
+                "stale"
+            ]
+        );
+        // Every original field is exactly what it was.
+        let mut top = v.clone();
+        top.as_object_mut().unwrap().remove("providers");
+        assert_eq!(top, serde_json::to_value(&claude).unwrap());
+        let p = &v["providers"];
+        assert_eq!(
+            (p[0]["id"].as_str(), p[1]["id"].as_str()),
+            (Some("claude"), Some("codex"))
+        );
+        assert_eq!(p[0]["status"], "stale");
+        assert_eq!(p[0]["limits"], v["limits"]);
+        assert_eq!(p[0]["observed_at"], v["fetched_at"]);
+        assert_eq!(p[1]["error"], "no Codex sessions yet");
+    }
+
+    #[test]
+    fn severities() {
+        assert_eq!(
+            [69.9, 70.0, 89.9, 90.0, 120.0].map(severity_for),
+            ["normal", "warning", "warning", "critical", "critical"]
+        );
     }
 
     #[test]

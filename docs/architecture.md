@@ -395,6 +395,39 @@ Claude subscription limits of the account logged in to Claude Code on that machi
   younger than 60s is served from it; after a failure the last good read comes back with
   `stale: true` and `error`, and the endpoint isn't asked again for 2 minutes. With no good read
   at all, the command fails (exit 1) with the reason.
+- **`providers`** (added; the fields above are unchanged and stay Claude's): Claude and Codex in
+  one shape — `{ id, label, status, plan, limits[], fetched_at, observed_at, error, credits }`,
+  `limits[]` items as above. Shape, statuses and severities: [cli.md](cli.md#usage-json).
+
+**Codex limits** (`core::usage_codex`) come from Codex's own transcripts — no network call. Each
+turn appends a `token_count` event to `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl` (default
+`~/.codex`) with `rate_limits: { limit_id, primary, secondary, credits, plan_type, … }`; a window is
+`{ used_percent, window_minutes, resets_at }` (epoch seconds; older Codex wrote
+`resets_in_seconds`). `rate_limits` is `null` for logins without subscription limits (an API
+key). Each `limit_id` is a bucket and its newest snapshot counts: `codex` (or none, from older
+Codex) holds the main windows, other ids with windows are scoped limits, and ids without windows
+(`premium`) only carry credits — see [cli.md](cli.md#usage-json).
+
+- **Finding the newest snapshots**: every regular `rollout-*.jsonl` file is `stat`ed (no reads),
+  then read newest mtime first, backwards in 256 KiB chunks, newest line first; torn, malformed
+  and non-UTF-8 lines are skipped, and so are lines longer than about 1.25 MiB (a line is dropped
+  once more than 1 MiB of it is held, so up to 1 MiB + one chunk can come back). Files are ordered by mtime, not by day directory,
+  because a resumed or long session keeps writing to the day it started in.
+- **Early stop**, on an *assumption*: a file's mtime is at least the time of its last event
+  (Codex only appends). So once a file's mtime is more than 60 s older than the main snapshot
+  found, no later file can hold a newer one, and the scan stops. Within a file, reading stops at
+  the first event more than 60 s older than the main snapshot once windowless credits are known.
+  Scoped snapshots that old don't count either, so scoped limits and credits don't depend on the
+  order of events within that window.
+- **Bounds per call**: 16 MiB read in total, 64 files, and 8 files whose `token_count` events all
+  have `rate_limits: null` while nothing else was found. So a poll during a busy Codex session,
+  or on an API-key login, never reads more than 16 MiB. A window more than 16 MiB from the end of
+  every file is missed (`no_data`).
+- **No cache**: a scan takes a few ms (about 4–7 ms over ~860 rollouts), so every call reads
+  afresh and nothing is written. The reset rule runs on every call.
+- **Errors**: a missing `sessions` directory is `no_data`; any other error reading it is
+  `status: "error"` with the reason. An unreadable year, month or day directory or rollout is
+  skipped.
 
 Only the tail is read (256 KiB, widened to 2 MiB then 8 MiB if no usable entry is in it), and the
 result is cached in-process per `(path, size, mtime)`, so the `watch` dashboard re-reads a
@@ -492,7 +525,7 @@ JSON over HTTP, errors as `{ "error": "..." }`. At a high level:
 | POST | `/api/hosts/:host/sessions/:id/autoname` | regenerate one session's name → `fleet name <session_id> --apply --refresh`; 200 `{ ok, host, id, name }` (`name` null: unchanged), **409** when held (waiting on a prompt; nothing typed), 502 CLI failure |
 | POST | `/api/hosts/:host/spawn` | `{ name?, dir?, prompt?, model?, harness?, ghIdentity?, embed?, slack? }` → new tmux session running that [harness](#other-harnesses) (`claude` default, `codex`, `pi`; its launcher is config `claude` / `harnesses.<id>.command`; `-n <name>` for Claude and pi only); `dir` must resolve inside one of the host's `spawnDirs`, hidden ones included (else 400; no `dir` = its first offered one); a prompt too long to type (the launch line over ~900 bytes) is written to `~/.claude/fleet-prompts/` and passed as `"$(cat <file>)"`; a first-run trust prompt is accepted (Claude: Down + Enter; Codex: Enter on "Trust and continue"); when the agent never starts (the pane is still just a shell after ~10s) the tmux session is killed and the answer is 502 with the pane's last lines. `ghIdentity` (Claude only; one of the host's `ghIdentities`, else 400): the session acts on GitHub as that [GitHub identity](cli.md#github-identities) — its launcher comes from `fleet --local gh-identity launcher`, and the pane gets `@fleet_gh_identity`. `prs/spawn`, `tasks/spawn` and the stack spawns take it too. `embed` (`[A-Za-z0-9_-]{1,40}`): the app whose [embedded panel](#embed-view) starts it — the pane gets `@fleet_embed`, `list` reports it as `embed`. `slack` (`{ url, minutes, mode?, task? }`, as `/api/slack/link`; only on `slack.host`, else 400 before anything opens): the session starts with no prompt, is linked as soon as it registers (≤ ~45 s), and `prompt` (max 4000 chars) ends the link's intro as the owner's first request; the answer carries the Link as `slack`. A link that fails after the spawn: 502 (400 for a link the bridge refuses), the session stays idle, its prompt unsent |
 | GET | `/api/hosts/:host/harnesses[?refresh=1]` | `{ host, harnesses: [{ id, label, command, installed, models }], ghIdentities: [{ name, login }] }` — `fleet --local harness list --json`, cached 10 min; Claude's `models` are `web.models`. An older CLI answers Claude alone |
-| GET | `/api/hosts/:host/usage[?refresh=1]` | that host's Claude subscription limits: `fleet usage --json` + `host` (see [Subscription usage](#subscription-usage)); 502 with the CLI's reason (no login, endpoint down with nothing cached) |
+| GET | `/api/hosts/:host/usage[?refresh=1]` | that host's usage limits (Claude's subscription, plus Codex in `providers`): `fleet usage --json` + `host` (see [Subscription usage](#subscription-usage)); 502 with the CLI's reason (no login, endpoint down with nothing cached) |
 | POST | `/api/hosts/:host/prs/checkout` | `{ pr: "owner/repo#123" }` → `{ host, worktree }`: `fleet pr checkout --json` on that host |
 | POST | `/api/hosts/:host/prs/seen` | `{ pr: "owner/repo#123" }` → `{ host, pr, seenAt }`: `fleet pr seen --json` on that host — its @mentions of you so far are seen |
 | POST | `/api/hosts/:host/prs/spawn` | `{ pr, prompt?, name?, model?, harness? }` → `{ host, worktree, spawn }`: the checkout, then a new session in the worktree whose first prompt is `worktree.contextLine` + `prompt` (like a stack sibling: the web spawner, not `fleet pr spawn`). Starts an agent |
