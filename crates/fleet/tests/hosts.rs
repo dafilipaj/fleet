@@ -87,7 +87,8 @@ fn as_host_tags_rows_with_the_callers_name() {
 fn directories_are_remapped_for_the_remote_home() {
     let env = Env::new();
     env.write_config(&two_hosts());
-    let home = dirs::home_dir().unwrap();
+    // `fleet` runs with the test's temp HOME (common::Env), so that is the home to remap.
+    let home = env.path("home");
     let dir = home.join("Code/project");
     let out = env
         .cmd()
