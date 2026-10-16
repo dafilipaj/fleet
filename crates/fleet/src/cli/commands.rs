@@ -286,6 +286,13 @@ pub fn peek(target: &str, lines: usize) -> Result<()> {
 
 pub fn send(target: &str, text: &str) -> Result<()> {
     let s = discovery::resolve_target(target)?;
+    // Never interleave with another fleet command typing into the same session. (A canned
+    // fleet's backends are inert: nothing to lock.)
+    let _lock = if discovery::is_fixture() {
+        None
+    } else {
+        Some(crate::core::lock::try_lock(&s).map_err(|e| Error::Other(e.to_string()))?)
+    };
     backend::send(&s, text)?;
     println!(
         "sent to {} ({}): {}",
@@ -368,6 +375,18 @@ pub fn keys(target: &str, names: &[String], json: bool) -> Result<()> {
     let run = || -> Result<(Session, Vec<backend::Key>)> {
         let keys = parse_keys(names)?;
         let s = discovery::resolve_target(target)?;
+        // The same per-session lock as `send` and `answer`: their keys never interleave.
+        let _lock = if discovery::is_fixture() {
+            None
+        } else {
+            Some(crate::core::lock::try_lock(&s).map_err(|e| {
+                let kind = match e {
+                    crate::core::lock::LockError::Busy => "busy",
+                    crate::core::lock::LockError::Io(_) => "io",
+                };
+                Error::tagged(kind, format!("{e}; nothing pressed"))
+            })?)
+        };
         backend::keys(&s, &keys)?;
         Ok((s, keys))
     };

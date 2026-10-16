@@ -1,0 +1,754 @@
+//! `fleet answer <target>`: answer the prompt a session is waiting on, by typing what a
+//! human would — Claude Code's `AskUserQuestion` (`--question`), a Claude Code permission
+//! prompt or a Codex approval prompt (`--choice`). `--list` says what is on screen.
+//!
+//! Nothing is typed unless the terminal shows that very prompt, untouched (the cursor still
+//! on its first answer, nothing ticked or typed), at the bottom of the screen. And no key is
+//! typed blind:
+//!
+//! - **Exclusive input.** A terminal has no answer bound to a prompt id, so the sources of a
+//!   race are closed instead: no human may be attached to the session's tmux session (unless
+//!   `--allow-attached`), and a per-session lock keeps every other fleet command that types
+//!   (`answer`, `send`) out for the whole read → type → verify sequence.
+//! - A permission prompt is answered with **one key** where it takes one (Claude Code: the
+//!   answer's number; Codex: a shortcut no other answer shares), right after reading the screen.
+//! - Otherwise each key is checked for: before the next one the screen must show exactly the
+//!   state the keys so far lead to (cursor row, ticked boxes, typed text, answered tabs; before
+//!   the final Enter the review screen listing every question with exactly the answer planned).
+//!   Anything else stops it: `prompt_changed`.
+//! - **After** the last key the screen is read again: the prompt must be gone, and no prompt
+//!   with the same answers may have taken its place within a moment. Otherwise the outcome is
+//!   reported as uncertain (`outcome_uncertain`), never as success.
+//!
+//! What remains, with no client attached and the lock held: something outside fleet writing
+//! to the pane in the milliseconds between the last read and the key.
+
+use std::time::{Duration, Instant};
+
+use colored::Colorize;
+use serde_json::{Value, json};
+
+use crate::cli::messages::{self, Failure};
+use crate::core::backend;
+use crate::core::discovery::{self, Backend, Session};
+use crate::core::harness::Harness;
+use crate::core::lock::{self, LockError, SessionLock};
+use crate::core::prompt::{self, PromptRead, ScreenPrompt};
+use crate::core::questions::{self, At, Planned, Question, Step};
+use crate::core::transcript::{self, Kind};
+use crate::error::{Error, Result};
+
+/// How long the screen may take to show what a key did.
+const SETTLE: Duration = Duration::from_millis(1500);
+/// After the prompt is gone, how long the screen is watched for one with the same answers
+/// taking its place.
+const WATCH: Duration = Duration::from_millis(300);
+/// How often the screen is read while waiting for it.
+const POLL: Duration = Duration::from_millis(40);
+/// Scrollback read with the screen: the top of a tall permission prompt.
+const HISTORY_LINES: usize = 1000;
+/// How far back the transcript is searched for the question named by `--question`.
+const QUESTION_LOOKBACK: usize = 500;
+
+pub struct Opts {
+    pub target: String,
+    pub json: bool,
+    pub list: bool,
+    pub choice: Option<String>,
+    pub prompt: Option<String>,
+    pub question: Option<String>,
+    pub answers: Option<String>,
+    pub allow_attached: bool,
+}
+
+enum Mode {
+    List,
+    Choice { n: usize, prompt: Option<String> },
+    Question { id: String, answers: Value },
+}
+
+type R<T> = std::result::Result<T, Failure>;
+
+fn fail<T>(kind: &'static str, message: impl Into<String>) -> R<T> {
+    Err(Failure {
+        kind,
+        message: message.into(),
+    })
+}
+
+fn mode(o: &Opts) -> R<Mode> {
+    let given = [o.list, o.choice.is_some(), o.question.is_some()]
+        .iter()
+        .filter(|g| **g)
+        .count();
+    if given != 1 {
+        return fail(
+            "usage",
+            "give one of --list, --choice <n>, --question <tool_use_id> --answers <json>",
+        );
+    }
+    if o.answers.is_some() != o.question.is_some() {
+        return fail("usage", "--answers goes with --question (and it needs one)");
+    }
+    if o.prompt.is_some() && o.choice.is_none() {
+        return fail("usage", "--prompt goes with --choice");
+    }
+    if o.list {
+        return Ok(Mode::List);
+    }
+    if let Some(c) = &o.choice {
+        return match c.trim().parse::<usize>() {
+            Ok(n) if n >= 1 => Ok(Mode::Choice {
+                n,
+                prompt: o.prompt.clone(),
+            }),
+            _ => fail(
+                "usage",
+                format!("--choice takes an answer's number, not {c:?}"),
+            ),
+        };
+    }
+    let id = o.question.clone().unwrap_or_default();
+    let answers =
+        serde_json::from_str(o.answers.as_deref().unwrap_or("")).map_err(|e| Failure {
+            kind: "answer_invalid",
+            message: format!("--answers is not JSON: {e}"),
+        })?;
+    Ok(Mode::Question { id, answers })
+}
+
+fn resolve(target: &str) -> R<Session> {
+    discovery::resolve_target(target).map_err(|e| Failure {
+        kind: e.kind(),
+        message: e.to_string(),
+    })
+}
+
+fn drivable(s: &Session) -> R<()> {
+    if discovery::is_fixture() || s.handle.is_none() || s.backend == Backend::Unknown {
+        return fail(
+            "backend_unsupported",
+            format!(
+                "{} has no terminal fleet can read and type into (backend {})",
+                s.headline(),
+                s.backend.label()
+            ),
+        );
+    }
+    Ok(())
+}
+
+/// What the session's terminal shows now, with scrollback above it.
+fn screen(s: &Session) -> R<String> {
+    drivable(s)?;
+    backend::peek_history(s, HISTORY_LINES).map_err(|e| Failure {
+        kind: "io",
+        message: format!("cannot read the terminal: {e}"),
+    })
+}
+
+/// The clients attached to the session's tmux session (a human who could be typing).
+fn attached_clients(s: &Session) -> R<usize> {
+    match s.backend {
+        Backend::Tmux => {
+            let handle = s.handle.as_deref().unwrap_or_default();
+            let out = crate::core::tools::tmux_cmd()
+                .args(["list-clients", "-t", handle, "-F", "#{client_tty}"])
+                .output()
+                .map_err(|e| Failure {
+                    kind: "io",
+                    message: format!("tmux list-clients: {e}"),
+                })?;
+            if !out.status.success() {
+                return fail(
+                    "io",
+                    format!(
+                        "tmux list-clients: {}",
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    ),
+                );
+            }
+            Ok(String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .count())
+        }
+        // An iTerm tab is a terminal on screen: a human may always be at it.
+        _ => Ok(1),
+    }
+}
+
+/// Exclusive input for the whole answer: nobody attached (unless allowed), the lock held.
+fn exclusive(s: &Session, allow_attached: bool) -> R<SessionLock> {
+    drivable(s)?;
+    if !allow_attached {
+        let n = attached_clients(s)?;
+        if n > 0 {
+            return fail(
+                "human_attached",
+                format!(
+                    "{n} terminal client(s) attached to the session — a human could be typing into it; nothing typed (--allow-attached to answer anyway)"
+                ),
+            );
+        }
+    }
+    lock::try_lock(s).map_err(|e| match e {
+        LockError::Busy => Failure {
+            kind: "busy",
+            message: format!("{e}; nothing typed"),
+        },
+        LockError::Io(_) => Failure {
+            kind: "io",
+            message: e.to_string(),
+        },
+    })
+}
+
+/// Read the screen until `ok` holds, for at most `within`.
+fn wait_for(s: &Session, within: Duration, ok: impl Fn(&str) -> bool) -> R<bool> {
+    let deadline = Instant::now() + within;
+    loop {
+        if ok(&screen(s)?) {
+            return Ok(true);
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        std::thread::sleep(POLL);
+    }
+}
+
+/// Did the key land? The prompt must leave the screen, and nothing that looks like it (`same`)
+/// may take its place within [`WATCH`]. `None`: yes; `Some(why)`: uncertain.
+fn landed(
+    s: &Session,
+    still: impl Fn(&str) -> bool,
+    same: impl Fn(&str) -> bool,
+) -> R<Option<String>> {
+    if !wait_for(s, SETTLE, |screen| !still(screen))? {
+        return Ok(Some(
+            "the prompt is still on screen after the answer".into(),
+        ));
+    }
+    if wait_for(s, WATCH, &same)? {
+        return Ok(Some(
+            "another prompt with the same answers is on screen now — the key may have answered it instead".into(),
+        ));
+    }
+    Ok(None)
+}
+
+fn press(s: &Session, step: &Step, done: usize, total: usize) -> R<()> {
+    let r = match step {
+        Step::Key(k) => backend::press(s, k),
+        Step::Text(t) => backend::type_literal(s, t),
+    };
+    r.or_else(|e| {
+        fail(
+            "send_failed",
+            format!("typing failed after {done} of {total} keystrokes: {e}"),
+        )
+    })
+}
+
+fn steps_json(steps: &[Step]) -> Value {
+    Value::Array(
+        steps
+            .iter()
+            .map(|s| match s {
+                Step::Key(k) => json!({ "key": k }),
+                Step::Text(t) => json!({ "text": t }),
+            })
+            .collect(),
+    )
+}
+
+fn base(s: &Session) -> serde_json::Map<String, Value> {
+    let mut m = serde_json::Map::new();
+    m.insert("ok".into(), json!(true));
+    m.insert("session_id".into(), json!(s.session_id));
+    m.insert("harness".into(), json!(s.harness));
+    m
+}
+
+/// The result after typing: `answered: true` when the key verifiably landed; with a reason,
+/// the `outcome_uncertain` failure (keys were typed — what they did is not certain). Under
+/// `-n` / `--dry-run`: what would be typed (`dry_run: true`, `answered: false`).
+fn outcome(
+    s: &Session,
+    prompt_kind: &str,
+    steps: &[Step],
+    fields: Vec<(&str, Value)>,
+    dry: bool,
+    uncertain: Option<String>,
+) -> Value {
+    let mut m = base(s);
+    if let Some(why) = uncertain {
+        m.insert("ok".into(), json!(false));
+        m.insert("kind".into(), json!("outcome_uncertain"));
+        m.insert(
+            "error".into(),
+            json!(format!("{why}; look at the terminal")),
+        );
+        m.insert("screen".into(), on_screen(s));
+    } else {
+        m.insert("answered".into(), json!(!dry));
+        if dry {
+            m.insert("dry_run".into(), json!(true));
+        }
+    }
+    m.insert("prompt_kind".into(), json!(prompt_kind));
+    for (k, v) in fields {
+        m.insert(k.into(), v);
+    }
+    m.insert("steps".into(), steps_json(steps));
+    Value::Object(m)
+}
+
+/// What `--list` would say about the screen now (best effort: `null` when unreadable).
+fn on_screen(s: &Session) -> Value {
+    list(s)
+        .ok()
+        .and_then(|v| v.get("prompt").cloned())
+        .unwrap_or(Value::Null)
+}
+
+fn permission_json(p: &ScreenPrompt) -> Value {
+    json!({
+        "kind": "permission",
+        "id": p.id,
+        "title": p.title,
+        "detail": p.detail,
+        "choices": p.choices,
+        "selected": p.selected,
+        "untouched": p.selected == 1,
+    })
+}
+
+/// The pending questions of a Claude session, newest first.
+fn pending_questions(s: &Session) -> R<Vec<transcript::Entry>> {
+    let Some(path) = messages::locate(s)? else {
+        return Ok(Vec::new());
+    };
+    let page = transcript::latest(&path, s.harness, QUESTION_LOOKBACK).map_err(|e| Failure {
+        kind: "io",
+        message: format!("cannot read {}: {e}", path.display()),
+    })?;
+    Ok(page
+        .entries
+        .into_iter()
+        .rev()
+        .filter(|e| e.kind == Kind::Question && e.status == Some("pending"))
+        .collect())
+}
+
+fn list(s: &Session) -> R<Value> {
+    let screen = screen(s)?;
+    let prompt = match prompt::permission_prompt(&screen, s.harness) {
+        PromptRead::Prompt(p) => permission_json(&p),
+        PromptRead::Incomplete(reason) => {
+            json!({ "kind": "permission", "incomplete": true, "reason": reason })
+        }
+        PromptRead::None => match prompt::parse_form(&screen) {
+            Some(form) => {
+                // Which question it is comes from the transcript (Claude Code only).
+                let found = if s.harness == Harness::Claude {
+                    pending_questions(s)?.into_iter().find_map(|e| {
+                        let qs = e.questions.clone()?;
+                        let active = form.shows(&qs).ok()?;
+                        Some((e, qs, active))
+                    })
+                } else {
+                    None
+                };
+                match found {
+                    Some((e, qs, active)) => json!({
+                        "kind": "question",
+                        "id": e.id,
+                        "questions": qs,
+                        "active": active,
+                        "untouched": active == 0 && form.untouched(&qs[0]),
+                    }),
+                    None => json!({
+                        "kind": "question", "id": null, "questions": null,
+                        "active": null, "untouched": false,
+                    }),
+                }
+            }
+            None => Value::Null,
+        },
+    };
+    let mut m = base(s);
+    m.insert("prompt".into(), prompt);
+    Ok(Value::Object(m))
+}
+
+/// The permission prompt on screen, or why there is none to answer.
+fn read_permission(s: &Session) -> R<ScreenPrompt> {
+    let screen = screen(s)?;
+    match prompt::permission_prompt(&screen, s.harness) {
+        PromptRead::Prompt(p) => Ok(p),
+        PromptRead::Incomplete(why) => fail("prompt_incomplete", format!("{why}; nothing typed")),
+        PromptRead::None if prompt::is_question_form(&screen) => fail(
+            "prompt_not_on_screen",
+            "the terminal shows a question form — answer it with --question; nothing typed",
+        ),
+        PromptRead::None => fail(
+            "prompt_not_on_screen",
+            "the terminal is not showing a permission prompt; nothing typed",
+        ),
+    }
+}
+
+fn same_answers(a: &ScreenPrompt, b: &ScreenPrompt) -> bool {
+    a.choices.len() == b.choices.len()
+        && a.choices
+            .iter()
+            .zip(&b.choices)
+            .all(|(x, y)| x.label == y.label)
+}
+
+fn choose(s: &Session, n: usize, want: Option<&str>, allow_attached: bool, dry: bool) -> R<Value> {
+    // A dry run checks this too: it says whether the answer could be typed now.
+    let _lock = exclusive(s, allow_attached)?;
+    let p = read_permission(s)?;
+    if want.is_some_and(|w| w != p.id) {
+        return fail(
+            "prompt_not_on_screen",
+            format!(
+                "the terminal shows a different prompt now ({}: \"{}\"); nothing typed",
+                p.id, p.title
+            ),
+        );
+    }
+    if p.selected != 1 {
+        return fail(
+            "prompt_not_on_screen",
+            "someone moved the prompt's cursor (it is not on answer 1) — answer it in the terminal; nothing typed",
+        );
+    }
+    let Some(choice) = p.choices.iter().find(|c| c.n == n).cloned() else {
+        return fail(
+            "choice_invalid",
+            format!("the prompt has answers 1–{}, not {n}", p.choices.len()),
+        );
+    };
+    let (method, steps) = match choice.key.as_deref() {
+        // One key, chosen from the screen just read: no cursor movement to race.
+        Some(k) => ("key", vec![Step::Key(k.to_string())]),
+        None => {
+            let mut steps: Vec<Step> =
+                std::iter::repeat_n(Step::Key("Down".into()), n - 1).collect();
+            steps.push(Step::Key("Enter".into()));
+            ("cursor", steps)
+        }
+    };
+    let fields = vec![
+        ("prompt", permission_json(&p)),
+        ("choice", json!(choice)),
+        ("method", json!(method)),
+    ];
+    if dry {
+        return Ok(outcome(s, "permission", &steps, fields, true, None));
+    }
+    let total = steps.len();
+    for (i, step) in steps.iter().enumerate() {
+        if i > 0 {
+            // The cursor must have moved to exactly answer i+1 of this very prompt; before the
+            // Enter, the whole prompt is read again.
+            let expect = i + 1;
+            let ok = wait_for(s, SETTLE, |screen| {
+                matches!(prompt::permission_prompt(screen, s.harness),
+                    PromptRead::Prompt(now) if now.id == p.id && now.selected == expect)
+            })?;
+            if !ok {
+                return fail(
+                    "prompt_changed",
+                    format!(
+                        "the prompt changed while answering (expected the cursor on answer {expect}); stopped after {i} of {total} keys"
+                    ),
+                );
+            }
+        }
+        press(s, step, i, total)?;
+    }
+    let uncertain = landed(
+        s,
+        |screen| matches!(prompt::permission_prompt(screen, s.harness), PromptRead::Prompt(now) if now.id == p.id),
+        |screen| matches!(prompt::permission_prompt(screen, s.harness), PromptRead::Prompt(now) if same_answers(&now, &p)),
+    )?;
+    Ok(outcome(s, "permission", &steps, fields, false, uncertain))
+}
+
+/// Does the screen show the form in state `at` of answering `qs`?
+fn form_at(screen: &str, qs: &[Question], at: &At) -> bool {
+    match at {
+        At::Review { expect } => prompt::parse_review(screen).is_some_and(|r| {
+            r.submit_focused
+                && r.items == *expect
+                && (r.tabs.is_empty()
+                    || (r.tabs.len() == qs.len() && r.tabs.iter().all(|(_, done)| *done)))
+        }),
+        At::Form {
+            question,
+            row,
+            ticked,
+            typed,
+            done,
+        } => {
+            let Some(form) = prompt::parse_form(screen) else {
+                return false;
+            };
+            if form.shows(qs) != Ok(*question) || form.cursor() != Some(*row) {
+                return false;
+            }
+            if !form.tabs.is_empty() && form.tabs.iter().map(|(_, d)| *d).ne(done.iter().copied()) {
+                return false;
+            }
+            let q = &qs[*question];
+            if q.multi_select {
+                let mut want = ticked.clone();
+                want.sort_unstable();
+                if form.ticked() != want {
+                    return false;
+                }
+            }
+            let other = form.rows.get(q.options.len());
+            match typed {
+                Some(t) => other.is_some_and(|r| r.label == *t),
+                None => other.is_some_and(|r| r.label.starts_with("Type something")),
+            }
+        }
+    }
+}
+
+fn answer_question(
+    s: &Session,
+    id: &str,
+    answers: &Value,
+    allow_attached: bool,
+    dry: bool,
+) -> R<Value> {
+    if s.harness != Harness::Claude {
+        return fail(
+            "harness_unsupported",
+            format!(
+                "{} questions are not answerable here (Claude Code only)",
+                s.harness
+            ),
+        );
+    }
+    // A dry run checks this too: it says whether the answer could be typed now.
+    let _lock = exclusive(s, allow_attached)?;
+    let Some(path) = messages::locate(s)? else {
+        return fail("transcript_not_found", "the session has no transcript yet");
+    };
+    let page =
+        transcript::latest(&path, Harness::Claude, QUESTION_LOOKBACK).map_err(|e| Failure {
+            kind: "io",
+            message: format!("cannot read {}: {e}", path.display()),
+        })?;
+    let questions: Vec<&transcript::Entry> = page
+        .entries
+        .iter()
+        .filter(|e| e.kind == Kind::Question)
+        .collect();
+    let Some(q) = questions.iter().find(|e| e.id.as_deref() == Some(id)) else {
+        return fail(
+            "question_not_found",
+            format!("no question {id} in this session"),
+        );
+    };
+    match q.status {
+        Some("pending") => {}
+        Some("abandoned") => {
+            return fail(
+                "question_not_active",
+                format!("question {id} was abandoned (a new prompt came before any answer)"),
+            );
+        }
+        other => {
+            return fail(
+                "question_answered",
+                format!("question {id} is already {}", other.unwrap_or("closed")),
+            );
+        }
+    }
+    // The one call waiting now: the same words asked under another id must not take it.
+    let active: Vec<&str> = questions
+        .iter()
+        .filter(|e| e.status == Some("pending"))
+        .filter_map(|e| e.id.as_deref())
+        .collect();
+    if active != [id] {
+        return fail(
+            "question_not_active",
+            format!(
+                "question {id} is not the one call waiting (waiting: {})",
+                active.join(", ")
+            ),
+        );
+    }
+    if s.status != "waiting" {
+        return fail(
+            "not_waiting",
+            format!("the session is {}, not waiting on a question", s.status),
+        );
+    }
+    let qs = q.questions.clone().unwrap_or_default();
+    let checked = questions::validate_answer(answers, &qs).map_err(|message| Failure {
+        kind: "answer_invalid",
+        message,
+    })?;
+    // The live form, whole: this question's tabs, text, options and descriptions, nothing
+    // ticked, typed or answered, the cursor on the first answer.
+    let first = screen(s)?;
+    let form = prompt::parse_form(&first);
+    let shown = form
+        .as_ref()
+        .is_some_and(|f| f.shows(&qs) == Ok(0) && f.untouched(&qs[0]));
+    if !shown {
+        let why = match form.as_ref().map(|f| f.shows(&qs)) {
+            None => "the terminal is not showing a question form".to_string(),
+            Some(Err(e)) => e,
+            Some(Ok(_)) => "the form has been touched (moved, ticked, typed or answered)".into(),
+        };
+        return fail(
+            "prompt_not_on_screen",
+            format!("{why} — answer it there; nothing typed"),
+        );
+    }
+    let plan: Vec<Planned> = questions::answer_plan(&qs, &checked);
+    let steps: Vec<Step> = plan.iter().map(|p| p.step.clone()).collect();
+    let fields = vec![("id", json!(id))];
+    if dry {
+        return Ok(outcome(s, "question", &steps, fields, true, None));
+    }
+    let total = plan.len();
+    for (i, planned) in plan.iter().enumerate() {
+        if i > 0 && !wait_for(s, SETTLE, |screen| form_at(screen, &qs, &planned.at))? {
+            return fail(
+                "prompt_changed",
+                format!(
+                    "the form changed while answering (not in the state the keys so far lead to); stopped after {i} of {total} keys"
+                ),
+            );
+        }
+        press(s, &planned.step, i, total)?;
+    }
+    let shows_it = |screen: &str| {
+        prompt::parse_form(screen).is_some_and(|f| f.shows(&qs).is_ok())
+            || prompt::parse_review(screen).is_some()
+    };
+    let uncertain = landed(s, shows_it, shows_it)?;
+    Ok(outcome(s, "question", &steps, fields, false, uncertain))
+}
+
+pub fn collect(o: &Opts) -> R<Value> {
+    let mode = mode(o)?;
+    let s = resolve(&o.target)?;
+    let dry = crate::core::hosts::dry_run();
+    match mode {
+        Mode::List => list(&s),
+        Mode::Choice { n, prompt } => choose(&s, n, prompt.as_deref(), o.allow_attached, dry),
+        Mode::Question { id, answers } => answer_question(&s, &id, &answers, o.allow_attached, dry),
+    }
+}
+
+pub fn run(o: Opts) -> Result<()> {
+    match collect(&o) {
+        // Keys went out but their outcome is not certain: a failure, with what is known.
+        Ok(v) if v["ok"] == false => {
+            let msg = v["error"]
+                .as_str()
+                .unwrap_or("outcome uncertain")
+                .to_string();
+            if o.json {
+                println!("{}", serde_json::to_string(&v)?);
+            }
+            Err(Error::exit(1, msg))
+        }
+        Ok(v) => {
+            if o.json {
+                println!("{}", serde_json::to_string(&v)?);
+            } else {
+                print_text(&v);
+            }
+            Ok(())
+        }
+        Err(f) => {
+            if o.json {
+                println!(
+                    "{}",
+                    json!({ "ok": false, "kind": f.kind, "error": f.message })
+                );
+            }
+            Err(Error::exit(1, f.message))
+        }
+    }
+}
+
+fn print_text(v: &Value) {
+    let p = &v["prompt"];
+    if v["dry_run"] == true {
+        println!(
+            "would type: {}",
+            v["steps"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|s| s["key"]
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("{:?}", s["text"].as_str().unwrap_or(""))))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        return;
+    }
+    if v["answered"] == true {
+        if v["prompt_kind"] == "permission" {
+            println!(
+                "answered \"{}\" with {}. {}",
+                p["title"].as_str().unwrap_or(""),
+                v["choice"]["n"],
+                v["choice"]["label"].as_str().unwrap_or("")
+            );
+        } else {
+            println!("answered question {}", v["id"].as_str().unwrap_or(""));
+        }
+        return;
+    }
+    if p.is_null() {
+        println!("{}", "no prompt on screen".dimmed());
+    } else if p["incomplete"] == true {
+        println!(
+            "a permission prompt, but {}",
+            p["reason"].as_str().unwrap_or("not all of it is readable")
+        );
+    } else if p["kind"] == "question" {
+        println!(
+            "question form {}",
+            p["id"].as_str().unwrap_or("(not in the transcript)")
+        );
+        for q in p["questions"].as_array().into_iter().flatten() {
+            println!("  {}", q["question"].as_str().unwrap_or("").bold());
+            for (i, o) in q["options"].as_array().into_iter().flatten().enumerate() {
+                println!("    {i}: {}", o["label"].as_str().unwrap_or(""));
+            }
+        }
+    } else {
+        println!("{}", p["title"].as_str().unwrap_or("").bold());
+        for d in p["detail"].as_array().into_iter().flatten() {
+            println!("  {}", d.as_str().unwrap_or("").dimmed());
+        }
+        for c in p["choices"].as_array().into_iter().flatten() {
+            let mark = if c["n"] == p["selected"] { "❯" } else { " " };
+            println!("{mark} {}. {}", c["n"], c["label"].as_str().unwrap_or(""));
+        }
+        println!(
+            "{}",
+            format!("prompt {}", p["id"].as_str().unwrap_or("")).dimmed()
+        );
+    }
+}
