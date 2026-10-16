@@ -98,7 +98,7 @@ member (see [Stacks](#stacks)).
 | `fleet stack list\|show\|new\|ensure\|spawn\|add\|remove\|rename\|edit\|set\|sync\|rm …` | [session stacks](#stacks): sessions that share one context file (the StackBrief) |
 | `fleet stack spawn <target> [prompt] [--harness <h>] [--name <n>] [--model <id>] [--dir <path>] [--on <host>] [--no-wait]` | spawn a **sibling** of `<target>`: a new session in its cwd (`--on`: on another host), in its stack (created around it first when it has none), told where the StackBrief is — see [Stacks](#stacks) |
 | `fleet watch [--interval 5] [--stuck 300] [--quiet] [--rows 1\|2\|auto] [--no-mouse]` | live dashboard + notifications on finished/stuck sessions |
-| `fleet usage [--json] [--refresh]` | the Claude subscription's usage limits on this host's login — current session (5h), weekly all models, weekly per model (e.g. Fable), extra usage — as bars with reset times; the numbers Claude Code's `/usage` shows. Cached 60s (`--refresh` skips it); a failed read serves the last one marked stale and backs off 2 minutes. `--json`: see [architecture](architecture.md#subscription-usage). `-H <host>` reads another machine's login |
+| `fleet usage [--json] [--refresh]` | usage limits on this host, as bars with reset times. **Claude**: the subscription of this host's login — current session (5h), weekly all models, weekly per model (e.g. Fable), extra usage; the numbers Claude Code's `/usage` shows. Cached 60s (`--refresh` skips it); a failed read serves the last one marked stale and backs off 2 minutes. **Codex**: the 5h and weekly windows (plus any scoped ones), plan and credits from the newest rate-limit snapshots in Codex's transcripts (no network call, no cache), as of the last Codex turn on this host; skipped when Codex isn't installed. `--json`: Claude's fields at the top level as before, plus `providers[]` — see [Usage JSON](#usage-json). `-H <host>` reads another machine's |
 | `fleet skill install [--force]\|show` | install / print the Claude Code skill (`~/.claude/skills/fleet/SKILL.md`; `--force` overwrites a different one) |
 
 `send`, `rename --force`, `name --apply` and `spawn` change a live agent's state — scripts and agents
@@ -282,6 +282,72 @@ Launch commands: Claude's is `FLEET_CMD` / config `claude`; the others' are conf
 
 Models: Claude's built-in list; Codex's from its `models_cache.json` (listed ones, its order);
 pi's from `pi --list-models` (ids `provider/model`). `id: ""` is the harness's own default.
+
+### Usage JSON
+
+`fleet usage --json` keeps its original top-level fields, which describe **Claude** only
+(`account`, `limits`, `extra_usage`, `fetched_at`, `stale`, `error` — see
+[architecture](architecture.md#subscription-usage)), and adds `providers`: one entry per provider,
+Claude first, in one shape:
+
+```json
+{
+  "account": { "…": "…" }, "limits": [ "…" ], "extra_usage": null,
+  "fetched_at": "2026-10-16T13:00:00+00:00", "stale": false, "error": null,
+  "providers": [
+    { "id": "claude", "label": "Claude", "status": "ok", "plan": "Team · Max 5x",
+      "limits": [ "…the top-level limits…" ], "fetched_at": "2026-10-16T13:00:00+00:00",
+      "observed_at": "2026-10-16T13:00:00+00:00", "error": null, "credits": null },
+    { "id": "codex", "label": "Codex", "status": "ok", "plan": "Plus",
+      "limits": [
+        { "kind": "session", "group": "session", "label": "5h limit", "model": null, "percent": 50.0,
+          "severity": "normal", "resets_at": "2026-10-16T15:00:00+00:00", "active": true },
+        { "kind": "weekly_all", "group": "weekly", "label": "Weekly limit", "model": null, "percent": 2.0,
+          "severity": "normal", "resets_at": "2026-10-23T08:00:00+00:00", "active": false }
+      ],
+      "fetched_at": "2026-10-16T13:00:00+00:00", "observed_at": "2026-10-16T12:30:00+00:00",
+      "error": null, "credits": { "has_credits": false, "unlimited": false, "balance": "0" } }
+  ]
+}
+```
+
+- **Why an array**: a reader iterates the providers the same way; a new provider is a new entry,
+  not a new top-level key; and nothing that reads the old fields changes. Claude's entry repeats
+  the top-level numbers (its `extra_usage` and `account` stay top-level only).
+- **`status`**: `ok`; `stale` (a Claude refresh failed, these are the last good numbers, `error`
+  says why); `no_data` (installed, but no limits recorded yet — no sessions, or only credits
+  events); `not_installed` (no Codex home); `error`. `limits` is empty unless `ok` or `stale`.
+- **`fetched_at`** is when fleet read the source; **`observed_at`** is when the provider recorded
+  the numbers. They are equal for Claude (a live endpoint). For Codex, `observed_at` is the
+  transcript event's time — as fresh as the last Codex turn on this host — so a UI should show
+  its age.
+- **Codex buckets**: each `rate_limits.limit_id` is a bucket, and the newest snapshot of each
+  counts. The main windows come from `codex` (or no `limit_id`, from older Codex); other ids
+  with windows are scoped limits (a model), added after the main ones, and count only when
+  recorded no more than 60 s before the main snapshot (or after it); ids without windows
+  (`premium`) only carry credits.
+- **Codex `limits[]`**: each snapshot's `primary` and `secondary` windows. `window_minutes` sets
+  `group` and `label`: up to a day is `session` (`5h limit`), longer is `weekly` (`Weekly limit`
+  for 10080). `kind` is `session` / `weekly_all` for the main bucket, `session_scoped` /
+  `weekly_scoped` for a scoped one, whose `model` is its `limit_name` (else its id) and whose
+  label ends in `· <model>`. Scoped limits share the main snapshot's `observed_at`. `active`
+  marks the fullest main window (`session` or `weekly_all`), never a scoped one: a model's
+  limit only stops that model. A window that has reset —
+  `resets_at` passed, or, with no reset time, `observed_at + window_minutes` passed — is
+  reported at `percent: 0` with `resets_at: null` (usage on another machine since is not
+  visible here).
+- **Codex `credits`**: from the newest snapshot *without* windows that has a `credits` object
+  (e.g. `premium`), else from the main snapshot. A windowed scoped snapshot's credits are never
+  used. Within 60 s of the main snapshot, or after it, the result doesn't depend on the order
+  of events; a windowless snapshot older than that is still used when the scan reaches it before
+  stopping, but the scan may stop first.
+- **`severity`** for Codex, which reports none: fleet's own bands, the ones its bars and the web
+  use — `normal` below 70%, `warning` from 70%, `critical` from 90%. Claude's is the endpoint's.
+- **Claude unavailable**: with no Claude read at all (not logged in, nothing cached) the command
+  still fails with exit 1 and the reason on stderr, as before. `--json` first prints
+  `{ "error": "<reason>", "providers": [{ "id": "claude", "status": "error", "error":
+  "<reason>", "limits": [], … }, <codex>] }` — none of the Claude top-level fields, so they never
+  mean "no limits" — so a caller can still show Codex. The text output prints the Codex section.
 
 ### Briefs
 

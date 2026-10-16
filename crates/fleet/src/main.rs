@@ -328,7 +328,7 @@ enum Commands {
         cmd: StackCmd,
     },
 
-    /// Claude subscription usage limits: session (5h), weekly, per-model weekly, extra usage
+    /// Usage limits: Claude's session (5h), weekly, per-model weekly, extra usage; Codex's 5h and weekly
     Usage {
         /// Machine-readable output (the web API's shape)
         #[arg(long)]

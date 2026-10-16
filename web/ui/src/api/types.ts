@@ -740,7 +740,7 @@ export interface UsageAccount {
 }
 
 export interface UsageLimit {
-  /** `session`, `weekly_all`, `weekly_scoped`, … */
+  /** `session`, `weekly_all`, `weekly_scoped`, `session_scoped` (Codex), … */
   kind: string
   /** `session` | `weekly`. */
   group: string

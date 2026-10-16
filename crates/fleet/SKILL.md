@@ -29,7 +29,7 @@ A firstmate-style orchestrator for the many Claude Code sessions the user runs i
 | "what's in this stack / what are my siblings doing" | `fleet stack show <stack>` (`--json` to parse), `fleet stack list` |
 | "take this to another terminal" | `fleet handoff --file <brief.md> --dir <path> [--name <name>] [--tab] [--no-wait]` — see below |
 | "watch / notify me / anyone stuck" | `fleet watch [--interval 5] [--stuck 300] [--quiet] [--rows 1\|2\|auto] [--no-mouse]` |
-| "how much usage do I have left / my limits" | `fleet usage` (`--json` to parse) — session (5h), weekly, per-model weekly (e.g. Fable) and extra usage, with reset times |
+| "how much usage do I have left / my limits" | `fleet usage` (`--json` to parse) — Claude's session (5h), weekly, per-model weekly (e.g. Fable) and extra usage, and Codex's 5h and weekly windows, with reset times |
 | "my PRs / what should I review / what's waiting on me" | `fleet prs` (`--json` to parse; `--column waiting-on-me` etc.; `--refresh` to fetch now) — see Pull requests below |
 | "check out PR X / work on PR X / review PR X in a session" | `fleet pr checkout <pr>` / `fleet pr spawn <pr> "<prompt>"` — see Pull requests below |
 | "what's running everywhere" | `fleet list --all-hosts` (add `--json`; every row carries `host`) |
