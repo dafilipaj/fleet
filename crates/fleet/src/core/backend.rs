@@ -103,6 +103,175 @@ end run"#
     }
 }
 
+/// What a session's terminal shows, whole: no header, no clipping to our own width.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Screen {
+    /// The terminal's size, when the backend says (tmux pane, iTerm session).
+    pub cols: Option<u32>,
+    pub rows: Option<u32>,
+    /// The last lines with content, oldest first; trailing blank lines dropped.
+    pub lines: Vec<String>,
+    /// The oldest line may have lost its start: the capture stopped at
+    /// [`MAX_CAPTURE_ROWS`] before reaching it (tmux only).
+    pub truncated: bool,
+}
+
+/// How far back into a tmux scrollback `peek --json` reaches to make its lines whole: a
+/// line spanning more rows than this (a minified file `cat` in a shell pane) comes back
+/// with its start cut, and `truncated` set, rather than every poll capturing the scrollback.
+pub const MAX_CAPTURE_ROWS: usize = 2000;
+
+/// The last `lines` lines of a session's terminal, unclipped. tmux joins the lines it
+/// wrapped (`capture-pane -J`) and reaches into the scrollback for them — see
+/// [`tmux_lines`]; iTerm gives its screen as shown. Escape sequences are stripped unless
+/// `ansi` (tmux `-e`; iTerm has none to give).
+pub fn screen(s: &Session, lines: usize, ansi: bool) -> Result<Screen> {
+    deny_fixture()?;
+    let handle = require_handle(s).map_err(|e| e.tag("backend_unsupported"))?;
+    let (cols, rows, (lines, truncated)) = match s.backend {
+        Backend::Iterm => {
+            let out = osa(
+                &format!(
+                    r#"{ITERM_FIND}
+on run argv
+  set s to findSession(item 1 of argv)
+  if s is missing value then error "session not found"
+  tell application "iTerm2" to return ((columns of s) as text) & " " & ((rows of s) as text) & linefeed & (text of s)
+end run"#
+                ),
+                &[handle],
+            )
+            .map_err(|e| e.tag("backend_failed"))?;
+            let (size, text) = out.split_once('\n').unwrap_or((out.as_str(), ""));
+            let (c, r) = parse_size(size);
+            (c, r, (screen_lines(text, lines, ansi), false))
+        }
+        Backend::Tmux => {
+            let size = tmux_query(handle, "#{pane_width} #{pane_height} #{history_size}")
+                .map_err(|e| Error::tagged("backend_failed", format!("tmux: {e}")))?;
+            let (c, r) = parse_size(&size);
+            let history = size
+                .split_whitespace()
+                .nth(2)
+                .and_then(|h| h.parse().ok())
+                .unwrap_or(usize::MAX);
+            (c, r, tmux_lines(handle, lines, history, ansi)?)
+        }
+        Backend::Unknown => {
+            return Err(Error::tagged(
+                "backend_unsupported",
+                format!("session {} has no controllable backend", s.label()),
+            ));
+        }
+    };
+    Ok(Screen {
+        cols,
+        rows,
+        lines,
+        truncated,
+    })
+}
+
+/// The last `n` *logical* lines of a tmux pane, each whole.
+///
+/// `capture-pane -S -<k>` picks physical rows and only then joins the wrapped ones (`-J`),
+/// so a long line whose start lies above row `-k` would come back with its start missing.
+/// So the capture widens — `k` doubling from `n` — until it holds more than `n` logical
+/// lines (the first may be cut; the `n` after it cannot be) or reaches the top of the
+/// scrollback (`history` rows), where nothing is cut but what tmux itself dropped — or
+/// [`MAX_CAPTURE_ROWS`], where it stops and says the oldest line may be cut (`true`).
+fn tmux_lines(handle: &str, n: usize, history: usize, ansi: bool) -> Result<(Vec<String>, bool)> {
+    let mut back = n.clamp(1, MAX_CAPTURE_ROWS);
+    loop {
+        let whole = back >= history;
+        let capped = !whole && back >= MAX_CAPTURE_ROWS;
+        let start = if whole {
+            "-".to_string()
+        } else {
+            format!("-{back}")
+        };
+        let mut cmd = crate::core::tools::tmux_cmd();
+        cmd.args(["capture-pane", "-p", "-J", "-t", handle, "-S", &start]);
+        if ansi {
+            cmd.arg("-e");
+        }
+        let out = cmd.output()?;
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        tmux_ok(out, &format!("tmux capture-pane -t {handle}"))
+            .map_err(|e| e.tag("backend_failed"))?;
+        let mut got = screen_lines(&text, n.saturating_add(1), ansi);
+        if whole || got.len() > n || capped {
+            let truncated = capped && got.len() <= n;
+            let from = got.len().saturating_sub(n);
+            return Ok((got.split_off(from), truncated));
+        }
+        back = back.saturating_mul(2).min(MAX_CAPTURE_ROWS);
+    }
+}
+
+/// `"<cols> <rows>"` → both, each `None` when unreadable.
+fn parse_size(s: &str) -> (Option<u32>, Option<u32>) {
+    let mut it = s.split_whitespace().map(|n| n.parse().ok());
+    (it.next().flatten(), it.next().flatten())
+}
+
+/// Captured text → its last `n` lines: escapes stripped unless `ansi`, trailing spaces
+/// and trailing blank lines (blank once escapes are ignored) dropped. Nothing is clipped.
+fn screen_lines(text: &str, n: usize, ansi: bool) -> Vec<String> {
+    let mut out: Vec<String> = text
+        .lines()
+        .map(|l| {
+            let l = l.trim_end_matches('\r');
+            let l = if ansi { l.to_string() } else { strip_ansi(l) };
+            l.trim_end_matches(' ').to_string()
+        })
+        .collect();
+    while out.last().is_some_and(|l| strip_ansi(l).trim().is_empty()) {
+        out.pop();
+    }
+    let from = out.len().saturating_sub(n);
+    out.split_off(from)
+}
+
+/// Drop terminal escape sequences (CSI `ESC [ … final`, OSC `ESC ] … BEL|ESC \`,
+/// `ESC ( B`-style designations, two-byte `ESC x`) and other control characters but tab.
+pub fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        if c == '\x1b' {
+            match it.next() {
+                Some('[') => {
+                    for c in it.by_ref() {
+                        if ('\x40'..='\x7e').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    while let Some(c) = it.next() {
+                        if c == '\x07' || (c == '\x1b' && it.next_if_eq(&'\\').is_some()) {
+                            break;
+                        }
+                    }
+                }
+                // `ESC ( B` and kin: intermediates, then one final character.
+                Some(c) if ('\x20'..='\x2f').contains(&c) => {
+                    for c in it.by_ref() {
+                        if !('\x20'..='\x2f').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        } else if c == '\t' || !c.is_control() {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// One `tmux send-keys` at `handle`, failing when tmux says it failed.
 fn send_keys(handle: &str, rest: &[&str]) -> Result<()> {
     let mut cmd = crate::core::tools::tmux_cmd();
@@ -1602,6 +1771,37 @@ mod tests {
         assert_eq!(Key::BTab.bytes(), b"\x1b[Z");
         assert_eq!(Key::CtrlC.bytes(), b"\x03");
         assert_eq!(Key::Enter.bytes(), b"\r");
+    }
+
+    #[test]
+    fn escapes_are_stripped_and_text_kept() {
+        assert_eq!(strip_ansi("\x1b[1;31mred\x1b[0m plain"), "red plain");
+        assert_eq!(strip_ansi("\x1b]0;title\x07after"), "after");
+        assert_eq!(
+            strip_ansi("\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\"),
+            "link"
+        );
+        assert_eq!(strip_ansi("a\tb\x1b(Bc\x08"), "a\tbc");
+        assert_eq!(strip_ansi("ünïcode ✓"), "ünïcode ✓");
+    }
+
+    #[test]
+    fn screen_lines_trim_the_tail_and_never_clip() {
+        let long = "x".repeat(300);
+        let text = format!("one  \n\x1b[32mtwo\x1b[0m\n{long}\n\n   \n\x1b[0m\n");
+        assert_eq!(
+            screen_lines(&text, 40, false),
+            ["one", "two", long.as_str()]
+        );
+        assert_eq!(screen_lines(&text, 1, false), [long.as_str()]);
+        // With escapes kept, a line holding only escapes still counts as blank.
+        assert_eq!(
+            screen_lines(&text, 40, true),
+            ["one", "\x1b[32mtwo\x1b[0m", long.as_str()]
+        );
+        assert!(screen_lines("\n\n", 40, false).is_empty());
+        assert_eq!(parse_size("80 24"), (Some(80), Some(24)));
+        assert_eq!(parse_size("junk"), (None, None));
     }
 
     #[test]

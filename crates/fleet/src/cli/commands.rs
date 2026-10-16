@@ -205,6 +205,30 @@ pub fn list(json: bool) -> Result<()> {
     Ok(())
 }
 
+/// `fleet peek <target> --json`: the screen whole — `{ ok, host, target: { session_id, pid },
+/// backend, status, cols, rows, lines, truncated }`, or `{ ok: false, host, kind, error }` (exit 1).
+pub fn peek_json(target: &str, lines: usize, ansi: bool) -> Result<()> {
+    let run = || -> Result<(Session, backend::Screen)> {
+        let s = discovery::resolve_target(target)?;
+        let screen = backend::screen(&s, lines, ansi)?;
+        Ok((s, screen))
+    };
+    let (s, screen) = run().map_err(json_failure)?;
+    let v = serde_json::json!({
+        "ok": true,
+        "host": host_label(),
+        "target": { "session_id": s.session_id, "pid": s.pid },
+        "backend": s.backend.label(),
+        "status": s.status,
+        "cols": screen.cols,
+        "rows": screen.rows,
+        "lines": screen.lines,
+        "truncated": screen.truncated,
+    });
+    println!("{}", serde_json::to_string_pretty(&v)?);
+    Ok(())
+}
+
 pub fn peek(target: &str, lines: usize) -> Result<()> {
     let s = discovery::resolve_target(target)?;
     let text = backend::peek(&s)?;

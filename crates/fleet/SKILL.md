@@ -15,6 +15,7 @@ A firstmate-style orchestrator for the many Claude Code sessions the user runs i
 | "open the fleet dashboard" | `fleet` — bare, no subcommand; tell the user to run it, don't run it inline |
 | "peek at / what is X doing" | `fleet peek <target> [--lines N]` |
 | "tell X to … / steer X" | `fleet send <target> "<text>"` |
+| "what exactly is on X's screen" (to parse) | `fleet peek <target> --json [--lines N]` — the lines whole: no header, not cut to your terminal's width |
 | "stop X / interrupt X" | `fleet keys <target> Escape` — presses keys (`Escape Enter Up Down Left Right Tab BTab Space C-c`); `--json` to parse |
 | "rename X / call it …" | `fleet rename <target> "<name>" [--no-tmux-sync] [--force]` |
 | "name X / what should this be called" | `fleet name <target>` — suggests; add `--apply` to send it |
