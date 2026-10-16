@@ -571,15 +571,49 @@ fn with_name(launcher: &str, name: Option<&str>, harness: Harness) -> String {
     }
 }
 
-fn run_command(prompt: Prompt, name: Option<&str>, launcher: &str, harness: Harness) -> String {
-    let launcher = with_name(launcher, name, harness);
-    match prompt {
-        Prompt::None => launcher,
-        Prompt::Inline("") => launcher,
-        Prompt::Inline(p) => format!("{launcher} {}", shq_typed(p)),
-        Prompt::File(path) => format!("{launcher} \"$(cat {})\"", shq(path)),
+/// pi's commands, which it runs when one is its first argument (`pi update`).
+const PI_COMMANDS: [&str; 6] = ["install", "remove", "uninstall", "update", "list", "config"];
+
+/// pi has no `--`: to it an argument that starts with `-` is a flag, `@…` a file to attach,
+/// and a bare `update` or `install` its own command. A leading space keeps any of those the
+/// first message; the model never minds it.
+fn pi_message(p: &str) -> std::borrow::Cow<'_, str> {
+    if p.starts_with(['-', '@']) || PI_COMMANDS.contains(&p) {
+        format!(" {p}").into()
+    } else {
+        p.into()
     }
 }
+
+fn run_command(prompt: Prompt, name: Option<&str>, launcher: &str, harness: Harness) -> String {
+    let bare = with_name(launcher, name, harness);
+    // `--` ends the options, so the prompt is never read as a flag or a subcommand:
+    // `codex '--help'` printed help, `codex 'resume'` opened the resume picker.
+    let launcher = if harness.ends_options_at_double_dash() {
+        format!("{bare} --")
+    } else {
+        bare.clone()
+    };
+    match (prompt, harness) {
+        (Prompt::None | Prompt::Inline(""), _) => bare,
+        (Prompt::Inline(p), Harness::Pi) => format!("{launcher} {}", shq_typed(&pi_message(p))),
+        (Prompt::Inline(p), _) => format!("{launcher} {}", shq_typed(p)),
+        // `$(cat f)` would drop the file's trailing newlines; a `.` after them keeps them, and
+        // `${…%.}` takes it off again. The file's first line is unknown here, so pi always gets
+        // the leading space.
+        (Prompt::File(path), Harness::Pi) => format!(
+            "{PROMPT_VAR}=\"$(cat {}; printf .)\" && {launcher} \" ${{{PROMPT_VAR}%.}}\"",
+            shq(path)
+        ),
+        (Prompt::File(path), _) => format!(
+            "{PROMPT_VAR}=\"$(cat {}; printf .)\" && {launcher} \"${{{PROMPT_VAR}%.}}\"",
+            shq(path)
+        ),
+    }
+}
+
+/// The shell variable a prompt file is read into (see [`run_command`]).
+const PROMPT_VAR: &str = "fleet_prompt";
 
 /// The shell line a spawn types: `cd <dir> && <launcher> [-n name] [prompt]`.
 pub fn launch_command(
@@ -1115,12 +1149,12 @@ mod tests {
                 "claude",
                 Harness::Claude
             ),
-            "cd '/tmp' && claude 'hi there'"
+            "cd '/tmp' && claude -- 'hi there'"
         );
         // A custom launcher (e.g. the user's `cc` wrapper) replaces `claude`.
         assert_eq!(
             launch_command("/tmp", Prompt::Inline("hi"), None, "cc", Harness::Claude),
-            "cd '/tmp' && cc 'hi'"
+            "cd '/tmp' && cc -- 'hi'"
         );
     }
 
@@ -1134,7 +1168,7 @@ mod tests {
                 "claude",
                 Harness::Claude
             ),
-            "cd '/tmp' && claude $'a\\nit\\'s \\\\ b'"
+            "cd '/tmp' && claude -- $'a\\nit\\'s \\\\ b'"
         );
     }
 
@@ -1148,7 +1182,7 @@ mod tests {
                 "claude",
                 Harness::Claude
             ),
-            "cd '/tmp' && claude -n 'auth fix' 'go'"
+            "cd '/tmp' && claude -n 'auth fix' -- 'go'"
         );
         // Flags the user already configured stay ahead of ours.
         assert_eq!(
@@ -1303,7 +1337,7 @@ mod tests {
                 "codex --model 'gpt-6'",
                 Harness::Codex
             ),
-            "cd '/w' && codex --model 'gpt-6' 'go'"
+            "cd '/w' && codex --model 'gpt-6' -- 'go'"
         );
         assert_eq!(
             launch_command("/w", Prompt::Inline("go"), Some("x"), "pi", Harness::Pi),
@@ -1311,8 +1345,71 @@ mod tests {
         );
     }
 
+    // `codex '--help'` showed Codex's help, `codex 'resume'` its resume picker: the prompt
+    // was read as a flag or a subcommand. Behind `--` it is always the prompt.
+    #[test]
+    fn the_prompt_follows_a_double_dash_where_the_cli_takes_one() {
+        let line = |p, h, l| launch_command("/w", Prompt::Inline(p), None, l, h);
+        assert_eq!(
+            line("--help", Harness::Codex, "codex"),
+            "cd '/w' && codex -- '--help'"
+        );
+        assert_eq!(
+            line("resume", Harness::Codex, "codex"),
+            "cd '/w' && codex -- 'resume'"
+        );
+        assert_eq!(
+            line("-p yes", Harness::Claude, "claude"),
+            "cd '/w' && claude -- '-p yes'"
+        );
+        // No prompt, no `--`: nothing for it to protect.
+        assert_eq!(
+            launch_command("/w", Prompt::None, Some("n"), "claude", Harness::Claude),
+            "cd '/w' && claude -n 'n'"
+        );
+        assert_eq!(
+            launch_command("/w", Prompt::Inline(""), None, "codex", Harness::Codex),
+            "cd '/w' && codex"
+        );
+    }
+
+    // pi's parser has no `--` (it would take `--` as a flag and the prompt as its value), so a
+    // prompt pi would misread gets a leading space instead.
+    #[test]
+    fn pi_prompts_it_would_misread_get_a_leading_space() {
+        let line = |p| launch_command("/w", Prompt::Inline(p), None, "pi", Harness::Pi);
+        assert_eq!(line("fix it"), "cd '/w' && pi 'fix it'");
+        assert_eq!(line("--help"), "cd '/w' && pi ' --help'");
+        assert_eq!(line("@notes.md read"), "cd '/w' && pi ' @notes.md read'");
+        assert_eq!(line("update"), "cd '/w' && pi ' update'");
+        assert_eq!(line("update the docs"), "cd '/w' && pi 'update the docs'");
+        assert_eq!(
+            launch_command("/w", Prompt::File("/f.md"), None, "pi", Harness::Pi),
+            r#"cd '/w' && fleet_prompt="$(cat '/f.md'; printf .)" && pi " ${fleet_prompt%.}""#
+        );
+    }
+
     #[test]
     fn prompt_file_expands_in_the_spawned_shell() {
+        // Run by a real shell: the file's text arrives byte for byte, trailing newlines too.
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("p.md");
+        let text = "it's \"x\" $HOME `y` \\ é\n\nlast line\n\n";
+        std::fs::write(&f, text).unwrap();
+        let line = run_command(
+            Prompt::File(&f.display().to_string()),
+            None,
+            "printf '%s|'",
+            Harness::Claude,
+        );
+        let out = std::process::Command::new("/bin/sh")
+            .args(["-c", &line])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(out.stdout).unwrap(),
+            format!("--|{text}|")
+        );
         // The brief's text must never reach the command line — only its path does.
         assert_eq!(
             launch_command(
@@ -1322,7 +1419,7 @@ mod tests {
                 "claude",
                 Harness::Claude
             ),
-            r#"cd '/tmp' && claude "$(cat '/tmp/a b.md')""#
+            r#"cd '/tmp' && fleet_prompt="$(cat '/tmp/a b.md'; printf .)" && claude -- "${fleet_prompt%.}""#
         );
     }
 }

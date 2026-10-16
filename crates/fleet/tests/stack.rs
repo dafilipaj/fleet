@@ -462,7 +462,7 @@ fn spawn_under_dry_run_prints_the_launch_and_writes_nothing() {
     let text = stdout(&out);
     assert!(text.contains("would create stack"), "{text}");
     assert!(
-        text.contains(&format!("cd '{}' && claude \"$(cat '", t.cwd())),
+        text.contains(&format!("cd '{}' && fleet_prompt=\"$(cat '", t.cwd())),
         "{text}"
     );
     assert!(text.contains("-stack-"), "{text}");
