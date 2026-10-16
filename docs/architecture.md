@@ -247,6 +247,18 @@ that stopped for a tool call. `context` comes from Codex's last `token_count`
 Targets (`peek <target>`, `send <target>` …) resolve against title, name, session-id prefix or pid,
 walking exact → prefix → substring → characters-in-order; two matches on the same rung is an error
 listing the candidates, so a loose fragment can never type into the wrong session.
+`pid:<n>` and `id:<session_id>` (`discovery::exact_target`) skip the ladder: exactly that pid or
+that full session id, or `TargetError::NotFound` — a pid that has just exited never falls through
+to a title with the same digits. They also skip the fleet: `discovery::find_exact` reads
+`<pid>.json` for `pid:`, or parses every registry entry to find those naming the `id:` (files
+only, no process); inspects the pids found with one `ps` (tty, environment, start time — an entry's
+`procStart` must be the same UTC instant, or the same text when it is not a time, so a reused
+pid is not the session); lists tmux panes only for a tmux session; and reads only the chosen
+session's transcript head (≤ 400 lines, ≤ 1 MiB) for its title. With no registry entry naming
+it, the target can only be a Codex / pi session: the harness processes are listed and paired
+with their transcripts as in the full discovery, and only the named one becomes a row. A `--json` verb reports a target failure as
+`{ ok: false, host, kind, error }` — `kind` `target_not_found | target_ambiguous | target_invalid`,
+or `stack_not_found | stack_ambiguous` for a `<stack>` (stack keeps exit 2 / 3).
 
 ## Session titles
 

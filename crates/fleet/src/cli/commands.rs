@@ -214,6 +214,18 @@ pub fn list_rows() -> Vec<Session> {
     rows
 }
 
+/// A `--json` command failing: print `{ ok: false, host, kind, error }` on stdout, then
+/// hand the error back (it still goes to stderr and sets the exit code).
+pub fn json_failure(e: Error) -> Error {
+    let mut v = e.json();
+    v["host"] = host_label().into();
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string())
+    );
+    e
+}
+
 pub fn list(json: bool) -> Result<()> {
     let rows = list_rows();
     if json {
@@ -230,7 +242,7 @@ pub fn list(json: bool) -> Result<()> {
 }
 
 pub fn peek(target: &str, lines: usize) -> Result<()> {
-    let s = discovery::resolve(target).map_err(Error::Other)?;
+    let s = discovery::resolve_target(target)?;
     let text = backend::peek(&s)?;
     let where_ = s.cwd.as_deref().map(home_rel).unwrap_or_default();
     println!(
@@ -249,7 +261,7 @@ pub fn peek(target: &str, lines: usize) -> Result<()> {
 }
 
 pub fn send(target: &str, text: &str) -> Result<()> {
-    let s = discovery::resolve(target).map_err(Error::Other)?;
+    let s = discovery::resolve_target(target)?;
     backend::send(&s, text)?;
     println!(
         "sent to {} ({}): {}",
@@ -387,7 +399,11 @@ impl From<&backend::TmuxSync> for TmuxReport {
 /// stdout), exit 1 otherwise. Nothing is queued — the caller retries when the
 /// session is idle, or passes `--force`.
 pub fn rename(target: &str, name: &str, no_tmux_sync: bool, force: bool, json: bool) -> Result<()> {
-    let s = discovery::resolve(target).map_err(Error::Other)?;
+    let s = match discovery::resolve_target(target) {
+        Ok(s) => s,
+        Err(e) if json => return Err(json_failure(e.into())),
+        Err(e) => return Err(e.into()),
+    };
     let name = clean_name(name)?;
     let mut rows = vec![s];
     naming::stamp_titles(&mut rows);
@@ -498,7 +514,7 @@ pub fn name(target: Option<String>, o: NameOpts) -> Result<()> {
     let cfg = naming_config();
     let how = gen_opts(&cfg, o, discovery::is_fixture());
     let targets: Vec<Session> = match (&target, o.all) {
-        (Some(t), false) => vec![discovery::resolve(t).map_err(Error::Other)?],
+        (Some(t), false) => vec![discovery::resolve_target(t)?],
         (None, true) => discovery::discover()
             .into_iter()
             .filter(Session::is_derived_name)
