@@ -203,6 +203,18 @@ enum Commands {
         json: bool,
     },
 
+    /// Press named keys in a session's terminal (Escape interrupts a turn)
+    Keys {
+        /// sessionId prefix, derived name, or pid; `pid:<n>` / `id:<session_id>` match exactly
+        target: String,
+        /// Escape, Enter, Up, Down, Left, Right, Tab, BTab, Space or C-c — pressed in order
+        #[arg(required = true, value_name = "KEY")]
+        keys: Vec<String>,
+        /// Print one JSON object: `{ ok, target: { session_id, pid }, keys }`, or `{ ok: false, kind, error }`
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Rename a session: Claude's own /rename (the title), then its tmux session follows
     Rename {
         /// sessionId prefix, derived name, or pid; `pid:<n>` / `id:<session_id>` match exactly
@@ -1908,6 +1920,7 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
             clear,
             json,
         } => commands::snooze(&target, for_.as_deref(), until.as_deref(), clear, json)?,
+        Commands::Keys { target, keys, json } => commands::keys(&target, &keys, json)?,
         Commands::Rename {
             target,
             name,
