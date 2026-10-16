@@ -46,7 +46,7 @@ impl Source {
 
 pub fn resolve(target: &str) -> Result<Source> {
     let dir = brief::briefs_dir()?;
-    match discovery::resolve(target) {
+    match discovery::resolve_target(target) {
         Ok(s) => {
             let id = s
                 .session_id
@@ -59,16 +59,28 @@ pub fn resolve(target: &str) -> Result<Source> {
                 dir,
             })
         }
-        Err(e) => {
-            if brief::is_session_id(target) && brief::read(&dir, target)?.is_some() {
-                return Ok(Source {
-                    id: target.to_string(),
-                    session: None,
-                    dir,
-                });
+        // A gone session's brief by its full id — bare, or as the exact `id:<id>` form. Only
+        // when nothing live matched: an ambiguous or malformed target stays an error.
+        Err(e @ discovery::TargetError::NotFound(_)) => {
+            let id = match discovery::exact_target(target) {
+                Some(Ok(discovery::Exact::Id(id))) => id,
+                _ => target.trim().to_string(),
+            };
+            // Session ids are lowercase; `id:` matches any case, so look the canonical one
+            // up first (a case-sensitive filesystem would miss `AAAA…` otherwise).
+            let lower = id.to_ascii_lowercase();
+            for id in [lower, id] {
+                if brief::is_session_id(&id) && brief::read(&dir, &id)?.is_some() {
+                    return Ok(Source {
+                        id,
+                        session: None,
+                        dir,
+                    });
+                }
             }
-            Err(Error::Other(e))
+            Err(e.into())
         }
+        Err(e) => Err(e.into()),
     }
 }
 
