@@ -14,6 +14,7 @@ A firstmate-style orchestrator for the many Claude Code sessions the user runs i
 | "what's running / my fleet" | `fleet list` (add `--json` to parse) — leads with each session's generated title |
 | "open the fleet dashboard" | `fleet` — bare, no subcommand; tell the user to run it, don't run it inline |
 | "peek at / what is X doing" | `fleet peek <target> [--lines N]` |
+| "what did X say / what was X asked / show X's conversation" | `fleet messages <target> [--limit N]` — prompts, replies, tool calls and questions from its transcript, even what scrolled off the screen (`--json` to parse; `--before <cursor>` for earlier) |
 | "tell X to … / steer X" | `fleet send <target> "<text>"` |
 | "what exactly is on X's screen" (to parse) | `fleet peek <target> --json [--lines N]` — the lines whole: no header, not cut to your terminal's width |
 | "stop X / interrupt X" | `fleet keys <target> Escape` — presses keys (`Escape Enter Up Down Left Right Tab BTab Space C-c`); `--json` to parse |
@@ -44,7 +45,7 @@ A firstmate-style orchestrator for the many Claude Code sessions the user runs i
 
 ## How to behave
 
-1. **Read freely, act with confirmation.** `list` and `peek` are read-only — run them whenever relevant. `send`, `keys` and `spawn` change a running agent's state, so **draft the exact command and confirm with the user before running it**, unless their instruction already fully specified it ("tell work-48 to run the tests" is explicit → just do it; "spawn something to look into the flaky test" needs you to confirm dir/prompt first). `handoff` is the exception — the user asking for it *is* the confirmation.
+1. **Read freely, act with confirmation.** `list`, `peek` and `messages` are read-only — run them whenever relevant. `send`, `keys` and `spawn` change a running agent's state, so **draft the exact command and confirm with the user before running it**, unless their instruction already fully specified it ("tell work-48 to run the tests" is explicit → just do it; "spawn something to look into the flaky test" needs you to confirm dir/prompt first). `handoff` is the exception — the user asking for it *is* the confirmation.
 2. **Resolve loose targets from `list` first** ("the api-server one", "the stuck one") — run `list`, match by cwd/title/status, then act on the resolved name.
 3. **`spawn` defaults:** always pass an explicit `--dir` for the repo the user means. Backend defaults to iTerm (or tmux inside tmux); only pass `--backend` when asked.
 4. **Reporting:** after `list`/`peek`, summarize in plain language — who's working, who's idle, who needs the user — rather than dumping raw output. Lead with anything that needs a decision.

@@ -387,6 +387,38 @@ passes it through, or prints the failure to reach it, so the output is one objec
 `Error::Tagged` from where the failure happens (`core::backend`, `SpawnOpts::resolve`); untagged
 errors report `io` / `json` / `other`. See [cli.md](cli.md#spawning) for every field and kind.
 
+### `fleet messages --json`
+
+See [cli.md](cli.md#messages) for the shape. The parser (`core::transcript`) is a port of the web's
+`web/lib/transcript.mjs` plus tool calls, question outcomes and cursors:
+
+- An entry's **position** is the byte offset of the transcript line that started it plus its index
+  among that line's entries — stable while the transcript is only appended to. An entry cursor is
+  `m2.<offset>.<index>.<line fingerprint>.<file id>` (file id: device and inode, hashed); the
+  top-level cursor appends a read hint
+  `.<end>.<rescan>.<fingerprint of the bytes before end>.<queue>.<a|p>`,
+  `queue` being Claude's prompt queue at `rescan` (`<enqueue line>:<content hash>,…`, or `!` when
+  it would not fit the 512-character cap — such a cursor cannot resume); `p` marks a cursor minted
+  by a `--limit`ed page (entries after its position not delivered yet), `a` one that delivered
+  everything it read.
+- `--after` checks the file id, the anchor line's fingerprint and the bytes before `end` (a
+  replaced, edited or shrunk transcript is `cursor_invalid`), re-reads the queue's enqueue lines,
+  and parses from `rescan`: the latest line at which nothing was open — no question waiting for its
+  result, no reply a later line could still extend. That is `end` itself most of the time, so a
+  poll reads only the appended bytes. Re-reading more than 2 MiB of what was delivered — from
+  `rescan` to `end`, or for a `p` cursor to its position — is `cursor_invalid`: the client
+  reloads rather than resuming with that state lost.
+- A question still waiting when a new prompt arrives is `abandoned` (its result never comes).
+- `--before` parses its window, then reads on past it until nothing opened in the window is
+  still open (a reply's later blocks, a question's outcome, Codex's final flag).
+- A Claude message's text blocks are glued into one entry, across the tool-call entries between
+  them, like the web parser. The message is taken as complete at its first tool result or at the
+  next message's first line (results and later messages always come after a message's lines), so
+  gluing never keeps a restart point open past it.
+- Lines no parser reads (API request logs, hook output, tool output events, reasoning) are skimmed
+  by a typed prefilter without building a JSON value; on real transcripts the initial tail (2 MiB,
+  doubled up to 64 MiB until it holds `--limit` entries) parses in ~10 ms on average.
+
 ### `fleet group --json`
 
 See [cli.md](cli.md#grouping) for the shape. State file: `groups.json` (below).

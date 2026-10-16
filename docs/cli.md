@@ -82,6 +82,7 @@ member (see [Stacks](#stacks)).
 | `fleet list [--json] [-a, --all-hosts]` (alias `ls`) | live sessions: title, status, age, context usage (`ctx 62%`), terminal, cwd. `--json` is an array whose rows all carry `host`; `-a` queries every configured host in parallel. The text view ends with `N dormant (fleet restore)` when a reboot left [dormant sessions](#session-recovery). Every local `list` also records the [snapshot](#session-recovery) |
 | `fleet peek <target> [--lines N]` | what the session's terminal shows now (default 40 lines): a `▼ <title> (<backend>, <status>) — <dir>` header, then each line cut to this terminal's width |
 | `fleet peek <target> --json [--lines N] [--ansi]` | the screen whole, for programs: `{ ok: true, host, target: { session_id, pid }, backend, status, cols, rows, lines: [...], truncated }` — no header, no clipping, the last N lines that have content (trailing blank lines and trailing spaces dropped). tmux: lines it wrapped are joined (`capture-pane -J`), and N counts those logical lines — the capture reaches back into the scrollback until each of the N is whole (up to what tmux still holds), but never more than 2,000 rows: a line longer than that comes back with its start cut and `truncated: true` (otherwise `false`; always `false` for iTerm); `cols`/`rows` are the pane's. iTerm: its visible screen as shown, `cols`/`rows` the session's. Escape sequences are stripped unless `--ansi` (tmux `-e`; iTerm gives none). On failure `{ ok: false, host, kind, error }`, exit 1 — kind `target_not_found`, `target_ambiguous`, `target_invalid`, `backend_unsupported` or `backend_failed` |
+| `fleet messages <target> [--json] [--after <cursor> \| --before <cursor>] [--limit N]` | the session's conversation from its transcript: prompts, replies, tool calls (never their output) and questions, oldest first — see [Messages](#messages). Without a cursor the newest `--limit` (default 100, max 500); `--after` everything newer (cheap enough to poll every second); `--before` the `--limit` entries before ("show earlier") |
 | `fleet send <target> <text>` | type text into the session and press Enter |
 | `fleet keys <target> <key>... [--json]` | press named keys in the session's terminal, in order (80 ms apart): `Escape` (interrupt a turn), `Enter`, `Up`, `Down`, `Left`, `Right`, `Tab`, `BTab` (Shift-Tab), `Space`, `C-c`. Names are tmux's, case-sensitive; any other name is refused (exit 1, kind `invalid_key`) and nothing is pressed. tmux sessions get one `send-keys` per key, iTerm sessions the bytes a terminal sends for the key. **Not atomic:** the first key that fails stops the call — the keys before it stay pressed (nothing can take them back), the rest are not sent, and the error says how many got through (`… — 1 of 3 keys pressed before it`). `--json`: `{ ok: true, host, target: { session_id, pid }, keys: [...] }`, or `{ ok: false, host, kind, error }` (exit 1) — kind `invalid_key`, `target_not_found`, `target_ambiguous`, `target_invalid`, `backend_unsupported` (no tmux pane or iTerm session to drive) or `backend_failed` |
 | `fleet rename <target> <title> [--no-tmux-sync] [--force] [--json]` | rename the session's one title: Claude's `/rename` (the source of truth), then its tmux session follows as a slug of it (`Fix Login` → `fix-login`, `-2` on a collision) when the tmux session is that Claude session's own (one window, one pane). A session **waiting on a prompt** is held (exit 1; `--json`: exit 3) — typed keys would be its answer; busy sessions are fine (Claude runs `/rename` mid-turn without disturbing the turn). Codex gets `/rename`, pi `/name`; a busy Codex / pi session is held too (`held: "busy"`) — they would queue the text as a message. `--force` overrides the hold. `--json` prints `{ ok, result: renamed\|sent\|held, session_id, pid, host, from, title, held, tmux: { renamed, from, to, note }, message }` |
@@ -190,6 +191,71 @@ With `-H <host>` the object comes from that host's own `spawn --json` (its exit 
 New kinds may be added; treat an unknown one like `other`. The session itself starts after
 `spawn` returns: it shows up in `list --json` once its agent has started (Codex and pi: once the
 process is up; Claude: once it has registered).
+
+### Messages
+
+`fleet messages <target>` reads the session's transcript — Claude Code's
+`~/.claude/projects/<cwd>/<id>.jsonl` (found in any project dir once the session moved to another
+directory or worktree), Codex's rollout, pi's session file (found by session id when discovery could
+not pair the process with one) — and prints one line per entry. A session that has not written a
+transcript yet (no first prompt) is an empty conversation, not an error.
+
+Shown: user prompts, slash commands and `!` commands (`command`), task notifications (`system`),
+assistant text, tool calls (one short argument: a path, a command's first line, a pattern) and
+Claude Code `AskUserQuestion` prompts with their outcome. Never shown: thinking, tool results/output,
+hook output, bookkeeping entries, subagent (sidechain) messages.
+
+`--json` prints exactly one object (one line):
+
+```json
+{
+  "ok": true, "session_id": "…", "harness": "claude", "transcript": "/abs/path.jsonl",
+  "entries": [ { "cursor": "m2.…", "role": "assistant", "kind": "assistant", "ts": "2026-10-16T09:00:00.000Z", "text": "Done.", "final": true } ],
+  "updated": [],
+  "has_more_before": true, "has_more_after": false,
+  "cursor": "m2.…"
+}
+```
+
+- Entry fields: `cursor`, `role` (`user` | `assistant`), `kind` (`user` | `assistant` | `command` |
+  `system` | `question` | `tool_call`), `ts` (RFC 3339 or `null`), `text` (Markdown for `assistant`).
+  `assistant`: `final` (the turn ended on it). `user`: `queued: true` while still waiting in Claude's
+  queue. `command`: `name`, `args`. `tool_call`: `id`, `tool`, `summary` (≤ 120 chars). `question`:
+  `id`, `questions` (`[{ question, header, multiSelect, options: [{ label, description }] }]`),
+  `status` (`pending` | `answered` | `declined` | `abandoned` — a new prompt came before any
+  result: the session was interrupted or restarted on it), `answer` — `null` while pending or
+  abandoned,
+  `{ "declined": true }`, or `{ "answers": [string|null…], "picked": [[option index…]…] }` (one
+  element per question; `picked` matches the recorded answer against the labels, a typed answer
+  picks nothing).
+- `cursor` (top level): poll with it. It is the newest entry's position plus a read hint, so an
+  `--after` call reads only what was appended since. It re-reads from an earlier line only while
+  something is still open there — an unanswered question, a reply that may still grow — and never
+  more than 2 MiB of what it already delivered: a cursor that would need more is `cursor_invalid`
+  (reload without a cursor) rather than resumed with that state lost. Paging on through what a
+  `--limit`ed page has not delivered yet is not bounded (it is progress). Claude's prompt queue travels in the hint. With nothing
+  newer it is the `--after` cursor again. `null` only when there are no entries and no `--after`
+  was given. Cursors are printable ASCII, at most 512 characters, without a leading `-`. An entry's
+  own `cursor` works with `--after` too, but restarts at its line without the queue state before
+  it — poll with the page cursor.
+- Every cursor names its file (device and inode) and its anchor line's fingerprint: a transcript
+  replaced or edited under it is `cursor_invalid`.
+- `updated` (`--after`): older entries that changed since the last read — a question answered,
+  streamed text appended, Codex narration turned non-final by a later tool call — each reported
+  once. Replace them by `cursor`.
+- Queued prompts (`queued: true`) come last, as the full current queue, in every no-cursor and
+  `--after` response (a `--limit`ed one too); drop the ones shown before. Their cursors (`q2.…`)
+  are not positions.
+- Only complete lines are read: a half-written last line shows up in the next call.
+- Failures (exit 1): one object `{ "ok": false, "kind", "error" }` on stdout, the message on stderr.
+  Kinds: `target_not_found`, `target_ambiguous`, `target_invalid` (`pid:abc`, `id:`),
+  `transcript_not_found` (a Claude session without a session id), `harness_unsupported` (reserved), `cursor_invalid` (garbage, or the transcript was
+  rewritten or replaced, or too far back to resume — reload without a cursor), `usage` (`--after`
+  with `--before`, a bad `--limit`), `io`. A usage error clap catches (a missing target, an unknown
+  flag, also behind grouped global flags like `-nH host`) is the same object with
+  `kind: "usage"`, exit 2 — clap's code; the usage errors fleet finds itself exit 1.
+- `--before` settles what is open where its page ends: a reply's later blocks (after a tool
+  call) are glued in, a question's outcome (or abandonment) is filled in, from the lines after.
 
 ### Harnesses
 

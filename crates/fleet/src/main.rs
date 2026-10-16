@@ -5,8 +5,8 @@ use colored::Colorize;
 
 use fleet::cli::{
     brief as brief_cmd, commands, config_cmd, group, hosts as host_cmds, init, jobs as jobs_cmd,
-    mcp, prs as prs_cmd, repos as repos_cmd, restore, skill, stack as stack_cmds,
-    tmux as tmux_cmds, usage as usage_cmd, web,
+    mcp, messages as messages_cmd, prs as prs_cmd, repos as repos_cmd, restore, skill,
+    stack as stack_cmds, tmux as tmux_cmds, usage as usage_cmd, web,
 };
 use fleet::core::config;
 use fleet::core::discovery::Backend;
@@ -129,6 +129,24 @@ enum Commands {
         /// With --json: keep the escape sequences (colours) in `lines`
         #[arg(long, requires = "json")]
         ansi: bool,
+    },
+
+    /// A session's conversation from its transcript: prompts, replies, tool calls, questions
+    Messages {
+        /// generated title, session name, sessionId prefix, or pid
+        target: String,
+        /// One JSON object: entries, paging flags and a cursor (failures: { ok: false, kind, error })
+        #[arg(long)]
+        json: bool,
+        /// Only entries newer than this cursor, oldest first (poll with the last response's cursor)
+        #[arg(long, value_name = "CURSOR")]
+        after: Option<String>,
+        /// Only entries older than this cursor ("show earlier")
+        #[arg(long, value_name = "CURSOR")]
+        before: Option<String>,
+        /// How many entries (default 100, max 500; --after returns all unless given)
+        #[arg(long, value_name = "N")]
+        limit: Option<String>,
     },
 
     /// Type text into a session and submit it
@@ -1141,6 +1159,19 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
             }
         }
         Commands::Usage { json, refresh } => usage_cmd::run(json, refresh)?,
+        Commands::Messages {
+            target,
+            json,
+            after,
+            before,
+            limit,
+        } => messages_cmd::run(messages_cmd::Opts {
+            target,
+            json,
+            after,
+            before,
+            limit,
+        })?,
         Commands::Send { target, text } => commands::send(&target, &text)?,
         Commands::Keys { target, keys, json } => commands::keys(&target, &keys, json)?,
         Commands::Rename {
@@ -1628,8 +1659,58 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
     Ok(0)
 }
 
+/// Commands whose `--json` failures are one `{ ok: false, kind, error }` object — usage
+/// errors clap catches included.
+const JSON_FAILURE_COMMANDS: &[&str] = &["messages"];
+
+/// The subcommand of [`JSON_FAILURE_COMMANDS`] the command line names with `--json`, read by
+/// clap itself with the error set aside — global flags in any spelling (`-nH host`,
+/// `--host=x`) included.
+fn json_failure_command() -> Option<String> {
+    let m = Cli::command()
+        .ignore_errors(true)
+        .try_get_matches_from(std::env::args_os())
+        .ok()?;
+    let (name, sub) = m.subcommand()?;
+    let json = matches!(sub.try_get_one::<bool>("json"), Ok(Some(true)));
+    (json && JSON_FAILURE_COMMANDS.contains(&name)).then(|| name.to_string())
+}
+
+/// A usage error for a `--json` command of [`JSON_FAILURE_COMMANDS`]: the failure object on
+/// stdout, clap's message on stderr, exit 2 (clap's code; usage errors fleet finds itself, past
+/// parsing, exit 1). Anything else (and help) is clap's as usual.
+fn parse_failure(e: clap::Error) -> ! {
+    use clap::error::ErrorKind;
+    let shown = matches!(
+        e.kind(),
+        ErrorKind::DisplayHelp
+            | ErrorKind::DisplayVersion
+            | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+    );
+    if !shown && json_failure_command().is_some() {
+        let rendered = e.render().to_string();
+        // The message is everything before clap's `Usage:` block, on one line.
+        let first = rendered
+            .lines()
+            .take_while(|l| !l.starts_with("Usage:") && !l.starts_with("For more information"))
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+            .trim_start_matches("error: ")
+            .to_string();
+        println!(
+            "{}",
+            serde_json::json!({ "ok": false, "kind": "usage", "error": first })
+        );
+        eprint!("{rendered}");
+        std::process::exit(2);
+    }
+    e.exit()
+}
+
 fn main() {
-    let cli = Cli::parse();
+    let cli = Cli::try_parse().unwrap_or_else(|e| parse_failure(e));
     match run(cli) {
         Ok(code) => std::process::exit(code),
         Err(e) => {

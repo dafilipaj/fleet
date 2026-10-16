@@ -779,6 +779,39 @@ fn subdirs(p: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// A Codex / pi session's transcript found by its id alone, wherever it lives (`root` is
+/// [`codex_home`] / [`pi_home`]): for a session whose process discovery could not pair with
+/// one (it moved to another directory). Codex names files `rollout-<stamp>-<id>.jsonl`, pi
+/// `<stamp>_<id>.jsonl`; the most recently written match wins.
+pub fn find_transcript(h: Harness, root: &Path, session_id: &str) -> Option<PathBuf> {
+    if session_id.is_empty() || session_id.contains(['/', '\\']) {
+        return None;
+    }
+    let sessions = root.join("sessions");
+    let candidates: Vec<PathBuf> = match h {
+        Harness::Codex => {
+            let suffix = format!("-{session_id}.jsonl");
+            subdirs(&sessions)
+                .iter()
+                .flat_map(|y| subdirs(y))
+                .flat_map(|m| subdirs(&m))
+                .flat_map(|d| jsonl_in(&d).collect::<Vec<_>>())
+                .filter(|f| f.to_string_lossy().ends_with(&suffix))
+                .collect()
+        }
+        Harness::Pi => {
+            let suffix = format!("_{session_id}.jsonl");
+            subdirs(&sessions)
+                .iter()
+                .flat_map(|d| jsonl_in(d).collect::<Vec<_>>())
+                .filter(|f| f.to_string_lossy().ends_with(&suffix))
+                .collect()
+        }
+        Harness::Claude => Vec::new(),
+    };
+    candidates.into_iter().max_by_key(|p| mtime_ms(p))
+}
+
 /// Pair each process with its transcript (see the module docs). Later-started
 /// processes choose first, so two sessions in one cwd each get their own.
 pub fn assign(procs: &[&Proc], ts: &[TranscriptRef]) -> HashMap<i64, TranscriptRef> {
@@ -1652,6 +1685,37 @@ mod tests {
         assert_eq!(check("FOO=1 claude"), LauncherCheck::Unknown);
         assert_eq!(check("$HOME/bin/x"), LauncherCheck::Unknown);
         assert_eq!(check(""), LauncherCheck::Unknown);
+    }
+
+    #[test]
+    fn transcripts_are_found_by_id_wherever_they_live() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let cdir = root.join("codex/sessions/2026/10/11");
+        std::fs::create_dir_all(&cdir).unwrap();
+        let cf = cdir.join("rollout-2026-10-11T21-50-53-abc-123.jsonl");
+        std::fs::write(&cf, "{}\n").unwrap();
+        std::fs::write(cdir.join("rollout-2026-10-11T21-50-53-other.jsonl"), "{}\n").unwrap();
+        assert_eq!(
+            find_transcript(Harness::Codex, &root.join("codex"), "abc-123"),
+            Some(cf)
+        );
+        let pdir = root
+            .join("pi/sessions")
+            .join(pi_dir_name("/moved/elsewhere"));
+        std::fs::create_dir_all(&pdir).unwrap();
+        let pf = pdir.join("2026-10-11T19-50-44-044Z_p1.jsonl");
+        std::fs::write(&pf, "{}\n").unwrap();
+        assert_eq!(
+            find_transcript(Harness::Pi, &root.join("pi"), "p1"),
+            Some(pf)
+        );
+        assert_eq!(find_transcript(Harness::Pi, &root.join("pi"), "p2"), None);
+        assert_eq!(
+            find_transcript(Harness::Pi, &root.join("pi"), "../p1"),
+            None
+        );
+        assert_eq!(find_transcript(Harness::Claude, root, "p1"), None);
     }
 
     #[test]
