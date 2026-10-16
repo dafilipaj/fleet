@@ -139,7 +139,8 @@ fn http_transport() {
         .unwrap()
         .port();
     let token = "x".repeat(40);
-    let mut server = std::process::Command::new(assert_cmd::cargo::cargo_bin("fleet"))
+    let mut server = env
+        .std_cmd()
         .args([
             "mcp",
             "--http",
@@ -148,12 +149,9 @@ fn http_transport() {
             "--tools",
             "list,peek",
         ])
-        .env("FLEET_CONFIG", env.config_path())
-        .env("FLEET_SNAPSHOT", env.path("snapshot.json"))
         .env("FLEET_MCP_TOKEN", &token)
         .env("FLEET_FIXTURE", common::fixture(env.dir.path(), "[]"))
         .env("HOME", env.dir.path())
-        .env_remove("FLEET_HOST")
         .stderr(std::process::Stdio::null())
         .spawn()
         .unwrap();

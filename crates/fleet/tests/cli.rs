@@ -24,11 +24,10 @@ fn list_json_is_valid_array() {
 // Enforced with a timeout so a regression fails the suite instead of hanging it.
 #[test]
 fn bare_invocation_is_one_shot_when_piped() {
-    let bin = assert_cmd::cargo::cargo_bin("fleet");
-    let cfg = tempfile::tempdir().unwrap();
-    let mut child = std::process::Command::new(bin)
-        .env("FLEET_CONFIG", cfg.path().join("none.json"))
-        .env("FLEET_SNAPSHOT", cfg.path().join("snapshot.json"))
+    // A real one-shot `list`: discovery, tmux, the registry — all of it the test's own.
+    let env = common::Env::new();
+    let mut child = env
+        .std_cmd()
         .stdout(std::process::Stdio::piped())
         .spawn()
         .unwrap();
@@ -343,12 +342,12 @@ fn fixture_mode_does_not_write_the_watch_state_file() {
     let home = dir.path().join("home");
     std::fs::create_dir_all(home.join(".claude")).unwrap();
 
-    let bin = assert_cmd::cargo::cargo_bin("fleet");
-    let mut child = std::process::Command::new(bin)
+    let env = common::Env::new();
+    let mut child = env
+        .std_cmd()
         // Piped stdout takes the notify-only path, which polls on the same tick.
         .args(["watch", "--interval", "1", "--stuck", "0"])
         .env("FLEET_FIXTURE", &path)
-        .env("FLEET_CONFIG", dir.path().join("none.json"))
         .env("HOME", &home)
         .stdout(std::process::Stdio::piped())
         .spawn()

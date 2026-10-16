@@ -351,7 +351,7 @@ fn remote_config(r: &Rig) {
         "self": "laptop",
         "hosts": {
             "laptop": { "ssh": null },
-            "workstation": { "ssh": "devbox", "fleetBin": assert_cmd::cargo::cargo_bin("fleet") },
+            "workstation": { "ssh": "devbox", "fleetBin": common::fleet_bin() },
             "down": { "ssh": "down" }
         }
     }));
