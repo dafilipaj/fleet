@@ -37,6 +37,45 @@ remote `sh -c`); `FLEET_CONFIG` is not — the remote uses its own config.
 Any unambiguous fragment works: matching tries exact → prefix → substring → characters-in-order and
 the first rung with hits wins. Two hits on the same rung is an error that lists the candidates.
 
+Two **exact forms** never fall through to a looser rung: `pid:<n>` is the session with that pid,
+`id:<session_id>` the session with that full session id (case-insensitive; a prefix is not
+enough). Nothing matching exactly is an error (`kind: "target_not_found"`), even when the value
+would match a title as a fragment — a bare pid that has just exited can match another session's
+title by its digits, and `send` would type into that one. Bare targets keep the ladder above.
+Any target that starts with `pid:` or `id:` (any case, spaces allowed) is an exact form — so a
+session titled `ID: refactor auth` can no longer be named by that title; use a fragment of it,
+or its id.
+
+- **Prefer `id:`** for a row a UI or script keeps around (from `list --json`): pids get reused, a
+  session id does not. `pid:` is for a session you just looked up.
+- **Identity:** an exact form checks that the process is still the one Claude registered — when
+  the registry entry records `procStart` (Claude writes it as `ps -o lstart` in UTC), the live
+  pid's start time must be that instant; a value that is not a `ps` time must match as text, so
+  an entry that cannot be checked fails closed. A pid a newer process reused is "not found",
+  not that process.
+- **Limit:** an entry without `procStart` (older Claude versions) is taken on liveness alone, and
+  bare targets and `list` never check start times — a stale entry whose pid was reused by another
+  process on a terminal can still show up there until Claude cleans it.
+- **Cheap:** an exact form looks up only that session. A Claude one: its registry entry
+  (`<pid>.json` for `pid:`; for `id:` every entry is parsed to find the ones naming it — files
+  only), one `ps` over the pids found, the tmux pane list when it runs in tmux, and the first
+  lines of its own transcript for its title — no other session's process or transcript. A Codex / pi one (no registry entry):
+  the harness processes are listed (one `ps`, one `lsof`) and paired with their transcripts, then
+  only the named one is inspected and read. Either way no context usage is read.
+
+Every verb that takes a session `<target>` accepts them (`peek`, `send`, `rename`, `name`,
+`brief`, `spawn --from`, `stack …`). A **gone** session's brief is found by `id:<id>` too, but only
+when no live session matches — an ambiguous or malformed target stays an error.
+
+With `--json`, a target that does not resolve prints `{ ok: false, host, kind, error }` on stdout:
+`rename`, `brief` (every mode) and every `stack` verb that takes a `<stack>` or `<target>`. `kind`
+is `target_not_found`, `target_ambiguous`, `target_invalid` (`pid:abc`, `id:`), or for a
+`<stack>`, `stack_not_found` / `stack_ambiguous`. The exit code is the command's own: 1 for
+`rename` and `brief`; `stack` keeps its codes — 2 for anything ambiguous, 3 for a `<stack>` that
+matches nothing (a `pid:` / `id:` given as `<stack>` included), 1 for a session `<target>` that
+matches nothing, and 3 (`target_not_found`) for `stack remove` given a live session that is not a
+member (see [Stacks](#stacks)).
+
 | command | does |
 | --- | --- |
 | `fleet` | `watch` on a terminal; a one-shot `list` when stdout is piped |
@@ -220,6 +259,15 @@ with \`fleet -H <home> stack set <id>\` (the whole markdown on stdin; …). <pro
 prefix, then substring) → a member's session id (whole, or a prefix of ≥ 8) → a session target
 that is a member. Two hits on the same rung is an error listing the candidates (exit 2); no hit is
 exit 3. `<target>` is a live session target as everywhere else (an ambiguous one is exit 2).
+`pid:<n>` / `id:<session_id>` skip the label rungs: `id:` is a member's whole session id (a gone
+member's too), else either form is the exact live session. These exit codes stay as they were
+(scripts and the web server branch on them); with `--json` the failure is also one object on
+stdout, `{ ok: false, host, kind, error }`: `stack_ambiguous` / `target_ambiguous` (exit 2),
+`stack_not_found` (exit 3; also `target_not_found` / `target_invalid` for an exact form given as
+`<stack>`), and for a session `<target>` that matches nothing `target_not_found` (exit 1, as
+before). One cell differs: `stack remove <stack> <target>` where `<target>` is a live session that
+is not a member of that stack is `target_not_found` with exit 3 (its code before this kind
+existed).
 With `-H <host>` every form runs on that host, where the files are — a stack is always addressed
 on its home, whichever hosts its members run on. A host this machine has no ssh destination for
 but a web url (`hosts.<host>.web` — how the always-on machines know each other) is reached
@@ -236,7 +284,7 @@ another host needs for its context line. The other forms need ssh. `--on <host>`
 | `fleet stack ensure <target> [--label] [--no-llm] [--json]` | the session's stack, created like `new` when it has none |
 | `fleet stack spawn <target> [prompt] [--harness] [--name] [--model] [--dir] [--backend iterm\|tmux] [--tmux-session <s>] [--window] [--on <host>] [--no-wait] [--label] [--no-llm] [--json]` | a sibling: `ensure` on `<target>`, then a new session on this host in `<target>`'s cwd (`--dir` overrides) whose first prompt is the context line + `prompt`, always through a prompt file `~/.claude/fleet-handoffs/<stamp>-stack-<hex>.md`; then waits (≤ 75 s) for it to register and adds it. `--on <host>`: the session starts on that host instead — `fleet --local spawn` there over ssh, in `--dir` (a path there; default `<target>`'s cwd as `~/…`, the same place on that machine) with the remote context line + `prompt` as the argument; it then waits for it in that host's `fleet list` and adds it as a member of that host (`spawned.host`, `session.host` in `--json`). `--no-wait` skips the waiting and prints the `fleet stack add` to run later. `-n` / `FLEET_DRY_RUN` prints the launch line (the ssh line with `--on`) and the prompt and writes nothing (not even a new stack). Starts an agent — confirm like `spawn` |
 | `fleet stack add <stack> <target> [--on <host>] [--input <src>] [--json]` | add a live session (refused when it is live in another stack of this host). `--on <host>`: a session running on that host — `<target>` is resolved among its rows, from `fleet list --json` over ssh, or from `--input` (`-` = stdin: a `list --json` array or an `/api/fleet` body carrying that host; what the web server passes, so it never needs ssh). Naming this machine is the plain form |
-| `fleet stack remove <stack> <target\|session_id> [--json]` | drop a member (a gone one by its session id or a prefix of ≥ 4, or its name); removing the last leaves an empty stack (the file stays) |
+| `fleet stack remove <stack> <target\|session_id> [--json]` | drop a member (a gone one by its session id or a prefix of ≥ 4, or its name; `id:<session_id>` only by the whole id); removing the last leaves an empty stack (the file stays) |
 | `fleet stack rename <stack> <label> [--json]` | rename the stack: the label (one line, ≤ 80 chars, cleaned like `--label`) in the frontmatter, the header line follows; `editedAt` stamped. `--json`: the StackView |
 | `fleet stack edit <stack>` | the body in `$VISUAL` / `$EDITOR`, saved as a human edit (with `--expect-updated` semantics; on another host fetched with `stack show --json` and written back with `stack set`) |
 | `fleet stack set <stack> [--expect-updated <iso>] [--json]` | the markdown on stdin, saved as a human edit: authoritative for everything but the header and `## Sessions` (regenerated); the stored machine keys stay; a `label:` in its frontmatter renames the stack; `editedAt` stamped. A stale `--expect-updated` is exit 3, nothing written (with `--json` stdout still carries `{ error, id, updated }`, the stored timestamp) |

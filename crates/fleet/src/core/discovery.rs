@@ -215,6 +215,10 @@ struct Reg {
     /// How this session was started — `"cli"` for a terminal, `"sdk-cli"` for a
     /// `claude -p` child. See [`is_headless`].
     entrypoint: Option<String>,
+    /// The process's start time as `ps -o lstart` prints it (UTC): what tells this
+    /// session's process from a later one that reused its pid.
+    #[serde(rename = "procStart")]
+    proc_start: Option<String>,
 }
 
 /// One tmux pane, as reported by `list-panes -a`.
@@ -265,85 +269,108 @@ pub fn discover_checked() -> Result<Vec<Session>, String> {
         Err(e) => return Err(format!("cannot read {}: {e}", dir.display())),
     };
     for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
-        }
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let Ok(reg) = serde_json::from_str::<Reg>(&text) else {
+        let Some(reg) = read_reg(&entry.path()) else {
             continue;
         };
         let Some(pid) = reg.pid else { continue };
-        // Interactive sessions only (skip print/headless runs). `kind` alone does
-        // not say it: a `claude -p` child registers as `interactive` too, and its
-        // entrypoint is the only thing that gives it away.
-        if reg.kind.as_deref().is_some_and(|k| k != "interactive") {
-            continue;
-        }
-        if reg.entrypoint.as_deref().is_some_and(is_headless) {
-            continue;
-        }
         // ps returns non-zero for a dead pid, so this doubles as a liveness check.
         let Some(tty) = tty_of(pid) else { continue };
         let (backend, handle) = backend_of(pid, Some(tty.as_str()), &panes);
-        // tmux tab (window name) is free from the panes query; iTerm tab titles are
-        // filled lazily by enrich_iterm_tabs (one AppleScript call) only for display.
-        let pane = if backend == Backend::Tmux {
-            panes.get(&format!("/dev/{tty}"))
-        } else {
-            None
-        };
-        let tab = pane
-            .map(|p| p.window_name.clone())
-            .filter(|w| !w.is_empty());
-        let tmux_session = pane
-            .map(|p| p.session_name.clone())
-            .filter(|w| !w.is_empty());
-        let origin = pane.and_then(|p| crate::core::jobs::Origin::parse(&p.job_run));
-        let title = match (reg.session_id.as_deref(), reg.cwd.as_deref()) {
-            (Some(sid), Some(cwd)) => title_for(cwd, sid),
-            _ => None,
-        };
-        let context = reg.session_id.as_deref().and_then(|sid| {
-            crate::core::context::for_session(&claude_home(), reg.cwd.as_deref(), sid)
-        });
-        out.push(Session {
-            pid,
-            status: reg.status.unwrap_or_else(|| "unknown".into()),
-            updated_at: reg.status_updated_at.or(reg.updated_at),
-            title,
-            tty: Some(tty),
-            backend,
-            handle,
-            tab,
-            tmux_session,
-            name_source: reg.name_source,
-            waiting_for: reg.waiting_for,
-            session_id: reg.session_id,
-            name: reg.name,
-            cwd: reg.cwd,
-            gen_title: None,
-            display_title: None,
-            host: None,
-            model: context.as_ref().and_then(|c| c.model.clone()),
-            context,
-            stack: None,
-            harness: Harness::Claude,
-            transcript: None,
-            origin,
-        });
+        out.push(claude_session(reg, pid, tty, backend, handle, &panes, true));
     }
     crate::core::context::apply_native_1m(out.iter_mut().filter_map(|s| s.context.as_mut()));
-    out.extend(discover_harnesses(&panes));
+    out.extend(discover_harnesses(&panes, None));
     out.sort_by_key(|s| std::cmp::Reverse(s.updated_at.unwrap_or(0)));
     Ok(out)
 }
 
+/// One registry entry, when the file is one and it is a session anybody supervises.
+fn read_reg(path: &std::path::Path) -> Option<Reg> {
+    if path.extension().and_then(|s| s.to_str()) != Some("json") {
+        return None;
+    }
+    let reg: Reg = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    // Interactive sessions only (skip print/headless runs). `kind` alone does
+    // not say it: a `claude -p` child registers as `interactive` too, and its
+    // entrypoint is the only thing that gives it away.
+    if reg.kind.as_deref().is_some_and(|k| k != "interactive") {
+        return None;
+    }
+    if reg.entrypoint.as_deref().is_some_and(is_headless) {
+        return None;
+    }
+    Some(reg)
+}
+
+/// A live Claude session from its registry entry and where its process runs. `enrich`
+/// reads its transcript for the title and context usage — the costly part, which a lookup
+/// of one session by an exact target skips.
+fn claude_session(
+    reg: Reg,
+    pid: i64,
+    tty: String,
+    backend: Backend,
+    handle: Option<String>,
+    panes: &HashMap<String, Pane>,
+    enrich: bool,
+) -> Session {
+    // tmux tab (window name) is free from the panes query; iTerm tab titles are
+    // filled lazily by enrich_iterm_tabs (one AppleScript call) only for display.
+    let pane = if backend == Backend::Tmux {
+        panes.get(&format!("/dev/{tty}"))
+    } else {
+        None
+    };
+    let tab = pane
+        .map(|p| p.window_name.clone())
+        .filter(|w| !w.is_empty());
+    let tmux_session = pane
+        .map(|p| p.session_name.clone())
+        .filter(|w| !w.is_empty());
+    let origin = pane.and_then(|p| crate::core::jobs::Origin::parse(&p.job_run));
+    let title = match (enrich, reg.session_id.as_deref(), reg.cwd.as_deref()) {
+        (true, Some(sid), Some(cwd)) => title_for(cwd, sid),
+        _ => None,
+    };
+    let context = reg
+        .session_id
+        .as_deref()
+        .filter(|_| enrich)
+        .and_then(|sid| crate::core::context::for_session(&claude_home(), reg.cwd.as_deref(), sid));
+    Session {
+        pid,
+        status: reg.status.unwrap_or_else(|| "unknown".into()),
+        updated_at: reg.status_updated_at.or(reg.updated_at),
+        title,
+        tty: Some(tty),
+        backend,
+        handle,
+        tab,
+        tmux_session,
+        name_source: reg.name_source,
+        waiting_for: reg.waiting_for,
+        session_id: reg.session_id,
+        name: reg.name,
+        cwd: reg.cwd,
+        gen_title: None,
+        display_title: None,
+        host: None,
+        model: context.as_ref().and_then(|c| c.model.clone()),
+        context,
+        stack: None,
+        harness: Harness::Claude,
+        transcript: None,
+        origin,
+    }
+}
+
 /// Live Codex and pi sessions (see [`crate::core::harness`]): found with `ps`, matched
 /// to their transcripts, placed in their terminal like Claude's.
-fn discover_harnesses(panes: &HashMap<String, Pane>) -> Vec<Session> {
+///
+/// `only`: build rows just for the process an exact target names (the others are still
+/// listed and paired with transcripts — that pairing needs every process in a cwd — but
+/// never inspected, read for state or titled).
+fn discover_harnesses(panes: &HashMap<String, Pane>, only: Option<&Exact>) -> Vec<Session> {
     if !harness::codex_home().is_dir() && !harness::pi_home().is_dir() {
         return Vec::new();
     }
@@ -370,7 +397,16 @@ fn discover_harnesses(panes: &HashMap<String, Pane>) -> Vec<Session> {
             HashMap::new()
         };
         for p in mine {
-            let mut s = harness_session(p, assigned.get(&p.pid), panes);
+            let t = assigned.get(&p.pid);
+            let named = match only {
+                None => true,
+                Some(Exact::Pid(pid)) => p.pid == *pid,
+                Some(Exact::Id(id)) => t.is_some_and(|t| t.session_id.eq_ignore_ascii_case(id)),
+            };
+            if !named {
+                continue;
+            }
+            let mut s = harness_session(p, t, panes);
             if let Some(n) = s.session_id.as_ref().and_then(|id| names.get(id)) {
                 // Codex titles every thread itself after its first turn.
                 s.name = Some(n.clone());
@@ -448,13 +484,295 @@ fn codex_prompt_from_screen(state: &mut harness::State, tmux_pane: Option<&str>)
 /// A target is a pid, a sessionId prefix, a session name, a generated title — or
 /// any unambiguous fragment of the last two, down to a fuzzy `flt` for
 /// `fleet-llm-title`. See [`resolve_in`] for how loose is too loose.
+///
+/// `pid:<n>` and `id:<session_id>` are the exact forms: they match only that pid or
+/// that full session id, and fail rather than fall through. A bare pid does fall
+/// through — so a pid that just exited can match a title with those digits in it;
+/// callers that type into the result (UIs, scripts) should use the exact forms.
 pub fn resolve(target: &str) -> Result<Session, String> {
+    resolve_target(target).map_err(|e| e.to_string())
+}
+
+/// [`resolve`] with the failure kept typed, for callers that report it as JSON.
+pub fn resolve_target(target: &str) -> Result<Session, TargetError> {
+    if let Some(exact) = exact_target(target)
+        && !is_fixture()
+        && let Some(found) = find_exact(target.trim(), &exact?)
+    {
+        return found;
+    }
     let mut rows = discover();
     // Every fleet view prints the *title* as a session's identity, so a title has
     // to resolve: otherwise `peek <the thing list just showed me>` fails for every
     // titled session, which is all of them.
     crate::core::naming::stamp_titles(&mut rows);
-    resolve_in(rows, target)
+    resolve_target_in(rows, target)
+}
+
+/// Why a target did not resolve to exactly one session.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum TargetError {
+    /// Nothing matched (or, for `pid:` / `id:`, nothing matched exactly).
+    #[error("{0}")]
+    NotFound(String),
+    /// More than one session matched on the same rung.
+    #[error("{0}")]
+    Ambiguous(String),
+    /// An explicit form with a malformed value (`pid:abc`, `id:`), or no target at all.
+    #[error("{0}")]
+    Invalid(String),
+}
+
+impl TargetError {
+    /// The stable machine-readable kind a `--json` failure carries.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            TargetError::NotFound(_) => "target_not_found",
+            TargetError::Ambiguous(_) => "target_ambiguous",
+            TargetError::Invalid(_) => "target_invalid",
+        }
+    }
+}
+
+/// An explicit target: matched exactly, never by prefix, substring or fuzzy title.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Exact {
+    /// `pid:<n>` — the pid of a listed session.
+    Pid(i64),
+    /// `id:<session_id>` — the full session id (case-insensitive).
+    Id(String),
+}
+
+/// Parse `pid:<n>` / `id:<session_id>`. `None` for a bare target (it keeps the ladder);
+/// `Some(Err)` for an explicit form whose value is malformed.
+pub fn exact_target(target: &str) -> Option<Result<Exact, TargetError>> {
+    let t = target.trim();
+    let (prefix, value) = t.split_once(':')?;
+    let value = value.trim();
+    match prefix.trim().to_ascii_lowercase().as_str() {
+        "pid" => Some(
+            value
+                .parse::<i64>()
+                .ok()
+                .filter(|p| *p > 0)
+                .map(Exact::Pid)
+                .ok_or_else(|| {
+                    TargetError::Invalid(format!(
+                        "\"{target}\": pid: takes a process id (digits only)"
+                    ))
+                }),
+        ),
+        "id" => Some(if value.is_empty() {
+            Err(TargetError::Invalid(format!(
+                "\"{target}\": id: takes a full session id"
+            )))
+        } else {
+            Ok(Exact::Id(value.to_string()))
+        }),
+        _ => None,
+    }
+}
+
+/// The one session an [`Exact`] target names. Never falls through to a looser match:
+/// a pid that is gone is an error even when it also reads as a fragment of a title.
+fn resolve_exact(rows: Vec<Session>, target: &str, exact: &Exact) -> Result<Session, TargetError> {
+    let is = |s: &Session| match exact {
+        Exact::Pid(p) => s.pid == *p,
+        Exact::Id(id) => s
+            .session_id
+            .as_deref()
+            .is_some_and(|sid| sid.eq_ignore_ascii_case(id)),
+    };
+    let mut hits: Vec<Session> = rows.into_iter().filter(is).collect();
+    match hits.len() {
+        1 => Ok(hits.remove(0)),
+        0 => Err(TargetError::NotFound(match exact {
+            Exact::Pid(p) => format!("no live session has pid {p} (\"{target}\" matches exactly)"),
+            Exact::Id(id) => {
+                format!("no live session has session id {id} (\"{target}\" matches exactly)")
+            }
+        })),
+        n => Err(TargetError::Ambiguous(format!(
+            "\"{target}\" matches {n} sessions: {} — be more specific",
+            hits.iter()
+                .map(|s| format!("{} (pid {})", s.headline(), s.pid))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
+}
+
+/// The lookup behind an exact target, without discovering the whole fleet: the registry
+/// entries naming that pid / session id (`<pid>.json` for `pid:`; for `id:`, every entry is
+/// parsed to find it — files only, no process), one `ps` over their pids (liveness, tty,
+/// start time, environment), the tmux pane list only when one runs in tmux, and a bounded
+/// read of the chosen session's transcript head for its title — no other transcript, no
+/// context usage. A UI polling one session (`peek --json id:…` every second) costs a
+/// handful of processes instead of two per live session.
+///
+/// Identity: the process must still be the one the entry registered — when the entry
+/// records `procStart`, the live pid's start time has to match it, so a pid that a newer
+/// process reused is not taken for the session.
+///
+/// Nothing in the Claude registry: a Codex / pi session (they have none) is looked for
+/// among the harness processes alone — one `ps`, one `lsof`, and only the named process
+/// inspected and its transcript read.
+fn find_exact(target: &str, exact: &Exact) -> Option<Result<Session, TargetError>> {
+    let dir = claude_home().join("sessions");
+    let mut regs: Vec<Reg> = match exact {
+        Exact::Pid(p) => read_reg(&dir.join(format!("{p}.json")))
+            .filter(|r| r.pid == Some(*p))
+            .into_iter()
+            .collect(),
+        Exact::Id(_) => Vec::new(),
+    };
+    if regs.is_empty() {
+        // `<pid>.json` is Claude's naming; anything else is found by reading the entries.
+        regs = std::fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| read_reg(&e.path()))
+            .filter(|r| match exact {
+                Exact::Pid(p) => r.pid == Some(*p),
+                Exact::Id(id) => r
+                    .session_id
+                    .as_deref()
+                    .is_some_and(|sid| sid.eq_ignore_ascii_case(id)),
+            })
+            .collect();
+    }
+    if regs.is_empty() {
+        // No Claude session is it (Claude rows only come from the registry): a Codex / pi
+        // one, or nothing. Only the harness processes are listed, and only the named one
+        // is inspected and read.
+        let rows = if harness::codex_home().is_dir() || harness::pi_home().is_dir() {
+            let mut rows = discover_harnesses(&tmux_panes(), Some(exact));
+            crate::core::naming::stamp_titles(&mut rows);
+            rows
+        } else {
+            Vec::new()
+        };
+        return Some(resolve_exact(rows, target, exact));
+    }
+    let pids: Vec<i64> = regs.iter().filter_map(|r| r.pid).collect();
+    let procs = inspect(&pids);
+    let mut live: Vec<(Reg, i64, &Inspected)> = Vec::new();
+    for reg in regs {
+        let Some(pid) = reg.pid else { continue };
+        let Some(p) = procs.get(&pid) else { continue };
+        if reg
+            .proc_start
+            .as_deref()
+            .is_some_and(|want| !p.started_as(want))
+        {
+            continue;
+        }
+        live.push((reg, pid, p));
+    }
+    let needs_panes = live
+        .iter()
+        .any(|(_, _, p)| !p.env.contains("ITERM_SESSION_ID=") || p.env.contains("TMUX="));
+    let panes = if needs_panes {
+        tmux_panes()
+    } else {
+        HashMap::new()
+    };
+    let mut rows: Vec<Session> = live
+        .into_iter()
+        .map(|(reg, pid, p)| {
+            let (backend, handle) = backend_from_env(&p.env, Some(p.tty.as_str()), &panes);
+            claude_session(reg, pid, p.tty.clone(), backend, handle, &panes, false)
+        })
+        .collect();
+    crate::core::naming::stamp_titles(&mut rows);
+    Some(resolve_exact(rows, target, exact).map(|mut s| {
+        // The one row picked gets its title (a bounded read of its transcript's head): it
+        // is what `name` works from, and what `rename --json`'s `from` and the views show.
+        if let (None, Some(sid), Some(cwd)) = (&s.title, s.session_id.as_deref(), s.cwd.as_deref())
+        {
+            s.title = title_for(cwd, sid);
+        }
+        s
+    }))
+}
+
+/// One live process as a single `ps` reports it.
+#[derive(Debug)]
+struct Inspected {
+    tty: String,
+    /// `ps -o lstart` in UTC (`LC_ALL=C TZ=UTC`, as Claude records `procStart`), words
+    /// single-spaced.
+    start: String,
+    /// The command line followed by the environment (`ps e`).
+    env: String,
+}
+
+impl Inspected {
+    /// Is `proc_start` (the registry's `procStart`) this process's start? Claude writes it
+    /// with `LC_ALL=C TZ=UTC ps -o lstart=`, which is how [`inspect`] reads it too: compared
+    /// as UTC times, else (either side unparseable) as single-spaced strings — so an entry
+    /// that cannot be checked fails closed rather than vouching for whatever has the pid.
+    fn started_as(&self, proc_start: &str) -> bool {
+        match (parse_lstart(&self.start), parse_lstart(proc_start)) {
+            (Some(have), Some(want)) => have == want,
+            _ => self.start == single_spaced(proc_start),
+        }
+    }
+}
+
+fn single_spaced(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn parse_lstart(s: &str) -> Option<chrono::NaiveDateTime> {
+    chrono::NaiveDateTime::parse_from_str(&single_spaced(s), "%a %b %e %H:%M:%S %Y").ok()
+}
+
+/// One `ps` for every pid: tty, start time and environment of each that is alive and on a
+/// terminal. Dead pids, and ones with no tty, are simply absent.
+fn inspect(pids: &[i64]) -> HashMap<i64, Inspected> {
+    if pids.is_empty() {
+        return HashMap::new();
+    }
+    let list = pids
+        .iter()
+        .map(i64::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let Ok(out) = Command::new("ps")
+        .env("TZ", "UTC")
+        .env("LC_ALL", "C")
+        .args(["eww", "-o", "pid=,tty=,lstart=,command=", "-p", &list])
+        .output()
+    else {
+        return HashMap::new();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(parse_inspected)
+        .collect()
+}
+
+/// `pid tty Www Mmm dd hh:mm:ss yyyy command… ENV=…` → the pid and what we need of it.
+fn parse_inspected(line: &str) -> Option<(i64, Inspected)> {
+    let words: Vec<&str> = line.split_whitespace().collect();
+    if words.len() < 7 {
+        return None;
+    }
+    let pid = words[0].parse().ok()?;
+    let tty = words[1];
+    if tty.is_empty() || tty == "??" || tty == "?" {
+        return None;
+    }
+    Some((
+        pid,
+        Inspected {
+            tty: tty.to_string(),
+            start: words[2..7].join(" "),
+            env: words[7..].join(" "),
+        },
+    ))
 }
 
 /// Shortest query allowed to match by subsequence. Two characters spread across a
@@ -536,9 +854,18 @@ fn is_subsequence(q: &str, haystack: &str) -> bool {
 /// type into a live Claude TUI — the cost of resolving to the wrong session there
 /// is somebody else's turn, so a coin flip is not an acceptable tie-break.
 pub fn resolve_in(rows: Vec<Session>, target: &str) -> Result<Session, String> {
+    resolve_target_in(rows, target).map_err(|e| e.to_string())
+}
+
+/// [`resolve_in`] with the failure kept typed. `pid:<n>` and `id:<session_id>` match
+/// exactly and nothing else (see [`exact_target`]); a bare target walks [`RUNGS`].
+pub fn resolve_target_in(rows: Vec<Session>, target: &str) -> Result<Session, TargetError> {
+    if let Some(exact) = exact_target(target) {
+        return resolve_exact(rows, target.trim(), &exact?);
+    }
     let q = target.trim().to_lowercase();
     if q.is_empty() {
-        return Err("no target given".into());
+        return Err(TargetError::Invalid("no target given".into()));
     }
     for rung in RUNGS {
         let mut hits = rows.iter().filter(|r| rung.matches(r, &q));
@@ -551,13 +878,15 @@ pub fn resolve_in(rows: Vec<Session>, target: &str) -> Result<Session, String> {
             .filter(|r| rung.matches(r, &q))
             .map(Session::headline)
             .collect();
-        return Err(format!(
+        return Err(TargetError::Ambiguous(format!(
             "\"{target}\" matches {} sessions: {} — be more specific",
             all.len(),
             all.join(", ")
-        ));
+        )));
     }
-    Err(format!("no live session matches \"{target}\""))
+    Err(TargetError::NotFound(format!(
+        "no live session matches \"{target}\""
+    )))
 }
 
 /// The Claude session this process was launched from: the nearest ancestor pid
@@ -770,14 +1099,24 @@ pub(crate) fn encode_cwd(cwd: &str) -> String {
         .collect()
 }
 
-/// Title = the session's first genuine user prompt from its transcript.
+/// How much of a transcript's head [`title_for`] reads at most.
+const TITLE_SCAN_BYTES: u64 = 1024 * 1024;
+
+/// Title = the session's first genuine user prompt from its transcript. Streamed and
+/// bounded — the first 400 lines within the first [`TITLE_SCAN_BYTES`] — so a long
+/// transcript costs no more than a short one.
 fn title_for(cwd: &str, session_id: &str) -> Option<String> {
+    use std::io::{BufRead, Read};
     let file = claude_home()
         .join("projects")
         .join(encode_cwd(cwd))
         .join(format!("{session_id}.jsonl"));
-    let text = std::fs::read_to_string(&file).ok()?;
-    for line in text.lines().take(400) {
+    let f = std::fs::File::open(&file).ok()?;
+    let lines = std::io::BufReader::new(f.take(TITLE_SCAN_BYTES))
+        .lines()
+        .map_while(Result::ok);
+    for line in lines.take(400) {
+        let line = line.as_str();
         if !line.contains("\"type\":\"user\"") {
             continue;
         }
@@ -969,6 +1308,103 @@ mod tests {
         assert!(err.contains("matches 2 sessions"), "{err}");
         assert!(err.contains("docs-refresh-frontend"), "{err}");
         assert!(err.contains("docs-refresh-api"), "{err}");
+    }
+
+    // The bug the exact forms exist for: the pid of a session that has just exited is
+    // no longer anyone's pid, so a bare pid walks on down the ladder and lands on a
+    // title that happens to carry those digits — and `send` types into it.
+    #[test]
+    fn an_exact_pid_never_falls_through_to_a_title() {
+        let rows = vec![titled(7, "app-7", "retry-4242-uploads")];
+        // Bare: still the ladder, for compatibility (substring of the title).
+        assert_eq!(resolve_in(rows.clone(), "4242").map(|s| s.pid), Ok(7));
+        // Exact: pid 4242 is gone, so nothing — never the title.
+        let err = resolve_target_in(rows.clone(), "pid:4242").unwrap_err();
+        assert_eq!(err.kind(), "target_not_found");
+        assert!(
+            err.to_string().contains("no live session has pid 4242"),
+            "{err}"
+        );
+        // …and the live pid resolves, whatever the title says.
+        assert_eq!(resolve_in(rows.clone(), "pid:7").map(|s| s.pid), Ok(7));
+        assert_eq!(resolve_in(rows, " PID: 7 ").map(|s| s.pid), Ok(7));
+    }
+
+    #[test]
+    fn an_exact_id_is_the_whole_session_id() {
+        let row = |pid: i64, sid: &str, title: &str| Session {
+            pid,
+            session_id: Some(sid.into()),
+            gen_title: Some(title.into()),
+            ..Default::default()
+        };
+        let sid = "aaaaaaaa-1111-2222-3333-444444444444";
+        let rows = vec![
+            row(1, sid, "statusline-blank"),
+            row(2, "bbbbbbbb-1111-2222-3333-444444444444", "aaaaaaaa-notes"),
+        ];
+        let one = |q: &str| resolve_target_in(rows.clone(), q).map(|s| s.pid);
+        assert_eq!(one(&format!("id:{sid}")), Ok(1));
+        assert_eq!(one(&format!("ID:{}", sid.to_uppercase())), Ok(1));
+        // A prefix is enough for a bare target, never for `id:`.
+        assert_eq!(one("aaaaaaaa-1111").map(|p| p == 1), Ok(true));
+        assert_eq!(one("id:aaaaaaaa").unwrap_err().kind(), "target_not_found");
+        // A title is not an id, even one that looks like one.
+        assert_eq!(
+            one("id:aaaaaaaa-notes").unwrap_err().kind(),
+            "target_not_found"
+        );
+        // The same id twice (a resumed session in two terminals) is a question, not a pick.
+        let twice = vec![row(1, sid, "a"), row(2, sid, "b")];
+        let err = resolve_target_in(twice, &format!("id:{sid}")).unwrap_err();
+        assert_eq!(err.kind(), "target_ambiguous");
+        assert!(err.to_string().contains("matches 2 sessions"), "{err}");
+    }
+
+    // One `ps eww -o pid=,tty=,lstart=,command=` line per live pid: what the exact lookup
+    // knows of a process, and how it tells a reused pid from the registered one.
+    #[test]
+    fn one_ps_line_carries_tty_start_and_environment() {
+        let line = "  4242 ttys012  Fri Oct 16 13:44:45 2026     claude --resume x TMUX=/tmp/t,1,0 TERM=xterm";
+        let (pid, p) = parse_inspected(line).unwrap();
+        assert_eq!(pid, 4242);
+        assert_eq!(p.tty, "ttys012");
+        assert!(p.env.contains(" TMUX=/tmp/t,1,0"), "{}", p.env);
+        // Claude's `procStart` is the same lstart in UTC; padding differs, the time doesn't.
+        assert!(p.started_as("Fri Oct 16 13:44:45 2026"));
+        assert!(p.started_as("Fri Oct 16  13:44:45  2026"));
+        assert!(!p.started_as("Fri Oct 16 13:44:46 2026"), "a newer process");
+        assert!(!p.started_as("Mon Jan  1 00:00:00 2001"));
+        // UTC only: the same wall time read as some other zone's is a different instant.
+        assert!(!p.started_as("Fri Oct 16 15:44:45 2026"));
+        // Not a `ps` time: it must then be the same string, or the check fails closed.
+        assert!(!p.started_as("2026-10-16T13:44:45Z"));
+        assert!(!p.started_as("yesterday"));
+        let (_, odd) = parse_inspected("  9 ttys001 Fri Oct 16 13:44:45 2026x sh").unwrap();
+        assert!(odd.started_as("Fri  Oct 16 13:44:45 2026x"));
+        assert!(!odd.started_as("Fri Oct 16 13:44:45 2026"));
+        // No terminal, or not a process line: absent.
+        assert!(parse_inspected("  77 ??  Fri Oct 16 13:44:45 2026 launchd").is_none());
+        assert!(parse_inspected("garbage").is_none());
+    }
+
+    #[test]
+    fn malformed_exact_forms_are_errors_and_other_colons_are_bare() {
+        let rows = vec![titled(7, "app:7", "fix-login")];
+        for bad in ["pid:", "pid:abc", "pid:-3", "pid:0", "id:", "id:  "] {
+            let err = resolve_target_in(rows.clone(), bad).unwrap_err();
+            assert_eq!(err.kind(), "target_invalid", "{bad}: {err}");
+        }
+        assert_eq!(exact_target("pid:12"), Some(Ok(Exact::Pid(12))));
+        assert_eq!(exact_target("id:abc"), Some(Ok(Exact::Id("abc".into()))));
+        // Any other prefix is a bare target and walks the ladder as before.
+        assert_eq!(exact_target("app:7"), None);
+        assert_eq!(exact_target("fix-login"), None);
+        assert_eq!(resolve_in(rows.clone(), "app:7").map(|s| s.pid), Ok(7));
+        assert_eq!(
+            resolve_target_in(rows, "").unwrap_err().kind(),
+            "target_invalid"
+        );
     }
 
     #[test]

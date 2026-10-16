@@ -117,7 +117,8 @@ enum Commands {
 
     /// Read what a session is currently showing
     Peek {
-        /// generated title, session name (e.g. app-f9), sessionId prefix, or pid
+        /// generated title, session name (e.g. app-f9), sessionId prefix, or pid;
+        /// `pid:<n>` / `id:<session_id>` match exactly, never by fragment
         target: String,
         /// How many trailing lines to show
         #[arg(long, default_value_t = 40)]
@@ -126,7 +127,7 @@ enum Commands {
 
     /// Type text into a session and submit it
     Send {
-        /// sessionId prefix, derived name, or pid
+        /// sessionId prefix, derived name, or pid; `pid:<n>` / `id:<session_id>` match exactly
         target: String,
         /// The message to send
         text: String,
@@ -134,7 +135,7 @@ enum Commands {
 
     /// Rename a session: Claude's own /rename (the title), then its tmux session follows
     Rename {
-        /// sessionId prefix, derived name, or pid
+        /// sessionId prefix, derived name, or pid; `pid:<n>` / `id:<session_id>` match exactly
         target: String,
         /// The new display name
         name: String,
@@ -986,6 +987,15 @@ fn target(cli_host: Option<&str>, local: bool, scope: Scope) -> Result<Target> {
     hosts::resolve(config::get(), requested.as_deref(), local, scope)
 }
 
+/// A `--json` command whose session or stack target did not resolve still answers with one
+/// object, `{ ok: false, host, kind, error }` (the exit code is the command's own).
+fn json_lookup<T>(json: bool, r: Result<T>) -> Result<T> {
+    match r {
+        Err(e) if json && e.is_lookup_failure() => Err(commands::json_failure(e)),
+        r => r,
+    }
+}
+
 fn run(cli: Cli) -> Result<i32> {
     if cli.dry_run {
         hosts::set_dry_run();
@@ -1193,13 +1203,16 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
                 brief_cmd::open(&t, &session)?
             } else if edit {
                 let t = target(cli.host.as_deref(), cli.local, Scope::SelfHost)?;
-                return brief_cmd::edit(&t, &session, json);
+                return json_lookup(json, brief_cmd::edit(&t, &session, json));
             } else if set {
-                brief_cmd::set(&session, json, expect_updated.as_deref())?
+                json_lookup(
+                    json,
+                    brief_cmd::set(&session, json, expect_updated.as_deref()),
+                )?
             } else if regenerate {
-                brief_cmd::regenerate(&session, json)?
+                json_lookup(json, brief_cmd::regenerate(&session, json))?
             } else {
-                brief_cmd::show(&session, json, prompt)?
+                json_lookup(json, brief_cmd::show(&session, json, prompt))?
             }
         }
         Commands::Spawn {
@@ -1232,19 +1245,24 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
         },
         Commands::Stack { cmd } => match cmd {
             StackCmd::List { json } => stack_cmds::list(json)?,
-            StackCmd::Show { stack, json, path } => stack_cmds::show(&stack, json, path)?,
+            StackCmd::Show { stack, json, path } => {
+                json_lookup(json, stack_cmds::show(&stack, json, path))?
+            }
             StackCmd::New {
                 from,
                 label,
                 no_llm,
                 json,
-            } => stack_cmds::new(&from, label.as_deref(), no_llm, json)?,
+            } => json_lookup(json, stack_cmds::new(&from, label.as_deref(), no_llm, json))?,
             StackCmd::Ensure {
                 target,
                 label,
                 no_llm,
                 json,
-            } => stack_cmds::ensure(&target, label.as_deref(), no_llm, json)?,
+            } => json_lookup(
+                json,
+                stack_cmds::ensure(&target, label.as_deref(), no_llm, json),
+            )?,
             StackCmd::Spawn {
                 target,
                 prompt,
@@ -1260,48 +1278,61 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
                 label,
                 no_llm,
                 json,
-            } => stack_cmds::spawn(stack_cmds::SpawnArgs {
-                target,
-                prompt,
-                label,
-                no_llm,
-                on,
-                opts: commands::SpawnOpts {
-                    dir,
-                    backend: backend.map(Into::into),
-                    name,
-                    model,
-                    harness: harness.map(Into::into).unwrap_or_default(),
-                    tmux_session,
-                    window,
-                },
-                wait: !no_wait,
+            } => json_lookup(
                 json,
-            })?,
+                stack_cmds::spawn(stack_cmds::SpawnArgs {
+                    target,
+                    prompt,
+                    label,
+                    no_llm,
+                    on,
+                    opts: commands::SpawnOpts {
+                        dir,
+                        backend: backend.map(Into::into),
+                        name,
+                        model,
+                        harness: harness.map(Into::into).unwrap_or_default(),
+                        tmux_session,
+                        window,
+                    },
+                    wait: !no_wait,
+                    json,
+                }),
+            )?,
             StackCmd::Add {
                 stack,
                 target,
                 on,
                 input,
                 json,
-            } => stack_cmds::add(&stack, &target, on.as_deref(), input.as_deref(), json)?,
+            } => json_lookup(
+                json,
+                stack_cmds::add(&stack, &target, on.as_deref(), input.as_deref(), json),
+            )?,
             StackCmd::Remove {
                 stack,
                 target,
                 json,
-            } => stack_cmds::remove(&stack, &target, json)?,
-            StackCmd::Rename { stack, label, json } => stack_cmds::rename(&stack, &label, json)?,
+            } => json_lookup(json, stack_cmds::remove(&stack, &target, json))?,
+            StackCmd::Rename { stack, label, json } => {
+                json_lookup(json, stack_cmds::rename(&stack, &label, json))?
+            }
             StackCmd::Edit { stack, json } => {
                 let t = target(cli.host.as_deref(), cli.local, Scope::SelfHost)?;
-                return stack_cmds::edit(&t, &stack, json);
+                return json_lookup(json, stack_cmds::edit(&t, &stack, json));
             }
             StackCmd::Set {
                 stack,
                 expect_updated,
                 json,
-            } => stack_cmds::set(&stack, expect_updated.as_deref(), json)?,
+            } => json_lookup(
+                json,
+                stack_cmds::set(&stack, expect_updated.as_deref(), json),
+            )?,
             StackCmd::Sync { input, json } => stack_cmds::sync(input.as_deref(), json)?,
-            StackCmd::Rm { stack, force, json } => stack_cmds::rm(&stack, force, json)?,
+            StackCmd::Rm { stack, force, json } => {
+                json_lookup(json, stack_cmds::rm(&stack, force, json))?
+            }
         },
         Commands::Handoff {
             brief,

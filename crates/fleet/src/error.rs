@@ -15,7 +15,7 @@ pub enum Error {
     Exit(i32, String),
 
     /// A failure a `--json` caller can branch on: `kind` is a stable `snake_case` code
-    /// (`dir_missing`, `name_taken`, …), the message is for people. Exits 1.
+    /// (`dir_missing`, `target_not_found`, …), the message is for people. Exits 1.
     #[error("{msg}")]
     Tagged { kind: &'static str, msg: String },
 
@@ -25,6 +25,15 @@ pub enum Error {
     Partial {
         source: Box<Error>,
         partial: Box<crate::core::backend::Spawned>,
+    },
+
+    /// [`Error::Tagged`] for a command that keeps its own exit code for it (`stack`: 2 for
+    /// ambiguous, 3 for no match).
+    #[error("{msg}")]
+    TaggedExit {
+        code: i32,
+        kind: &'static str,
+        msg: String,
     },
 }
 
@@ -43,7 +52,7 @@ impl Error {
     /// The same failure under a machine-readable `kind`; an already tagged one keeps its own.
     pub fn tag(self, kind: &'static str) -> Self {
         match self {
-            Error::Tagged { .. } => self,
+            Error::Tagged { .. } | Error::TaggedExit { .. } => self,
             Error::Partial { source, partial } => Error::Partial {
                 source: Box::new(source.tag(kind)),
                 partial,
@@ -52,10 +61,18 @@ impl Error {
         }
     }
 
+    pub fn tagged_exit(code: i32, kind: &'static str, msg: impl Into<String>) -> Self {
+        Error::TaggedExit {
+            code,
+            kind,
+            msg: msg.into(),
+        }
+    }
+
     /// The machine-readable kind: the tagged one, else what the error is.
     pub fn kind(&self) -> &'static str {
         match self {
-            Error::Tagged { kind, .. } => kind,
+            Error::Tagged { kind, .. } | Error::TaggedExit { kind, .. } => kind,
             Error::Partial { source, .. } => source.kind(),
             Error::Io(_) => "io",
             Error::Json(_) => "json",
@@ -88,13 +105,31 @@ impl Error {
         }
     }
 
+    /// A target (session or stack) that did not resolve: what every `--json` command that
+    /// takes one reports as `{ ok: false, kind, error }`.
+    pub fn is_lookup_failure(&self) -> bool {
+        let k = self.kind();
+        k.starts_with("target_") || k.starts_with("stack_")
+    }
+
+    /// `{ ok: false, kind, error }`: what a `--json` command prints on stdout when it fails.
+    pub fn json(&self) -> serde_json::Value {
+        serde_json::json!({ "ok": false, "kind": self.kind(), "error": self.to_string() })
+    }
+
     /// The process exit code this error maps to.
     pub fn code(&self) -> i32 {
         match self {
-            Error::Exit(c, _) => *c,
+            Error::Exit(c, _) | Error::TaggedExit { code: c, .. } => *c,
             _ => 1,
         }
     }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+impl From<crate::core::discovery::TargetError> for Error {
+    fn from(e: crate::core::discovery::TargetError) -> Self {
+        Error::tagged(e.kind(), e.to_string())
+    }
+}

@@ -36,6 +36,8 @@ A firstmate-style orchestrator for the many Claude Code sessions the user runs i
 
 **Any unambiguous fragment of a title or name works too** — you don't have to retype 30 characters. Matching walks four rungs and the *first* one with hits decides: exact (pid, whole name, whole title, sessionId prefix) → prefix (`fleet`) → substring (`llm`) → characters-in-order (`flt`, `fltitle`). So a name typed in full is never reinterpreted as a fuzzy match on some other session, and looseness is only reached for a query nothing tighter explains. Fragments under 3 characters don't reach the fuzzy rung.
 
+**Exact forms: `pid:<n>` and `id:<session_id>`** match only that pid / that full session id and never fall through to the looser rungs — nothing matching exactly is an error. A bare pid is still a target, but it walks the ladder: a session that has just exited leaves its pid free to match some other session's title by its digits. When you act on a session you took from `list --json` (`send`, `rename`), prefer `id:<session_id>` (pids get reused; an exact form also refuses a pid whose process is not the one Claude registered), or `pid:<pid>` for one you just looked up. Any target starting with `pid:` or `id:` is an exact form, so a title that starts that way can only be targeted by a fragment of it.
+
 **Two sessions matching at the same rung is an error, not a coin flip** — you get the candidate list back and pass a longer fragment. That's what makes fragments safe for `send` and `rename`, which type into a live Claude TUI: resolving to the wrong session there costs somebody else their turn. When relaying such an error to the user, quote the candidates.
 
 ## How to behave
