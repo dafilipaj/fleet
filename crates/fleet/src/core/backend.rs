@@ -84,6 +84,12 @@ pub fn tmux_screen(pane: &str) -> Option<String> {
 pub const SCREEN_DEADLINE: std::time::Duration = std::time::Duration::from_millis(500);
 
 pub fn peek(s: &Session) -> Result<String> {
+    peek_history(s, 0)
+}
+
+/// [`peek`] plus up to `history` lines of tmux scrollback above the screen (what scrolled off
+/// the top: the head of a tall prompt). iTerm gives its session's text as it has it.
+pub fn peek_history(s: &Session, history: usize) -> Result<String> {
     deny_fixture()?;
     let handle = require_handle(s)?;
     match s.backend {
@@ -99,10 +105,24 @@ end run"#
             &[handle],
         ),
         Backend::Tmux => {
-            let out = crate::core::tools::tmux_cmd()
-                .args(["capture-pane", "-t", handle, "-p"])
-                .output()?;
-            Ok(String::from_utf8_lossy(&out.stdout).to_string())
+            let capture = |range: &[&str]| -> Result<String> {
+                let out = crate::core::tools::tmux_cmd()
+                    .args(["capture-pane", "-t", handle, "-p"])
+                    .args(range)
+                    .output()?;
+                Ok(String::from_utf8_lossy(&out.stdout).to_string())
+            };
+            let visible = capture(&[])?;
+            if history == 0 {
+                return Ok(visible);
+            }
+            // The scrollback above the screen, then a mark where the screen starts: what is
+            // on screen now is told apart from what scrolled (or was cleared) off it.
+            let above = capture(&["-S", &format!("-{history}"), "-E", "-1"])?;
+            Ok(format!(
+                "{above}{}\n{visible}",
+                crate::core::prompt::VISIBLE_MARK
+            ))
         }
         Backend::Unknown => require_handle(s).map(|_| String::new()),
     }
@@ -550,6 +570,35 @@ end run"#,
             "backend_unsupported",
             format!("session {} has no controllable backend", s.label()),
         )),
+    }
+}
+
+const ITERM_WRITE: &str = r#"on run argv
+  set s to findSession(item 1 of argv)
+  if s is missing value then error "session not found"
+  tell application "iTerm2" to tell s to write text (item 2 of argv) without newline
+end run"#;
+
+/// Press one key in the session, nothing else: a named [`Key`] (`Enter`, `Down`, `Escape`, …)
+/// through [`keys`], or a single letter or digit (a prompt's shortcut), typed as itself.
+pub fn press(s: &Session, key: &str) -> Result<()> {
+    match Key::parse(key) {
+        Some(k) => keys(s, &[k]),
+        None if key.chars().count() == 1 && key.chars().all(|c| c.is_ascii_alphanumeric()) => {
+            type_literal(s, key)
+        }
+        None => Err(Error::Other(format!("no such key: {key}"))),
+    }
+}
+
+/// Type one line of text into the session literally, without submitting it.
+pub fn type_literal(s: &Session, text: &str) -> Result<()> {
+    deny_fixture()?;
+    let handle = require_handle(s)?;
+    match s.backend {
+        Backend::Tmux => type_text(handle, text),
+        Backend::Iterm => osa(&format!("{ITERM_FIND}\n{ITERM_WRITE}"), &[handle, text]).map(|_| ()),
+        Backend::Unknown => require_handle(s).map(|_| ()),
     }
 }
 
