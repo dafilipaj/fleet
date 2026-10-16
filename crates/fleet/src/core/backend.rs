@@ -845,11 +845,17 @@ pub fn spawn_tagged(
                 plan_tmux_target(tmux_session, name, dir, &tmux_session_names())?;
             // A fresh session's first window is the one we want: opening another
             // next to it would leave an idle shell behind.
-            let mut args = tmux_spawn_args(&session, dir, exists);
-            if let Some(t) = tag {
-                args.extend(t.env().into_iter().flat_map(|kv| ["-e".to_string(), kv]));
+            let env = tag.map(|t| t.env()).unwrap_or_default();
+            let args = tmux_spawn_args(&session, dir, exists, &env);
+            let mut cmd = crate::core::tools::tmux_cmd();
+            // When this starts the tmux server, its global environment is ours: keep the
+            // agent's variables out of it, or every later pane on the server inherits them.
+            for (k, _) in std::env::vars_os() {
+                if k.to_str().is_some_and(is_agent_env) {
+                    cmd.env_remove(k);
+                }
             }
-            let out = crate::core::tools::tmux_cmd()
+            let out = cmd
                 .args(&args)
                 .output()
                 .map_err(|e| Error::tagged("backend_failed", format!("cannot run tmux: {e}")))?;
@@ -995,10 +1001,70 @@ pub fn plan_tmux_target(
 /// key, eating the first character of the launch line typed into it (`laude: command not found`).
 pub const SPAWN_SHELL_ENV: &str = "DISABLE_AUTO_UPDATE=true";
 
+/// What the agent that ran `fleet spawn` puts in its tools' environment to describe itself
+/// (found by diffing an agent's tool environment against a fresh login shell's, and Codex's
+/// sandboxed one). A session spawned with them would act as part of the spawner: a nested
+/// `claude` takes its session id, messaging socket and effort; a `codex` thinks it runs
+/// sandboxed inside another one's thread; `TRACEPARENT` joins the parent's trace.
+///
+/// Only these exact names: configuration a user sets on purpose — `CLAUDE_CODE_OAUTH_TOKEN`,
+/// `CLAUDE_CODE_USE_BEDROCK` / `_VERTEX`, `OTEL_*` exporter endpoints and headers, … — is left
+/// alone (Claude Code does not pass its `OTEL_*` on to tools at all).
+pub const AGENT_ENV: [&str; 23] = [
+    // Claude Code
+    "CLAUDECODE",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_SSE_PORT",
+    "CLAUDE_PID",
+    "CLAUDE_EFFORT",
+    "AI_AGENT",
+    // The parent tool call's W3C trace context
+    "TRACEPARENT",
+    "TRACESTATE",
+    // Codex
+    "CODEX_THREAD_ID",
+    "CODEX_CI",
+    "CODEX_SANDBOX",
+    "CODEX_SANDBOX_NETWORK_DISABLED",
+    "CODEX_MANAGED_BY_NPM",
+    "CODEX_MANAGED_BY_BUN",
+    "CODEX_MANAGED_BY_PNPM",
+    "CODEX_MANAGED_BY_VITE_PLUS",
+    "CODEX_MANAGED_PACKAGE_ROOT",
+];
+
+pub fn is_agent_env(name: &str) -> bool {
+    AGENT_ENV.contains(&name)
+}
+
+/// The spawned pane's first process (`$1`: the tmux binary). It drops every [`AGENT_ENV`]
+/// variable, wherever it came from — fleet's own environment, the tmux server's global
+/// environment (a server started from inside an agent keeps that agent's variables for good),
+/// the session's — and becomes what tmux itself would have started: the session's effective
+/// `default-command` when one is set (read here, where the server is up and its config
+/// loaded), else `$SHELL -l`. The agent is typed into a login shell either way, so the profile
+/// runs and may set any of them again on purpose.
+fn spawn_shell_script() -> String {
+    let drop: String = AGENT_ENV.iter().map(|n| format!(" -u {n}")).collect();
+    format!(
+        r#"dc=$("$1" show-options -Aqv default-command 2>/dev/null)
+sh=${{SHELL:-/bin/sh}}
+if [ -n "$dc" ]; then exec env{drop} "$sh" -c "$dc"; fi
+exec env{drop} "$sh" -l"#
+    )
+}
+
 /// The tmux command that opens the spawn's window in `dir`, printing its pane id and
 /// window (see [`parse_spawn_target`]): a new window in an existing `session` (matched
-/// exactly), or the session itself.
-fn tmux_spawn_args(session: &str, dir: &str, exists: bool) -> Vec<String> {
+/// exactly), or the session itself. `env` is `-e` `KEY=value`s on top of
+/// [`SPAWN_SHELL_ENV`]; the pane runs [`spawn_shell_script`].
+fn tmux_spawn_args(session: &str, dir: &str, exists: bool, env: &[String]) -> Vec<String> {
     let mut a: Vec<String> = if exists {
         vec!["new-window".into(), "-t".into(), format!("={session}:")]
     } else {
@@ -1021,6 +1087,15 @@ fn tmux_spawn_args(session: &str, dir: &str, exists: bool) -> Vec<String> {
         ]
         .map(String::from),
     );
+    a.extend(env.iter().flat_map(|kv| ["-e".to_string(), kv.clone()]));
+    // More than one argument: tmux runs it as given, no `sh -c` around it.
+    a.extend([
+        "/bin/sh".into(),
+        "-c".into(),
+        spawn_shell_script(),
+        "fleet-spawn".into(),
+        crate::core::tools::tmux().into(),
+    ]);
     a
 }
 
@@ -1043,17 +1118,16 @@ mod tests {
     #[test]
     fn tmux_spawn_targets_the_session_exactly() {
         assert_eq!(
-            tmux_spawn_args("fleet", "/tmp", true)[..3],
+            tmux_spawn_args("fleet", "/tmp", true, &[])[..3],
             ["new-window", "-t", "=fleet:"]
         );
-        let fresh = tmux_spawn_args("fleet", "/tmp", false);
+        let fresh = tmux_spawn_args("fleet", "/tmp", false, &["A=1".into()]);
         assert_eq!(fresh[..4], ["new-session", "-d", "-s", "fleet"]);
-        assert!(fresh.ends_with(&[
-            "-c".to_string(),
-            "/tmp".to_string(),
-            "-e".to_string(),
-            SPAWN_SHELL_ENV.to_string()
-        ]));
+        let at = fresh.iter().position(|a| a == "-c").unwrap();
+        assert_eq!(
+            fresh[at..at + 6],
+            ["-c", "/tmp", "-e", SPAWN_SHELL_ENV, "-e", "A=1"]
+        );
         assert!(fresh.contains(&"-P".to_string()));
     }
 
@@ -1075,6 +1149,92 @@ mod tests {
             (Some("ABC-123".into()), Some("session is gone".into()))
         );
         assert_eq!(parse_iterm_result(""), (None, None));
+    }
+
+    #[test]
+    fn the_pane_starts_as_a_scrubbing_login_shell() {
+        let a = tmux_spawn_args("s", "/tmp", false, &[]);
+        assert_eq!(
+            a[a.len() - 5..a.len() - 1],
+            ["/bin/sh", "-c", &spawn_shell_script(), "fleet-spawn"]
+        );
+        assert_eq!(a.last().unwrap(), crate::core::tools::tmux());
+        for name in [
+            "CLAUDECODE",
+            "CLAUDE_CODE_SESSION_ID",
+            "CODEX_THREAD_ID",
+            "TRACEPARENT",
+        ] {
+            assert!(is_agent_env(name), "{name}");
+        }
+        // Configuration stays: auth, provider, telemetry exporters.
+        for name in [
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "CLAUDE_CODE_USE_BEDROCK",
+            "CLAUDE_CODE_USE_VERTEX",
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "OTEL_EXPORTER_OTLP_HEADERS",
+            "OTEL_RESOURCE_ATTRIBUTES",
+            "PATH",
+            "FLEET_JOB_RUN",
+        ] {
+            assert!(!is_agent_env(name), "{name}");
+        }
+    }
+
+    // The script itself, run by a real `sh`: the agent's markers are gone, configuration stays,
+    // and it ends in a login shell — or in tmux's `default-command`, asked of tmux at run time.
+    #[test]
+    fn the_spawn_script_drops_the_markers_and_execs_what_tmux_would() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let exe = |name: &str, body: &str| {
+            let p = dir.path().join(name);
+            std::fs::write(&p, body).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            p
+        };
+        let shell = exe("shell", "#!/bin/sh\necho \"args:$*\"\nenv\n");
+        let run = |tmux: &std::path::Path| {
+            let out = std::process::Command::new("/bin/sh")
+                .args(["-c", &spawn_shell_script(), "fleet-spawn"])
+                .arg(tmux)
+                .env("SHELL", &shell)
+                .env("CLAUDECODE", "1")
+                .env("CLAUDE_CODE_ENTRYPOINT", "cli")
+                .env("CODEX_THREAD_ID", "t-1")
+                .env("TRACEPARENT", "00-a-b-01")
+                .env("CLAUDE_CODE_OAUTH_TOKEN", "kept")
+                .env("CLAUDE_CODE_USE_BEDROCK", "1")
+                .env("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector")
+                .env("KEEP_ME", "multi\nCLAUDECODE=line")
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).to_string()
+        };
+        let no_default = exe("tmux-none", "#!/bin/sh\nexit 0\n");
+        let out = run(&no_default);
+        assert!(out.starts_with("args:-l\n"), "{out}");
+        for gone in [
+            "CLAUDECODE=1",
+            "CLAUDE_CODE_ENTRYPOINT=",
+            "CODEX_THREAD_ID=",
+            "TRACEPARENT=",
+        ] {
+            assert!(!out.contains(gone), "{gone} survived:\n{out}");
+        }
+        for kept in [
+            "CLAUDE_CODE_OAUTH_TOKEN=kept",
+            "CLAUDE_CODE_USE_BEDROCK=1",
+            "OTEL_EXPORTER_OTLP_ENDPOINT=http://collector",
+            "KEEP_ME=multi\nCLAUDECODE=line",
+        ] {
+            assert!(out.contains(kept), "{kept} lost:\n{out}");
+        }
+        let with_default = exe("tmux-dc", "#!/bin/sh\necho 'echo custom'\n");
+        let out = run(&with_default);
+        assert!(out.starts_with("args:-c echo custom\n"), "{out}");
+        assert!(!out.contains("CLAUDECODE=1"), "{out}");
     }
 
     #[test]

@@ -71,6 +71,28 @@ path, or a command found on `PATH`, in the usual install dirs or — failing tho
 goes ahead as before). It is judged from `--dir`, where the shell will run it: `./agent` is the
 `agent` in that directory, and the login shell starts there.
 
+A tmux spawn (and `handoff`, `stack spawn`, `pr spawn`, a job run) starts its pane without the
+variables an agent sets to describe itself to its tools — the agent that ran `fleet`, whose
+markers would make the new session act as part of it (a nested `claude` takes its session id,
+messaging socket and effort; `codex` thinks it runs sandboxed in another one's thread;
+`TRACEPARENT` joins its trace):
+
+- Claude Code: `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_EXECPATH`,
+  `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_CHILD_SESSION`, `CLAUDE_CODE_SESSION_ATTENDED`,
+  `CLAUDE_CODE_MESSAGING_SOCKET`, `CLAUDE_CODE_MESSAGING_TOKEN`, `CLAUDE_CODE_SSE_PORT`,
+  `CLAUDE_PID`, `CLAUDE_EFFORT`, `AI_AGENT`
+- trace context: `TRACEPARENT`, `TRACESTATE`
+- Codex: `CODEX_THREAD_ID`, `CODEX_CI`, `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`,
+  `CODEX_MANAGED_BY_NPM` / `_BUN` / `_PNPM` / `_VITE_PLUS`, `CODEX_MANAGED_PACKAGE_ROOT`
+
+Only those names: configuration stays, wherever it is set — `CLAUDE_CODE_OAUTH_TOKEN`,
+`CLAUDE_CODE_USE_BEDROCK` / `_VERTEX`, `OTEL_*` exporter endpoints, headers and resource
+attributes, … (Claude Code does not hand its own `OTEL_*` to tools at all). The markers are dropped
+wherever they come from: fleet's own environment, or the global environment of a tmux server
+started from inside an agent. The pane then becomes what tmux would have started — the session's
+effective `default-command` when one is set, else `$SHELL -l` — so the profile runs and may set
+any of them on purpose. An iTerm tab gets iTerm's environment, not fleet's.
+
 `spawn --json` (also with `--from`) prints one object on stdout. On success (exit 0):
 
 ```json
