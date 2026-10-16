@@ -416,7 +416,7 @@ fn fire(e: &Entry, task: Option<&Task>) -> Result<Option<String>> {
         println!("dry-run: would start {}: {line}", e.id);
         return Ok(None);
     }
-    let (desc, session) = backend::spawn_tagged(
+    let spawned = backend::spawn_tagged(
         Backend::Tmux,
         &dir,
         Prompt::Inline(&prompt),
@@ -427,5 +427,5 @@ fn fire(e: &Entry, task: Option<&Task>) -> Result<Option<String>> {
         e.harness,
         None,
     )?;
-    Ok(Some(session.unwrap_or(desc)))
+    Ok(Some(spawned.tmux_session.unwrap_or(spawned.desc)))
 }

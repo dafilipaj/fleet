@@ -266,5 +266,5 @@ pub fn spawn(r: &str, prompt: Option<String>, opts: crate::cli::commands::SpawnO
         Some(p) => format!("{line} {p}"),
         None => line,
     };
-    crate::cli::commands::spawn(Some(first), None, opts)
+    crate::cli::commands::spawn(Some(first), None, opts, false)
 }

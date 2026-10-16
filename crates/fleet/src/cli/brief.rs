@@ -128,11 +128,14 @@ pub fn continue_from(target: &str) -> Result<Continue> {
     let src = resolve(target)?;
     let (b, exists) = brief::load(&src.dir, &src.id)?;
     if !exists {
-        return Err(Error::Other(format!(
-            "{} has no brief yet — nothing to continue from (generate one: fleet brief {} --regenerate)",
-            src.label(),
-            src.id
-        )));
+        return Err(Error::tagged(
+            "no_brief",
+            format!(
+                "{} has no brief yet — nothing to continue from (generate one: fleet brief {} --regenerate)",
+                src.label(),
+                src.id
+            ),
+        ));
     }
     Ok(Continue {
         prompt: prompt_for(&src, &b),
