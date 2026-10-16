@@ -889,3 +889,48 @@ fn rename_changes_the_label_everywhere_and_refuses_an_empty_one() {
         .unwrap();
     assert_eq!(out.status.code(), Some(3));
 }
+
+// A `<stack>` or session target that does not resolve: one object on stdout, with its kind,
+// and stack's own exit codes (2 ambiguous, 3 nothing).
+#[test]
+fn json_reports_targets_that_do_not_resolve_with_stack_exit_codes() {
+    let t = T::new();
+    t.json(&["stack", "ensure", "login-redirect", "--no-llm", "--json"]);
+    t.json(&["stack", "ensure", "login-tests", "--no-llm", "--json"]);
+    let fail = |args: &[&str]| {
+        let out = t.cmd().args(args).output().unwrap();
+        let v: Value = serde_json::from_slice(&out.stdout)
+            .unwrap_or_else(|e| panic!("{args:?}: {e}: {}", stdout(&out)));
+        assert_eq!(v["ok"], false, "{args:?}");
+        (
+            out.status.code().unwrap(),
+            v["kind"].as_str().unwrap().to_string(),
+        )
+    };
+    let want = |code: i32, kind: &str| (code, kind.to_string());
+    assert_eq!(
+        fail(&["stack", "show", "no-such-stack", "--json"]),
+        want(3, "stack_not_found")
+    );
+    assert_eq!(
+        fail(&["stack", "show", "login", "--json"]),
+        want(2, "stack_ambiguous")
+    );
+    assert_eq!(
+        fail(&["stack", "show", "pid:4242", "--json"]),
+        want(3, "target_not_found")
+    );
+    // Session targets: an ambiguous one keeps exit 2 and says it is the session that was.
+    assert_eq!(
+        fail(&["stack", "ensure", "login", "--no-llm", "--json"]),
+        want(2, "target_ambiguous")
+    );
+    assert_eq!(
+        fail(&["stack", "ensure", "pid:4242", "--no-llm", "--json"]),
+        want(1, "target_not_found")
+    );
+    assert_eq!(
+        fail(&["stack", "remove", "login-redirect", "id:cccccccc", "--json"]),
+        want(1, "target_not_found")
+    );
+}

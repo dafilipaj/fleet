@@ -66,8 +66,8 @@ const INSTRUCTIONS: &str = "fleet supervises Claude Code (and Codex, pi) session
 across machines. Each tool is one `fleet` subcommand (tool `tmux_list` = `fleet tmux list`). \
 Every tool takes `host` (a configured host name or ssh destination; default: this machine, or \
 defaultHost for tmux commands) and `dry_run`. Pass `json: true` where offered for machine-readable \
-output. Session targets: a title, session name, session-id prefix or pid; an ambiguous target \
-errors with candidates — never guess, re-ask with a more specific one. `send`, `rename`, `spawn` \
+output. Session targets: a title, session name, session-id prefix or pid; `pid:<n>` and \
+`id:<session id>` match exactly and never fall through; an ambiguous target errors with candidates — never guess, re-ask with a more specific one. `send`, `rename`, `spawn` \
 and `handoff` type into live agents.";
 
 #[derive(Debug, Clone)]

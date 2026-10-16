@@ -952,8 +952,9 @@ pub fn stamp_stacks(rows: &mut [Session]) {
 // ------------------------------------------------------------------ resolving `<stack>`
 
 fn ambiguous(q: &str, hits: &[&Stack]) -> Error {
-    Error::exit(
+    Error::tagged_exit(
         EXIT_AMBIGUOUS,
+        "stack_ambiguous",
         format!(
             "\"{q}\" matches {} stacks: {} — be more specific",
             hits.len(),
@@ -994,7 +995,21 @@ pub fn resolve<'a>(stacks: &'a [Stack], rows: &[Session], q: &str) -> Result<&'a
             })
         }),
     ];
-    for rung in &rungs {
+    // `pid:<n>` / `id:<session_id>` name a session exactly: no label rung may claim them,
+    // and `id:` matches a member's whole session id (a gone member's too), never a prefix.
+    let exact = discovery::exact_target(raw);
+    if let Some(Ok(discovery::Exact::Id(id))) = &exact {
+        let hits: Vec<&Stack> = stacks
+            .iter()
+            .filter(|s| s.members.iter().any(|m| m.session.eq_ignore_ascii_case(id)))
+            .collect();
+        match hits.len() {
+            0 => {}
+            1 => return Ok(hits[0]),
+            _ => return Err(ambiguous(raw, &hits)),
+        }
+    }
+    for rung in rungs.iter().filter(|_| exact.is_none()) {
         let hits: Vec<&Stack> = stacks.iter().filter(|s| rung(s)).collect();
         match hits.len() {
             0 => continue,
@@ -1002,7 +1017,7 @@ pub fn resolve<'a>(stacks: &'a [Stack], rows: &[Session], q: &str) -> Result<&'a
             _ => return Err(ambiguous(raw, &hits)),
         }
     }
-    match discovery::resolve_in(rows.to_vec(), raw) {
+    match discovery::resolve_target_in(rows.to_vec(), raw) {
         Ok(s) => {
             if let Some(id) = s.session_id.as_deref() {
                 let hits: Vec<&Stack> =
@@ -1013,22 +1028,23 @@ pub fn resolve<'a>(stacks: &'a [Stack], rows: &[Session], q: &str) -> Result<&'a
                     _ => return Err(ambiguous(raw, &hits)),
                 }
             }
-            Err(Error::exit(
+            Err(Error::tagged_exit(
                 EXIT_NOTHING,
+                "stack_not_found",
                 format!("{} is not in a stack", s.headline()),
             ))
         }
-        Err(e) if is_ambiguous_session(&e) => Err(Error::exit(EXIT_AMBIGUOUS, e)),
-        Err(_) => Err(Error::exit(
+        Err(e @ discovery::TargetError::Ambiguous(_)) => {
+            Err(Error::tagged_exit(EXIT_AMBIGUOUS, e.kind(), e.to_string()))
+        }
+        // `pid:` / `id:` can only mean a session: say which way it failed.
+        Err(e) if exact.is_some() => Err(Error::tagged_exit(EXIT_NOTHING, e.kind(), e.to_string())),
+        Err(_) => Err(Error::tagged_exit(
             EXIT_NOTHING,
+            "stack_not_found",
             format!("no stack matches \"{raw}\""),
         )),
     }
-}
-
-/// `discovery::resolve`'s "two sessions on one rung" error (vs "no match").
-pub fn is_ambiguous_session(err: &str) -> bool {
-    err.contains(" sessions: ") && err.contains("be more specific")
 }
 
 // ------------------------------------------------------------------ the context line
@@ -1915,6 +1931,44 @@ mod tests {
         assert_eq!(code, EXIT_AMBIGUOUS, "two sessions on one rung");
         let (code, _) = id(resolve(&stacks, &rows, "nothing-like-it")).unwrap_err();
         assert_eq!(code, EXIT_NOTHING);
+    }
+
+    // `id:` / `pid:` name a session exactly: no label rung claims them, and `id:` takes a
+    // member's whole id — a gone member's too — but never a prefix of it.
+    #[test]
+    fn resolve_exact_session_forms() {
+        let mk = |id: &str, label: &str, sid: &str| {
+            let mut s = sample();
+            s.meta.insert("stack".into(), json!(id));
+            s.meta.insert("label".into(), json!(label));
+            s.members[0].session = sid.into();
+            s
+        };
+        let stacks = vec![
+            mk("st-00000001", "Login", SID),
+            mk("st-00000002", "pid:8 notes", SID2),
+        ];
+        let id = |r: Result<&Stack>| r.map(|s| s.id()).map_err(|e| e.code());
+        // Gone member (no live rows), whole id, any case.
+        assert_eq!(
+            id(resolve(
+                &stacks,
+                &[],
+                &format!("id:{}", SID2.to_uppercase())
+            ))
+            .unwrap(),
+            "st-00000002"
+        );
+        assert_eq!(
+            id(resolve(&stacks, &[], "id:bbbbbbbb")),
+            Err(EXIT_NOTHING),
+            "a prefix is not an exact id"
+        );
+        // `pid:7` is the live session with pid 7 (a member of st-1); `pid:8` is no live pid, and
+        // the label "pid:8 notes" must not claim it as a prefix.
+        let rows = vec![row(SID, "redirect-work")];
+        assert_eq!(id(resolve(&stacks, &rows, "pid:7")).unwrap(), "st-00000001");
+        assert_eq!(id(resolve(&stacks, &rows, "pid:8")), Err(EXIT_NOTHING));
     }
 
     #[test]

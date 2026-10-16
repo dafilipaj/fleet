@@ -540,3 +540,62 @@ fn group_keeps_dormant_sessions() {
     let a1 = members.iter().find(|m| m["id"] == "a1").unwrap();
     assert!(a1.get("dormant").is_none());
 }
+
+// `pid:` / `id:` are exact: a pid nobody has any more is "not found", never the session
+// whose title carries those digits — while the bare pid still walks the ladder onto it.
+#[test]
+fn exact_targets_never_fall_through() {
+    let env = common::Env::new();
+    let path = common::fixture(
+        env.dir.path(),
+        r#"[{"pid":42,"session_id":"aaaaaaaa-1111-2222-3333-444444444444","name":"retry-4242-uploads",
+             "name_source":"user","cwd":"/tmp","status":"idle","backend":"tmux","handle":"%99"}]"#,
+    );
+    let run = |args: &[&str]| {
+        env.cmd()
+            .args(args)
+            .env("FLEET_FIXTURE", &path)
+            .env("HOME", env.path("home"))
+            .output()
+            .unwrap()
+    };
+    // Bare: resolves to the title (and stops at the inert fixture backend).
+    let out = run(&["send", "4242", "hello"]);
+    assert!(
+        common::stderr(&out).contains("fixture mode"),
+        "{}",
+        common::stderr(&out)
+    );
+    // Exact: nothing has pid 4242.
+    for args in [
+        vec!["send", "pid:4242", "hello"],
+        vec!["peek", "pid:4242"],
+        vec!["rename", "pid:4242", "x"],
+        vec!["name", "pid:4242"],
+        vec!["send", "id:aaaaaaaa", "hello"],
+    ] {
+        let out = run(&args);
+        assert_eq!(out.status.code(), Some(1), "{args:?}");
+        let err = common::stderr(&out);
+        assert!(err.contains("no live session has"), "{args:?}: {err}");
+        assert!(
+            !err.contains("fixture mode"),
+            "{args:?} reached a backend: {err}"
+        );
+    }
+    // The exact forms reach the session they name.
+    for target in ["pid:42", "id:AAAAAAAA-1111-2222-3333-444444444444"] {
+        let out = run(&["send", target, "hello"]);
+        assert!(common::stderr(&out).contains("fixture mode"), "{target}");
+    }
+    // `--json`: one failure object on stdout.
+    let out = run(&["rename", "pid:4242", "x", "--json"]);
+    assert_eq!(out.status.code(), Some(1));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["ok"], false);
+    assert_eq!(v["kind"], "target_not_found");
+    assert!(v["error"].as_str().unwrap().contains("pid 4242"), "{v}");
+    let out = run(&["rename", "pid:x", "x", "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["kind"], "target_invalid");
+}

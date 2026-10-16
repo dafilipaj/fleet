@@ -2,6 +2,8 @@
 //! user's real one) with ssh multiplexing off.
 #![allow(dead_code, deprecated)]
 
+pub mod fake;
+
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 

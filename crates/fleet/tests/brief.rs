@@ -506,3 +506,76 @@ fn open_runs_the_editor_on_the_cwd_or_over_remote_ssh() {
     assert!(text.contains("brief app-9d --json"), "{text}");
     assert!(text.contains("code --remote ssh-remote+devbox "), "{text}");
 }
+
+// `--json` answers a target that does not resolve with one object, kind and all.
+#[test]
+fn json_reports_a_target_that_does_not_resolve() {
+    let t = T::new();
+    for (target, kind) in [
+        (
+            "id:cccccccc-1111-2222-3333-444444444444",
+            "target_not_found",
+        ),
+        ("pid:4242", "target_not_found"),
+        ("pid:abc", "target_invalid"),
+    ] {
+        let out = t.cmd().args(["brief", target, "--json"]).output().unwrap();
+        assert_eq!(out.status.code(), Some(1), "{target}");
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout)
+            .unwrap_or_else(|e| panic!("{target}: {e}: {}", stdout(&out)));
+        assert_eq!(v["ok"], false, "{target}");
+        assert_eq!(v["kind"], kind, "{target}: {v}");
+    }
+}
+
+// The archive fallback (a gone session's brief by its id) is for "nothing live matched"
+// only: two live sessions sharing the id is a question, even with a brief on disk.
+#[test]
+fn an_ambiguous_id_never_falls_back_to_the_archive() {
+    let t = T::new();
+    let cwd = t.cwd();
+    let row = |pid: i64| {
+        serde_json::json!({ "pid": pid, "session_id": SID, "name": format!("twin-{pid}"),
+            "cwd": cwd, "status": "idle", "backend": "tmux", "handle": "%99" })
+    };
+    common::fixture(
+        t.env.dir.path(),
+        &serde_json::json!([row(42), row(43)]).to_string(),
+    );
+    t.write_brief(SID, SAMPLE);
+    let out = t
+        .cmd()
+        .args(["brief", &format!("id:{SID}"), "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["kind"], "target_ambiguous", "{v}");
+    // `spawn --from` resolves the same way.
+    let out = t
+        .cmd()
+        .args(["-n", "spawn", "--from", &format!("id:{SID}")])
+        .output()
+        .unwrap();
+    assert!(
+        stderr(&out).contains("matches 2 sessions"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+// `id:` matches any case; a gone session's brief is stored under its (lowercase) id, and is
+// found — and reported — as that, whatever case was typed.
+#[test]
+fn an_uppercase_id_finds_the_archived_brief_by_its_canonical_id() {
+    let t = T::new();
+    t.write_brief(GONE, &SAMPLE.replace(SID, GONE));
+    let out = t
+        .cmd()
+        .args(["brief", &format!("id:{}", GONE.to_uppercase()), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["id"], GONE, "{v}");
+}

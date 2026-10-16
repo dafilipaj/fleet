@@ -204,12 +204,11 @@ impl Ctx {
 }
 
 fn session_in(rows: Vec<Session>, target: &str) -> Result<Session> {
-    let s = discovery::resolve_in(rows, target).map_err(|e| {
-        if stack::is_ambiguous_session(&e) {
-            Error::exit(EXIT_AMBIGUOUS, e)
-        } else {
-            Error::Other(e)
+    let s = discovery::resolve_target_in(rows, target).map_err(|e| match e {
+        e @ discovery::TargetError::Ambiguous(_) => {
+            Error::tagged_exit(EXIT_AMBIGUOUS, e.kind(), e.to_string())
         }
+        e => e.into(),
     })?;
     if s.session_id
         .as_deref()
@@ -626,21 +625,28 @@ pub fn remove(q: &str, target: &str, json: bool) -> Result<()> {
     let c = Ctx::new()?;
     c.sync()?;
     let mut st = c.resolve(q)?;
-    let t = target.trim().to_lowercase();
+    // `id:<session_id>` is a member's whole id, never a prefix; `pid:<n>` is a live session.
+    let (t, loose) = match discovery::exact_target(target) {
+        Some(Err(e)) => return Err(e.into()),
+        Some(Ok(discovery::Exact::Id(id))) => (id.to_lowercase(), false),
+        Some(Ok(discovery::Exact::Pid(_))) => (String::new(), false),
+        None => (target.trim().to_lowercase(), true),
+    };
     let by_id: Vec<String> = st
         .members
         .iter()
         .filter(|m| {
             let id = m.session.to_lowercase();
-            id == t || (t.len() >= 4 && id.starts_with(&t))
+            (!t.is_empty() && id == t) || (loose && t.len() >= 4 && id.starts_with(&t))
         })
         .map(|m| m.session.clone())
         .collect();
     let sid = match by_id.len() {
         1 => by_id[0].clone(),
         n if n > 1 => {
-            return Err(Error::exit(
+            return Err(Error::tagged_exit(
                 EXIT_AMBIGUOUS,
+                "target_ambiguous",
                 format!(
                     "\"{target}\" matches {n} members: {} — be more specific",
                     by_id.join(", ")
@@ -651,7 +657,7 @@ pub fn remove(q: &str, target: &str, json: bool) -> Result<()> {
             let by_name: Vec<String> = st
                 .members
                 .iter()
-                .filter(|m| m.name.as_deref().is_some_and(|n| n.to_lowercase() == t))
+                .filter(|m| loose && m.name.as_deref().is_some_and(|n| n.to_lowercase() == t))
                 .map(|m| m.session.clone())
                 .collect();
             if by_name.len() == 1 {
@@ -663,8 +669,9 @@ pub fn remove(q: &str, target: &str, json: bool) -> Result<()> {
         }
     };
     let Some(pos) = st.members.iter().position(|m| m.session == sid) else {
-        return Err(Error::exit(
+        return Err(Error::tagged_exit(
             EXIT_NOTHING,
+            "target_not_found",
             format!(
                 "{target} is not a member of stack {} ({})",
                 st.label(),
