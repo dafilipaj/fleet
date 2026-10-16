@@ -114,13 +114,12 @@ impl Rig {
 
     /// The isolated server, directly (through the same wrapper).
     fn tmux(&self, args: &[&str]) -> String {
-        let out = std::process::Command::new(self.p("bin/tmux"))
-            .args(args)
+        let mut c = std::process::Command::new(self.p("bin/tmux"));
+        c.args(args);
+        self.env.isolate(&mut c);
+        let out = c
             .env("TMUX_TMPDIR", self.sockets.path())
-            .env("HOME", self.p("home"))
             .env("SHELL", "/bin/sh")
-            .env_remove("TMUX")
-            .env_remove("TMUX_PANE")
             .output()
             .unwrap();
         String::from_utf8_lossy(&out.stdout).to_string()
