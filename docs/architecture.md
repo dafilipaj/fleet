@@ -508,8 +508,23 @@ answered tabs; for the final Enter the whole review). `core::lock` is the per-se
 - Codex's approval has no frame, and its title, command and reason share one indent. The prompt
   is everything between the last line drawn from column 0 above the answers (the last conversation
   item, `•` / `›`) and the answers; exactly one line of it may read as a title, else (a command line
-  like `Allow …`) incomplete, and a top out of reach (60 lines) is incomplete too. Its detail is
-  that whole span but the title.
+  like `Allow …`) incomplete, as is none (a line merely ending in `?` is not one) and a top out
+  of sight (over 60 lines up, or no column-0 line captured at all). Its detail is that whole span
+  but the title. With no title in sight, a list is an approval only with the approval's answer
+  shape (a `(y)` / `(esc)` shortcut in an answer, or the footer `… esc to cancel`): Codex's popups
+  (`… esc to go back`) and transcript pager are no prompt. With that shape, answers the walk
+  cannot read are incomplete, never no prompt; Codex's answers wrap onto any number of lines
+  (Claude Code's: at most 3). **Assumption:** Codex pads everything it draws in the approval (title,
+  command, reason), so no line of a command starts at column 0 and passes for the conversation item
+  above it; a terminal that wraps an overlong line to column 0 itself breaks it, as for Claude Code.
+  Only recorded approvals of a one-line command back it (no patch, multi-line or
+  `request_user_input` layout).
+- A list in an input box is a draft, never a prompt: a plain rule from column 0 under it (Claude
+  Code's input box, pi's editor; not a boxed prompt's `╰───╯`), or Codex's composer footer (`? for
+  shortcuts`, `… context left`, `⏎ send`).
+- An incomplete prompt is never read as no prompt: `answer` refuses it (`prompt_incomplete`), the
+  post-answer check counts it as a prompt that may be the one answered or a queued lookalike
+  (`outcome_uncertain`), and a rename holds for it.
 - The `id` is `p2.<FNV-1a of the title, every line of the detail as drawn (indentation, blank and
   rule-like lines kept; a side frame — a box character at the left edge and one at the end; an
   indented line keeps its box characters — trailing blanks and Claude Code's frame rules, as wide
