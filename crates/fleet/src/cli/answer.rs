@@ -18,16 +18,18 @@
 //!   the final Enter the review screen listing every question with exactly the answer planned).
 //!   Anything else stops it: `prompt_changed`.
 //! - **After** the last key the screen is read again: the prompt must be gone, and no prompt
-//!   with the same answers may have taken its place within a moment. Otherwise the outcome is
-//!   reported as uncertain (`outcome_uncertain`), never as success.
+//!   with the same answers — nor a permission prompt that cannot be read whole, which may be
+//!   either — may have taken its place within a moment. Otherwise the outcome is reported as
+//!   uncertain (`outcome_uncertain`), never as success.
 //!
 //! What remains (docs/cli.md, "the approval race"): a terminal has no conditional key, so a
 //! client attaching after the check, or anything else writing to the pane, between the last
 //! read and the key can put another prompt under it. The post-key check reports only a prompt
-//! with the same answers still on screen after the key (another one following the one
-//! answered). The plain case — the read prompt answered by someone else, the key landing on the
-//! lookalike that replaced it, nothing after — comes back as `answered: true`: neither the
-//! screen nor the transcript ties a key to a prompt, so it is not detected, nor undone.
+//! with the same answers, or a permission prompt it cannot read whole, still on screen after
+//! the key (another one following the one answered). The plain case — the read prompt
+//! answered by someone else, the key landing on the lookalike that replaced it, nothing after
+//! — comes back as `answered: true`: neither the screen nor the transcript ties a key to a
+//! prompt, so it is not detected, nor undone.
 
 use std::time::{Duration, Instant};
 
@@ -46,8 +48,8 @@ use crate::error::{Error, Result};
 
 /// How long the screen may take to show what a key did.
 const SETTLE: Duration = Duration::from_millis(1500);
-/// After the prompt is gone, how long the screen is watched for one with the same answers
-/// taking its place.
+/// After the prompt is gone, how long the screen is watched for one with the same answers, or
+/// a permission prompt that cannot be read whole, taking its place.
 const WATCH: Duration = Duration::from_millis(300);
 /// How often the screen is read while waiting for it.
 const POLL: Duration = Duration::from_millis(40);
@@ -211,7 +213,7 @@ fn exclusive(s: &Session, allow_attached: bool) -> R<SessionLock> {
 }
 
 /// Read the screen until `ok` holds, for at most `within`.
-fn wait_for(s: &Session, within: Duration, ok: impl Fn(&str) -> bool) -> R<bool> {
+fn wait_for(s: &Session, within: Duration, mut ok: impl FnMut(&str) -> bool) -> R<bool> {
     let deadline = Instant::now() + within;
     loop {
         if ok(&screen(s)?) {
@@ -224,13 +226,17 @@ fn wait_for(s: &Session, within: Duration, ok: impl Fn(&str) -> bool) -> R<bool>
     }
 }
 
-/// Did the key land? The prompt must leave the screen, and nothing that looks like it (`same`)
-/// may take its place within [`WATCH`]. `None`: yes; `Some(why)`: uncertain. A screen that
-/// cannot be read (the pane or tmux gone) proves nothing either way: uncertain too.
+const SAME_ANSWERS: &str =
+    "another prompt with the same answers is on screen now — the key may have answered it instead";
+
+/// Did the key land? The prompt must leave the screen, and nothing that may be it or look like
+/// it (`unsure`: why not) may take its place within [`WATCH`]. `None`: yes; `Some(why)`:
+/// uncertain. A screen that cannot be read (the pane or tmux gone) proves nothing either way:
+/// uncertain too.
 fn landed(
     s: &Session,
     still: impl Fn(&str) -> bool,
-    same: impl Fn(&str) -> bool,
+    unsure: impl Fn(&str) -> Option<String>,
 ) -> Option<String> {
     let unread = |f: Failure| Some(format!("{} after the answer", f.message));
     match wait_for(s, SETTLE, |screen| !still(screen)) {
@@ -238,12 +244,13 @@ fn landed(
         Ok(false) => return Some("the prompt is still on screen after the answer".into()),
         Ok(true) => {}
     }
-    match wait_for(s, WATCH, &same) {
+    let mut why = None;
+    match wait_for(s, WATCH, |screen| {
+        why = unsure(screen);
+        why.is_some()
+    }) {
         Err(f) => unread(f),
-        Ok(true) => Some(
-            "another prompt with the same answers is on screen now — the key may have answered it instead".into(),
-        ),
-        Ok(false) => None,
+        Ok(_) => why,
     }
 }
 
@@ -493,7 +500,15 @@ fn choose(s: &Session, n: usize, want: Option<&str>, allow_attached: bool, dry: 
     let uncertain = landed(
         s,
         |screen| matches!(prompt::permission_prompt(screen, s.harness), PromptRead::Prompt(now) if now.id == p.id),
-        |screen| matches!(prompt::permission_prompt(screen, s.harness), PromptRead::Prompt(now) if same_answers(&now, &p)),
+        // A prompt not read whole proves nothing: it may be this one, or a queued one with the
+        // same answers — never "no prompt".
+        |screen| match prompt::permission_prompt(screen, s.harness) {
+            PromptRead::Prompt(now) if same_answers(&now, &p) => Some(SAME_ANSWERS.into()),
+            PromptRead::Incomplete(why) => Some(format!(
+                "a prompt that cannot be read whole is on screen now ({why}) — it may be the one answered, or one the key answered instead"
+            )),
+            PromptRead::Prompt(_) | PromptRead::None => None,
+        },
     );
     Ok(outcome(s, "permission", &steps, fields, false, uncertain))
 }
@@ -661,7 +676,9 @@ fn answer_question(
         prompt::parse_form(screen).is_some_and(|f| f.shows(&qs).is_ok())
             || prompt::parse_review(screen).is_some()
     };
-    let uncertain = landed(s, shows_it, shows_it);
+    let uncertain = landed(s, shows_it, |screen| {
+        shows_it(screen).then(|| SAME_ANSWERS.into())
+    });
     Ok(outcome(s, "question", &steps, fields, false, uncertain))
 }
 

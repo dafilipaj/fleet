@@ -272,8 +272,12 @@ hook output, bookkeeping entries, subagent (sidechain) messages.
 - `--list`: what the screen shows. `prompt` is `null`, a **permission** prompt — Claude Code's
   "Do you want to proceed?" (Bash, edits, …) or a Codex approval ("Would you like to run the
   following command?") — `{ kind: "permission", id, title, detail: [lines], choices: [{ n, label }],
-  selected, untouched }` (`{ kind: "permission", incomplete: true, reason }` when its top is out of
-  reach or its frame is ambiguous), or a Claude Code **question** form
+  selected, untouched }` (`{ kind: "permission", incomplete: true, reason }` when it cannot be told
+  whole: its top out of reach, its frame ambiguous, a Codex approval without exactly one title — on
+  a Codex or pi pane, a numbered list with no title counts as one only with the approval's answer
+  shape, a shortcut in an answer (`(y)`, `(esc)`) or its footer "Press enter to confirm or esc to
+  cancel"; Codex's popups (/model, /approvals, /review), its transcript pager and a numbered draft
+  in an input box are `null`), or a Claude Code **question** form
   `{ kind: "question", id: <tool_use id> | null, questions | null, active, untouched }` (the id comes
   from the transcript: the pending `AskUserQuestion` the form shows, checked whole — tabs, the active
   question's full text, its options and descriptions). Types nothing.
@@ -320,12 +324,28 @@ extra dashed rule, a dashed pair with no header above it), so the frame cannot b
 command's own lines — it is `prompt_incomplete` (answer it in the terminal). A Codex approval has no
 frame: it is everything between the last conversation item (the line at the left edge above it)
 and its answers, and exactly one line of it may read as its title ("Would you like to …", "Allow
-…"); a command line that reads like one too, or a top out of reach (60 lines), is
-`prompt_incomplete`. That can refuse a harmless prompt: a command or reason that wraps so a line
-starts with `Allow `, `Do you want to` or `Proceed?`, or that says "needs your approval" anywhere,
-is `prompt_incomplete` too (answer it in the terminal). (The column-0 rules are an assumption about how Claude Code draws: the frame
-from column 0, everything inside it padded. A line the terminal wraps to column 0 itself — a width
-it measured wrong — breaks it; only a synthetic Bash layout backs it so far.)
+…"); a command line that reads like one too, no line that does (a line merely ending in `?`
+does not), or a top out of sight (over 60 lines up, or no line at the left edge captured at all:
+a fresh or cleared pane) is `prompt_incomplete`. That can refuse a harmless prompt: a command or
+reason that wraps so a line starts with `Allow `, `Do you want to` or `Proceed?`, or that says
+"needs your approval" anywhere, is `prompt_incomplete` too (answer it in the terminal). A list
+with no title in sight is taken for an approval only when it has the approval's answer shape — a
+shortcut in an answer (`(y)`, `(p)`, `(esc)`) or the footer "Press enter to confirm or esc to
+cancel" — and is then `prompt_incomplete`; without it (a popup, the transcript pager) it is no
+prompt, its top in sight or not. With that shape, answers that cannot be read whole (the list
+running off the captured text, a wrapped line that reads as a rule or as another answer) are
+`prompt_incomplete` too, never "no prompt". A numbered list in an input box is a draft, never a
+prompt: Claude Code's or pi's (a plain rule from the left edge under it), Codex's composer (its
+footer: "? for shortcuts", "… context left", "⏎ send"). Codex's `request_user_input` questions are
+not approvals: answer them in the terminal. `--choice` refuses them (`prompt_not_on_screen`, or
+`prompt_incomplete` when their answers carry the approval's shape) unless the question reads as an
+approval's title ("Would you like to …"), and then takes it for one. (The column-0 rules are an assumption about how the harnesses draw. Claude Code: the
+frame from column 0, everything inside it padded; only a synthetic Bash layout backs it so far.
+Codex: the conversation items from column 0, everything in the approval — title, command, reason —
+padded, so no line of a command can pass for the item above it; only recorded approvals of a
+one-line command (at 40, 60 and full width) back it so far, no patch approval, multi-line command
+or `request_user_input` layout. A line the terminal wraps to column 0 itself — a width it measured
+wrong — breaks either.)
 
 No key is typed blind:
 
@@ -339,8 +359,10 @@ No key is typed blind:
   included) and "Submit answers" focused. Anything else stops it: `prompt_changed` (it says how
   many keys went out).
 - After the last key the screen is read again: the prompt must be gone, and for 300 ms no prompt
-  with the same answers may stand in its place (a queued prompt the key may have answered instead).
-  Only then is it `answered: true`; otherwise `outcome_uncertain`, with what is on screen now. A
+  with the same answers may stand in its place (a queued prompt the key may have answered instead),
+  nor a permission prompt that cannot be read whole (one `--list` reports as `incomplete`: it may
+  be the prompt just answered or a queued one). Only then is it `answered: true`; otherwise
+  `outcome_uncertain`, with what is on screen now. A
   terminal that can no longer be read (its pane or tmux gone) proves nothing: `outcome_uncertain`
   after the last key, `io` (saying how many keys went out) before it.
 
@@ -356,8 +378,9 @@ attached clients are checked once, before the first key. Not covered:
 - anything else writing to the pane (`tmux send-keys` from another tool, an iTerm script) in that
   same window.
 
-**What the post-key check detects, exactly:** a prompt with the same answers still on screen
-within 300 ms of the key (or the read prompt not gone within 1.5 s) is `outcome_uncertain`.
+**What the post-key check detects, exactly:** a prompt with the same answers, or a permission
+prompt that cannot be read whole, still on screen within 300 ms of the key (or the read prompt not
+gone within 1.5 s) is `outcome_uncertain`.
 That is the case where *another* prompt follows the one the key answered — usually fleet's key
 landed on A and B came up behind it, so the report may be a false alarm. **The plain two-prompt
 case above is not detected:** the key answers B, B leaves the screen, nothing follows, and the

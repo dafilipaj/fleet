@@ -59,6 +59,39 @@ while IFS= read -r -s -n1 -d '' c; do
 done
 "#;
 
+/// A Codex approval prompt (wording synthetic) under its last conversation item, drawn from
+/// column 0. Its `y` answer clears the pane, scrollback and all, and the next approval — the
+/// same answers, a queued one — comes up with no line at column 0 on the captured text.
+/// Args: key log, answer file.
+const FAKE_CODEX: &str = r#"#!/bin/bash
+log="$1"; out="$2"
+approval() {
+  echo "  Would you like to run the following command?"
+  echo
+  echo "  \$ $1"
+  echo
+  echo "› 1. Yes, proceed (y)"
+  echo "  2. No, and tell Codex what to do differently (esc)"
+  echo
+  echo "  Press enter to confirm or esc to cancel"
+}
+stty -echo -icanon min 1 time 0
+printf '\033[2J\033[H'
+echo "› Clean the build output"
+echo
+echo "• Running rm -rf build"
+echo
+approval "rm -rf build"
+while IFS= read -r -s -n1 -d '' c; do
+  printf '%s' "$c" >> "$log"
+  if [ "$c" = y ]; then
+    echo "picked=y" >> "$out"
+    printf '\033[2J\033[3J\033[H'
+    approval "rm -rf dist"
+  fi
+done
+"#;
+
 /// A Claude Code 2.1 question form (one question, "Which city?", options Paris and Rome) that
 /// behaves like the real one: ↑/↓ move the cursor, typing on "Type something" fills it in,
 /// Enter picks (single-select) or ticks (multi-select; on "Submit" it submits).
@@ -210,12 +243,19 @@ impl Server {
         .unwrap();
         std::fs::write(env.path("bin/permission"), FAKE_PERMISSION).unwrap();
         std::fs::write(env.path("bin/form"), FAKE_FORM).unwrap();
+        std::fs::write(env.path("bin/codex"), FAKE_CODEX).unwrap();
         std::fs::write(
             env.path("bin/static"),
             "#!/bin/bash\ncat \"$1\"\nstty -echo -icanon min 1 time 0\nwhile IFS= read -r -s -n1 -d '' c; do printf '%s' \"$c\" >> \"$2\"; done\n",
         )
         .unwrap();
-        for f in ["bin/tmux", "bin/permission", "bin/form", "bin/static"] {
+        for f in [
+            "bin/tmux",
+            "bin/permission",
+            "bin/form",
+            "bin/codex",
+            "bin/static",
+        ] {
             Command::new("chmod")
                 .arg("+x")
                 .arg(env.path(f))
@@ -265,6 +305,23 @@ impl Server {
 
     fn agent_cmd(&self, name: &str, cmd: &str, session_id: &str, ready: &str) -> String {
         self.agent_as(name, cmd, session_id, ready, "waiting")
+    }
+
+    /// [`Server::agent`] as a Codex session: the process named `codex` (as `ps` shows it), a
+    /// Codex home under the temp `HOME`, no Claude registry entry.
+    fn codex_agent(&self, name: &str, script: &str, args: &[&Path], ready: &str) -> String {
+        std::fs::create_dir_all(self.env.path("home/.codex")).unwrap();
+        let quoted: Vec<String> = std::iter::once(self.env.path(&format!("bin/{script}")))
+            .chain(args.iter().map(|p| p.to_path_buf()))
+            .map(|p| format!("'{}'", p.display()))
+            .collect();
+        let cmd = format!(
+            "exec /bin/bash -c \"exec -a codex /bin/bash {}\"",
+            quoted.join(" ")
+        );
+        let pid = self.agent_cmd(name, &cmd, "s-unused", ready);
+        std::fs::remove_file(self.env.path(&format!("home/.claude/sessions/{pid}.json"))).unwrap();
+        pid
     }
 
     /// [`Server::agent_cmd`], registered with `status` (what the registry says the session is
@@ -747,6 +804,45 @@ fn a_key_that_reveals_a_lookalike_prompt_is_not_claimed_as_answered() {
         json!(["Bash command", "Remove the build output", "rm -rf dist"])
     );
     assert_eq!(keys(&log), "3", "one key went out");
+}
+
+// Codex: the key clears the pane, and the next approval — the same answers — comes up with no
+// line at column 0 captured, so it cannot be read whole. Taken for "no prompt", that once
+// reported the answer as landed.
+#[test]
+fn a_key_that_reveals_a_prompt_not_read_whole_is_not_claimed_as_answered() {
+    let Some(s) = Server::new() else { return };
+    let (log, out) = s.files("cleared");
+    let pid = s.codex_agent(
+        "cleared",
+        "codex",
+        &[&log, &out],
+        "Would you like to run the following command?",
+    );
+    let (code, v, err) = s.fleet(&["answer", &pid, "--list", "--json"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(v["harness"], "codex", "{v}");
+    assert_eq!(v["prompt"]["detail"], json!(["$ rm -rf build"]), "{v}");
+    let id = v["prompt"]["id"].as_str().unwrap().to_string();
+
+    let (code, v, _) = s.fleet(&["answer", &pid, "--choice", "1", "--prompt", &id, "--json"]);
+    assert_eq!(
+        (code, v["kind"].as_str()),
+        (1, Some("outcome_uncertain")),
+        "{v}"
+    );
+    assert_ne!(v["answered"], true);
+    assert_eq!(v["method"], "key");
+    assert_eq!(v["screen"]["incomplete"], true, "{v}");
+    assert!(
+        v["screen"]["reason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("off the captured screen"),
+        "{v}"
+    );
+    assert_eq!(keys(&log), "y", "one key went out");
+    assert_eq!(read(&out).trim(), "picked=y");
 }
 
 // The pane (and the tmux server) gone right after the key: its captures fail, and an empty
