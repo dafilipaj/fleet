@@ -621,6 +621,23 @@ pub fn procs() -> Vec<(i64, i64, String)> {
         .collect()
 }
 
+/// The shell pid of tmux pane `pane` (`%12`), while that pane exists.
+pub fn pane_pid(pane: &str) -> Option<i64> {
+    let out = tmux()
+        .args(["display-message", "-p", "-t", pane, "#{pane_pid}"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+}
+
+/// Pane `pane` still exists, is the one whose shell was `shell` (pane ids restart with the
+/// tmux server), and that shell is running something — the command typed into it. A shell
+/// back at its prompt (the command ended or never started) is not.
+pub fn pane_running(pane: &str, shell: i64) -> bool {
+    pane_pid(pane) == Some(shell) && procs().iter().any(|(_, ppid, _)| *ppid == shell)
+}
+
 /// Gather the live state for [`classify`]. `claude_check=false` skips the
 /// cross-check (and says so in the report).
 pub fn stale_input(claude_check: bool) -> Result<StaleInput> {

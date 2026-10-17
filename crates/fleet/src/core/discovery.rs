@@ -614,10 +614,73 @@ fn resolve_exact(rows: Vec<Session>, target: &str, exact: &Exact) -> Result<Sess
 /// records `procStart`, the live pid's start time has to match it, so a pid that a newer
 /// process reused is not taken for the session.
 ///
-/// Nothing in the Claude registry: a Codex / pi session (they have none) is looked for
-/// among the harness processes alone — one `ps`, one `lsof`, and only the named process
+/// No live Claude session in the registry (none, or only stale entries): a Codex / pi
+/// session (they have none) is looked for among the harness processes alone — one `ps`, one `lsof`, and only the named process
 /// inspected and its transcript read.
 fn find_exact(target: &str, exact: &Exact) -> Option<Result<Session, TargetError>> {
+    let mut rows = exact_rows(exact, None);
+    crate::core::naming::stamp_titles(&mut rows);
+    Some(resolve_exact(rows, target, exact).map(|mut s| {
+        // The one row picked gets its title (a bounded read of its transcript's head): it
+        // is what `name` works from, and what `rename --json`'s `from` and the views show.
+        if s.harness == Harness::Claude
+            && let (None, Some(sid), Some(cwd)) =
+                (&s.title, s.session_id.as_deref(), s.cwd.as_deref())
+        {
+            s.title = title_for(cwd, sid);
+        }
+        s
+    }))
+}
+
+/// The live sessions of `harness` whose session id is `id` (whole, case-insensitive), by the
+/// lookup behind an `id:` target ([`find_exact`]) narrowed to that harness: another
+/// harness's entry with the same id, live or stale, neither stands in for this one nor
+/// hides it. Claude's come from its registry (a stale entry is no session), Codex's and pi's
+/// from their processes. Under `FLEET_FIXTURE`, the fixture's rows.
+pub fn find_live_id(harness: Harness, id: &str) -> Vec<Session> {
+    let exact = Exact::Id(id.to_string());
+    let rows = if is_fixture() {
+        discover()
+    } else {
+        exact_rows(&exact, Some(harness))
+    };
+    rows.into_iter()
+        .filter(|s| {
+            s.harness == harness
+                && s.session_id
+                    .as_deref()
+                    .is_some_and(|sid| sid.eq_ignore_ascii_case(id))
+        })
+        .collect()
+}
+
+/// The live rows an exact target could name, untitled. `only`: of that harness alone; else
+/// Claude's registry first and, when no live Claude session is it, Codex's and pi's
+/// processes (a stale Claude entry does not hide a live Codex / pi session).
+fn exact_rows(exact: &Exact, only: Option<Harness>) -> Vec<Session> {
+    let rows = if only.is_none_or(|h| h == Harness::Claude) {
+        claude_exact_rows(exact)
+    } else {
+        Vec::new()
+    };
+    if !rows.is_empty() || only == Some(Harness::Claude) {
+        return rows;
+    }
+    // Codex / pi sessions have no registry: only the harness processes are listed, and
+    // only the named one is inspected and read.
+    if !harness::codex_home().is_dir() && !harness::pi_home().is_dir() {
+        return Vec::new();
+    }
+    let mut rows = discover_harnesses(&tmux_panes(), Some(exact));
+    if let Some(h) = only {
+        rows.retain(|s| s.harness == h);
+    }
+    rows
+}
+
+/// The live Claude sessions an exact target names, from their registry entries alone.
+fn claude_exact_rows(exact: &Exact) -> Vec<Session> {
     let dir = claude_home().join("sessions");
     let mut regs: Vec<Reg> = match exact {
         Exact::Pid(p) => read_reg(&dir.join(format!("{p}.json")))
@@ -643,17 +706,7 @@ fn find_exact(target: &str, exact: &Exact) -> Option<Result<Session, TargetError
             .collect();
     }
     if regs.is_empty() {
-        // No Claude session is it (Claude rows only come from the registry): a Codex / pi
-        // one, or nothing. Only the harness processes are listed, and only the named one
-        // is inspected and read.
-        let rows = if harness::codex_home().is_dir() || harness::pi_home().is_dir() {
-            let mut rows = discover_harnesses(&tmux_panes(), Some(exact));
-            crate::core::naming::stamp_titles(&mut rows);
-            rows
-        } else {
-            Vec::new()
-        };
-        return Some(resolve_exact(rows, target, exact));
+        return Vec::new();
     }
     let pids: Vec<i64> = regs.iter().filter_map(|r| r.pid).collect();
     let procs = inspect(&pids);
@@ -678,23 +731,12 @@ fn find_exact(target: &str, exact: &Exact) -> Option<Result<Session, TargetError
     } else {
         HashMap::new()
     };
-    let mut rows: Vec<Session> = live
-        .into_iter()
+    live.into_iter()
         .map(|(reg, pid, p)| {
             let (backend, handle) = backend_from_env(&p.env, Some(p.tty.as_str()), &panes);
             claude_session(reg, pid, p.tty.clone(), backend, handle, &panes, false)
         })
-        .collect();
-    crate::core::naming::stamp_titles(&mut rows);
-    Some(resolve_exact(rows, target, exact).map(|mut s| {
-        // The one row picked gets its title (a bounded read of its transcript's head): it
-        // is what `name` works from, and what `rename --json`'s `from` and the views show.
-        if let (None, Some(sid), Some(cwd)) = (&s.title, s.session_id.as_deref(), s.cwd.as_deref())
-        {
-            s.title = title_for(cwd, sid);
-        }
-        s
-    }))
+        .collect()
 }
 
 /// One live process as a single `ps` reports it.

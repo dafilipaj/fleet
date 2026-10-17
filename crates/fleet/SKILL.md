@@ -26,6 +26,7 @@ A firstmate-style orchestrator for the many Claude Code sessions the user runs i
 | "spawn / start a session to …" | `fleet spawn "<prompt>" --dir <path> [--harness claude\|codex\|pi] [--name <name>] [--model <id>] [--backend iterm\|tmux] [--window]` — `--harness` picks the coding agent (default Claude); `fleet harness list` shows what a host has and its models |
 | "what is X doing / where was X" (summary, PRs, files, todos) | `fleet brief <target>` (`--json` to parse) — the session's brief; see below |
 | "continue X's work in a new session" | `fleet spawn --from <target> ["<extra instructions>"] [--name <name>]` — same host and cwd, seeded with X's brief |
+| "resume / reopen that old session" | `fleet spawn --resume <session_id> --dir <its cwd> [--harness claude\|codex] [--name <name>]` — the harness's own resume (`claude --resume`, `codex resume`) in a new terminal, no prompt; refused while it is still live (`session_live`) or another resume of it is starting (`session_starting`) — then just `peek`/`send` to it once it shows. Starts an agent: confirm like `spawn` |
 | "spawn a sibling / another session on this with shared context" | `fleet stack spawn <this session> "<prompt>" [--on <host>]` — see Session stacks below |
 | "what's in this stack / what are my siblings doing" | `fleet stack show <stack>` (`--json` to parse), `fleet stack list` |
 | "take this to another terminal" | `fleet handoff --file <brief.md> --dir <path> [--name <name>] [--tab] [--no-wait]` — see below |

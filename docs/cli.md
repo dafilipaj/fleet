@@ -93,6 +93,7 @@ member (see [Stacks](#stacks)).
 | `fleet spawn [prompt] --dir <path> [--harness claude\|codex\|pi] [--name <n>] [--model <id>] [--backend iterm\|tmux] [--tmux-session <s>] [--window] [--json]` | start a new agent session in a new tab/pane. `--json`: one object saying where it landed, or why it did not — see [Spawning](#spawning). `--harness` picks the coding agent (default `claude`; see [Harnesses](#harnesses)). `--model <id>` runs `<harness> --model '<id>'` (letters, digits and `._[]-/:` only — pi's ids are `provider/model`; blank = the harness's default). `--name` is passed as `-n` to Claude and pi; Codex has no such flag (the tmux session carries the name). The prompt goes after `--` for Claude and Codex, so one that starts with `-` (or reads like a subcommand, `resume`) is still the prompt; pi has no `--`, so a prompt it would take as a flag, a file (`@…`) or one of its commands (`update`) gets a leading space. Pass `--` to `fleet` too for such a prompt: `fleet spawn --dir . -- '--help me'`. A prompt whose launch line would pass 900 bytes is written to `~/.claude/fleet-prompts/` and read back at launch with its trailing newlines intact (`fleet_prompt="$(cat <file>; printf .)" && <launcher> -- "${fleet_prompt%.}"`). Default backend: tmux inside tmux, over ssh or off macOS; else iTerm. With tmux, each spawn gets its own tmux session (one session per job) named from `--name` or the dir's basename, sanitised like `fleet new`; a taken `--name` is an error, a taken basename is uniquified (`app-2`). `--tmux-session <s>` opens a window in `s` instead (created if missing) |
 | `fleet harness list [--json] [--no-models]` | the [harnesses](#harnesses) on this host: id, label, launch command, `installed`, and the models each offers for a picker. `-H <host>` asks another machine |
 | `fleet spawn --from <target> [prompt] [--name <n>] [--model <id>] [--backend …] [--json]` | continue a session's work in a new one: same host (with `-H`, the host the session is on) and its cwd (`--dir` overrides), first prompt = its [brief](#briefs)'s continue prompt, then a blank line and `prompt`. The prompt goes through a file under `~/.claude/fleet-handoffs/`, like a handoff. Errors when the session has no brief yet. `-n` prints the launch command and the prompt and writes nothing |
+| `fleet spawn --resume <session_id> --dir <path> [--harness claude\|codex] [--name <n>] [--model <id>] [--backend …] [--json]` | resume a past session with the harness's own resume, in a new terminal in `--dir` (required: the directory it ran in): `<claude launcher> --resume=<id>` (the launcher as `spawn` builds it, `-n` for `--name`), `codex resume -- <id>` — the id bound so the harness never reads it as a flag. Same path as a plain `spawn` — checks, login shell, env scrub, naming, `--json` object (plus `resumed`). No prompt. The id is ASCII letters, digits and `-`, 1–128 of them, not starting with `-`. One session never gets a second process: refused while it is live in `fleet list` (same harness, `session_live`), and while another resume of it is starting it (`session_starting`): each resume claims `resume-<harness>-<lowercased id>.lock` under `$FLEET_LOCK_DIR` (an `flock` held through the liveness check and the start) and, before typing anything, writes `resume-<harness>-<lowercased id>.stamp` beside it: the start time, then the tmux pane it types the resume into (and that pane's shell pid). Until the session registers, the stamp holds it for 30 s, and past that for as long as the pane exists and its shell still runs what was typed (Claude waiting at its trust prompt has not registered). Once the pane is gone or its shell is back at the prompt, the stamp is stale; an iTerm resume has no pane to check, so only the 30 s hold. A start that never got a terminal removes the stamp; a stamp that cannot be written stops the resume before anything starts. `-n` claims and writes nothing. See [Spawning](#spawning) |
 | `fleet handoff [brief] [--file <f\|->] --dir <path> [--harness <h>] [--name <n>] [--model <id>] [--tmux-session <s>] [--tab] [--no-wait]` | start a new session in another window seeded with a brief (saved under `~/.claude/fleet-handoffs/`); waits until it registers. Same tmux placement as `spawn` |
 | `fleet brief <target> [--json \| --prompt]` | print the session's [brief](#briefs) — its body (Summary / Resources / Todos, no frontmatter); `--json` the parsed shape; `--prompt` only the continue prompt |
 | `fleet brief <target> --edit` / `--set [--expect-updated <iso>]` / `--regenerate` / `--open` | edit it in `$VISUAL`/`$EDITOR`; save markdown from stdin; ask the web server to regenerate it; open the session's checkout in VS Code — see [Briefs](#briefs) |
@@ -136,7 +137,7 @@ started from inside an agent. The pane then becomes what tmux would have started
 effective `default-command` when one is set, else `$SHELL -l` — so the profile runs and may set
 any of them on purpose. An iTerm tab gets iTerm's environment, not fleet's.
 
-`spawn --json` (also with `--from`) prints one object on stdout. On success (exit 0):
+`spawn --json` (also with `--from` or `--resume`) prints one object on stdout. On success (exit 0):
 
 ```json
 { "ok": true, "dry_run": false, "host": "laptop", "backend": "tmux",
@@ -157,6 +158,7 @@ any of them on purpose. An iTerm tab gets iTerm's environment, not fleet's.
 | `command` | the shell line typed into the new terminal |
 | `prompt_file` | the file the first prompt was read from (a long prompt, `--from`), else `null` |
 | `from` | `--from`: `{ session_id, label }` of the session it continues, else `null` |
+| `resumed` | `--resume` only: the session id it resumes (absent otherwise) |
 | `dry_run` | `-n`: nothing ran; `command` is what would be typed and the terminal fields are `null` |
 
 On failure the exit code is 1 (unless noted below), stderr carries the message as usual, and
@@ -168,7 +170,11 @@ and close it. `kind` is one of:
 
 | kind | when |
 | --- | --- |
-| `dir_missing` | `--dir` does not exist (with `--from`: no working directory known) |
+| `dir_missing` | `--dir` does not exist (with `--from`: no working directory known; with `--resume`: no `--dir` given) |
+| `usage` | `--resume` with a prompt or `--from`, or a session id outside `[A-Za-z0-9-]{1,128}` or starting with `-`; also a command line clap cannot parse (`--resume` without a value, an unknown flag) |
+| `harness_unsupported` | `--resume` with a harness that has no resume here (pi) |
+| `session_live` | `--resume`: a live session in `fleet list` already has that id (same harness). The object also carries `"pid"` of the live one — select it instead |
+| `session_starting` | `--resume`: another `spawn --resume` of that id (same harness, any case) is starting it right now, or started it and it has not registered yet: under 30 s ago, or its tmux pane still runs it (however long ago). Nothing was started; select it once it appears, do not retry the resume |
 | `name_invalid` | `--name` is empty, multi-line, or empty after sanitising for tmux |
 | `name_taken` | a tmux session already has that `--name` |
 | `model_invalid` | `--model` has characters outside the allowed set |
@@ -951,7 +957,7 @@ fleet mcp --http [--bind 127.0.0.1] [--port 7778] --token-file ~/.config/fleet/m
 | `FLEET_SNAPSHOT` | the [session-recovery](#session-recovery) snapshot (default `${XDG_STATE_HOME:-~/.local/state}/fleet/snapshot.json`) |
 | `FLEET_BOOT_ID` | override this boot's id (tests; a different value simulates a reboot) |
 | `FLEET_GROUPS_STATE` | `fleet group` state file (default `${XDG_STATE_HOME:-~/.local/state}/fleet/groups.json`) |
-| `FLEET_LOCK_DIR` | where the per-session typing locks of `fleet answer` / `fleet send` live (default `${XDG_RUNTIME_DIR:-cache dir}/fleet/locks`) |
+| `FLEET_LOCK_DIR` | where the per-session typing locks of `fleet answer` / `fleet send`, and the `spawn --resume` reservations, live (default `${XDG_RUNTIME_DIR:-cache dir}/fleet/locks`) |
 | `FLEET_FIXTURE=<sessions.json>` | read a canned fleet from a file instead of the live registry (demo/tests; backends are inert) |
 | `NO_COLOR=1` | no colors |
 | `FLEET_NO_TTY=1` | never prompt on the terminal: confirmations fail as if there were none (set by `fleet mcp`) |
