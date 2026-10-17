@@ -150,15 +150,59 @@ fn opt(id: &str, label: &str) -> ModelOption {
     }
 }
 
-/// Claude's picker (the web's `web.models` overrides it there).
-pub fn claude_models() -> Vec<ModelOption> {
+/// Claude's picker (the web's `web.models` overrides it there), its default labelled
+/// with the model Claude Code would start with — see [`claude_default_model`].
+pub fn claude_models(default: Option<&str>) -> Vec<ModelOption> {
     vec![
-        opt("", "Default"),
+        opt("", &default_label(default)),
         opt("claude-fable-5-1", "Fable 5.1"),
         opt("claude-opus-5-5", "Opus 5.5"),
         opt("claude-sonnet-5-5", "Sonnet 5.5"),
         opt("claude-haiku-5-5", "Haiku 5.5"),
     ]
+}
+
+/// Claude Code's user config dir: `$CLAUDE_CONFIG_DIR`, else `~/.claude`.
+pub fn claude_config_dir() -> PathBuf {
+    std::env::var_os("CLAUDE_CONFIG_DIR")
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".claude"))
+}
+
+/// Settings files larger than this are not read: the default is then unknown.
+const MAX_SETTINGS_BYTES: u64 = 1 << 20;
+
+/// The model a new Claude Code session starts with, as Claude Code resolves it at user
+/// level: `env_model` (`ANTHROPIC_MODEL`), else `model` in `<config_dir>/settings.json`,
+/// else unknown. The value is kept as written (`opus[1m]`, an alias, a full id).
+///
+/// Project settings (`.claude/settings.json` and `settings.local.json` under the start
+/// directory) can override it too, but they depend on where a session is started, so this
+/// harness-wide default leaves them out.
+///
+/// Only the `model` key is taken from the settings: the file can hold secrets (`env`,
+/// `apiKeyHelper`), so nothing else in it is kept or logged. A missing, oversized or
+/// invalid file means unknown.
+pub fn claude_default_model(env_model: Option<&str>, config_dir: &Path) -> Option<String> {
+    if let Some(m) = env_model.map(str::trim).filter(|m| !m.is_empty()) {
+        return Some(m.to_string());
+    }
+    let file = std::fs::File::open(config_dir.join("settings.json")).ok()?;
+    let mut text = String::new();
+    file.take(MAX_SETTINGS_BYTES + 1)
+        .read_to_string(&mut text)
+        .ok()?;
+    if text.len() as u64 > MAX_SETTINGS_BYTES {
+        return None;
+    }
+    let settings: Value = serde_json::from_str(&text).ok()?;
+    settings
+        .get("model")?
+        .as_str()
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .map(str::to_string)
 }
 
 pub fn codex_home() -> PathBuf {
@@ -316,7 +360,11 @@ pub fn info(h: Harness, with_models: bool) -> HarnessInfo {
     };
     let models = match (with_models && installed, h) {
         (false, _) => Vec::new(),
-        (true, Harness::Claude) => claude_models(),
+        (true, Harness::Claude) => {
+            let env_model = std::env::var("ANTHROPIC_MODEL").ok();
+            let default = claude_default_model(env_model.as_deref(), &claude_config_dir());
+            claude_models(default.as_deref())
+        }
         (true, Harness::Codex) => codex_models(&codex_home()),
         (true, Harness::Pi) => pi_models(&pi_home(), &command),
     };
@@ -1600,6 +1648,55 @@ mod tests {
             pi_state(&named.join("\n")).name.as_deref(),
             Some("auth-fix")
         );
+    }
+
+    #[test]
+    fn claude_default_model_prefers_the_env_then_user_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("settings.json");
+        // Nothing configured: unknown, plain "Default".
+        assert_eq!(claude_default_model(None, dir.path()), None);
+        assert_eq!(claude_models(None)[0].label, "Default");
+
+        std::fs::write(
+            &settings,
+            r#"{"env":{"ANTHROPIC_API_KEY":"sk-not-read"},"model":"opus[1m]"}"#,
+        )
+        .unwrap();
+        let m = claude_default_model(None, dir.path());
+        assert_eq!(m.as_deref(), Some("opus[1m]"));
+        assert_eq!(claude_models(m.as_deref())[0].label, "Default (opus[1m])");
+        assert_eq!(claude_models(m.as_deref())[0].id, "");
+
+        // ANTHROPIC_MODEL wins over the settings; an empty one doesn't count.
+        assert_eq!(
+            claude_default_model(Some("claude-sonnet-5-5"), dir.path()).as_deref(),
+            Some("claude-sonnet-5-5")
+        );
+        assert_eq!(
+            claude_default_model(Some(" "), dir.path()).as_deref(),
+            Some("opus[1m]")
+        );
+    }
+
+    #[test]
+    fn claude_default_model_is_unknown_for_unusable_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("settings.json");
+        for text in [
+            "{not json",
+            r#"{"model":42}"#,
+            r#"{"model":""}"#,
+            r#"{"permissions":{}}"#,
+            "[]",
+        ] {
+            std::fs::write(&settings, text).unwrap();
+            assert_eq!(claude_default_model(None, dir.path()), None, "{text}");
+        }
+        // Oversized: not read at all.
+        let pad = " ".repeat(MAX_SETTINGS_BYTES as usize);
+        std::fs::write(&settings, format!(r#"{{"model":"opus"}}{pad}"#)).unwrap();
+        assert_eq!(claude_default_model(None, dir.path()), None);
     }
 
     #[test]
