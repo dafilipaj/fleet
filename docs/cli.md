@@ -30,7 +30,8 @@ On the remote, `fleet` is looked up as `hosts.<name>.fleetBin`, then `~/.local/b
 `fleet install` puts it), then `PATH`. `--dir` / `-C` values under your `$HOME` are rewritten to
 `~/…` so they mean the same place on the other machine; relative paths are refused.
 `FLEET_CMD`, `FLEET_JOB_RUN`, `FLEET_GH_IDENTITY`, `FLEET_DEBUG` and `FLEET_DRY_RUN` are forwarded (exported, single-quoted, in the
-remote `sh -c`); `FLEET_CONFIG` is not — the remote uses its own config.
+remote `sh -c`); `FLEET_CONFIG` is not — the remote uses its own config. Under
+[`FLEET_PATH_ONLY`](#path-only-mode) another host is refused instead.
 
 ## Claude sessions
 
@@ -118,7 +119,8 @@ the tmux session name is free, and the launcher can start: its first word must b
 path, or a command found on `PATH`, in the usual install dirs or — failing those — by
 `command -v` in a login shell of `$SHELL` (a launcher it cannot judge, such as `VAR=1 claude`,
 goes ahead as before). It is judged from `--dir`, where the shell will run it: `./agent` is the
-`agent` in that directory, and the login shell starts there.
+`agent` in that directory, and the login shell starts there. Under
+[`FLEET_PATH_ONLY`](#path-only-mode) `PATH` alone decides: no install dirs, no login shell.
 
 A tmux spawn (and `handoff`, `stack spawn`, `pr spawn`, a job run) starts its pane without the
 variables an agent sets to describe itself to its tools — the agent that ran `fleet`, whose
@@ -138,8 +140,10 @@ Only those names: configuration stays, wherever it is set — `CLAUDE_CODE_OAUTH
 `CLAUDE_CODE_USE_BEDROCK` / `_VERTEX`, `OTEL_*` exporter endpoints, headers and resource
 attributes, … (Claude Code does not hand its own `OTEL_*` to tools at all). The markers are dropped
 wherever they come from: fleet's own environment, or the global environment of a tmux server
-started from inside an agent. The pane then becomes what tmux would have started — the session's
-effective `default-command` when one is set, else `$SHELL -l` — so the profile runs and may set
+started from inside an agent: the pane's first process, `sh`, unsets them itself (no `env`).
+The pane then becomes what tmux would have started — the session's
+effective `default-command` when one is set, else `$SHELL -l` (tmux sets `SHELL` in every pane
+to the server's `default-shell`) — so the profile runs and may set
 any of them on purpose. An iTerm tab gets iTerm's environment, not fleet's.
 
 `spawn --json` (also with `--from` or `--resume`) prints one object on stdout. On success (exit 0):
@@ -176,7 +180,7 @@ and close it. `kind` is one of:
 | kind | when |
 | --- | --- |
 | `dir_missing` | `--dir` does not exist (with `--from`: no working directory known; with `--resume`: no `--dir` given) |
-| `usage` | `--resume` with a prompt or `--from`, or a session id outside `[A-Za-z0-9-]{1,128}` or starting with `-`; also a command line clap cannot parse (`--resume` without a value, an unknown flag) |
+| `usage` | `--resume` with a prompt or `--from`, or a session id outside `[A-Za-z0-9-]{1,128}` or starting with `-`; also a command line clap cannot parse (`--resume` without a value, an unknown flag); and, under [`FLEET_PATH_ONLY`](#path-only-mode), `-H` another host, the iTerm backend, no `sh` on `PATH` for a tmux pane, or `PATH` unset or empty |
 | `harness_unsupported` | `--resume` with a harness that has no resume here (pi) |
 | `session_live` | `--resume`: a live session in `fleet list` already has that id (same harness). The object also carries `"pid"` of the live one — select it instead |
 | `session_starting` | `--resume`: another `spawn --resume` of that id (same harness, any case) is starting it right now, or started it and it has not registered yet: under 30 s ago, or its tmux pane still runs it (however long ago). Nothing was started; select it once it appears, do not retry the resume |
@@ -1251,6 +1255,7 @@ fleet mcp --http [--bind 127.0.0.1] [--port 7778] --token-file ~/.config/fleet/m
 | `FLEET_REMOTE_TIMEOUT` | limit for one captured remote call, e.g. a host in `list --all-hosts` (default 15 s) |
 | `FLEET_MUX=0` | disable ssh connection multiplexing (control socket `~/.ssh/fleet-mux-%C`) |
 | `FLEET_TMUX` | tmux binary (over config `tmux`) |
+| `FLEET_PATH_ONLY=1` | run only what `PATH` holds, for hermetic tests and sandboxes; what reaches past it is refused — see [PATH-only mode](#path-only-mode) |
 | `FLEET_CMD` | command that launches Claude in spawned sessions (over config `claude`; default `claude`). Codex / pi: config `harnesses.<id>.command` |
 | `CODEX_HOME` / `PI_CODING_AGENT_DIR` | where Codex / pi keep their state (default `~/.codex`, `~/.pi/agent`) — discovery reads transcripts from there |
 | `FLEET_BIN` | `fleet` binary the web server calls |
@@ -1278,6 +1283,58 @@ fleet mcp --http [--bind 127.0.0.1] [--port 7778] --token-file ~/.config/fleet/m
 | `FLEET_NO_TTY=1` | never prompt on the terminal: confirmations fail as if there were none (set by `fleet mcp`) |
 | `FLEET_MCP_TIMEOUT` | seconds one `fleet mcp` tool call may run (default 600) |
 | `FLEET_MCP_TOKEN` | bearer token for `fleet mcp --http` (when no `--token-file`) |
+
+### PATH-only mode
+
+`FLEET_PATH_ONLY=1` (or `true`, `yes`) is for hermetic tests and sandboxes — a temporary `HOME`,
+a private tmux server, a `PATH` holding only what the test declares. Fleet then runs nothing it
+did not find on `PATH`, with one exception: a pane's shell, the tmux server's `default-shell`
+(below).
+
+- **Binary lookup**: `PATH` only. No fallback dirs (`/opt/homebrew/bin`, `/usr/local/bin`,
+  `~/.local/bin`, `~/.cargo/bin`, `~/bin`), no hard-coded install locations (`Tailscale.app`,
+  `~/.claude/local`); a tool not on `PATH` fails as "not found". Explicit binaries still apply
+  (`FLEET_TMUX`, `FLEET_GH`, the config's `tmux`, …), and a child that looks tools up itself gets
+  `PATH` as it is. A `PATH` that is unset or empty, or holds a relative or empty entry (one a
+  pane would resolve against its own directory), is refused at startup.
+- **The launcher check**, which `spawn` (plain, `--resume`, `--from`) and `pr spawn` run: a
+  launcher not on `PATH` is `harness_missing` at once. No login shell is asked. (`handoff`,
+  `stack spawn` and job runs have no launcher check.)
+- **Panes fleet opens** (`spawn`, `handoff`, `stack spawn`, `pr spawn`, job runs, `restore`,
+  `tmux new` / `new`): tmux starts them with fleet's `PATH` and `FLEET_PATH_ONLY=1` (`-e`), over
+  the tmux server's environment, so a `fleet` run inside one is PATH-only too. A spawned pane's
+  first process is the `sh` on `PATH`; it drops the [agent markers](#spawning) with its own
+  `unset` and runs nothing else from `PATH`. `spawn`'s default backend is tmux.
+
+Refused — exit 1, kind `usage` — because they reach past `PATH` by design. A command run with
+`--json` prints its failure object on stdout (`{ ok: false, host, kind: "usage", error }`,
+`spawn`'s own shape for `spawn`). `spawn`, `handoff`, `stack spawn` and `pr spawn` are refused
+before anything is written for them (a prompt file, a stack, a worktree):
+
+- `fleet web serve`, `fleet web install-service`, `fleet jobs install-service` and
+  `fleet repos install-service`, dry runs and `--print` included. The web server itself
+  (`node server.mjs`) will not start either (exit 2).
+- Any other host, however it is named (`-H`, `FLEET_HOST`, a remote `defaultHost`, `stack spawn
+  --on`): nothing goes over ssh or to a host's web server. Commands that fan out
+  (`list --all-hosts`, `doctor`, `enter`'s search) report each other host as refused and carry
+  on with this one; `doctor` does not count them as problems.
+- The iTerm backend: `--backend iterm` on `spawn`, `handoff`, `stack spawn` or `pr spawn`, dry
+  runs included, and anything that drives an iTerm session (`peek`, `send`, `keys`, `answer`,
+  …). `list` leaves iTerm tab titles out.
+- A tmux spawn when `PATH` holds no `sh` to start the pane with.
+- `fleet exec` and `fleet ssh` on this machine: they run `$SHELL -l`, whose profiles look past
+  `PATH`.
+
+The pane's shell is the exception, and profiles still run. Every pane, whoever opens it, runs
+the tmux server's `default-shell` (or its `default-command`), never fleet's own `$SHELL`: tmux
+sets `SHELL` in each pane to `default-shell`, so a spawned pane's `$SHELL -l` is that shell too,
+wherever it is. `default-shell` is the `SHELL` the server started with, unless its config sets
+one; without a `SHELL` it is the account's login shell. Once it starts, the system profiles and
+those under `$HOME` run and may change `PATH` again: on macOS `/etc/profile` and `/etc/zprofile`
+put the system dirs first (`path_helper`), and some Linux distributions reset `PATH` in
+`/etc/profile`. A hermetic setup must start its private tmux server with its own `SHELL`,
+pointing into its world (a shell it provides, or one it trusts; or set `default-shell` there), own
+`HOME` and set `PATH` in its profiles there (`~/.profile` for `sh`, `~/.zprofile` for `zsh`, …).
 
 ## Exit codes
 

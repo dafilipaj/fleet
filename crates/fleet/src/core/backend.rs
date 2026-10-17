@@ -22,8 +22,10 @@ const ITERM_FIND: &str = r#"on findSession(theId)
   return missing value
 end findSession"#;
 
-/// Run a static AppleScript, passing dynamic values as argv (injection-safe).
+/// Run a static AppleScript, passing dynamic values as argv (injection-safe). Every iTerm
+/// action goes through here, so this is where `FLEET_PATH_ONLY` refuses iTerm.
 fn osa(script: &str, args: &[&str]) -> Result<String> {
+    crate::core::tools::deny_path_only("the iTerm backend")?;
     // One file per call: Fleet.app runs several scripts at once from one process.
     static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1291,6 +1293,8 @@ pub fn spawn_hooked(
     before_typing: &mut dyn FnMut(&Spawned) -> Result<()>,
 ) -> Result<Spawned> {
     let backend = effective_backend(backend, tag.is_some());
+    // Before a prompt file is written for it.
+    refuse_path_only(backend)?;
     // A long prompt typed onto the command line is slow and fragile (the web spawn has the
     // same limit): it goes through a file the shell expands at launch instead.
     let long_file = match prompt {
@@ -1336,8 +1340,10 @@ pub fn spawn_hooked(
                 plan_tmux_target(tmux_session, name, dir, &tmux_session_names())?;
             // A fresh session's first window is the one we want: opening another
             // next to it would leave an idle shell behind.
-            let env = tag.map(|t| t.env()).unwrap_or_default();
-            let args = tmux_spawn_args(&session, dir, exists, &env);
+            let mut env = crate::core::tools::pane_env();
+            env.extend(tag.map(|t| t.env()).unwrap_or_default());
+            let sh = crate::core::tools::pane_sh()?;
+            let args = tmux_spawn_args(&session, dir, exists, &env, &sh);
             let mut cmd = crate::core::tools::tmux_cmd();
             // When this starts the tmux server, its global environment is ours: keep the
             // agent's variables out of it, or every later pane on the server inherits them.
@@ -1543,28 +1549,49 @@ pub fn is_agent_env(name: &str) -> bool {
     AGENT_ENV.contains(&name)
 }
 
-/// The spawned pane's first process (`$1`: the tmux binary). It drops every [`AGENT_ENV`]
-/// variable, wherever it came from — fleet's own environment, the tmux server's global
-/// environment (a server started from inside an agent keeps that agent's variables for good),
-/// the session's — and becomes what tmux itself would have started: the session's effective
-/// `default-command` when one is set (read here, where the server is up and its config
-/// loaded), else `$SHELL -l`. The agent is typed into a login shell either way, so the profile
-/// runs and may set any of them again on purpose.
+/// The spawned pane's first process (`$1`: the tmux binary, `$2`: the `sh` running it). It
+/// drops every [`AGENT_ENV`] variable, wherever it came from — fleet's own environment, the
+/// tmux server's global environment (a server started from inside an agent keeps that agent's
+/// variables for good), the session's — and becomes what tmux itself would have started: the
+/// session's effective `default-command` when one is set (read here, where the server is up
+/// and its config loaded), else `$SHELL -l` (`$2 -l` when it is empty). The agent is typed
+/// into a login shell either way, so the profile runs and may set any of them again on purpose.
+/// Only shell builtins: no `env`, so a `PATH` without one (`FLEET_PATH_ONLY`) still works.
 fn spawn_shell_script() -> String {
-    let drop: String = AGENT_ENV.iter().map(|n| format!(" -u {n}")).collect();
     format!(
-        r#"dc=$("$1" show-options -Aqv default-command 2>/dev/null)
-sh=${{SHELL:-/bin/sh}}
-if [ -n "$dc" ]; then exec env{drop} "$sh" -c "$dc"; fi
-exec env{drop} "$sh" -l"#
+        r#"unset {}
+dc=$("$1" show-options -Aqv default-command 2>/dev/null)
+sh=${{SHELL:-$2}}
+if [ -n "$dc" ]; then exec "$sh" -c "$dc"; fi
+exec "$sh" -l"#,
+        AGENT_ENV.join(" ")
     )
+}
+
+/// Under `FLEET_PATH_ONLY`, what a spawn landing on `backend` (the one it really uses, see
+/// [`spawn_backend`]) could never do, refused (kind `usage`) before anything is written for
+/// it: iTerm at all, or a tmux pane with no `sh` on `PATH` to start it.
+pub fn refuse_path_only(backend: Backend) -> Result<()> {
+    match backend {
+        Backend::Iterm => crate::core::tools::deny_path_only("the iTerm backend"),
+        Backend::Tmux => crate::core::tools::pane_sh().map(drop),
+        Backend::Unknown => Ok(()),
+    }
 }
 
 /// The tmux command that opens the spawn's window in `dir`, printing its pane id and
 /// window (see [`parse_spawn_target`]): a new window in an existing `session` (matched
 /// exactly), or the session itself. `env` is `-e` `KEY=value`s on top of
-/// [`SPAWN_SHELL_ENV`]; the pane runs [`spawn_shell_script`].
-fn tmux_spawn_args(session: &str, dir: &str, exists: bool, env: &[String]) -> Vec<String> {
+/// [`SPAWN_SHELL_ENV`] (the job tag, and under `FLEET_PATH_ONLY` the
+/// [`pane_env`](crate::core::tools::pane_env)); the pane is `sh` (see
+/// [`pane_sh`](crate::core::tools::pane_sh)) running [`spawn_shell_script`].
+fn tmux_spawn_args(
+    session: &str,
+    dir: &str,
+    exists: bool,
+    env: &[String],
+    sh: &str,
+) -> Vec<String> {
     let mut a: Vec<String> = if exists {
         vec!["new-window".into(), "-t".into(), format!("={session}:")]
     } else {
@@ -1590,11 +1617,12 @@ fn tmux_spawn_args(session: &str, dir: &str, exists: bool, env: &[String]) -> Ve
     a.extend(env.iter().flat_map(|kv| ["-e".to_string(), kv.clone()]));
     // More than one argument: tmux runs it as given, no `sh -c` around it.
     a.extend([
-        "/bin/sh".into(),
+        sh.into(),
         "-c".into(),
         spawn_shell_script(),
         "fleet-spawn".into(),
         crate::core::tools::tmux().into(),
+        sh.into(),
     ]);
     a
 }
@@ -1626,10 +1654,10 @@ mod tests {
     #[test]
     fn tmux_spawn_targets_the_session_exactly() {
         assert_eq!(
-            tmux_spawn_args("fleet", "/tmp", true, &[])[..3],
+            tmux_spawn_args("fleet", "/tmp", true, &[], "/bin/sh")[..3],
             ["new-window", "-t", "=fleet:"]
         );
-        let fresh = tmux_spawn_args("fleet", "/tmp", false, &["A=1".into()]);
+        let fresh = tmux_spawn_args("fleet", "/tmp", false, &["A=1".into()], "/bin/sh");
         assert_eq!(fresh[..4], ["new-session", "-d", "-s", "fleet"]);
         let at = fresh.iter().position(|a| a == "-c").unwrap();
         assert_eq!(
@@ -1637,6 +1665,39 @@ mod tests {
             ["-c", "/tmp", "-e", SPAWN_SHELL_ENV, "-e", "A=1"]
         );
         assert!(fresh.contains(&"-P".to_string()));
+    }
+
+    // Under FLEET_PATH_ONLY the pane starts with fleet's PATH and the switch, set by tmux
+    // `-e` — on a new session and on a window in an existing one — not the server's, and
+    // is the `sh` found on that PATH.
+    #[test]
+    fn a_path_only_spawn_hands_the_pane_its_path() {
+        let env = [
+            "PATH=/t/bin:/usr/bin:/bin".to_string(),
+            "FLEET_PATH_ONLY=1".into(),
+        ];
+        for exists in [false, true] {
+            let a = tmux_spawn_args("s", "/tmp", exists, &env, "/t/bin/sh");
+            let at = a.iter().position(|a| a == "-c").unwrap();
+            assert_eq!(
+                a[at..at + 8],
+                [
+                    "-c",
+                    "/tmp",
+                    "-e",
+                    SPAWN_SHELL_ENV,
+                    "-e",
+                    "PATH=/t/bin:/usr/bin:/bin",
+                    "-e",
+                    "FLEET_PATH_ONLY=1"
+                ],
+                "{a:?}"
+            );
+            // Still the scrubbing script that ends in a login shell, run by that `sh`, which
+            // it also gets as the shell to fall back on.
+            assert_eq!(a[at + 8..at + 10], ["/t/bin/sh", "-c"]);
+            assert_eq!(a.last().unwrap(), "/t/bin/sh");
+        }
     }
 
     #[test]
@@ -1661,12 +1722,18 @@ mod tests {
 
     #[test]
     fn the_pane_starts_as_a_scrubbing_login_shell() {
-        let a = tmux_spawn_args("s", "/tmp", false, &[]);
+        let a = tmux_spawn_args("s", "/tmp", false, &[], "/bin/sh");
         assert_eq!(
-            a[a.len() - 5..a.len() - 1],
-            ["/bin/sh", "-c", &spawn_shell_script(), "fleet-spawn"]
+            a[a.len() - 6..],
+            [
+                "/bin/sh",
+                "-c",
+                &spawn_shell_script(),
+                "fleet-spawn",
+                crate::core::tools::tmux(),
+                "/bin/sh"
+            ]
         );
-        assert_eq!(a.last().unwrap(), crate::core::tools::tmux());
         for name in [
             "CLAUDECODE",
             "CLAUDE_CODE_SESSION_ID",
@@ -1692,6 +1759,7 @@ mod tests {
 
     // The script itself, run by a real `sh`: the agent's markers are gone, configuration stays,
     // and it ends in a login shell — or in tmux's `default-command`, asked of tmux at run time.
+    // It runs nothing from PATH (here an empty dir: no `env`), as under FLEET_PATH_ONLY.
     #[test]
     fn the_spawn_script_drops_the_markers_and_execs_what_tmux_would() {
         use std::os::unix::fs::PermissionsExt;
@@ -1702,11 +1770,16 @@ mod tests {
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
             p
         };
-        let shell = exe("shell", "#!/bin/sh\necho \"args:$*\"\nenv\n");
+        let empty = dir.path().join("empty-bin");
+        std::fs::create_dir_all(&empty).unwrap();
+        // `$SHELL` is where fleet's own PATH stops mattering: it may run what it likes.
+        let shell = exe("shell", "#!/bin/sh\necho \"args:$*\"\n/usr/bin/env\n");
         let run = |tmux: &std::path::Path| {
             let out = std::process::Command::new("/bin/sh")
                 .args(["-c", &spawn_shell_script(), "fleet-spawn"])
                 .arg(tmux)
+                .arg("/bin/sh")
+                .env("PATH", &empty)
                 .env("SHELL", &shell)
                 .env("CLAUDECODE", "1")
                 .env("CLAUDE_CODE_ENTRYPOINT", "cli")
@@ -1742,6 +1815,21 @@ mod tests {
         let with_default = exe("tmux-dc", "#!/bin/sh\necho 'echo custom'\n");
         let out = run(&with_default);
         assert!(out.starts_with("args:-c echo custom\n"), "{out}");
+        assert!(!out.contains("CLAUDECODE=1"), "{out}");
+
+        // An empty `$SHELL`: the `sh` it was handed (`$2`), as a login shell. (Unset, some
+        // `sh`s fill it in themselves: bash takes the account's login shell.)
+        let out = std::process::Command::new("/bin/sh")
+            .args(["-c", &spawn_shell_script(), "fleet-spawn"])
+            .arg(&no_default)
+            .arg(&shell)
+            .env("PATH", &empty)
+            .env("SHELL", "")
+            .env("CLAUDECODE", "1")
+            .output()
+            .unwrap();
+        let out = String::from_utf8_lossy(&out.stdout);
+        assert!(out.starts_with("args:-l\n"), "{out}");
         assert!(!out.contains("CLAUDECODE=1"), "{out}");
     }
 

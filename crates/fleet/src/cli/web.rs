@@ -174,6 +174,8 @@ pub fn serve_command(o: &ServeOpts) -> Result<Command> {
 }
 
 pub fn serve(o: ServeOpts) -> Result<()> {
+    // The server puts Homebrew and `~/.local/bin` on its PATH and drives iTerm.
+    tools::deny_path_only("`fleet web serve`")?;
     let mut c = serve_command(&o)?;
     if hosts::dry_run() {
         let envs: Vec<String> = c
@@ -305,6 +307,7 @@ pub struct ServiceOpts {
 }
 
 pub fn install_service(o: ServiceOpts) -> Result<()> {
+    tools::deny_path_only("`fleet web install-service`")?;
     let exe = crate::cli::hosts::current_exe()?;
     let cfg_path = config::path();
     if !cfg!(target_os = "macos") {

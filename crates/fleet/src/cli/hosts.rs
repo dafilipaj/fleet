@@ -39,6 +39,8 @@ pub fn exec(target: &Target, dir: Option<&str>, tty: bool, argv: &[String]) -> R
     let dir = dir.unwrap_or("~");
     match target {
         Target::Local { .. } => {
+            // A login shell's profile looks past PATH.
+            tools::deny_path_only("`fleet exec`")?;
             let dir = tools::expand_tilde(dir);
             let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
             let mut c = Command::new(&shell);
@@ -83,6 +85,8 @@ pub fn exec(target: &Target, dir: Option<&str>, tty: bool, argv: &[String]) -> R
 pub fn ssh(target: &Target, argv: &[String]) -> Result<i32> {
     match target {
         Target::Local { .. } => {
+            // A login shell's profile looks past PATH.
+            tools::deny_path_only("`fleet ssh`")?;
             let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
             let mut c = Command::new(&shell);
             if argv.is_empty() {
@@ -296,6 +300,11 @@ pub fn doctor(only: Option<&str>) -> Result<()> {
             .into_iter()
             .filter_map(|t| match t {
                 Ok(t) => Some(t),
+                // FLEET_PATH_ONLY: not checked, which is no problem with the host.
+                Err(e) if tools::is_refusal(&e) => {
+                    info(&format!("{} {e}", "·".dimmed()));
+                    None
+                }
                 Err(e) => {
                     bad(&e.to_string());
                     failures += 1;

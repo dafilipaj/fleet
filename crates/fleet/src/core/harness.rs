@@ -401,6 +401,7 @@ pub enum LauncherCheck {
 /// on `PATH` and the usual install dirs, then — since the spawned shell is a login shell whose
 /// profile may add to `PATH` or define the command as a function (nvm, a telemetry wrapper) —
 /// in a login shell of `$SHELL`. Only a shell that answered "not found" makes it `Missing`.
+/// Under `FLEET_PATH_ONLY` `PATH` alone decides: no install dirs, no login shell.
 /// Everything is judged from `dir`, where the spawned shell will run the launcher: a relative
 /// path (`./agent`, `bin/agent`) is resolved there, and the login shell starts there.
 pub fn check_launcher(launcher: &str, dir: &Path) -> LauncherCheck {
@@ -428,6 +429,10 @@ pub fn check_launcher(launcher: &str, dir: &Path) -> LauncherCheck {
         || (word == "claude" && crate::core::tools::claude().is_some())
     {
         return LauncherCheck::Found;
+    }
+    // A login shell would look past PATH (its profile adds to it).
+    if crate::core::tools::path_only() {
+        return LauncherCheck::Missing;
     }
     login_shell_has(word, dir)
 }

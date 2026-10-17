@@ -1469,7 +1469,8 @@ fn parse_pane(line: &str) -> Option<(String, Pane)> {
 /// Fill iTerm sessions' `tab` with their tab title via a single AppleScript call.
 /// Kept out of `discover()` so one-shot commands (peek/send) don't pay for it.
 pub fn enrich_iterm_tabs(rows: &mut [Session]) {
-    if is_fixture() {
+    // FLEET_PATH_ONLY refuses iTerm; tab names are cosmetic, so they are just left out.
+    if is_fixture() || crate::core::tools::path_only() {
         return;
     }
     if !rows

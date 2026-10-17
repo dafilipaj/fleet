@@ -776,6 +776,31 @@ fn spawn_on_another_host_under_dry_run_shows_the_ssh_line_and_the_remote_context
     );
 }
 
+// Under FLEET_PATH_ONLY `--on` another host is refused before the stack is made, and with
+// `--json` the refusal is the failure object; a refused iTerm sibling, the same.
+#[test]
+fn path_only_refuses_a_sibling_elsewhere_with_its_json_object() {
+    let t = T::new();
+    let refused = |args: &[&str], what: &str| {
+        let out = t
+            .cmd()
+            .env("FLEET_PATH_ONLY", "1")
+            .args(["stack", "spawn", "login-redirect", "--no-llm", "--json"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+        let v: Value = serde_json::from_slice(&out.stdout)
+            .unwrap_or_else(|e| panic!("{e}: {} / {}", stdout(&out), stderr(&out)));
+        assert_eq!(v["kind"], "usage", "{v}");
+        let want = format!("{what} is not available with FLEET_PATH_ONLY set");
+        assert!(v["error"].as_str().unwrap().contains(&want), "{v}");
+    };
+    refused(&["--on", "workstation"], "another host (`workstation`)");
+    refused(&["--backend", "iterm"], "the iTerm backend");
+    assert_eq!(t.stack_files(), Vec::<String>::new(), "nothing written");
+}
+
 #[test]
 fn a_host_with_a_web_url_and_no_ssh_is_reached_over_its_web_server() {
     let t = T::new();

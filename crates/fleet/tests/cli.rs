@@ -669,6 +669,681 @@ fn exact_targets_never_fall_through() {
     assert_eq!(v["kind"], "target_invalid");
 }
 
+// `FLEET_PATH_ONLY=1`: a harness installed only in a fallback dir (`~/.local/bin`) is not
+// found — PATH is all a sandbox lets fleet see. Without it, the fallback dirs still count.
+#[test]
+fn path_only_hides_binaries_outside_path() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = common::Env::new();
+    let codex = env.path("home/.local/bin/codex");
+    std::fs::create_dir_all(codex.parent().unwrap()).unwrap();
+    std::fs::write(&codex, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let empty_path = env.path("empty-bin");
+    std::fs::create_dir_all(&empty_path).unwrap();
+
+    let installed = |path_only: Option<&str>| {
+        let mut c = env.cmd();
+        c.args(["harness", "list", "--json", "--no-models"])
+            .env("PATH", &empty_path);
+        if let Some(v) = path_only {
+            c.env("FLEET_PATH_ONLY", v);
+        }
+        let out = c.output().unwrap();
+        assert!(out.status.success(), "{}", common::stderr(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        let h = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|h| h["id"] == "codex")
+            .unwrap()
+            .clone();
+        h["installed"].as_bool().unwrap()
+    };
+
+    assert!(installed(None));
+    assert!(installed(Some("0")));
+    assert!(!installed(Some("1")));
+}
+
+/// A `PATH` of stand-ins that only log that they ran, to `<env>/ran`: `ssh`, `osascript`,
+/// `node`, `npm`, `launchctl`, `agent` (a launcher), `sh` (what a tmux pane would start with),
+/// and `zsh` — a login shell that answers "not found" to the launcher probe. Proves a refusal
+/// ran nothing.
+struct Stubs {
+    bin: std::path::PathBuf,
+    log: std::path::PathBuf,
+}
+
+impl Stubs {
+    fn new(env: &common::Env) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = env.path("stub-bin");
+        let log = env.path("ran");
+        std::fs::create_dir_all(&bin).unwrap();
+        for name in [
+            "ssh",
+            "osascript",
+            "node",
+            "npm",
+            "launchctl",
+            "agent",
+            "sh",
+            "zsh",
+        ] {
+            let answer = if name == "zsh" {
+                "echo fleet:missing\n"
+            } else {
+                ""
+            };
+            let p = bin.join(name);
+            std::fs::write(
+                &p,
+                format!(
+                    "#!/bin/sh\necho \"{name} $*\" >> '{}'\n{answer}",
+                    log.display()
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        Stubs { bin, log }
+    }
+
+    fn ran(&self) -> String {
+        std::fs::read_to_string(&self.log).unwrap_or_default()
+    }
+
+    /// `fleet` under `FLEET_PATH_ONLY=1` (or without it), `PATH` the stubs alone.
+    fn cmd(&self, env: &common::Env, path_only: bool) -> assert_cmd::Command {
+        let mut c = env.cmd();
+        c.env("PATH", &self.bin)
+            .env("SHELL", self.bin.join("zsh"))
+            .env("FLEET_CMD", self.bin.join("agent"))
+            .timeout(std::time::Duration::from_secs(30));
+        if path_only {
+            c.env("FLEET_PATH_ONLY", "1");
+        }
+        c
+    }
+}
+
+/// The refusal every out-of-scope feature gives under `FLEET_PATH_ONLY`: exit 1, the message
+/// naming the switch.
+fn assert_refused(out: &std::process::Output, what: &str) {
+    let err = common::stderr(out);
+    assert_eq!(out.status.code(), Some(1), "{what}: {err}");
+    assert!(
+        err.contains(&format!("{what} is not available with FLEET_PATH_ONLY set")),
+        "{what}: {err}"
+    );
+}
+
+// Under FLEET_PATH_ONLY a launcher not on PATH is missing at once: no login shell is asked
+// (its profile would look past PATH). Without the switch the shell is still asked.
+#[test]
+fn path_only_never_probes_a_login_shell_for_the_launcher() {
+    let env = common::Env::new();
+    let stubs = Stubs::new(&env);
+    let dir = env.path("work");
+    std::fs::create_dir_all(&dir).unwrap();
+    let spawn = |path_only: bool| {
+        let out = stubs
+            .cmd(&env, path_only)
+            .env("FLEET_CMD", "fleet-test-no-such-agent")
+            .args(["spawn", "--backend", "tmux", "--json", "--dir"])
+            .arg(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1), "{}", common::stderr(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(v["kind"], "harness_missing", "{v}");
+        v["error"].as_str().unwrap().to_string()
+    };
+
+    let err = spawn(true);
+    assert!(err.contains("not on PATH (FLEET_PATH_ONLY"), "{err}");
+    assert_eq!(stubs.ran(), "", "nothing ran, the login shell least of all");
+
+    spawn(false);
+    assert!(stubs.ran().starts_with("zsh -l -i -c "), "{}", stubs.ran());
+}
+
+// `fleet web serve`, every service install and the iTerm backend reach past PATH by design:
+// under FLEET_PATH_ONLY they are refused (kind `usage`) before anything runs — even a dry
+// run or `--print`.
+#[test]
+fn path_only_refuses_the_web_server_service_installs_and_iterm() {
+    let env = common::Env::new();
+    let stubs = Stubs::new(&env);
+    let refused: [(&[&str], &str); 4] = [
+        (&["-n", "web", "serve"], "`fleet web serve`"),
+        (
+            &["web", "install-service", "--print"],
+            "`fleet web install-service`",
+        ),
+        (
+            &["jobs", "install-service", "--print"],
+            "`fleet jobs install-service`",
+        ),
+        (
+            &["repos", "install-service", "--print"],
+            "`fleet repos install-service`",
+        ),
+    ];
+    for (args, what) in refused {
+        let out = stubs.cmd(&env, true).args(args).output().unwrap();
+        assert_refused(&out, what);
+    }
+
+    // iTerm: refused as a spawn's backend, with the `--json` object's kind…
+    let dir = env.path("work");
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = stubs
+        .cmd(&env, true)
+        .args(["spawn", "--backend", "iterm", "--json", "--dir"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert_refused(&out, "the iTerm backend");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["kind"], "usage", "{v}");
+    assert_eq!(v["partial"], serde_json::Value::Null, "{v}");
+    // …and never the default one: a spawn nobody pointed anywhere lands in tmux.
+    let out = stubs
+        .cmd(&env, true)
+        .args(["-n", "spawn", "--json", "--dir"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", common::stderr(&out));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["backend"], "tmux", "{v}");
+
+    assert_eq!(stubs.ran(), "", "a refusal runs nothing");
+}
+
+// Under FLEET_PATH_ONLY another host is refused, however it is named — `-H`, `FLEET_HOST`, the
+// config's `defaultHost`, an ad-hoc ssh destination, a host reached only through its web
+// server — and nothing is forwarded. Fan-outs skip each such host with the same refusal.
+// This machine (`-H local`) still works.
+#[test]
+fn path_only_refuses_other_hosts() {
+    let env = common::Env::new();
+    let mut cfg = common::two_hosts();
+    cfg["hosts"]["shed"] = serde_json::json!({ "ssh": null, "web": "http://127.0.0.1:9/" });
+    env.write_config(&cfg);
+    let stubs = Stubs::new(&env);
+
+    let refused: [(&[&str], Option<&str>, &str); 5] = [
+        (&["-H", "workstation", "list"], None, "workstation"),
+        (&["list"], Some("workstation"), "workstation"),
+        (&["tmux", "list"], None, "workstation"),
+        (&["-H", "some-alias", "peek", "x"], None, "some-alias"),
+        (&["-H", "shed", "stack", "list"], None, "shed"),
+    ];
+    for (args, fleet_host, host) in refused {
+        let mut c = stubs.cmd(&env, true);
+        if let Some(h) = fleet_host {
+            c.env("FLEET_HOST", h);
+        }
+        let out = c.args(args).output().unwrap();
+        assert_refused(&out, &format!("another host (`{host}`)"));
+    }
+
+    // `spawn --json` still answers with one object.
+    let out = stubs
+        .cmd(&env, true)
+        .args(["-H", "workstation", "spawn", "--json", "--dir", "~/x", "hi"])
+        .output()
+        .unwrap();
+    assert_refused(&out, "another host (`workstation`)");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        (&v["kind"], &v["host"]),
+        (&"usage".into(), &"workstation".into())
+    );
+
+    // A fan-out reports the host as refused and lists this machine.
+    let out = stubs
+        .cmd(&env, true)
+        .args(["list", "--all-hosts", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", common::stderr(&out));
+    assert!(
+        common::stderr(&out).contains("workstation: another host (`workstation`) is not available"),
+        "{}",
+        common::stderr(&out)
+    );
+
+    let out = stubs
+        .cmd(&env, true)
+        .args(["-H", "local", "list", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", common::stderr(&out));
+    assert_eq!(stubs.ran(), "", "nothing went over ssh");
+
+    // Without the switch `-H` is forwarded over ssh as ever.
+    let out = stubs
+        .cmd(&env, false)
+        .args(["-H", "workstation", "list"])
+        .output()
+        .unwrap();
+    assert!(stubs.ran().starts_with("ssh "), "{}", common::stderr(&out));
+}
+
+/// `out`'s stdout as the one `--json` failure object of a FLEET_PATH_ONLY refusal of `what`.
+fn json_refusal(out: &std::process::Output, what: &str) -> serde_json::Value {
+    assert_refused(out, what);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("{what}: {e}: {}", common::stdout(out)));
+    assert_eq!(
+        (&v["ok"], &v["kind"]),
+        (&false.into(), &"usage".into()),
+        "{v}"
+    );
+    assert!(v["error"].as_str().unwrap().contains(what), "{v}");
+    v
+}
+
+// A host refusal is a usage error the command itself would print as JSON: with `--json`, one
+// failure object on stdout, whichever command and however the host is named.
+#[test]
+fn path_only_host_refusals_answer_json() {
+    let env = common::Env::new();
+    env.write_config(&common::two_hosts());
+    let stubs = Stubs::new(&env);
+    let refused: [(&[&str], Option<&str>); 8] = [
+        (&["-H", "workstation", "peek", "x", "--json"], None),
+        (&["-H", "workstation", "send", "x", "hi", "--json"], None),
+        (&["-H", "workstation", "keys", "x", "Enter", "--json"], None),
+        (&["-H", "workstation", "close", "x", "--json"], None),
+        (&["-H", "workstation", "messages", "x", "--json"], None),
+        (&["-H", "workstation", "list", "--json"], None),
+        (&["peek", "x", "--json"], Some("workstation")),
+        // The default host (`tmux` commands) is the remote one.
+        (&["tmux", "list", "--json"], None),
+    ];
+    for (args, fleet_host) in refused {
+        let mut c = stubs.cmd(&env, true);
+        if let Some(h) = fleet_host {
+            c.env("FLEET_HOST", h);
+        }
+        let out = c.args(args).output().unwrap();
+        let v = json_refusal(&out, "another host (`workstation`)");
+        assert_eq!(v["host"], "laptop", "{args:?}: {v}");
+    }
+    // Without `--json`, the plain error alone.
+    let out = stubs
+        .cmd(&env, true)
+        .args(["-H", "workstation", "peek", "x"])
+        .output()
+        .unwrap();
+    assert_refused(&out, "another host (`workstation`)");
+    assert_eq!(common::stdout(&out), "");
+    assert_eq!(stubs.ran(), "", "nothing went over ssh");
+}
+
+// Under FLEET_PATH_ONLY an iTerm spawn is refused before anything is written for it — a dry
+// run included, which would otherwise promise an iTerm spawn: no handoff brief, no resume stamp.
+#[test]
+fn path_only_refuses_iterm_before_writing_anything() {
+    let env = common::Env::new();
+    let stubs = Stubs::new(&env);
+    let dir = env.path("work");
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.display().to_string();
+    let iterm = "the iTerm backend";
+
+    let out = stubs
+        .cmd(&env, true)
+        .args(["-n", "spawn", "--backend", "iterm", "--json", "--dir", &dir])
+        .output()
+        .unwrap();
+    let v = json_refusal(&out, iterm);
+    assert_eq!(v["partial"], serde_json::Value::Null, "{v}");
+
+    let out = stubs
+        .cmd(&env, true)
+        .args(["handoff", "take the login bug", "--backend", "iterm"])
+        .args(["--no-wait", "--dir", &dir])
+        .output()
+        .unwrap();
+    assert_refused(&out, iterm);
+    let handoffs = env.path("home/.claude/fleet-handoffs");
+    assert!(
+        std::fs::read_dir(&handoffs).map_or(true, |mut d| d.next().is_none()),
+        "a handoff brief was written"
+    );
+
+    let out = stubs
+        .cmd(&env, true)
+        .args(["spawn", "--resume", "0b7e3c1a-5d2f-4e6a-9c8b-1f2e3d4c5b6a"])
+        .args(["--backend", "iterm", "--json", "--dir", &dir])
+        .output()
+        .unwrap();
+    json_refusal(&out, iterm);
+    assert!(
+        std::fs::read_dir(env.path("locks")).map_or(true, |mut d| d.next().is_none()),
+        "a resume was reserved"
+    );
+    assert_eq!(stubs.ran(), "", "a refusal runs nothing");
+}
+
+// `fleet exec` and `fleet ssh` on this machine run `$SHELL -l`, whose profile looks past PATH:
+// refused under FLEET_PATH_ONLY, dry runs included. Without it, a dry run shows the command.
+#[test]
+fn path_only_refuses_a_local_exec_and_ssh() {
+    let env = common::Env::new();
+    let stubs = Stubs::new(&env);
+    for (args, what) in [
+        (&["-n", "exec", "--", "true"][..], "`fleet exec`"),
+        (&["exec", "--", "true"], "`fleet exec`"),
+        (&["-n", "ssh"], "`fleet ssh`"),
+        (&["-n", "ssh", "true"], "`fleet ssh`"),
+    ] {
+        let out = stubs.cmd(&env, true).args(args).output().unwrap();
+        assert_refused(&out, what);
+    }
+    assert_eq!(stubs.ran(), "", "no shell ran");
+
+    let out = stubs
+        .cmd(&env, false)
+        .args(["-n", "exec", "--", "true"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", common::stderr(&out));
+    assert!(
+        common::stdout(&out).contains(" -l -c "),
+        "{}",
+        common::stdout(&out)
+    );
+}
+
+// Under FLEET_PATH_ONLY a PATH that is unset or empty is refused before the command runs: a
+// bare-name exec would fall back to the C library's default path. A `--json` command still
+// answers with its failure object.
+#[test]
+fn path_only_needs_a_path() {
+    let env = common::Env::new();
+    let dir = env.path("work");
+    std::fs::create_dir_all(&dir).unwrap();
+    let what = "PATH is unset or empty";
+    for path in [None, Some("")] {
+        let cmd = || {
+            let mut c = env.cmd();
+            c.env("FLEET_PATH_ONLY", "1");
+            match path {
+                Some(p) => c.env("PATH", p),
+                None => c.env_remove("PATH"),
+            };
+            c
+        };
+        let out = cmd().args(["list"]).output().unwrap();
+        assert_eq!(out.status.code(), Some(1), "{path:?}");
+        assert!(
+            common::stderr(&out).contains(what),
+            "{}",
+            common::stderr(&out)
+        );
+        assert_eq!(common::stdout(&out), "");
+
+        let out = cmd().args(["peek", "x", "--json"]).output().unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(v["kind"], "usage", "{v}");
+        assert!(v["error"].as_str().unwrap().contains(what), "{v}");
+
+        let out = cmd()
+            .args(["spawn", "--json", "--dir"])
+            .arg(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1));
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(
+            (&v["kind"], &v["partial"]),
+            (&"usage".into(), &serde_json::Value::Null)
+        );
+
+        // Without the switch, no PATH is just no PATH.
+        let mut c = env.cmd();
+        match path {
+            Some(p) => c.env("PATH", p),
+            None => c.env_remove("PATH"),
+        };
+        let out = c.args(["list", "--json"]).output().unwrap();
+        assert!(out.status.success(), "{}", common::stderr(&out));
+    }
+}
+
+// Under FLEET_PATH_ONLY a PATH with a relative or empty entry is refused at startup too: tmux
+// would resolve it against each pane's own directory.
+#[test]
+fn path_only_refuses_a_relative_path_entry() {
+    let env = common::Env::new();
+    for (path, named) in [("bin", "`bin`"), ("/usr/bin::/bin", "an empty entry")] {
+        let out = env
+            .cmd()
+            .env("FLEET_PATH_ONLY", "1")
+            .env("PATH", path)
+            .args(["peek", "x", "--json"])
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1), "{path}");
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(v["kind"], "usage", "{v}");
+        let error = v["error"].as_str().unwrap();
+        assert!(error.contains(named), "{v}");
+        assert!(error.contains("not an absolute directory"), "{v}");
+    }
+}
+
+// `doctor` under FLEET_PATH_ONLY says each other host is refused, and does not count that as a
+// problem: this machine alone decides its exit code.
+#[test]
+fn path_only_doctor_skips_other_hosts_without_failing() {
+    let env = common::Env::new();
+    env.write_config(&common::two_hosts());
+    let stubs = Stubs::new(&env);
+    let out = stubs.cmd(&env, true).arg("doctor").output().unwrap();
+    let text = common::stdout(&out);
+    assert!(out.status.success(), "{text}\n{}", common::stderr(&out));
+    assert!(
+        text.contains("another host (`workstation`) is not available with FLEET_PATH_ONLY set"),
+        "{text}"
+    );
+    assert!(!stubs.ran().contains("ssh "), "{}", stubs.ran());
+}
+
+/// The session id of [`iterm_session`].
+const ITERM_ID: &str = "1f2e3d4c-5b6a-4e6a-9c8b-0b7e3c1a5d2f";
+
+/// A Claude session in iTerm, as discovery sees one: a registered process with a terminal of
+/// its own, whose environment carries `ITERM_SESSION_ID` and no `TMUX`. It is a `tmux wait-for`
+/// client idling in a pane of the test's private server, which gives it the terminal; unlike a
+/// platform binary's (`sleep`, `sh`) on macOS, its environment is one `ps` can read. `false`
+/// when tmux is not installed. It goes with the server when the `Env` drops.
+fn iterm_session(env: &common::Env) -> bool {
+    if fleet::core::tools::find_binary("tmux").is_none() {
+        return false;
+    }
+    let wrapper = env.tmux_wrapper().display().to_string();
+    let out = env.tmux(&[
+        "new-session",
+        "-d",
+        "-s",
+        "fleet-test-iterm",
+        "-P",
+        "-F",
+        "#{pane_pid}",
+        "/usr/bin/env",
+        "-u",
+        "TMUX",
+        "-u",
+        "TMUX_PANE",
+        "ITERM_SESSION_ID=w0t0p0:FLEET-TEST-ITERM",
+        &wrapper,
+        "wait-for",
+        "fleet-test-never",
+    ]);
+    assert!(out.status.success(), "{}", common::stderr(&out));
+    let pid: i64 = common::stdout(&out).trim().parse().unwrap();
+    // Until `env` and the wrapper have exec'd the tmux client, its environment is not the one
+    // to read.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let ps = std::process::Command::new("ps")
+            .args(["-o", "comm=", "-p", &pid.to_string()])
+            .output()
+            .unwrap();
+        if common::stdout(&ps).trim().ends_with("tmux") {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "no iTerm stand-in");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let sessions = env.path("home/.claude/sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    let reg = serde_json::json!({
+        "pid": pid, "sessionId": ITERM_ID, "cwd": env.dir.path(), "name": "iterm-tab",
+        "nameSource": "user", "status": "idle", "kind": "interactive", "entrypoint": "cli",
+        "procStart": common::fake::proc_start(pid),
+    });
+    std::fs::write(sessions.join(format!("{pid}.json")), reg.to_string()).unwrap();
+    true
+}
+
+/// [`Stubs::cmd`] with the system dirs after the stubs, for `ps` (discovery).
+fn with_ps(stubs: &Stubs, env: &common::Env, path_only: bool) -> assert_cmd::Command {
+    let mut c = stubs.cmd(env, path_only);
+    c.env("PATH", format!("{}:/usr/bin:/bin", stubs.bin.display()));
+    c
+}
+
+// Under FLEET_PATH_ONLY anything that drives an iTerm session is refused (kind `usage`)
+// before `osascript` runs; `list` leaves the tab title out rather than ask iTerm for it.
+// Without the switch the very same `list` asks (the stub runs): the setup reaches the gate.
+#[test]
+fn path_only_never_drives_iterm() {
+    let env = common::Env::new();
+    let stubs = Stubs::new(&env);
+    if !iterm_session(&env) {
+        return;
+    }
+    let target = format!("id:{ITERM_ID}");
+
+    let out = with_ps(&stubs, &env, true)
+        .args(["list", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", common::stderr(&out));
+    let rows: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(rows[0]["backend"], "iterm", "{rows}");
+    assert_eq!(rows[0]["tab"], serde_json::Value::Null, "{rows}");
+
+    for args in [
+        &["peek", &target, "--json"][..],
+        &["send", &target, "hi", "--json"],
+        &["keys", &target, "Enter", "--json"],
+    ] {
+        let out = with_ps(&stubs, &env, true).args(args).output().unwrap();
+        json_refusal(&out, "the iTerm backend");
+    }
+    assert_eq!(stubs.ran(), "", "osascript ran");
+
+    let out = with_ps(&stubs, &env, false)
+        .args(["list", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", common::stderr(&out));
+    assert!(stubs.ran().starts_with("osascript "), "{}", stubs.ran());
+}
+
+// `claude` installed only in `~/.claude/local` (a hard-coded install location) is not there
+// under FLEET_PATH_ONLY: the default launcher is `harness_missing`.
+#[test]
+fn path_only_ignores_claude_in_its_install_dir() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = common::Env::new();
+    let stubs = Stubs::new(&env);
+    let local = env.path("home/.claude/local");
+    std::fs::create_dir_all(&local).unwrap();
+    std::fs::write(local.join("claude"), "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(local.join("claude"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let dir = env.path("work");
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = stubs
+        .cmd(&env, true)
+        .env_remove("FLEET_CMD")
+        .args(["spawn", "--backend", "tmux", "--json", "--dir"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1), "{}", common::stderr(&out));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["kind"], "harness_missing", "{v}");
+    assert!(v["error"].as_str().unwrap().contains("`claude`"), "{v}");
+    assert_eq!(stubs.ran(), "");
+}
+
+// `fleet tmux new` under FLEET_PATH_ONLY gives its session fleet's PATH and the switch (tmux
+// `-e`), over the server's environment, as a spawn does.
+#[test]
+fn path_only_tmux_new_hands_the_session_fleets_path() {
+    use std::os::unix::fs::PermissionsExt;
+    if fleet::core::tools::find_binary("tmux").is_none() {
+        return;
+    }
+    let env = common::Env::new();
+    let bin = env.path("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let idle = bin.join("idle");
+    std::fs::write(&idle, "#!/bin/sh\nexec /bin/sleep 30\n").unwrap();
+    std::fs::set_permissions(&idle, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+    // A server whose own environment says otherwise.
+    let out = env.tmux(&[
+        "new-session",
+        "-d",
+        "-s",
+        "fleet-test-base",
+        "/bin/sleep",
+        "30",
+    ]);
+    assert!(out.status.success(), "{}", common::stderr(&out));
+    let session = |name: &str, path_only: bool| {
+        let mut c = env.cmd();
+        c.env("PATH", &path).env("SHELL", "/bin/sh");
+        if path_only {
+            c.env("FLEET_PATH_ONLY", "1");
+        }
+        let out = c
+            .args(["tmux", "new", "-d", name, "--"])
+            .arg(&idle)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", common::stderr(&out));
+        let shown = |var: &str| {
+            common::stdout(&env.tmux(&["show-environment", "-t", name, var]))
+                .trim()
+                .to_string()
+        };
+        (shown("PATH"), shown("FLEET_PATH_ONLY"))
+    };
+    assert_eq!(
+        session("fleet-test-p", true),
+        (format!("PATH={path}"), "FLEET_PATH_ONLY=1".to_string())
+    );
+    // Without the switch the session adds nothing of its own.
+    assert_eq!(
+        session("fleet-test-q", false),
+        (String::new(), String::new())
+    );
+}
+
 // Claude's default model option names what Claude Code would start with: `ANTHROPIC_MODEL`,
 // else `model` in `$CLAUDE_CONFIG_DIR/settings.json` (else `~/.claude/settings.json`).
 #[test]
