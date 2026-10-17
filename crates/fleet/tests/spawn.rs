@@ -636,6 +636,135 @@ fn the_spawned_pane_honours_the_effective_default_command() {
     assert!(!has_var(&env, "CLAUDECODE"));
 }
 
+/// `name`'s value in an environment dump.
+fn var_of<'a>(env: &'a str, name: &str) -> Option<&'a str> {
+    env.lines()
+        .find_map(|l| l.strip_prefix(name).and_then(|r| r.strip_prefix('=')))
+}
+
+// Under FLEET_PATH_ONLY the pane starts with fleet's own PATH and the switch, passed with tmux
+// `-e` — over the tmux server's environment, which a pane otherwise inherits: in a new session,
+// and in a window of a session made without them. (`default-command` is a plain `sh` here, so
+// no login profile rewrites PATH after the pane starts.)
+#[test]
+fn a_path_only_spawn_hands_the_pane_fleets_path() {
+    let Some(r) = Rig::new() else { return };
+    std::fs::write(
+        r.p("home/.tmux.conf"),
+        "set -g default-command 'exec /bin/sh'\n",
+    )
+    .unwrap();
+    let work = r.s("work");
+    let path = format!("{}:/usr/bin:/bin", r.s("bin"));
+    let spawn = |path_only: bool, extra: &[&str]| {
+        let mut c = r.cmd();
+        c.env("PATH", &path);
+        if path_only {
+            c.env("FLEET_PATH_ONLY", "1");
+        }
+        c.args(["spawn", "--backend", "tmux", "--json", "--dir", &work])
+            .args(extra);
+        let (out, v) = r.json_of(&mut c);
+        assert!(out.status.success(), "{v} / {}", stderr(&out));
+        r.agent_argv();
+        agent_env(&r)
+    };
+
+    // The server starts without the switch; then its global environment says otherwise.
+    spawn(false, &["--name", "fleet-test-p"]);
+    r.tmux(&[
+        "set-environment",
+        "-g",
+        "PATH",
+        "/fleet-test-stale:/usr/bin:/bin",
+    ]);
+    r.tmux(&["set-environment", "-g", "FLEET_PATH_ONLY", "0"]);
+    // Without the switch a pane gets the server's…
+    let env = spawn(false, &["--name", "fleet-test-q"]);
+    assert_eq!(var_of(&env, "FLEET_PATH_ONLY"), Some("0"));
+    // …with it, fleet's.
+    for extra in [
+        &["--name", "fleet-test-r"][..],
+        &["--tmux-session", "fleet-test-p"],
+    ] {
+        let env = spawn(true, extra);
+        assert_eq!(var_of(&env, "PATH"), Some(path.as_str()), "{extra:?}");
+        assert_eq!(var_of(&env, "FLEET_PATH_ONLY"), Some("1"), "{extra:?}");
+    }
+}
+
+// Under FLEET_PATH_ONLY the pane runs nothing from outside PATH, and needs nothing on it but
+// `sh`: tmux starts the `sh` found there (not `/bin/sh`), which scrubs the agent markers itself
+// (no `env`) and becomes `$SHELL -l` — the one exception. With no `sh` on PATH the spawn is
+// refused before anything opens or is written.
+#[test]
+fn a_path_only_spawn_needs_only_sh_on_path() {
+    let Some(r) = Rig::new() else { return };
+    let work = r.s("work");
+    std::fs::create_dir_all(r.p("only-sh")).unwrap();
+    std::fs::create_dir_all(r.p("nothing")).unwrap();
+    write_exe(
+        &r.p("only-sh/sh"),
+        &format!(
+            "#!/bin/sh\necho \"sh $*\" >> '{}'\nexec /bin/sh \"$@\"\n",
+            r.s("sh.log")
+        ),
+    );
+    // The login shell's profile gives the agent the system tools back.
+    std::fs::write(
+        r.p("home/.profile"),
+        "PATH=\"$PATH:/usr/bin:/bin\"; export PATH\n",
+    )
+    .unwrap();
+
+    let mut c = r.cmd();
+    c.env("PATH", r.p("only-sh"))
+        .env("FLEET_PATH_ONLY", "1")
+        .env("CLAUDECODE", "1")
+        .args(["spawn", "--backend", "tmux", "--json", "--dir", &work])
+        .args(["--name", "fleet-test-sh", "go"]);
+    let (out, v) = r.json_of(&mut c);
+    assert!(out.status.success(), "{v} / {}", stderr(&out));
+    assert!(r.agent_argv().ends_with(&["go".to_string()]));
+    assert!(!has_var(&agent_env(&r), "CLAUDECODE"));
+    let log = std::fs::read_to_string(r.p("sh.log")).unwrap_or_default();
+    assert!(log.starts_with("sh -c "), "the pane's sh: {log:?}");
+
+    // No `sh` on PATH: refused (kind `usage`), a dry run included, and nothing is written.
+    for dry in [false, true] {
+        let mut c = r.cmd();
+        c.env("PATH", r.p("nothing")).env("FLEET_PATH_ONLY", "1");
+        if dry {
+            c.arg("-n");
+        }
+        c.args(["spawn", "--backend", "tmux", "--json", "--dir", &work])
+            .args(["--name", "fleet-test-nosh", "go"]);
+        let (out, v) = r.json_of(&mut c);
+        assert_eq!(out.status.code(), Some(1), "{v}");
+        assert_eq!(v["kind"], "usage", "{v}");
+        assert!(v["error"].as_str().unwrap().contains("`sh`"), "{v}");
+    }
+    let out = r
+        .cmd()
+        .env("PATH", r.p("nothing"))
+        .env("FLEET_PATH_ONLY", "1")
+        .args([
+            "handoff",
+            "take it",
+            "--backend",
+            "tmux",
+            "--no-wait",
+            "--dir",
+            &work,
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(stderr(&out).contains("`sh`"), "{}", stderr(&out));
+    assert!(!r.p("home/.claude/fleet-handoffs").exists());
+    assert!(!r.sessions().contains(&"fleet-test-nosh".to_string()));
+}
+
 // --- spawn --resume ---------------------------------------------------------
 
 const RESUME_ID: &str = "0b7e3c1a-5d2f-4e6a-9c8b-1f2e3d4c5b6a";

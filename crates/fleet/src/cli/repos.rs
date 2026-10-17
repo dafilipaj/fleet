@@ -371,6 +371,7 @@ pub fn launchd_plist(exe: &Path, config_path: &Path, path_env: &str, log: &Path)
 }
 
 pub fn install_service(o: ServiceOpts) -> Result<()> {
+    tools::deny_path_only("`fleet repos install-service`")?;
     if !cfg!(target_os = "macos") {
         return Err(Error::exit(
             1,

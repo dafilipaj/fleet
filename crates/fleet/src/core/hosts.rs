@@ -87,7 +87,8 @@ fn is_local_alias(name: &str) -> bool {
 ///
 /// `requested` is `--host` (or `$FLEET_HOST`). An unconfigured name is taken as
 /// an ssh destination as-is, so `fleet -H some-alias tmux list` works before
-/// `fleet init` has ever run.
+/// `fleet init` has ever run. Under `FLEET_PATH_ONLY` another host is refused (kind
+/// `usage`): every remote target is made here, so nothing is forwarded over ssh.
 pub fn resolve(
     cfg: &Config,
     requested: Option<&str>,
@@ -109,6 +110,7 @@ pub fn resolve(
     if name == me || is_local_alias(&name) {
         return Ok(Target::Local { name: me });
     }
+    crate::core::tools::deny_path_only(&format!("another host (`{name}`)"))?;
     match cfg.host(&name) {
         Some(h) => {
             let dest = h

@@ -294,6 +294,8 @@ pub fn spawn(
     prompt: Option<String>,
     mut opts: crate::cli::commands::SpawnOpts,
 ) -> Result<()> {
+    // A backend FLEET_PATH_ONLY refuses fails before the checkout, not after it.
+    opts.backend()?;
     let wt = checkout(r, false)?;
     let extra = prompt.as_deref().map(str::trim).filter(|p| !p.is_empty());
     let first = match extra {

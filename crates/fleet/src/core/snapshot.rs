@@ -1669,9 +1669,28 @@ fn restore_line(launcher: &str, dir: &str, c: &ClaudeSnap) -> Result<String> {
 struct Exec {
     dry: bool,
     log: Vec<String>,
+    /// `KEY=value`s the panes it opens start with (`-e`), whatever tmux's own environment.
+    env: Vec<String>,
 }
 
 impl Exec {
+    /// `pane_env` goes on top of [`SPAWN_SHELL_ENV`](crate::core::backend::SPAWN_SHELL_ENV):
+    /// [`tools::pane_env`] for a real restore.
+    fn new(dry: bool, pane_env: Vec<String>) -> Self {
+        let mut env = vec![crate::core::backend::SPAWN_SHELL_ENV.to_string()];
+        env.extend(pane_env);
+        Exec {
+            dry,
+            log: Vec::new(),
+            env,
+        }
+    }
+
+    /// `-e KEY=value` for each of [`Exec::env`].
+    fn env_args(&self) -> impl Iterator<Item = String> + '_ {
+        self.env.iter().flat_map(|kv| [s("-e"), kv.clone()])
+    }
+
     fn render(args: &[String]) -> String {
         let mut shown = tools::shq_min(tools::tmux());
         for a in args {
@@ -1795,14 +1814,8 @@ fn rebuild(
             .collect();
         let mut args = if wi == 0 {
             // Splits and later windows inherit the session's environment.
-            let mut a = vec![
-                s("new-session"),
-                s("-d"),
-                s("-s"),
-                s(name),
-                s("-e"),
-                s(crate::core::backend::SPAWN_SHELL_ENV),
-            ];
+            let mut a = vec![s("new-session"), s("-d"), s("-s"), s(name)];
+            a.extend(ex.env_args());
             // Big enough for every split; an attaching client resizes it anyway.
             if let Some((x, y)) = layout_size(&w.layout) {
                 a.extend([s("-x"), x.to_string(), s("-y"), y.to_string()]);
@@ -2227,10 +2240,8 @@ fn restore_from(snap: &Snapshot, pool: Pool, target: &Target, launcher: &str) ->
     } else {
         Some(take(pool, target)??)
     };
-    let mut ex = Exec {
-        dry,
-        log: Vec::new(),
-    };
+    // Under FLEET_PATH_ONLY the panes get fleet's PATH and the switch, not the server's.
+    let mut ex = Exec::new(dry, tools::pane_env());
     let mut warnings = Vec::new();
     let built = match (&entry, &host_session) {
         (Taken::Claude(c), Some(h)) => {
@@ -2308,22 +2319,10 @@ fn reopen_in(
         return Ok(Vec::new());
     }
     let dir = usable_dir(c.cwd.as_deref().unwrap_or("~"), warnings);
-    let pane = ex.run(
-        vec![
-            s("new-window"),
-            s("-d"),
-            s("-t"),
-            format!("={session}:"),
-            s("-e"),
-            s(crate::core::backend::SPAWN_SHELL_ENV),
-            s("-c"),
-            dir.clone(),
-            s("-P"),
-            s("-F"),
-            s("#{pane_id}"),
-        ],
-        "%new",
-    )?;
+    let mut args = vec![s("new-window"), s("-d"), s("-t"), format!("={session}:")];
+    args.extend(ex.env_args());
+    args.extend([s("-c"), dir.clone(), s("-P"), s("-F"), s("#{pane_id}")]);
+    let pane = ex.run(args, "%new")?;
     tag_job(ex, &pane, c, warnings);
     let line = restore_line(launcher, &dir, c)?;
     ex.type_line(&pane, &line)?;
@@ -2996,10 +2995,7 @@ garbage";
             }],
             ..Default::default()
         });
-        let mut ex = Exec {
-            dry: true,
-            log: Vec::new(),
-        };
+        let mut ex = Exec::new(true, Vec::new());
         let mut warn = Vec::new();
         let skip = HashSet::from(["s-2".to_string()]);
         let launched = rebuild(&mut ex, &t, "api", "claude", &skip, &mut warn).unwrap();
@@ -3336,10 +3332,7 @@ garbage";
 
     #[test]
     fn a_closed_claude_reopens_in_a_window_of_its_tmux_session() {
-        let mut ex = Exec {
-            dry: true,
-            log: Vec::new(),
-        };
+        let mut ex = Exec::new(true, Vec::new());
         let mut warn = Vec::new();
         let c = ClaudeSnap {
             flags: argv("--chrome"),
@@ -3362,10 +3355,7 @@ garbage";
         );
         assert_eq!(launched.len(), 1);
         // Running elsewhere: nothing opened.
-        let mut ex = Exec {
-            dry: true,
-            log: Vec::new(),
-        };
+        let mut ex = Exec::new(true, Vec::new());
         let skip = HashSet::from(["s-1".to_string()]);
         assert!(
             reopen_in(&mut ex, &c, "api", "claude", &skip, &mut warn)
@@ -3373,6 +3363,47 @@ garbage";
                 .is_empty()
         );
         assert!(ex.log.is_empty());
+    }
+
+    // Under FLEET_PATH_ONLY a restore's panes start with fleet's PATH and the switch, not the
+    // tmux server's: the session it rebuilds (its splits and later windows inherit them), and a
+    // window it reopens in a live session.
+    #[test]
+    fn a_path_only_restore_hands_its_panes_the_path() {
+        let env = || {
+            vec![
+                "PATH=/t/bin:/usr/bin:/bin".to_string(),
+                "FLEET_PATH_ONLY=1".into(),
+            ]
+        };
+        let e = "-e DISABLE_AUTO_UPDATE=true -e PATH=/t/bin:/usr/bin:/bin -e FLEET_PATH_ONLY=1";
+        let mut warn = Vec::new();
+        let mut ex = Exec::new(true, env());
+        rebuild(
+            &mut ex,
+            &tmux("api", &["s-1"]),
+            "api",
+            "claude",
+            &HashSet::new(),
+            &mut warn,
+        )
+        .unwrap();
+        assert!(
+            ex.log[0].contains(&format!("new-session -d -s api {e} ")),
+            "{:?}",
+            ex.log
+        );
+        let mut ex = Exec::new(true, env());
+        let c = ClaudeSnap {
+            tmux_session: Some("api".into()),
+            ..claude("s-1")
+        };
+        reopen_in(&mut ex, &c, "api", "claude", &HashSet::new(), &mut warn).unwrap();
+        assert!(
+            ex.log[0].contains(&format!("new-window -d -t '=api:' {e} -c ")),
+            "{:?}",
+            ex.log
+        );
     }
 
     #[test]
