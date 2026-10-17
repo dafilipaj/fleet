@@ -121,6 +121,8 @@ impl Env {
             ("TMUX_TMPDIR", Some(self.sockets.path().into())),
             // `fleet list` records the session snapshot: never into the real one.
             ("FLEET_SNAPSHOT", Some(self.path("snapshot.json").into())),
+            // Typing locks and `spawn --resume` reservations: never the machine's.
+            ("FLEET_LOCK_DIR", Some(self.path("locks").into())),
             ("FLEET_MUX", Some("0".into())),
             ("FLEET_CONNECT_TIMEOUT", Some("2".into())),
             ("NO_COLOR", Some("1".into())),

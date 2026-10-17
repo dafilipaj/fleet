@@ -100,6 +100,7 @@ impl Rig {
             .env("TMUX_TMPDIR", self.sockets.path())
             .env("HOME", self.p("home"))
             .env("XDG_STATE_HOME", self.p("home/state"))
+            .env("FLEET_LOCK_DIR", self.p("locks"))
             .env("FLEET_CMD", self.p("bin/agent"))
             .env("SHELL", "/bin/sh")
             .env("PATH", path)
@@ -633,4 +634,538 @@ fn the_spawned_pane_honours_the_effective_default_command() {
         "the session's default-command did not run"
     );
     assert!(!has_var(&env, "CLAUDECODE"));
+}
+
+// --- spawn --resume ---------------------------------------------------------
+
+const RESUME_ID: &str = "0b7e3c1a-5d2f-4e6a-9c8b-1f2e3d4c5b6a";
+
+// Claude resumes as `<launcher> --resume=<id>` (the id bound to its flag), through the plain
+// spawn's path: the same object plus `resumed`, and no prompt typed.
+#[test]
+fn spawn_resume_starts_claudes_own_resume() {
+    let Some(r) = Rig::new() else { return };
+    let work = r.s("work");
+    let (out, v) = r.spawn_json(&[
+        "--resume",
+        RESUME_ID,
+        "--dir",
+        &work,
+        "--name",
+        "fleet-test-r1",
+    ]);
+    assert!(out.status.success(), "{v} / {}", stderr(&out));
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["dry_run"], false);
+    assert_eq!(v["resumed"], RESUME_ID);
+    assert_eq!(v["harness"], "claude");
+    assert_eq!(v["tmux_session"], "fleet-test-r1");
+    assert_eq!(v["created_session"], true);
+    assert_eq!(v["dir"], work.as_str());
+    assert_eq!(v["prompt_file"], Value::Null);
+    assert_eq!(v["from"], Value::Null);
+    let command = v["command"].as_str().unwrap();
+    assert!(
+        command.ends_with(&format!(" --resume={RESUME_ID} -n 'fleet-test-r1'")),
+        "{command}"
+    );
+    let bound = format!("--resume={RESUME_ID}");
+    assert_eq!(r.agent_argv(), [bound.as_str(), "-n", "fleet-test-r1"]);
+}
+
+// Codex resumes as `codex resume -- <id>` (after `--`, the id is its positional even if it
+// read like a flag), under its configured launcher.
+#[test]
+fn spawn_resume_starts_codexs_own_resume() {
+    let Some(r) = Rig::new() else { return };
+    r.env.write_config(&serde_json::json!({
+        "version": 1,
+        "harnesses": { "codex": { "command": r.s("bin/agent") } }
+    }));
+    let work = r.s("work");
+    let (out, v) = r.spawn_json(&[
+        "--resume",
+        RESUME_ID,
+        "--harness",
+        "codex",
+        "--dir",
+        &work,
+        "--name",
+        "fleet-test-r2",
+    ]);
+    assert!(out.status.success(), "{v} / {}", stderr(&out));
+    assert_eq!(v["resumed"], RESUME_ID);
+    assert_eq!(v["harness"], "codex");
+    assert_eq!(v["tmux_session"], "fleet-test-r2");
+    let command = v["command"].as_str().unwrap();
+    assert!(
+        command.ends_with(&format!(" resume -- {RESUME_ID}")),
+        "{command}"
+    );
+    assert_eq!(r.agent_argv(), ["resume", "--", RESUME_ID]);
+}
+
+#[test]
+fn spawn_resume_refusals_carry_a_kind_and_start_nothing() {
+    let Some(r) = Rig::new() else { return };
+    let work = r.s("work");
+    let fail = |args: &[&str], kind: &str| {
+        let (out, v) = r.spawn_json(args);
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {v}");
+        assert_eq!(v["ok"], false, "{v}");
+        assert_eq!(v["kind"], kind, "{v}");
+        assert!(!v["error"].as_str().unwrap().is_empty(), "{v}");
+        assert_eq!(v["partial"], Value::Null, "{v}");
+    };
+    // A first prompt has no place in a resume.
+    fail(&["--resume", RESUME_ID, "--dir", &work, "hi"], "usage");
+    // The id is typed into a shell: letters, digits and `-` only, 1-128 of them.
+    let long = "a".repeat(129);
+    for bad in ["", "abc;touch x", "a b", "$(id)", "abc_def", &long] {
+        fail(&["--resume", bad, "--dir", &work], "usage");
+    }
+    // Nor does a session id start with `-`: it would read as the harness's flag.
+    for bad in ["--help", "-abc", "-", "--"] {
+        fail(&[&format!("--resume={bad}"), "--dir", &work], "usage");
+        fail(
+            &[
+                &format!("--resume={bad}"),
+                "--harness",
+                "codex",
+                "--dir",
+                &work,
+            ],
+            "usage",
+        );
+    }
+    fail(
+        &["--resume", RESUME_ID, "--harness", "pi", "--dir", &work],
+        "harness_unsupported",
+    );
+    fail(&["--resume", RESUME_ID], "dir_missing");
+    fail(
+        &["--resume", RESUME_ID, "--dir", &r.s("nope")],
+        "dir_missing",
+    );
+    assert!(r.sessions().is_empty(), "{:?}", r.sessions());
+    // 128 is still an id.
+    let (out, v) = r.spawn_json(&["-n", "--resume", &"a".repeat(128), "--dir", &work]);
+    assert!(out.status.success(), "{v} / {}", stderr(&out));
+}
+
+// A session in fleet's current list never gets a second process: `session_live`, with the
+// live one's pid. The same id under another harness is not that session.
+#[test]
+fn spawn_resume_of_a_live_session_names_its_pid() {
+    let Some(r) = Rig::new() else { return };
+    let work = r.s("work");
+    let fixture = r.p("sessions.json");
+    std::fs::write(
+        &fixture,
+        serde_json::json!([{
+            "pid": 4242, "session_id": RESUME_ID, "harness": "claude",
+            "cwd": work, "status": "idle", "backend": "tmux"
+        }])
+        .to_string(),
+    )
+    .unwrap();
+    let resume = |id: &str, extra: &[&str]| {
+        let mut c = r.cmd();
+        c.env("FLEET_FIXTURE", &fixture)
+            .args(["spawn", "--backend", "tmux", "--json", "--resume", id])
+            .args(["--dir", &work])
+            .args(extra);
+        r.json_of(&mut c)
+    };
+    let (out, v) = resume(RESUME_ID, &[]);
+    assert_eq!(out.status.code(), Some(1), "{v}");
+    assert_eq!(v["ok"], false);
+    assert_eq!(v["kind"], "session_live", "{v}");
+    assert_eq!(v["pid"], 4242, "{v}");
+    // Matched like an `id:<session_id>` target: whole, case-insensitive.
+    let (_, v) = resume(&RESUME_ID.to_uppercase(), &[]);
+    assert_eq!(v["kind"], "session_live", "{v}");
+    assert!(r.sessions().is_empty(), "{:?}", r.sessions());
+
+    let (out, v) = resume(RESUME_ID, &["-n", "--harness", "codex"]);
+    assert!(out.status.success(), "{v} / {}", stderr(&out));
+    assert_eq!(v["dry_run"], true);
+    assert_eq!(v["resumed"], RESUME_ID);
+}
+
+// Parse failures clap catches are `spawn --json`'s failure object too: exit 1, kind `usage` —
+// a missing id, or a hyphen-prefixed one given apart (clap reads it as a flag). No tmux needed.
+#[test]
+fn spawn_resume_parse_failures_are_one_usage_object() {
+    let env = Env::new();
+    for args in [
+        &["spawn", "--json", "--resume"][..],
+        &["spawn", "--resume", "--json"],
+        &["spawn", "--json", "--resume", "--bad"],
+        &["spawn", "--json", "--resume", "-x", "--dir", "."],
+        // `--json` after what clap cannot read counts the same as before it.
+        &["--local", "spawn", "--resume", "--bad", "--json"],
+        &["--local", "spawn", "--json", "--resume", "--bad"],
+        &["--local", "spawn", "--bad=1", "-Z", "--resume", "--json"],
+    ] {
+        let out = env.cmd().args(args).output().unwrap();
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {}", stderr(&out));
+        let v: Value = serde_json::from_str(stdout(&out).trim())
+            .unwrap_or_else(|e| panic!("{args:?}: {e}: {}", stdout(&out)));
+        assert_eq!(v["ok"], false, "{v}");
+        assert_eq!(v["kind"], "usage", "{v}");
+        assert!(!v["error"].as_str().unwrap().is_empty(), "{v}");
+        assert_eq!(v["partial"], Value::Null, "{v}");
+    }
+    // Without --json it stays clap's: exit 2, nothing on stdout — and a `--json` that is an
+    // option's value, or after `--`, is not one.
+    for args in [
+        &["spawn", "--resume"][..],
+        &["--local", "spawn", "--resume", "--bad", "--", "--json"],
+        &[
+            "--local",
+            "spawn",
+            "--bad",
+            "--resume",
+            "x",
+            "--name=--json",
+        ],
+    ] {
+        let out = env.cmd().args(args).output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        assert!(stdout(&out).is_empty(), "{args:?}: {}", stdout(&out));
+    }
+}
+
+/// The reservation stamp of a `--resume` of `id` under `harness`.
+fn reservation(r: &Rig, harness: &str, id: &str) -> PathBuf {
+    r.p(&format!(
+        "locks/resume-{harness}-{}.stamp",
+        id.to_lowercase()
+    ))
+}
+
+/// The Claude reservation stamp of `RESUME_ID`, read.
+fn stamp(r: &Rig) -> Value {
+    let raw = std::fs::read(reservation(r, "claude", RESUME_ID)).unwrap();
+    serde_json::from_slice(&raw).unwrap()
+}
+
+/// Age that stamp past the 30 s hold, as if its resume started 31 s ago.
+fn age_stamp(r: &Rig) {
+    let mut s = stamp(r);
+    s["at"] = (s["at"].as_u64().unwrap() - 31_000).into();
+    std::fs::write(reservation(r, "claude", RESUME_ID), s.to_string()).unwrap();
+}
+
+// Several resumes of one session at once start it once: the rest are `session_starting`.
+#[test]
+fn concurrent_resumes_start_one_process() {
+    let Some(r) = Rig::new() else { return };
+    let work = r.s("work");
+    let results: Vec<(Option<i32>, Value)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                scope.spawn(|| {
+                    let (out, v) = r.spawn_json(&["--resume", RESUME_ID, "--dir", &work]);
+                    (out.status.code(), v)
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let started: Vec<_> = results.iter().filter(|(_, v)| v["ok"] == true).collect();
+    assert_eq!(started.len(), 1, "{results:?}");
+    for (code, v) in results.iter().filter(|(_, v)| v["ok"] != true) {
+        assert_eq!(*code, Some(1), "{v}");
+        assert_eq!(v["kind"], "session_starting", "{v}");
+        assert_eq!(v["partial"], Value::Null, "{v}");
+        assert!(v.get("pid").is_none(), "{v}");
+    }
+    assert_eq!(r.sessions().len(), 1, "{:?}", r.sessions());
+    let bound = format!("--resume={RESUME_ID}");
+    assert_eq!(r.agent_argv(), [bound.as_str()]);
+}
+
+/// Register `pid` in the rig's Claude registry as session `RESUME_ID` (what Claude does once
+/// it is up). Returns the entry's path.
+fn register(r: &Rig, pid: i64, cwd: &str) -> PathBuf {
+    let sessions = r.p("home/.claude/sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    let entry = sessions.join(format!("{pid}.json"));
+    std::fs::write(
+        &entry,
+        serde_json::json!({
+            "pid": pid, "sessionId": RESUME_ID, "cwd": cwd, "status": "idle",
+            "kind": "interactive", "entrypoint": "cli"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    entry
+}
+
+fn pane_pid(r: &Rig, session: &str) -> i64 {
+    r.tmux(&["display-message", "-p", "-t", session, "#{pane_pid}"])
+        .trim()
+        .parse()
+        .unwrap()
+}
+
+// A resume holds its session until it registers (then `session_live`), or for 30 s: a retry
+// meanwhile never starts a second process. Another harness's session of that id is not held.
+#[test]
+fn a_resume_holds_the_session_until_it_registers() {
+    let Some(r) = Rig::new() else { return };
+    let work = r.s("work");
+    let resume = |extra: &[&str]| {
+        let mut args = vec!["--resume", RESUME_ID, "--dir", work.as_str()];
+        args.extend_from_slice(extra);
+        r.spawn_json(&args)
+    };
+    let (out, v) = resume(&["--name", "fleet-test-h1"]);
+    assert!(out.status.success(), "{v} / {}", stderr(&out));
+    r.agent_argv();
+
+    // Not registered yet: the retry (in any case) is refused, and a dry run says the same.
+    let up = RESUME_ID.to_uppercase();
+    for dry in [false, true] {
+        let mut c = r.cmd();
+        if dry {
+            c.arg("-n");
+        }
+        c.args(["spawn", "--backend", "tmux", "--json", "--resume", &up])
+            .args(["--dir", &work]);
+        let (out, v) = r.json_of(&mut c);
+        assert_eq!(out.status.code(), Some(1), "{v}");
+        assert_eq!(v["kind"], "session_starting", "{v}");
+    }
+    assert_eq!(r.sessions(), ["fleet-test-h1"]);
+    // Codex's session of the same id is another session.
+    let (out, v) = resume(&["-n", "--harness", "codex"]);
+    assert!(out.status.success(), "{v} / {}", stderr(&out));
+
+    // It registers: now it is live, with its pid.
+    let pid = pane_pid(&r, "fleet-test-h1");
+    let entry = register(&r, pid, &work);
+    let (out, v) = resume(&[]);
+    assert_eq!(out.status.code(), Some(1), "{v}");
+    assert_eq!(v["kind"], "session_live", "{v}");
+    assert_eq!(v["pid"], pid, "{v}");
+
+    // Gone again — its terminal closed — and the hold has run out (30 s, aged here): a
+    // resume starts it anew.
+    std::fs::remove_file(&entry).unwrap();
+    age_stamp(&r);
+    r.tmux(&["kill-session", "-t", "=fleet-test-h1"]);
+    let (out, v) = resume(&["--name", "fleet-test-h2"]);
+    assert!(out.status.success(), "{v} / {}", stderr(&out));
+    assert_eq!(r.sessions(), ["fleet-test-h2"]);
+}
+
+// The reservation is tied to the tmux pane the resume was typed into. A resume that never
+// registers (Claude waiting at its trust prompt) holds the session past the 30 s for as long
+// as that pane runs it; once the pane is gone, or its shell is back at the prompt, it is stale.
+#[test]
+fn a_resume_stays_reserved_while_its_host_runs_it() {
+    let Some(r) = Rig::new() else { return };
+    let work = r.s("work");
+    let resume =
+        |name: &str| r.spawn_json(&["--resume", RESUME_ID, "--dir", &work, "--name", name]);
+    let refused = || {
+        let (out, v) = r.spawn_json(&["--resume", RESUME_ID, "--dir", &work]);
+        assert_eq!(out.status.code(), Some(1), "{v}");
+        assert_eq!(v["kind"], "session_starting", "{v}");
+    };
+    let (out, v) = resume("fleet-test-t1");
+    assert!(out.status.success(), "{v} / {}", stderr(&out));
+    r.agent_argv();
+    let s = stamp(&r);
+    assert_eq!(s["pane"], v["handle"], "{s} / {v}");
+    assert_eq!(s["shell"], pane_pid(&r, "fleet-test-t1"), "{s}");
+
+    // Long past 30 s, never registered, its pane still running it: still starting.
+    age_stamp(&r);
+    refused();
+    assert_eq!(r.sessions(), ["fleet-test-t1"]);
+
+    // Its host is gone: stale, and the next resume starts it.
+    r.tmux(&["kill-session", "-t", "=fleet-test-t1"]);
+    let (out, v) = resume("fleet-test-t2");
+    assert!(out.status.success(), "{v} / {}", stderr(&out));
+    r.agent_argv();
+
+    // The pane outlives what was typed into it (the resume exited): stale too.
+    age_stamp(&r);
+    refused();
+    let shell = pane_pid(&r, "fleet-test-t2");
+    let _ = std::process::Command::new("pkill")
+        .args(["-TERM", "-P", &shell.to_string()])
+        .output();
+    let idle = || {
+        std::process::Command::new("pgrep")
+            .args(["-P", &shell.to_string()])
+            .output()
+            .is_ok_and(|o| o.stdout.is_empty())
+    };
+    r.wait_for("the agent to exit", idle);
+    let (out, v) = resume("fleet-test-t3");
+    assert!(out.status.success(), "{v} / {}", stderr(&out));
+    assert_eq!(r.sessions().len(), 2, "{:?}", r.sessions());
+}
+
+// The stamp is down before anything is typed: a start that fails while typing (or a fleet
+// killed there) still holds the session, while one that never got a terminal frees it; and a
+// stamp that cannot be written stops the resume before it creates anything.
+#[test]
+fn the_reservation_is_written_before_the_resume_is_typed() {
+    let Some(r) = Rig::new() else { return };
+    let work = r.s("work");
+    let resume = |fail: Option<&str>, name: &str| {
+        let mut c = r.cmd();
+        if let Some(f) = fail {
+            c.env("FLEET_TEST_FAIL", f);
+        }
+        c.args([
+            "spawn",
+            "--backend",
+            "tmux",
+            "--json",
+            "--resume",
+            RESUME_ID,
+        ])
+        .args(["--dir", &work, "--name", name]);
+        r.json_of(&mut c)
+    };
+
+    // No terminal: nothing started, the session is free at once.
+    let (out, v) = resume(Some("new-session"), "fleet-test-w0");
+    assert_eq!(out.status.code(), Some(1), "{v}");
+    assert_eq!(v["kind"], "backend_failed", "{v}");
+    assert!(!reservation(&r, "claude", RESUME_ID).exists());
+
+    // Typing failed in an existing terminal: the stamp names it already, and holds.
+    let (out, v) = resume(Some("send-keys"), "fleet-test-w1");
+    assert_eq!(out.status.code(), Some(1), "{v}");
+    assert_eq!(v["kind"], "backend_failed", "{v}");
+    assert_eq!(stamp(&r)["pane"], v["partial"]["handle"], "{v}");
+    let (out, v) = resume(None, "fleet-test-w2");
+    assert_eq!(out.status.code(), Some(1), "{v}");
+    assert_eq!(v["kind"], "session_starting", "{v}");
+    r.tmux(&["kill-server"]);
+
+    // A stamp that cannot be written: refused before any terminal exists.
+    let stamp_path = reservation(&r, "claude", RESUME_ID);
+    std::fs::remove_file(&stamp_path).unwrap();
+    std::fs::create_dir_all(stamp_path.join("blocked")).unwrap();
+    let (out, v) = resume(None, "fleet-test-w3");
+    assert_eq!(out.status.code(), Some(1), "{v}");
+    assert_eq!(v["ok"], false, "{v}");
+    assert_eq!(v["partial"], Value::Null, "{v}");
+    assert!(r.sessions().is_empty(), "{:?}", r.sessions());
+}
+
+/// A stand-in Codex session on the rig's private server: a process named `codex` in `cwd`
+/// (tmux session `name`) and its rollout under the temp home. Returns its pid.
+fn fake_codex(r: &Rig, name: &str, cwd: &Path, id: &str) -> i64 {
+    let cwd = std::fs::canonicalize(cwd).unwrap();
+    let script = format!(
+        "cd '{}' && exec /bin/bash -c 'exec -a codex sleep 300'",
+        cwd.display()
+    );
+    r.tmux(&[
+        "new-session",
+        "-d",
+        "-s",
+        name,
+        "--",
+        "/bin/sh",
+        "-c",
+        &script,
+    ]);
+    let pid = pane_pid(r, name);
+    let day = r.p("home/.codex/sessions/2026/10/16");
+    std::fs::create_dir_all(&day).unwrap();
+    let out = std::process::Command::new("date")
+        .args(["-u", "+%Y-%m-%dT%H:%M:%SZ"])
+        .output()
+        .unwrap();
+    let now = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let meta = serde_json::json!({ "type": "session_meta",
+        "payload": { "id": id, "cwd": cwd, "timestamp": now } });
+    std::fs::write(
+        day.join(format!("rollout-2026-10-16T10-00-00-{id}.jsonl")),
+        format!("{meta}\n"),
+    )
+    .unwrap();
+    pid
+}
+
+// Liveness is per harness, through real discovery (no fixture): a stale Claude entry of the
+// id does not hide a live Codex session of it, a live Claude one is not the Codex one, and
+// the other way round.
+#[test]
+fn liveness_is_per_harness_in_real_discovery() {
+    let Some(r) = Rig::new() else { return };
+    let work = r.s("work");
+    let resume = |harness: &str| {
+        r.spawn_json(&[
+            "-n",
+            "--resume",
+            RESUME_ID,
+            "--harness",
+            harness,
+            "--dir",
+            &work,
+        ])
+    };
+    // A stale Claude entry: its pid is gone.
+    let dead = {
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "exit 0"])
+            .spawn()
+            .unwrap();
+        let pid = i64::from(child.id());
+        child.wait().unwrap();
+        pid
+    };
+    register(&r, dead, &work);
+    let codex_dir = r.p("codex-work");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    let codex = fake_codex(&r, "fleet-test-cx", &codex_dir, RESUME_ID);
+
+    let live_pid = |harness: &str| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let (out, v) = resume(harness);
+            if v["kind"] == "session_live" || Instant::now() > deadline {
+                assert_eq!(out.status.code(), Some(1), "{harness}: {v}");
+                return v["pid"]
+                    .as_i64()
+                    .unwrap_or_else(|| panic!("{harness}: {v}"));
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    };
+    assert_eq!(live_pid("codex"), codex, "the stale Claude entry hid Codex");
+    let (out, v) = resume("claude");
+    assert!(
+        out.status.success(),
+        "a stale entry or Codex counted as Claude: {v}"
+    );
+
+    // A live Claude session of the id: Claude's resume names it, Codex's still names Codex.
+    r.tmux(&[
+        "new-session",
+        "-d",
+        "-s",
+        "fleet-test-cl",
+        "--",
+        "sleep",
+        "300",
+    ]);
+    let claude = pane_pid(&r, "fleet-test-cl");
+    register(&r, claude, &work);
+    assert_eq!(live_pid("claude"), claude);
+    assert_eq!(live_pid("codex"), codex);
 }

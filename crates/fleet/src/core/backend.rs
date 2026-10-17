@@ -1163,6 +1163,32 @@ pub fn spawn(
     launcher: &str,
     harness: Harness,
 ) -> Result<Spawned> {
+    spawn_with_hook(
+        backend,
+        dir,
+        prompt,
+        name,
+        tmux_session,
+        window,
+        launcher,
+        harness,
+        &mut |_| Ok(()),
+    )
+}
+
+/// [`spawn`] with a `before_typing` hook (see [`spawn_hooked`]).
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_with_hook(
+    backend: Backend,
+    dir: &str,
+    prompt: Prompt,
+    name: Option<&str>,
+    tmux_session: Option<&str>,
+    window: bool,
+    launcher: &str,
+    harness: Harness,
+    before_typing: &mut dyn FnMut(&Spawned) -> Result<()>,
+) -> Result<Spawned> {
     let tag = crate::core::jobs::Tag::from_env();
     // What a bot session spawns closes itself when finished, like the bot session.
     let file = match (&tag, prompt) {
@@ -1178,7 +1204,7 @@ pub fn spawn(
         Some(f) => Prompt::File(f),
         None => prompt,
     };
-    spawn_tagged(
+    spawn_hooked(
         backend,
         dir,
         prompt,
@@ -1188,6 +1214,7 @@ pub fn spawn(
         launcher,
         harness,
         tag.as_ref(),
+        before_typing,
     )
 }
 
@@ -1219,6 +1246,36 @@ pub fn spawn_tagged(
     launcher: &str,
     harness: Harness,
     tag: Option<&crate::core::jobs::Tag>,
+) -> Result<Spawned> {
+    spawn_hooked(
+        backend,
+        dir,
+        prompt,
+        name,
+        tmux_session,
+        window,
+        launcher,
+        harness,
+        tag,
+        &mut |_| Ok(()),
+    )
+}
+
+/// [`spawn_tagged`] that calls `before_typing` once a tmux terminal exists and before anything
+/// is typed into it (iTerm creates the tab and runs the line in one step: never called). Its
+/// failure types nothing and is the spawn's, with the terminal as the `partial`.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_hooked(
+    backend: Backend,
+    dir: &str,
+    prompt: Prompt,
+    name: Option<&str>,
+    tmux_session: Option<&str>,
+    window: bool,
+    launcher: &str,
+    harness: Harness,
+    tag: Option<&crate::core::jobs::Tag>,
+    before_typing: &mut dyn FnMut(&Spawned) -> Result<()>,
 ) -> Result<Spawned> {
     let backend = effective_backend(backend, tag.is_some());
     // A long prompt typed onto the command line is slow and fragile (the web spawn has the
@@ -1310,6 +1367,12 @@ pub fn spawn_tagged(
             };
             // Window already opened in `dir`; just run the launcher in it. From here on the
             // terminal exists: a failure says where it is, so the caller can clean it up.
+            if let Err(e) = before_typing(&spawned) {
+                return Err(Error::Partial {
+                    source: Box::new(e),
+                    partial: Box::new(spawned),
+                });
+            }
             let run = run_command(prompt, name, launcher, harness);
             let typed =
                 send_keys(&pane, &["-l", "--", &run]).and_then(|()| send_keys(&pane, &["Enter"]));
