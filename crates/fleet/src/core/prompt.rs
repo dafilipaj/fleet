@@ -92,6 +92,33 @@ fn content(line: &str) -> &str {
     line.trim().trim_matches(FRAME).trim()
 }
 
+/// A screen line as drawn, only without a side frame (`│ … │`: a box character at column 0
+/// and one at the end) and trailing blanks: its indentation kept. A prompt's identity is made
+/// of these, because whitespace is part of a command (`os.remove(x)` inside or outside an `if`
+/// block is another command). And a rule at column 0 is the prompt's frame, while the lines
+/// inside the frame are padded: a rule-like line of a command is indented, never mistaken for
+/// the frame. So a line that starts with blanks keeps them, box characters at both ends or not:
+/// an indented `╭────╮` or `│x│` is a line of the command, never one drawn from column 0.
+fn literal(line: &str) -> &str {
+    let l = line.trim_end();
+    let mut ends = l.chars();
+    match (ends.next(), ends.next_back()) {
+        (Some(a), Some(b)) if FRAME.contains(&a) && FRAME.contains(&b) => {
+            l[a.len_utf8()..l.len() - b.len_utf8()].trim_end()
+        }
+        _ => l,
+    }
+}
+
+/// [`literal`] for every line [`screen_lines`] returns, at the same indexes.
+fn literal_lines(screen: &str) -> Vec<&str> {
+    screen
+        .lines()
+        .filter(|l| *l != VISIBLE_MARK)
+        .map(literal)
+        .collect()
+}
+
 /// A horizontal rule: solid (`───`, the top of Claude Code's prompt frame) or dashed (`╌╌╌`,
 /// around the command inside it).
 fn is_rule(c: &str) -> bool {
@@ -240,40 +267,85 @@ pub fn permission_prompt(screen: &str, harness: Harness) -> PromptRead {
     } else {
         MAX_CODEX_PROMPT_LINES
     };
-    let floor = top.saturating_sub(reach);
-    // The title: the nearest prompt-like line above the answers.
-    let Some(t) = (floor..top)
-        .rev()
-        .find(|&j| is_title(lines[j]))
-        .or_else(|| (floor..top).rev().find(|&j| lines[j].ends_with('?')))
-    else {
-        return PromptRead::None;
+    let mut floor = top.saturating_sub(reach);
+    let literal = literal_lines(screen);
+    if !claude {
+        // Codex draws no frame: its title, command and reason share one indent, under the last
+        // conversation item (`•`, `›`), which starts at column 0. All between it and the
+        // answers is the prompt; out of reach, the prompt cannot be told whole.
+        match (floor..top)
+            .rev()
+            .find(|&j| literal[j].starts_with(|c: char| !c.is_whitespace()))
+        {
+            Some(above) => floor = above + 1,
+            None if floor > 0 => {
+                return PromptRead::Incomplete(
+                    "the top of the approval prompt is off the captured screen".into(),
+                );
+            }
+            None => {}
+        }
+    }
+    // The title: the nearest prompt-like line above the answers. In a Codex prompt it must be
+    // the only one: a line of its command that reads like a title ("Allow …") would otherwise
+    // cut the real title and everything above it out of the prompt.
+    let titles: Vec<usize> = (floor..top).filter(|&j| is_title(lines[j])).collect();
+    let asks: Vec<usize> = (floor..top).filter(|&j| lines[j].ends_with('?')).collect();
+    let t = match (claude, &titles[..], &asks[..]) {
+        (true, [.., t], _) | (true, [], [.., t]) | (false, [t], _) | (false, [], [t]) => *t,
+        (true, [], []) | (false, [], []) => return PromptRead::None,
+        (false, _, _) => {
+            return PromptRead::Incomplete(
+                "more than one line of the approval prompt reads as its title (one is inside its command)".into(),
+            );
+        }
     };
+    // A rule of the frame: drawn from column 0. A rule-like line inside it is padded content.
+    let frame_rule = |j: usize| is_rule(lines[j]) && !literal[j].starts_with(char::is_whitespace);
     let detail_range = if claude {
         // Everything inside the frame, which starts at the solid rule above the title. A
         // frame out of sight would leave the prompt unidentifiable: refuse it.
-        let Some(rule) = (floor..t).rev().find(|&j| is_solid_rule(lines[j])) else {
+        let Some(rule) = (floor..t)
+            .rev()
+            .find(|&j| frame_rule(j) && is_solid_rule(lines[j]))
+        else {
             return PromptRead::Incomplete(
                 "the top of the permission prompt is off the captured screen".into(),
             );
         };
-        // The frame's dashed rules come in pairs around the command. An odd count between the
-        // solid rule found and the title means that rule is inside the command (a line of the
-        // command drawn as a rule), not the frame's top: the frame cannot be told.
-        let dashed = (rule + 1..t)
-            .filter(|&j| is_rule(lines[j]) && !is_solid_rule(lines[j]))
-            .count();
-        if dashed % 2 == 1 {
+        // The frame's own shape, exactly: its top, then either no other rule before the title
+        // or one dashed pair around the command, with the header (" Bash command") between
+        // the top and the pair. (The top is the nearest solid rule, so every rule under it is
+        // dashed.) Any other rule at column 0 — a lone or a third dashed one, a pair right under
+        // the top — means the rule taken for the top may be inside the command: the frame
+        // cannot be told, and nothing is guessed.
+        let inner: Vec<usize> = (rule + 1..t).filter(|&j| frame_rule(j)).collect();
+        let shaped = match inner[..] {
+            [] => true,
+            [open, _] => (rule + 1..open).any(|j| !lines[j].is_empty()),
+            _ => false,
+        };
+        if !shaped {
             return PromptRead::Incomplete(
                 "the permission prompt's frame is ambiguous (a rule inside its command)".into(),
             );
         }
         rule + 1..top
     } else {
-        t + 1..top
+        floor..top
     };
     let detail: Vec<String> = detail_range
-        .filter(|&j| j != t && !lines[j].is_empty() && !is_rule(lines[j]))
+        .clone()
+        .filter(|&j| j != t && !lines[j].is_empty())
+        // Claude Code: all but the frame (a rule-like line of the command is the command);
+        // Codex draws no frame, and its rules are decoration.
+        .filter(|&j| {
+            !if claude {
+                frame_rule(j)
+            } else {
+                is_rule(lines[j])
+            }
+        })
         .map(|j| lines[j].to_string())
         .collect();
     let title = lines[t].to_string();
@@ -295,16 +367,20 @@ pub fn permission_prompt(screen: &str, harness: Harness) -> PromptRead {
             c.key = None;
         }
     }
-    let mut wording = title.clone();
-    for d in &detail {
+    // The identity: the title and every line of what it is about exactly as drawn — the
+    // command's indentation, blank lines and rule-like lines included — then the answers. Not
+    // Claude Code's frame rules: as wide as the pane, they would make one prompt another at
+    // another width.
+    let mut wording = literal[t].to_string();
+    for j in detail_range.filter(|&j| j != t && !(claude && frame_rule(j))) {
         wording.push('\n');
-        wording.push_str(d);
+        wording.push_str(literal[j]);
     }
     for c in &choices {
         wording.push_str(&format!("\n{}. {}", c.n, c.label));
     }
     PromptRead::Prompt(ScreenPrompt {
-        id: format!("p1.{:08x}", fnv1a(wording.as_bytes())),
+        id: format!("p2.{:08x}", fnv1a(wording.as_bytes())),
         title,
         detail,
         choices,
@@ -714,7 +790,7 @@ mod tests {
             p.detail,
             ["Bash command", "Remove the build output", "rm -rf build"]
         );
-        assert!(p.id.starts_with("p1."));
+        assert!(p.id.starts_with("p2."));
         let other = prompt(
             &CLAUDE_BASH.replace("rm -rf build", "rm -rf dist"),
             Harness::Claude,
@@ -741,6 +817,60 @@ mod tests {
             permission_prompt(&window, Harness::Claude),
             PromptRead::Incomplete(_)
         ));
+    }
+
+    // Codex draws no frame: its title, command and reason share one indent. A command line that
+    // reads like a title ("Allow …") once became the title, and everything above it — the real
+    // title, the reason, the head of the command — left the id: `rm -rf` and `echo` collided.
+    #[test]
+    fn a_codex_command_line_that_reads_like_a_title_never_hides_the_lines_above_it() {
+        let with = |first: &str| {
+            CODEX_EXEC.replace(
+                "  $ touch probe.txt\n",
+                &format!("  $ bash -lc '{first}\n  Allow listing\n  ls'\n"),
+            )
+        };
+        let reads = [
+            permission_prompt(&with("rm -rf /w/app"), Harness::Codex),
+            permission_prompt(&with("echo hi"), Harness::Codex),
+        ];
+        // Two title-like lines in one prompt: which is the title cannot be told. Refused.
+        for r in &reads {
+            assert!(matches!(r, PromptRead::Incomplete(_)), "{r:?}");
+        }
+        // The id covers the whole prompt, from the conversation above it down to the answers:
+        // two commands that differ only above a line ending in "?" are two prompts.
+        let ask = |first: &str| {
+            CODEX_EXEC.replace(
+                "  $ touch probe.txt\n",
+                &format!("  $ bash -lc '{first}\n  echo really?\n  ls'\n"),
+            )
+        };
+        let a = prompt(&ask("rm -rf /w/app"), Harness::Codex);
+        let b = prompt(&ask("echo hi"), Harness::Codex);
+        assert_eq!(a.title, "Would you like to run the following command?");
+        assert_ne!(a.id, b.id);
+        assert!(a.detail.iter().any(|d| d.contains("rm -rf /w/app")));
+    }
+
+    // The recorded Codex screens, at 40, 60 and full width: one title each, read whole.
+    #[test]
+    fn recorded_codex_approval_screens_are_read_whole() {
+        for screen in [
+            include_str!("../../../../testdata/codex/exec-approval-pane.txt"),
+            include_str!("../../../../testdata/codex/exec-approval-pane-60.txt"),
+            include_str!("../../../../testdata/codex/exec-approval-pane-40.txt"),
+        ] {
+            let p = prompt(screen, Harness::Codex);
+            assert!(p.title.starts_with("Would you like to run the"), "{p:?}");
+            assert!(
+                p.detail
+                    .iter()
+                    .any(|d| d.contains("touch approval-probe.txt")),
+                "{p:?}"
+            );
+            assert_eq!(p.choices.len(), 3);
+        }
     }
 
     #[test]
@@ -968,6 +1098,157 @@ mod tests {
             permission_prompt(&inside, Harness::Claude),
             PromptRead::Incomplete(_)
         ));
+    }
+
+    // Two heredocs that differ only in indentation: one deletes the file, one does not.
+    #[test]
+    fn command_indentation_is_part_of_the_prompts_identity() {
+        let with = |body: &str| {
+            CLAUDE_BASH.replace(
+                " rm -rf build\n╌",
+                &format!(" python3 - <<'EOF'\n if False:\n{body}\n EOF\n╌"),
+            )
+        };
+        let guarded = prompt(&with("     os.remove('data.db')"), Harness::Claude);
+        let deletes = prompt(&with(" os.remove('data.db')"), Harness::Claude);
+        assert_ne!(guarded.id, deletes.id);
+        // The same prompt read twice is the same prompt.
+        let again = prompt(&with("     os.remove('data.db')"), Harness::Claude);
+        assert_eq!(guarded.id, again.id);
+    }
+
+    // A command drawing a solid rule, then a dashed one: indented, as everything inside the
+    // frame is, they are the command's own lines — the frame is still the one at column 0,
+    // and what comes before them is part of the prompt's identity.
+    #[test]
+    fn rules_inside_the_command_never_hide_the_lines_above_them() {
+        let with = |first: &str| {
+            CLAUDE_BASH.replace(
+                " rm -rf build\n",
+                &format!(
+                    " {first}\n ────────────────────────────────────────\n ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\n echo end\n"
+                ),
+            )
+        };
+        let a = prompt(&with("rm -rf /w/app"), Harness::Claude);
+        let b = prompt(&with("echo start"), Harness::Claude);
+        assert_ne!(a.id, b.id);
+        assert!(a.detail.contains(&"rm -rf /w/app".to_string()));
+        assert!(a.detail.contains(&"Bash command".to_string()));
+        // The same lines drawn from column 0 are not the frame's shape (a solid rule right
+        // above a dashed pair, no header between): refused, not guessed.
+        let flush = CLAUDE_BASH.replace(
+            " rm -rf build\n",
+            " rm -rf /w/app\n────────────────────────────────────────\n╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\n echo end\n",
+        );
+        assert!(matches!(
+            permission_prompt(&flush, Harness::Claude),
+            PromptRead::Incomplete(_)
+        ));
+    }
+
+    // The frame's rules are as wide as the pane: hashed, they made one prompt two ids at two
+    // widths, and a resize between `--list` and `--choice --prompt` refused the answer.
+    #[test]
+    fn the_frame_width_is_not_part_of_the_prompts_identity() {
+        let at = |cols: usize| -> String {
+            CLAUDE_BASH
+                .lines()
+                .map(|l| match l.chars().next() {
+                    Some(c @ ('─' | '╌')) if is_rule(l) => c.to_string().repeat(cols),
+                    _ => l.to_string(),
+                })
+                .map(|l| l + "\n")
+                .collect()
+        };
+        let narrow = prompt(&at(60), Harness::Claude);
+        assert_eq!(narrow.id, prompt(&at(120), Harness::Claude).id);
+        assert_eq!(narrow.id, prompt(CLAUDE_BASH, Harness::Claude).id);
+        // A rule-like line of the command (padded) still counts.
+        let ruled = CLAUDE_BASH.replace(" rm -rf build\n", " rm -rf build\n ────────────\n");
+        assert_ne!(narrow.id, prompt(&ruled, Harness::Claude).id);
+    }
+
+    // A box character at one end only is the command's, and so is the indentation before it:
+    // only a side frame (a box character at both ends) is dropped.
+    #[test]
+    fn a_lone_box_character_keeps_its_indentation_in_the_identity() {
+        let with = |line: &str| CLAUDE_BASH.replace(" rm -rf build\n", &format!("{line}\n"));
+        let deep = prompt(&with("     │ y"), Harness::Claude);
+        let shallow = prompt(&with(" │ y"), Harness::Claude);
+        assert_ne!(deep.id, shallow.id);
+        assert_eq!(literal("│  a │"), "  a");
+        assert_eq!(literal("   │ y"), "   │ y");
+        // Boxed at both ends but indented: a line of the command, its indentation kept.
+        assert_eq!(literal("  ╭────╮"), "  ╭────╮");
+        let deep = prompt(&with("     │ y │"), Harness::Claude);
+        let shallow = prompt(&with(" │ y │"), Harness::Claude);
+        assert_ne!(deep.id, shallow.id);
+    }
+
+    // A command line boxed at both ends (`╭────╮`, `│x│`) once lost its indentation and read as
+    // drawn from column 0: it forged the frame's top and the dashed pair, the real header and
+    // the head of the command left the id, and `rm -rf` and `echo` got one id.
+    #[test]
+    fn a_boxed_command_line_never_reads_as_the_claude_frame() {
+        let with = |first: &str| {
+            CLAUDE_BASH.replace(
+                " rm -rf build\n",
+                &format!(
+                    " {first}\n ╭────────────────╮\n Bash command\n ╭╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╮\n echo hi\n"
+                ),
+            )
+        };
+        let a = prompt(&with("rm -rf /w/app"), Harness::Claude);
+        let b = prompt(&with("echo start"), Harness::Claude);
+        assert_ne!(a.id, b.id);
+        assert!(a.detail.contains(&"rm -rf /w/app".to_string()), "{a:?}");
+        assert!(
+            a.detail.contains(&"Remove the build output".to_string()),
+            "{a:?}"
+        );
+    }
+
+    // The same for Codex: a boxed command line once read as the last conversation item, and
+    // the prompt's top moved under it.
+    #[test]
+    fn a_boxed_command_line_never_reads_as_the_codex_conversation() {
+        let with = |first: &str, after: &str| {
+            CODEX_EXEC.replace(
+                "  $ touch probe.txt\n",
+                &format!("  $ bash -lc '{first}\n  │x│\n  {after}\n  ls'\n"),
+            )
+        };
+        for first in ["rm -rf /w/app", "echo hi"] {
+            let r = permission_prompt(&with(first, "Allow listing"), Harness::Codex);
+            assert!(matches!(r, PromptRead::Incomplete(_)), "{r:?}");
+        }
+        let a = prompt(&with("rm -rf /w/app", "echo really?"), Harness::Codex);
+        let b = prompt(&with("echo hi", "echo really?"), Harness::Codex);
+        assert_eq!(a.title, "Would you like to run the following command?");
+        assert_ne!(a.id, b.id);
+        assert!(
+            a.detail.iter().any(|d| d.contains("rm -rf /w/app")),
+            "{a:?}"
+        );
+    }
+
+    // Codex: the last conversation item out of reach above a tall command. The prompt's top
+    // cannot be found, so it cannot be told whole: refused, never read from mid-command.
+    #[test]
+    fn a_codex_prompt_whose_top_is_out_of_reach_is_incomplete() {
+        let tall = |n: usize| {
+            let body: String = (0..n).map(|i| format!("  echo part {i}\n")).collect();
+            CODEX_EXEC.replace(
+                "  $ touch probe.txt\n",
+                &format!("  $ bash -lc '\n{body}  echo really?\n  ls'\n"),
+            )
+        };
+        let r = permission_prompt(&tall(MAX_CODEX_PROMPT_LINES + 10), Harness::Codex);
+        assert!(matches!(r, PromptRead::Incomplete(_)), "{r:?}");
+        // Within reach, the same prompt is read whole.
+        let p = prompt(&tall(10), Harness::Codex);
+        assert_eq!(p.title, "Would you like to run the following command?");
     }
 
     // Claude Code 2.1's review screen, as captured (wording synthetic).
