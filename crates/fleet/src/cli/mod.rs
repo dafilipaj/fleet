@@ -2,6 +2,7 @@
 
 pub mod answer;
 pub mod brief;
+pub mod close;
 pub mod commands;
 pub mod config_cmd;
 pub mod group;
