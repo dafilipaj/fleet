@@ -103,12 +103,14 @@ impl Harness {
         }
     }
 
-    /// Arguments that resume `session_id` (appended to the launcher).
+    /// Arguments that resume `session_id` (appended to the launcher). The id is bound so the
+    /// harness can never read it as a flag: Claude's as `--resume=<id>`, Codex's after `--`
+    /// (`codex resume -- <id>`: its positional session id, even one that starts with `-`).
     pub fn resume_args(self, session_id: &str) -> String {
         let id = crate::core::tools::shq_min(session_id);
         match self {
-            Harness::Claude => format!("--resume {id}"),
-            Harness::Codex => format!("resume {id}"),
+            Harness::Claude => format!("--resume={id}"),
+            Harness::Codex => format!("resume -- {id}"),
             Harness::Pi => format!("--session {id}"),
         }
     }
@@ -1392,11 +1394,20 @@ mod tests {
     fn resume_commands_per_harness() {
         assert_eq!(
             Harness::Claude.resume_command("claude", None, "s1"),
-            "claude --resume s1"
+            "claude --resume=s1"
+        );
+        // An id that reads like a flag stays the id.
+        assert_eq!(
+            Harness::Claude.resume_command("claude", None, "--help"),
+            "claude --resume=--help"
+        );
+        assert_eq!(
+            Harness::Codex.resume_command("codex", None, "--help"),
+            "codex resume -- --help"
         );
         assert_eq!(
             Harness::Codex.resume_command("codex", Some("gpt-6"), "s1"),
-            "codex --model 'gpt-6' resume s1"
+            "codex --model 'gpt-6' resume -- s1"
         );
         assert_eq!(
             Harness::Pi.resume_command("pi", None, "s1"),

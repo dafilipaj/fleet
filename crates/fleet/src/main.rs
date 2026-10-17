@@ -356,6 +356,9 @@ enum Commands {
         /// Continue this session's work: same host and cwd, its brief's continue prompt first
         #[arg(long, value_name = "SESSION")]
         from: Option<String>,
+        /// Resume this session (its full id) with the harness's own resume, in --dir; no prompt
+        #[arg(long, value_name = "SESSION_ID")]
+        resume: Option<String>,
         /// Working directory (defaults to the current directory)
         #[arg(long)]
         dir: Option<String>,
@@ -1667,6 +1670,7 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
         Commands::Spawn {
             prompt,
             from,
+            resume,
             dir,
             backend,
             name,
@@ -1680,10 +1684,8 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
             slack_task,
             slack_proactive,
             json,
-        } => commands::spawn(
-            prompt,
-            from,
-            commands::SpawnOpts {
+        } => {
+            let opts = commands::SpawnOpts {
                 dir,
                 backend: backend.map(Into::into),
                 name,
@@ -1698,9 +1700,12 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
                     task: slack_task,
                     proactive: slack_proactive,
                 }),
-            },
-            json,
-        )?,
+            };
+            match resume {
+                Some(id) => commands::spawn_resume(&id, prompt, from.is_some(), opts, json)?,
+                None => commands::spawn(prompt, from, opts, json)?,
+            }
+        }
         Commands::Harness { cmd } => match cmd {
             HarnessCmd::List { json, no_models } => commands::harness_list(json, !no_models)?,
         },
@@ -2142,25 +2147,59 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
 }
 
 /// Commands whose `--json` failures are one `{ ok: false, kind, error }` object — usage
-/// errors clap catches included.
-const JSON_FAILURE_COMMANDS: &[&str] = &["messages", "answer"];
+/// errors clap catches included — and the exit code such a usage error gets: clap's 2, but
+/// `spawn`'s failures (as `docs/cli.md` promises them) all exit 1.
+const JSON_FAILURE_COMMANDS: &[(&str, i32)] = &[("messages", 2), ("answer", 2), ("spawn", 1)];
 
 /// The subcommand of [`JSON_FAILURE_COMMANDS`] the command line names with `--json`, read by
 /// clap itself with the error set aside — global flags in any spelling (`-nH host`,
 /// `--host=x`) included.
 fn json_failure_command() -> Option<String> {
+    json_failure_command_in(std::env::args_os().collect())
+}
+
+/// [`json_failure_command`] of `args`. Clap's error-tolerant parse still stops reading at an
+/// argument it does not know (`spawn --resume --bad --json` never reached `--json`), so each
+/// such argument is set aside first and the rest parsed again: `--json` counts wherever it
+/// stands, as clap reads it — not as an option's value (`--name=--json`), nor after `--`.
+fn json_failure_command_in(mut args: Vec<std::ffi::OsString>) -> Option<String> {
+    use clap::error::{ContextKind, ContextValue, ErrorKind};
+    for _ in 0..args.len() {
+        let Err(e) = Cli::command().try_get_matches_from(&args) else {
+            break;
+        };
+        let bad = match (e.kind(), e.get(ContextKind::InvalidArg)) {
+            (ErrorKind::UnknownArgument, Some(ContextValue::String(bad))) => bad,
+            _ => break,
+        };
+        let flag = bad.split_once('=').map_or(bad.as_str(), |(flag, _)| flag);
+        let Some(at) = args
+            .iter()
+            .skip(1)
+            .take_while(|a| *a != "--")
+            .position(|a| {
+                a.to_str().is_some_and(|a| {
+                    a == flag || a.strip_prefix(flag).is_some_and(|v| v.starts_with('='))
+                })
+            })
+        else {
+            break;
+        };
+        args.remove(at + 1);
+    }
     let m = Cli::command()
         .ignore_errors(true)
-        .try_get_matches_from(std::env::args_os())
+        .try_get_matches_from(&args)
         .ok()?;
     let (name, sub) = m.subcommand()?;
     let json = matches!(sub.try_get_one::<bool>("json"), Ok(Some(true)));
-    (json && JSON_FAILURE_COMMANDS.contains(&name)).then(|| name.to_string())
+    (json && JSON_FAILURE_COMMANDS.iter().any(|(c, _)| *c == name)).then(|| name.to_string())
 }
 
 /// A usage error for a `--json` command of [`JSON_FAILURE_COMMANDS`]: the failure object on
-/// stdout, clap's message on stderr, exit 2 (clap's code; usage errors fleet finds itself, past
-/// parsing, exit 1). Anything else (and help) is clap's as usual.
+/// stdout (`spawn`'s own shape, with `host` and `partial`), clap's message on stderr, and the
+/// command's exit code: 2 (clap's; usage errors fleet finds itself, past parsing, exit 1), 1 for
+/// `spawn`. Anything else (and help) is clap's as usual.
 fn parse_failure(e: clap::Error) -> ! {
     use clap::error::ErrorKind;
     let shown = matches!(
@@ -2169,7 +2208,7 @@ fn parse_failure(e: clap::Error) -> ! {
             | ErrorKind::DisplayVersion
             | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
     );
-    if !shown && json_failure_command().is_some() {
+    if !shown && let Some(cmd) = json_failure_command() {
         let rendered = e.render().to_string();
         // The message is everything before clap's `Usage:` block, on one line.
         let first = rendered
@@ -2181,12 +2220,18 @@ fn parse_failure(e: clap::Error) -> ! {
             .join(" ")
             .trim_start_matches("error: ")
             .to_string();
-        println!(
-            "{}",
+        let code = JSON_FAILURE_COMMANDS
+            .iter()
+            .find(|(c, _)| *c == cmd)
+            .map_or(2, |(_, code)| *code);
+        let v = if cmd == "spawn" {
+            commands::spawn_error_json(&Error::tagged("usage", first), &commands::host_label())
+        } else {
             serde_json::json!({ "ok": false, "kind": "usage", "error": first })
-        );
+        };
+        println!("{v}");
         eprint!("{rendered}");
-        std::process::exit(2);
+        std::process::exit(code);
     }
     e.exit()
 }

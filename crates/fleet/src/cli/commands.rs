@@ -12,6 +12,7 @@ use crate::core::backend::{self, Prompt};
 use crate::core::config;
 use crate::core::discovery::{self, Backend, Session, claude_home};
 use crate::core::harness::{self, Harness};
+use crate::core::lock;
 use crate::core::naming;
 use crate::core::title;
 use crate::error::{Error, Result};
@@ -979,7 +980,7 @@ pub fn spawn_remote_json(r: &crate::core::hosts::Remote, args: &[String]) -> Res
 
 /// `fleet spawn --json` on failure. `partial`: where the terminal is when it was created before
 /// the spawn failed (so the caller can find and close it), else `null`.
-pub(crate) fn spawn_error_json(e: &Error, host: &str) -> serde_json::Value {
+pub fn spawn_error_json(e: &Error, host: &str) -> serde_json::Value {
     serde_json::json!({
         "ok": false,
         "host": host,
@@ -1020,28 +1021,65 @@ fn spawn_new(prompt: Option<String>, opts: SpawnOpts, json: bool) -> Result<()> 
         &with_model(&opts.harness.command(), model.as_deref()),
         opts.harness,
     )?;
+    let at = Landing {
+        dir: &dir,
+        backend: backend_kind,
+        name: name.as_deref(),
+        model: model.as_deref(),
+    };
+    launch(
+        &at,
+        Prompt::Inline(&prompt),
+        &launcher,
+        &opts,
+        None,
+        json,
+        &mut |_| Ok(()),
+    )
+}
+
+/// Where a spawn goes, as [`SpawnOpts::resolve`] and [`spawn_model`] settled it.
+struct Landing<'a> {
+    dir: &'a str,
+    backend: Backend,
+    name: Option<&'a str>,
+    model: Option<&'a str>,
+}
+
+/// Start `launcher` (or, with `-n`, say what would start) and report it: the tail that a
+/// plain `spawn` and `spawn --resume` share. `resumed`: the session id a resume continues.
+/// `before_typing`: see [`backend::spawn_hooked`]; success is reported only after it.
+fn launch(
+    at: &Landing,
+    prompt: Prompt,
+    launcher: &str,
+    opts: &SpawnOpts,
+    resumed: Option<&str>,
+    json: bool,
+    before_typing: &mut dyn FnMut(&backend::Spawned) -> Result<()>,
+) -> Result<()> {
+    let with_resumed = |mut v: serde_json::Value| {
+        if let Some(id) = resumed {
+            v["resumed"] = id.into();
+        }
+        v
+    };
     if crate::core::hosts::dry_run() {
-        let line = backend::launch_command(
-            &dir,
-            Prompt::Inline(&prompt),
-            name.as_deref(),
-            &launcher,
-            opts.harness,
-        );
-        let backend_kind = backend::spawn_backend(backend_kind);
+        let line = backend::launch_command(at.dir, prompt, at.name, launcher, opts.harness);
+        let backend_kind = backend::spawn_backend(at.backend);
         if json {
             let v = spawned_json(
                 &host_label(),
                 None,
                 backend_kind,
-                &dir,
+                at.dir,
                 opts.harness,
-                model.as_deref(),
-                name.as_deref(),
+                at.model,
+                at.name,
                 &line,
                 None,
             );
-            println!("{}", serde_json::to_string_pretty(&v)?);
+            println!("{}", serde_json::to_string_pretty(&with_resumed(v))?);
         } else {
             println!(
                 "dry-run: would spawn a {} session: {line}",
@@ -1050,34 +1088,39 @@ fn spawn_new(prompt: Option<String>, opts: SpawnOpts, json: bool) -> Result<()> 
         }
         return Ok(());
     }
-    require_launcher(opts.harness, &launcher, &dir)?;
-    let desc = backend::spawn(
-        backend_kind,
-        &dir,
-        Prompt::Inline(&prompt),
-        name.as_deref(),
+    require_launcher(opts.harness, launcher, at.dir)?;
+    let desc = backend::spawn_with_hook(
+        at.backend,
+        at.dir,
+        prompt,
+        at.name,
         opts.tmux_session.as_deref(),
         opts.window,
-        &launcher,
+        launcher,
         opts.harness,
+        before_typing,
     )?;
     if json {
         let v = spawned_json(
             &host_label(),
             Some(&desc),
-            backend_kind,
-            &dir,
+            at.backend,
+            at.dir,
             opts.harness,
-            model.as_deref(),
-            name.as_deref(),
+            at.model,
+            at.name,
             "",
             None,
         );
-        println!("{}", serde_json::to_string_pretty(&v)?);
-    } else if prompt.is_empty() {
-        println!("{desc} in {}", home_rel(&dir));
-    } else {
-        println!("{desc} in {} — \"{prompt}\"", home_rel(&dir));
+        println!("{}", serde_json::to_string_pretty(&with_resumed(v))?);
+        return Ok(());
+    }
+    match (resumed, prompt) {
+        (Some(id), _) => println!("{desc} in {} — resuming {id}", home_rel(at.dir)),
+        (None, Prompt::Inline(p)) if !p.is_empty() => {
+            println!("{desc} in {} — \"{p}\"", home_rel(at.dir))
+        }
+        _ => println!("{desc} in {}", home_rel(at.dir)),
     }
     Ok(())
 }
@@ -1123,6 +1166,181 @@ fn spawn_linked(
         .tmux_session
         .ok_or_else(|| Error::Other("the session has no tmux session to link".into()))?;
     crate::cli::slack::link_spawned(&tmux, link, prompt)
+}
+
+/// A session id `spawn --resume` will type into a shell: ASCII letters, digits and `-`,
+/// 1–128 of them, not starting with `-` (Claude's and Codex's ids are UUIDs). The resume
+/// line binds it as the id anyway (`--resume=<id>`, `resume -- <id>`); a leading `-` is still
+/// refused, as nothing that looks like a flag is a session id.
+fn valid_session_id(id: &str) -> bool {
+    (1..=128).contains(&id.len())
+        && !id.starts_with('-')
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+/// The pid of a live `harness` session with this id, per the lookup `id:<session_id>` targets
+/// use, narrowed to that harness: another harness's session with the same id (live, or a
+/// stale registry entry) neither is this one nor hides it.
+fn live_pid(harness: Harness, id: &str) -> Option<i64> {
+    discovery::find_live_id(harness, id).first().map(|s| s.pid)
+}
+
+/// `fleet spawn --resume <session_id>`: the harness's own resume of that session (`claude
+/// --resume=<id>`, `codex resume -- <id>`) in a new terminal in `--dir`, through the same path
+/// as a plain spawn. One session never gets a second process: refused (`session_live`, with
+/// its pid) while the session is live, and (`session_starting`) while another resume of it is
+/// checking or starting it, or started it and it has not registered yet: while the tmux pane
+/// it was typed into still runs it, or for [`lock::RESUME_HOLD`] (see [`lock::Stamp::holds`]).
+/// With `json`, one object either way, as [`spawn`].
+pub fn spawn_resume(
+    id: &str,
+    prompt: Option<String>,
+    from: bool,
+    opts: SpawnOpts,
+    json: bool,
+) -> Result<()> {
+    let mut live = None;
+    let out = resume(id, prompt, from, &opts, json, &mut live);
+    if json && let Err(e) = &out {
+        let mut v = spawn_error_json(e, &host_label());
+        if let Some(pid) = live {
+            v["pid"] = pid.into();
+        }
+        println!("{v}");
+    }
+    out
+}
+
+fn resume(
+    id: &str,
+    prompt: Option<String>,
+    from: bool,
+    opts: &SpawnOpts,
+    json: bool,
+    live: &mut Option<i64>,
+) -> Result<()> {
+    if from {
+        return Err(Error::tagged(
+            "usage",
+            "--resume and --from cannot be combined",
+        ));
+    }
+    if prompt.is_some() {
+        return Err(Error::tagged(
+            "usage",
+            "--resume takes no prompt: the session continues where it left off",
+        ));
+    }
+    if opts.ask_done || opts.slack.is_some() {
+        return Err(Error::tagged(
+            "usage",
+            "--resume cannot be combined with --ask-done or --slack",
+        ));
+    }
+    if !valid_session_id(id) {
+        return Err(Error::tagged(
+            "usage",
+            format!(
+                "invalid session id \"{id}\" — ASCII letters, digits and - only, 1-128 of them, not starting with -"
+            ),
+        ));
+    }
+    if !matches!(opts.harness, Harness::Claude | Harness::Codex) {
+        return Err(Error::tagged(
+            "harness_unsupported",
+            format!("--resume supports claude and codex, not {}", opts.harness),
+        ));
+    }
+    if opts.dir.is_none() {
+        return Err(Error::tagged(
+            "dir_missing",
+            "--resume needs --dir: the directory the session ran in",
+        ));
+    }
+    let (dir, backend_kind, name) = opts.resolve()?;
+    let model = spawn_model(opts)?;
+    // Held from the liveness check through the start, so a second fleet cannot pass the
+    // check meanwhile; its stamp holds the session after, until it registers.
+    let starting = || {
+        Error::tagged(
+            "session_starting",
+            format!(
+                "session {id} is already being resumed and has not registered yet — select it once it does"
+            ),
+        )
+    };
+    // A dry run only looks: it claims nothing and writes nothing.
+    let held = if crate::core::hosts::dry_run() {
+        None
+    } else {
+        match lock::reserve_resume(opts.harness, id) {
+            Ok(r) => Some(r),
+            Err(lock::LockError::Busy) => return Err(starting()),
+            Err(lock::LockError::Io(e)) => return Err(e.into()),
+        }
+    };
+    if let Some(pid) = live_pid(opts.harness, id) {
+        *live = Some(pid);
+        return Err(Error::tagged(
+            "session_live",
+            format!("session {id} is already live (pid {pid}) — select it instead"),
+        ));
+    }
+    let recent = match &held {
+        Some(r) => r.starting(),
+        None => lock::resume_starting(opts.harness, id),
+    };
+    if recent {
+        return Err(starting());
+    }
+    let launcher = crate::core::gh_identity::wrap_current(
+        &opts
+            .harness
+            .resume_command(&opts.harness.command(), model.as_deref(), id),
+        opts.harness,
+    )?;
+    let at = Landing {
+        dir: &dir,
+        backend: backend_kind,
+        name: name.as_deref(),
+        model: model.as_deref(),
+    };
+    let Some(held) = held else {
+        return launch(
+            &at,
+            Prompt::None,
+            &launcher,
+            opts,
+            Some(id),
+            json,
+            &mut |_| Ok(()),
+        );
+    };
+    // The stamp is down before anything is typed (a process killed after this still leaves
+    // the session reserved), and success is printed only after it names the host.
+    held.claim()?;
+    let mut host = |s: &backend::Spawned| match &s.handle {
+        Some(pane) if s.backend == Backend::Tmux => Ok(held.host(pane)?),
+        _ => Ok(()),
+    };
+    let out = launch(
+        &at,
+        Prompt::None,
+        &launcher,
+        opts,
+        Some(id),
+        json,
+        &mut host,
+    );
+    // No terminal was created, so nothing started: free the session for the next resume. Once
+    // a terminal exists the resume may be running in it, and the stamp stays.
+    if let Err(e) = &out
+        && e.partial().is_none()
+        && let Err(w) = held.release()
+    {
+        eprintln!("warning: cannot release the resume of {id}: {w}");
+    }
+    out
 }
 
 /// `spawn --from <session>`: a new session in the source's cwd (on this host — `-H` already
