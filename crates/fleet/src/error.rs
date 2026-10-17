@@ -16,8 +16,13 @@ pub enum Error {
 
     /// A failure a `--json` caller can branch on: `kind` is a stable `snake_case` code
     /// (`dir_missing`, `target_not_found`, …), the message is for people. Exits 1.
+    /// `reason`, when set, narrows `kind` down (`close`'s `busy`: `locked`, `editor_open`).
     #[error("{msg}")]
-    Tagged { kind: &'static str, msg: String },
+    Tagged {
+        kind: &'static str,
+        msg: String,
+        reason: Option<&'static str>,
+    },
 
     /// A spawn that failed after its terminal was created: `partial` says where that terminal
     /// is (tmux session, window, pane; iTerm session), so the caller can find and close it.
@@ -46,6 +51,17 @@ impl Error {
         Error::Tagged {
             kind,
             msg: msg.into(),
+            reason: None,
+        }
+    }
+
+    /// [`Error::tagged`] with a `reason` that narrows `kind` down, printed beside it in the
+    /// `--json` failure object.
+    pub fn tagged_for(kind: &'static str, reason: &'static str, msg: impl Into<String>) -> Self {
+        Error::Tagged {
+            kind,
+            msg: msg.into(),
+            reason: Some(reason),
         }
     }
 
@@ -113,8 +129,23 @@ impl Error {
     }
 
     /// `{ ok: false, kind, error }`: what a `--json` command prints on stdout when it fails.
+    /// `reason` is added when the failure has one.
     pub fn json(&self) -> serde_json::Value {
-        serde_json::json!({ "ok": false, "kind": self.kind(), "error": self.to_string() })
+        let mut v =
+            serde_json::json!({ "ok": false, "kind": self.kind(), "error": self.to_string() });
+        if let Some(r) = self.reason() {
+            v["reason"] = r.into();
+        }
+        v
+    }
+
+    /// What narrows [`Error::kind`] down, when the failure says.
+    pub fn reason(&self) -> Option<&'static str> {
+        match self {
+            Error::Tagged { reason, .. } => *reason,
+            Error::Partial { source, .. } => source.reason(),
+            _ => None,
+        }
     }
 
     /// The process exit code this error maps to.
