@@ -599,3 +599,59 @@ fn exact_targets_never_fall_through() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["kind"], "target_invalid");
 }
+
+// Claude's default model option names what Claude Code would start with: `ANTHROPIC_MODEL`,
+// else `model` in `$CLAUDE_CONFIG_DIR/settings.json` (else `~/.claude/settings.json`).
+#[test]
+fn harness_list_labels_claude_default_with_the_configured_model() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+    let env = common::Env::new();
+    let claude = env.path("bin/claude");
+    std::fs::create_dir_all(claude.parent().unwrap()).unwrap();
+    std::fs::write(&claude, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let config = env.path("claude-config");
+    std::fs::create_dir_all(&config).unwrap();
+    let home_claude = env.path("home/.claude");
+    std::fs::create_dir_all(&home_claude).unwrap();
+
+    let default_label = |config_dir: Option<&Path>, model: Option<&str>| {
+        let mut c = env.cmd();
+        c.args(["harness", "list", "--json"])
+            .env("FLEET_CMD", &claude);
+        if let Some(d) = config_dir {
+            c.env("CLAUDE_CONFIG_DIR", d);
+        }
+        if let Some(m) = model {
+            c.env("ANTHROPIC_MODEL", m);
+        }
+        let out = c.output().unwrap();
+        assert!(out.status.success(), "{}", common::stderr(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        let h = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|h| h["id"] == "claude")
+            .unwrap()
+            .clone();
+        assert_eq!(h["models"][0]["id"], "", "{h}");
+        h["models"][0]["label"].as_str().unwrap().to_string()
+    };
+
+    // Nothing configured.
+    assert_eq!(default_label(Some(&config), None), "Default");
+    // `~/.claude/settings.json` when CLAUDE_CONFIG_DIR is unset.
+    std::fs::write(home_claude.join("settings.json"), r#"{"model":"sonnet"}"#).unwrap();
+    assert_eq!(default_label(None, None), "Default (sonnet)");
+    // CLAUDE_CONFIG_DIR replaces `~/.claude`.
+    assert_eq!(default_label(Some(&config), None), "Default");
+    std::fs::write(config.join("settings.json"), r#"{"model":"opus[1m]"}"#).unwrap();
+    assert_eq!(default_label(Some(&config), None), "Default (opus[1m])");
+    // ANTHROPIC_MODEL wins over both.
+    assert_eq!(
+        default_label(Some(&config), Some("claude-haiku-5-5")),
+        "Default (claude-haiku-5-5)"
+    );
+}
