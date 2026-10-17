@@ -37,6 +37,7 @@ pub const UNSET: &[&str] = &[
     "FLEET_BIN",
     "FLEET_GH",
     "FLEET_NODE",
+    "FLEET_PATH_ONLY",
     "FLEET_WEB_BIND",
     "FLEET_WEB_PORT",
     "FLEET_MCP_TOKEN",

@@ -276,16 +276,25 @@ fn is_gone(why: &str) -> bool {
     .any(|m| why.contains(m))
 }
 
-/// Create a detached session, optionally in `dir` and running `cmd`.
+/// Create a detached session, optionally in `dir` and running `cmd`. Under `FLEET_PATH_ONLY`
+/// its panes start with fleet's `PATH` and the switch ([`tools::pane_env`]), not the server's.
 pub fn new_session(name: &str, dir: Option<&str>, cmd: &[String]) -> Result<()> {
     require()?;
     let dir = dir.map(tools::expand_tilde);
-    let mut args: Vec<&str> = vec!["new-session", "-d", "-s", name];
-    if let Some(d) = dir.as_deref() {
-        args.extend(["-c", d]);
+    let args = new_session_args(name, dir.as_deref(), &tools::pane_env(), cmd);
+    run(&args.iter().map(String::as_str).collect::<Vec<_>>())
+}
+
+fn new_session_args(name: &str, dir: Option<&str>, env: &[String], cmd: &[String]) -> Vec<String> {
+    let mut args: Vec<String> = ["new-session", "-d", "-s", name].map(String::from).into();
+    if let Some(d) = dir {
+        args.extend(["-c".into(), d.into()]);
     }
-    args.extend(cmd.iter().map(String::as_str));
-    run(&args)
+    for kv in env {
+        args.extend(["-e".into(), kv.clone()]);
+    }
+    args.extend(cmd.iter().cloned());
+    args
 }
 
 pub fn kill_session(name: &str) -> Result<()> {
@@ -1019,6 +1028,33 @@ pub fn process_alive(pid: i64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // `fleet tmux new` hands its panes the PATH-only environment with tmux `-e`, before the
+    // command (which tmux takes as the rest of its arguments).
+    #[test]
+    fn a_new_session_starts_with_the_pane_env() {
+        let env = ["PATH=/t/bin".to_string(), "FLEET_PATH_ONLY=1".into()];
+        assert_eq!(
+            new_session_args("w", Some("/tmp"), &env, &["top".into()]),
+            [
+                "new-session",
+                "-d",
+                "-s",
+                "w",
+                "-c",
+                "/tmp",
+                "-e",
+                "PATH=/t/bin",
+                "-e",
+                "FLEET_PATH_ONLY=1",
+                "top"
+            ]
+        );
+        assert_eq!(
+            new_session_args("w", None, &[], &[]),
+            ["new-session", "-d", "-s", "w"]
+        );
+    }
 
     fn sess(name: &str, last: i64, att: i64) -> TmuxSession {
         TmuxSession {

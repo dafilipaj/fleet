@@ -432,6 +432,44 @@ fn a_lone_claude_session_comes_back_in_its_own_tmux_session() {
     assert_eq!(after["dormant"]["iterm"], serde_json::json!([]));
 }
 
+// Under FLEET_PATH_ONLY a restored session's panes start with fleet's PATH and the switch: the
+// session it creates carries them (tmux `-e`), whatever the server's environment holds.
+#[test]
+fn a_path_only_restore_hands_the_session_fleets_path() {
+    let Some(r) = Rig::new() else { return };
+    let snap = serde_json::json!({
+        "version": 1, "host": "local", "bootId": "boot-0",
+        "tmux": [],
+        "iterm": [ { "sessionId": "lone-path-only", "name": "n", "cwd": r.s("work/one"),
+                     "title": "Path only", "flags": [] } ],
+        "dormant": { "tmux": [], "iterm": [] }
+    });
+    std::fs::write(r.p("state/snapshot.json"), snap.to_string()).unwrap();
+    let path = format!("{}:/usr/bin:/bin", r.s("bin"));
+    let out = r
+        .cmd()
+        .env("PATH", &path)
+        .env("FLEET_PATH_ONLY", "1")
+        .args(["restore", "lone-path-only", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["restored"][0]["session"], "Path-only", "{v}");
+    r.wait_for("the resumed claude", || {
+        r.registered()
+            .iter()
+            .any(|s| s["sessionId"] == "lone-path-only")
+    });
+    let shown = |name: &str| {
+        r.tmux(&["show-environment", "-t", "Path-only", name])
+            .trim()
+            .to_string()
+    };
+    assert_eq!(shown("PATH"), format!("PATH={path}"));
+    assert_eq!(shown("FLEET_PATH_ONLY"), "FLEET_PATH_ONLY=1");
+}
+
 #[test]
 fn nothing_is_recorded_in_fixture_mode() {
     let env = Env::new();
