@@ -19,7 +19,8 @@ import { resolveStaticPath, readJsonBody, contentTypeFor, HttpError } from '../l
 import { createBackend, BackendError, createScriptProvider, ITERM_SCRIPT } from '../lib/backends.mjs';
 import { createFleet, trimTitle, TITLE_MAX } from '../lib/fleet.mjs';
 import { createFleetCli } from '../lib/fleet-cli.mjs';
-import { ensurePath, ensureUtf8Locale } from '../lib/config.mjs';
+import { ensurePath, ensureUtf8Locale, pathOnly } from '../lib/config.mjs';
+import { spawnSync } from 'node:child_process';
 
 // ------------------------------------------------------------------ tailLines
 
@@ -454,6 +455,29 @@ test('ensurePath prepends the homebrew/local bins once', () => {
   const once = env.PATH;
   ensurePath(env);
   assert.equal(env.PATH, once, 'idempotent');
+});
+
+test('pathOnly reads FLEET_PATH_ONLY the way the CLI does', () => {
+  for (const v of ['1', 'true', 'YES', ' yes ']) assert.equal(pathOnly({ FLEET_PATH_ONLY: v }), true, v);
+  for (const v of [undefined, '', '0', 'no', 'false']) assert.equal(pathOnly({ FLEET_PATH_ONLY: v }), false, String(v));
+});
+
+// The server reaches past PATH (ensurePath, the iTerm osascript), so under FLEET_PATH_ONLY it
+// refuses to start: exit 2 before reading the config (an unreadable one here would fail
+// differently) or listening.
+test('the server refuses to start under FLEET_PATH_ONLY', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-web-path-only-'));
+  const config = path.join(dir, 'config.json');
+  fs.writeFileSync(config, 'not json');
+  const server = new URL('../server.mjs', import.meta.url).pathname;
+  const r = spawnSync(process.execPath, [server], {
+    env: { PATH: '/usr/bin:/bin', HOME: dir, FLEET_CONFIG: config, FLEET_PATH_ONLY: '1' },
+    encoding: 'utf8',
+    timeout: 10_000,
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+  assert.equal(r.status, 2, r.stderr);
+  assert.match(r.stderr, /not available with FLEET_PATH_ONLY set/);
 });
 
 test('ensureUtf8Locale gives children a UTF-8 locale, keeping one that is already set', () => {

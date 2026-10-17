@@ -178,7 +178,8 @@ pub fn tailscale() -> Option<(Peer, Vec<Peer>)> {
     let bin = tools::find_binary("tailscale")
         .map(|p| p.display().to_string())
         .or_else(|| {
-            let app = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
+            let app =
+                tools::install_location("/Applications/Tailscale.app/Contents/MacOS/Tailscale")?;
             std::path::Path::new(app).exists().then(|| app.to_string())
         })?;
     let out = std::process::Command::new(bin)

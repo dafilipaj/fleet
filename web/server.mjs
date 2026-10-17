@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { configPath, loadConfig, ensurePath, ensureUtf8Locale, resolveBinary } from './lib/config.mjs';
+import { configPath, loadConfig, ensurePath, ensureUtf8Locale, pathOnly, resolveBinary } from './lib/config.mjs';
 import { run } from './lib/run.mjs';
 import { createFleetCli } from './lib/fleet-cli.mjs';
 import { createFleet } from './lib/fleet.mjs';
@@ -44,6 +44,10 @@ const log = (line) => process.stdout.write(`${line}\n`);
 const logError = (err, context = '') =>
   process.stderr.write(`[error]${context ? ` ${context}` : ''} ${err?.stack ?? String(err)}\n`);
 
+if (pathOnly(process.env)) {
+  process.stderr.write('[fleet-web] not available with FLEET_PATH_ONLY set: the server runs binaries outside PATH\n');
+  process.exit(2);
+}
 ensurePath(process.env);
 ensureUtf8Locale(process.env);
 

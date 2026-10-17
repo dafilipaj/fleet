@@ -1075,12 +1075,45 @@ fn target(cli_host: Option<&str>, local: bool, scope: Scope) -> Result<Target> {
     hosts::resolve(config::get(), requested.as_deref(), local, scope)
 }
 
-/// A `--json` command whose session or stack target did not resolve still answers with one
-/// object, `{ ok: false, host, kind, error }` (the exit code is the command's own).
+/// A `--json` command whose session or stack target did not resolve (or that `FLEET_PATH_ONLY`
+/// refused: `stack spawn --on` another host) still answers with one object, `{ ok: false,
+/// host, kind, error }` (the exit code is the command's own).
 fn json_lookup<T>(json: bool, r: Result<T>) -> Result<T> {
     match r {
-        Err(e) if json && e.is_lookup_failure() => Err(commands::json_failure(e)),
+        Err(e) if json && (e.is_lookup_failure() || fleet::core::tools::is_refusal(&e)) => {
+            Err(commands::json_failure(e))
+        }
         r => r,
+    }
+}
+
+/// A `FLEET_PATH_ONLY` refusal before the command runs (no `PATH`, another host): a command
+/// run with `--json` still answers with its failure object on stdout — `spawn`'s own shape
+/// for `spawn` — as its own failures do.
+fn refused(e: Error, command: &Commands) -> Error {
+    if !json_requested() {
+        return e;
+    }
+    match command {
+        Commands::Spawn { .. } => commands::spawn_json_failure(e, &commands::host_label()),
+        _ => commands::json_failure(e),
+    }
+}
+
+/// Does the command line ask for `--json`, at any level (`list --json`, `stack show x --json`)?
+fn json_requested() -> bool {
+    let Ok(m) = Cli::command().try_get_matches_from(std::env::args_os()) else {
+        return false;
+    };
+    let mut m = &m;
+    loop {
+        if matches!(m.try_get_one::<bool>("json"), Ok(Some(true))) {
+            return true;
+        }
+        match m.subcommand() {
+            Some((_, sub)) => m = sub,
+            None => return false,
+        }
     }
 }
 
@@ -1092,6 +1125,9 @@ fn run(cli: Cli) -> Result<i32> {
         hosts::set_as_host(h);
     }
     let command = cli.command.unwrap_or_else(default_command);
+    if let Err(e) = fleet::core::tools::require_path() {
+        return Err(refused(e, &command));
+    }
 
     // `enter` with no host named looks on the default host, then everywhere else.
     let host_named = cli.host.is_some()
@@ -1108,10 +1144,12 @@ fn run(cli: Cli) -> Result<i32> {
     }
 
     // `fleet -H <host> stack …` for a host this machine has no ssh to, only its web server
-    // (the sheds): the stack routes of that server answer instead.
+    // (the sheds): the stack routes of that server answer instead. Not under FLEET_PATH_ONLY:
+    // dispatch below refuses the host.
     if let Commands::Stack { cmd } = &command
         && let Some(h) = cli.host.as_deref().map(str::trim).filter(|h| !h.is_empty())
         && !cli.local
+        && !fleet::core::tools::path_only()
         && let Some(hc) = config::get().host(h)
         && h != config::get().self_name()
         && hc.ssh.as_deref().map(str::trim).is_none_or(str::is_empty)
@@ -1171,6 +1209,7 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
                     &requested(),
                 ));
             }
+            Err(e) if fleet::core::tools::is_refusal(&e) => return Err(refused(e, &command)),
             Err(e) => return Err(e),
         };
         hosts::debug(&format!("target: {t:?}"));

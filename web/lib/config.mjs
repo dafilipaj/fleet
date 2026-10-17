@@ -94,6 +94,16 @@ export function configPath(env = process.env, home = os.homedir()) {
   return path.join(base, 'fleet', 'config.json');
 }
 
+/**
+ * `FLEET_PATH_ONLY` (`1`, `true` or `yes`, as the CLI reads it): binaries from PATH alone, for
+ * hermetic tests. The server cannot honour it: it puts Homebrew and `~/.local/bin` on PATH
+ * (`ensurePath`), looks binaries up there (`resolveBinary`) and drives iTerm through
+ * `/usr/bin/osascript`. So it refuses to start, as `fleet web serve` does.
+ */
+export function pathOnly(env = process.env) {
+  return ['1', 'true', 'yes'].includes(String(env.FLEET_PATH_ONLY ?? '').trim().toLowerCase());
+}
+
 /** Prepend the usual Homebrew / user bin dirs so children launched by launchd find binaries. */
 export function ensurePath(env = process.env, home = os.homedir()) {
   const extra = ['/opt/homebrew/bin', path.join(home, '.local', 'bin'), '/usr/local/bin'];

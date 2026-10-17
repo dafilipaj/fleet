@@ -709,7 +709,7 @@ impl SpawnOpts {
                 format!("dir does not exist: {dir}"),
             ));
         }
-        let backend = self.backend.unwrap_or_else(default_backend);
+        let backend = self.backend()?;
         let name = self
             .name
             .as_deref()
@@ -718,15 +718,26 @@ impl SpawnOpts {
             .map_err(|e| e.tag("name_invalid"))?;
         Ok((dir, backend, name))
     }
+
+    /// The backend (`--backend`, else [`default_backend`]), refused under `FLEET_PATH_ONLY`
+    /// when the spawn could never run there ([`backend::refuse_path_only`]): checked here, so
+    /// that a dry run fails the same way, and before a prompt file, a resume stamp, a stack or
+    /// a worktree is written for it.
+    pub(crate) fn backend(&self) -> Result<Backend> {
+        let backend = self.backend.unwrap_or_else(default_backend);
+        backend::refuse_path_only(backend::spawn_backend(backend))?;
+        Ok(backend)
+    }
 }
 
 /// Where a new session goes when nobody said: tmux when we are inside tmux, or
 /// reached over ssh (a remote host's iTerm is on a screen nobody is looking
-/// at), or not on macOS; iTerm otherwise.
+/// at), or not on macOS, or under `FLEET_PATH_ONLY` (which refuses iTerm); iTerm otherwise.
 fn default_backend() -> Backend {
     if std::env::var_os("TMUX").is_some()
         || std::env::var_os("SSH_CONNECTION").is_some()
         || !cfg!(target_os = "macos")
+        || crate::core::tools::path_only()
     {
         Backend::Tmux
     } else {
@@ -771,6 +782,8 @@ fn require_launcher(harness: Harness, launcher: &str, dir: &str) -> Result<()> {
     let word = launcher.split_whitespace().next().unwrap_or(launcher);
     let why = if word.contains('/') {
         "is not an executable file (relative to the spawn's --dir)"
+    } else if crate::core::tools::path_only() {
+        "is not on PATH (FLEET_PATH_ONLY: no login-shell lookup)"
     } else {
         "is neither on PATH nor known to a login shell"
     };
