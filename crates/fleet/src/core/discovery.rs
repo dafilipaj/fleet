@@ -819,25 +819,233 @@ pub fn process_start(pid: i64) -> Option<String> {
     proc_starts(&[pid]).get(&pid).and_then(|s| start_rfc3339(s))
 }
 
-/// The terminal of process `pid` as `ps` names it (`ttys012`, `pts/3`); `None` when it has
-/// none or is gone.
-pub fn process_tty(pid: i64) -> Option<String> {
-    tty_of(pid)
+/// One process, as a [`processes`] snapshot read it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Proc {
+    pub pid: i64,
+    pub ppid: i64,
+    /// Its process group.
+    pub pgid: i64,
+    /// The foreground process group of its terminal: the one what is typed there reaches.
+    pub tpgid: i64,
+    /// `ps` state: `S+`, `T` (stopped, as Ctrl-Z leaves it), `Z` (a zombie), ….
+    pub stat: String,
+    /// Its terminal as `ps` names it (`ttys012`, `pts/3`); `None` when it has none.
+    pub tty: Option<String>,
+    /// Its start time, RFC 3339 UTC as [`Session::proc_start`]; `None` when unreadable.
+    pub start: Option<String>,
+    pub command: String,
 }
 
-/// Is process `pid` running in the foreground of its terminal — in the terminal's
-/// foreground process group (`ps` state `+`) and not stopped (`T`, as Ctrl-Z leaves it; `t`,
-/// traced)? What is typed on that terminal reaches only such a process. `false` when gone.
-pub fn process_foreground(pid: i64) -> bool {
-    Command::new("ps")
-        .args(["-o", "stat=", "-p", &pid.to_string()])
-        .output()
-        .ok()
-        .is_some_and(|o| foreground_stat(String::from_utf8_lossy(&o.stdout).trim()))
+impl Proc {
+    /// Exited but not yet reaped.
+    pub fn zombie(&self) -> bool {
+        self.stat.starts_with('Z')
+    }
+
+    /// Stopped (Ctrl-Z, `SIGSTOP`) or traced.
+    pub fn stopped(&self) -> bool {
+        self.stat.contains(['T', 't'])
+    }
+
+    /// Running in the foreground of its terminal: in the terminal's foreground process group
+    /// and not stopped. What is typed on that terminal reaches only such a process.
+    pub fn in_front(&self) -> bool {
+        self.tty.is_some() && self.pgid == self.tpgid && !self.stopped() && !self.zombie()
+    }
 }
 
-fn foreground_stat(stat: &str) -> bool {
-    stat.contains('+') && !stat.contains(['T', 't', 'Z'])
+/// Every process, from one `ps`: a process's pid, start time, terminal and foreground state
+/// are read together, so they never mix two processes that held the same pid in turn.
+pub fn processes() -> std::io::Result<Vec<Proc>> {
+    read_procs(&["-A"])
+}
+
+/// The processes of `pids` that still run, from one `ps` each read whole as [`processes`]
+/// reads them — only those, not every process. A pid that is gone is just not there.
+pub fn processes_of(pids: &[i64]) -> std::io::Result<Vec<Proc>> {
+    if pids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let list = pids
+        .iter()
+        .map(i64::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    read_procs(&["-p", &list])
+}
+
+/// `ps <select> -o …` → [`Proc`]s. `ps -p` exits 1, silently, when none of its pids runs:
+/// that is no process, not a failure; anything it says on stderr is.
+fn read_procs(select: &[&str]) -> std::io::Result<Vec<Proc>> {
+    let out = Command::new("ps")
+        .env("TZ", "UTC")
+        .env("LC_ALL", "C")
+        .args(select)
+        .args(["-o", "pid=,ppid=,pgid=,tpgid=,stat=,tty=,lstart=,comm="])
+        .output()?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if !out.status.success() && (select[0] == "-A" || !stderr.trim().is_empty()) {
+        return Err(std::io::Error::other(format!(
+            "ps exited {}: {}",
+            out.status,
+            stderr.trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(parse_proc)
+        .collect())
+}
+
+/// `pid ppid pgid tpgid stat tty Www Mmm dd hh:mm:ss yyyy command…` → a [`Proc`].
+fn parse_proc(line: &str) -> Option<Proc> {
+    let w: Vec<&str> = line.split_whitespace().collect();
+    if w.len() < 11 {
+        return None;
+    }
+    let num = |i: usize| w[i].parse::<i64>().ok();
+    Some(Proc {
+        pid: num(0)?,
+        ppid: num(1)?,
+        pgid: num(2)?,
+        tpgid: num(3)?,
+        stat: w[4].to_string(),
+        tty: (!matches!(w[5], "??" | "?" | "-")).then(|| w[5].to_string()),
+        start: start_rfc3339(&w[6..11].join(" ")),
+        command: w[11..].join(" "),
+    })
+}
+
+/// Which of `pids` read terminal `tty` (as `ps` names it: `ttys012`, `pts/3`) — have it as
+/// their standard input. `/proc` where there is one, else `lsof`.
+///
+/// Fails closed: an answer it cannot be sure of is an error, never "nobody". `/proc`: a
+/// link that cannot be read for any reason but the process (or its fd 0) being gone. `lsof`:
+/// one that cannot be run, runs longer than [`LSOF_DEADLINE`] (it is killed), is killed, or
+/// exits non-zero while a pid it said nothing of still runs.
+pub fn reading_tty(pids: &[i64], tty: &str) -> std::io::Result<Vec<i64>> {
+    if pids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let dev = format!("/dev/{tty}");
+    if std::path::Path::new("/proc/self/fd").is_dir() {
+        let mut hits = Vec::new();
+        for &p in pids {
+            match std::fs::read_link(format!("/proc/{p}/fd/0")) {
+                Ok(l) if l.as_os_str() == dev.as_str() => hits.push(p),
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(std::io::Error::other(format!("/proc/{p}/fd/0: {e}")));
+                }
+            }
+        }
+        return Ok(hits);
+    }
+    let list = pids
+        .iter()
+        .map(i64::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    // `-a`: fd 0 of those pids. `-b`: no kernel call that can block. Its exit status is 1
+    // when any of them is gone (or cannot be looked at); a process that runs with fd 0 closed
+    // gets no record, with exit status 0.
+    let out = output_within(
+        Command::new("lsof").args([
+            "-b", "-n", "-P", "-w", "-a", "-d", "0", "-F", "pn", "-p", &list,
+        ]),
+        LSOF_DEADLINE,
+    )
+    .map_err(|e| std::io::Error::new(e.kind(), format!("lsof: {e}")))?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let (listed, hits) = stdin_on(&stdout, &dev);
+    if !out.status.success() {
+        let unlisted: Vec<i64> = pids
+            .iter()
+            .copied()
+            .filter(|p| !listed.contains(p))
+            .collect();
+        let running = processes_of(&unlisted)?;
+        if let Some(p) = running.iter().find(|p| !p.zombie()) {
+            return Err(std::io::Error::other(format!(
+                "lsof exited {} and said nothing of pid {}, which still runs",
+                out.status, p.pid
+            )));
+        }
+    }
+    Ok(hits)
+}
+
+/// How long `lsof` gets to say who reads a terminal, before it is killed and the answer is
+/// an error.
+pub const LSOF_DEADLINE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// `cmd`'s output (stdin null, stdout captured, stderr dropped), or `TimedOut` once it has
+/// run for `deadline` — it is killed and reaped then.
+fn output_within(
+    cmd: &mut Command,
+    deadline: std::time::Duration,
+) -> std::io::Result<std::process::Output> {
+    use std::io::Read;
+    use std::process::Stdio;
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let mut pipe = child.stdout.take();
+    let reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(p) = pipe.as_mut() {
+            let _ = p.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let end = std::time::Instant::now() + deadline;
+    let status = loop {
+        if let Some(st) = child.try_wait()? {
+            break st;
+        }
+        if std::time::Instant::now() >= end {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("no answer within {}s", deadline.as_secs()),
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    let stdout = reader.join().unwrap_or_default();
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr: Vec::new(),
+    })
+}
+
+/// `lsof -F pn` output → (every pid it has a record of, the pids whose file is `dev`).
+fn stdin_on(lsof: &str, dev: &str) -> (Vec<i64>, Vec<i64>) {
+    let mut pid = None;
+    let mut listed = Vec::new();
+    let mut hits = Vec::new();
+    for l in lsof.lines() {
+        if let Some(p) = l.strip_prefix('p') {
+            pid = p.parse().ok();
+            if let Some(p) = pid
+                && !listed.contains(&p)
+            {
+                listed.push(p);
+            }
+        } else if let (Some(n), Some(p)) = (l.strip_prefix('n'), pid)
+            && n == dev
+            && !hits.contains(&p)
+        {
+            hits.push(p);
+        }
+    }
+    (listed, hits)
 }
 
 /// `ps -o lstart` (UTC) → RFC 3339 UTC, to the second.
@@ -1336,14 +1544,102 @@ mod tests {
     }
 
     #[test]
+    fn a_ps_line_is_one_process_read_whole() {
+        let p = parse_proc(
+            "  412   400   412   412 S+   ttys003  Sat Oct 17 13:19:29 2026     claude --resume x",
+        )
+        .unwrap();
+        assert_eq!(
+            p,
+            Proc {
+                pid: 412,
+                ppid: 400,
+                pgid: 412,
+                tpgid: 412,
+                stat: "S+".into(),
+                tty: Some("ttys003".into()),
+                start: Some("2026-10-17T13:19:29Z".into()),
+                command: "claude --resume x".into(),
+            }
+        );
+        assert!(p.in_front());
+        // Linux spells it `pts/3`, and no terminal `?`; a one-digit day is padded.
+        let q = parse_proc("7 1 7 -1 Ss ? Fri Oct  2 03:04:05 2026 init").unwrap();
+        assert_eq!(
+            (q.tty, q.start.as_deref()),
+            (None, Some("2026-10-02T03:04:05Z"))
+        );
+        assert!(
+            parse_proc("8 1 8 8 S+ pts/3 Fri Oct  2 03:04:05 2026 sh")
+                .unwrap()
+                .tty
+                == Some("pts/3".into())
+        );
+        // An unreadable start is no start; a short or garbled line is no process.
+        assert_eq!(
+            parse_proc("9 1 9 9 S+ pts/3 soon soon soon soon soon x")
+                .unwrap()
+                .start,
+            None
+        );
+        for bad in [
+            "",
+            "9 1 9 9 S+ pts/3",
+            "x 1 9 9 S+ pts/3 Fri Oct 2 03:04:05 2026 sh",
+        ] {
+            assert_eq!(parse_proc(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
     fn only_a_running_foreground_process_is_in_front() {
+        let p = |pgid: i64, tpgid: i64, stat: &str, tty: Option<&str>| Proc {
+            pid: 5,
+            ppid: 1,
+            pgid,
+            tpgid,
+            stat: stat.into(),
+            tty: tty.map(Into::into),
+            start: None,
+            command: String::new(),
+        };
         for stat in ["S+", "R+", "Ss+", "S<+"] {
-            assert!(foreground_stat(stat), "{stat}");
+            assert!(p(5, 5, stat, Some("ttys001")).in_front(), "{stat}");
         }
-        // Background, stopped (Ctrl-Z, in front or not), traced, zombie, gone.
-        for stat in ["S", "Ss", "T", "T+", "t+", "Z+", ""] {
-            assert!(!foreground_stat(stat), "{stat}");
+        // Stopped (Ctrl-Z, in front or not), traced, zombie.
+        for stat in ["T", "T+", "t+", "Z+"] {
+            assert!(!p(5, 5, stat, Some("ttys001")).in_front(), "{stat}");
         }
+        // Another group in front (an editor of its own, a job); no terminal at all.
+        assert!(!p(5, 9, "S", Some("ttys001")).in_front());
+        assert!(!p(5, 5, "S+", None).in_front());
+    }
+
+    #[test]
+    fn lsof_names_the_pids_reading_the_terminal() {
+        let out = "p10\nn/dev/ttys004\np11\nnpipe\np12\nn/dev/ttys0040\np13\nn/dev/ttys004\n";
+        let (listed, hits) = stdin_on(out, "/dev/ttys004");
+        assert_eq!((listed, hits), (vec![10, 11, 12, 13], vec![10, 13]));
+        assert_eq!(stdin_on("", "/dev/ttys004"), (vec![], vec![]));
+    }
+
+    #[test]
+    fn a_command_past_its_deadline_is_killed_and_an_error() {
+        let t0 = std::time::Instant::now();
+        let e = output_within(
+            Command::new("sleep").arg("30"),
+            std::time::Duration::from_millis(200),
+        )
+        .unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::TimedOut);
+        assert!(t0.elapsed() < std::time::Duration::from_secs(5));
+        let out = output_within(
+            Command::new("echo").arg("hi"),
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap();
+        assert!(out.status.success());
+        assert_eq!(out.stdout, b"hi\n");
     }
 
     // Without a screen to read (iTerm, a pane tmux would not capture), a pending escalated

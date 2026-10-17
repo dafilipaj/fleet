@@ -81,10 +81,10 @@ member (see [Stacks](#stacks)).
 | `fleet` | `watch` on a terminal; a one-shot `list` when stdout is piped |
 | `fleet list [--json] [-a, --all-hosts]` (alias `ls`) | live sessions: title, status, age, context usage (`ctx 62%`), terminal, cwd. `--json` is an array whose rows all carry `host`; `-a` queries every configured host in parallel. The text view ends with `N dormant (fleet restore)` when a reboot left [dormant sessions](#session-recovery). Every local `list` also records the [snapshot](#session-recovery) |
 | `fleet peek <target> [--lines N]` | what the session's terminal shows now (default 40 lines): a `▼ <title> (<backend>, <status>) — <dir>` header, then each line cut to this terminal's width |
-| `fleet peek <target> --json [--lines N] [--ansi]` | the screen whole, for programs: `{ ok: true, host, target: { session_id, pid }, backend, status, cols, rows, lines: [...], truncated }` — no header, no clipping, the last N lines that have content (trailing blank lines and trailing spaces dropped). tmux: lines it wrapped are joined (`capture-pane -J`), and N counts those logical lines — the capture reaches back into the scrollback until each of the N is whole (up to what tmux still holds), but never more than 2,000 rows: a line longer than that comes back with its start cut and `truncated: true` (otherwise `false`; always `false` for iTerm); `cols`/`rows` are the pane's. iTerm: its visible screen as shown, `cols`/`rows` the session's. Escape sequences are stripped unless `--ansi` (tmux `-e`; iTerm gives none). On failure `{ ok: false, host, kind, error }`, exit 1 — kind `target_not_found`, `target_ambiguous`, `target_invalid`, `backend_unsupported` or `backend_failed` |
+| `fleet peek <target> --json [--lines N] [--ansi]` | the screen whole, for programs: `{ ok: true, host, target: { session_id, pid }, backend, status, cols, rows, lines: [...], truncated }` — no header, no clipping, the last N lines that have content (trailing blank lines and trailing spaces dropped). tmux: lines it wrapped are joined (`capture-pane -J`), and N counts those logical lines — the capture reaches back into the scrollback until each of the N is whole (up to what tmux still holds), but never more than 2,000 rows: a line longer than that comes back with its start cut and `truncated: true` (otherwise `false`; always `false` for iTerm); `cols`/`rows` are the pane's. iTerm: its visible screen as shown, `cols`/`rows` the session's. Escape sequences are stripped unless `--ansi` (tmux `-e`; iTerm gives none). On failure `{ ok: false, host, kind, error }`, exit 1 — kind `target_not_found`, `target_ambiguous`, `target_invalid`, `backend_unsupported` or `backend_failed`; a command line clap rejects (an unknown flag, wherever `--json` stands) is the same object with kind `usage`, exit 2 |
 | `fleet messages <target> [--json] [--after <cursor> \| --before <cursor>] [--limit N]` | the session's conversation from its transcript: prompts, replies, tool calls (never their output) and questions, oldest first — see [Messages](#messages). Without a cursor the newest `--limit` (default 100, max 500); `--after` everything newer (cheap enough to poll every second); `--before` the `--limit` entries before ("show earlier") |
 | `fleet send <target> <text>` | type text into the session and press Enter (fails while another fleet command types into it) |
-| `fleet keys <target> <key>... [--json]` | press named keys in the session's terminal, in order (80 ms apart), holding the session's lock as `send` and `answer` do: `Escape` (interrupt a turn), `Enter`, `Up`, `Down`, `Left`, `Right`, `Tab`, `BTab` (Shift-Tab), `Space`, `C-c`. Names are tmux's, case-sensitive; any other name is refused (exit 1, kind `invalid_key`) and nothing is pressed. tmux sessions get one `send-keys` per key, iTerm sessions the bytes a terminal sends for the key. **Not atomic:** the first key that fails stops the call — the keys before it stay pressed (nothing can take them back), the rest are not sent, and the error says how many got through (`… — 1 of 3 keys pressed before it`). `--json`: `{ ok: true, host, target: { session_id, pid }, keys: [...] }`, or `{ ok: false, host, kind, error }` (exit 1) — kind `invalid_key`, `target_not_found`, `target_ambiguous`, `target_invalid`, `busy` (another fleet command is typing into the session; nothing is pressed), `backend_unsupported` (no tmux pane or iTerm session to drive) or `backend_failed` |
+| `fleet keys <target> <key>... [--json]` | press named keys in the session's terminal, in order (80 ms apart), holding the session's lock as `send` and `answer` do: `Escape` (interrupt a turn), `Enter`, `Up`, `Down`, `Left`, `Right`, `Tab`, `BTab` (Shift-Tab), `Space`, `C-c`. Names are tmux's, case-sensitive; any other name is refused (exit 1, kind `invalid_key`) and nothing is pressed. tmux sessions get one `send-keys` per key, iTerm sessions the bytes a terminal sends for the key. **Not atomic:** the first key that fails stops the call — the keys before it stay pressed (nothing can take them back), the rest are not sent, and the error says how many got through (`… — 1 of 3 keys pressed before it`). `--json`: `{ ok: true, host, target: { session_id, pid }, keys: [...] }`, or `{ ok: false, host, kind, error }` (exit 1) — kind `invalid_key`, `target_not_found`, `target_ambiguous`, `target_invalid`, `busy` (another fleet command is typing into the session; nothing is pressed), `backend_unsupported` (no tmux pane or iTerm session to drive) or `backend_failed`; a command line clap rejects is the same object with kind `usage`, exit 2 |
 | `fleet close <id:… \| pid:…> [--json] [--timeout <s>] [--expect-pid <n> --expect-start <t>]` | end a session that is alone in its own tmux session (the layout `spawn` creates): its exit command, then that tmux session is killed; exact targets only, `-n` touches nothing — see [Closing sessions](#closing-sessions) |
 | `fleet answer <target> [--json] [--allow-attached] (--list \| --choice <n> [--prompt <id>] \| --question <tool_use_id> --answers <json>)` | answer the prompt the session waits on by typing what a human would — only while the terminal shows that very prompt, untouched; see [Answering prompts](#answering-prompts) |
 | `fleet rename <target> <title> [--no-tmux-sync] [--force] [--json]` | rename the session's one title: Claude's `/rename` (the source of truth), then its tmux session follows as a slug of it (`Fix Login` → `fix-login`, `-2` on a collision) when the tmux session is that Claude session's own (one window, one pane). A session **waiting on a prompt** is held (exit 1; `--json`: exit 3) — typed keys would be its answer; busy sessions are fine (Claude runs `/rename` mid-turn without disturbing the turn). Codex gets `/rename`, pi `/name`; a busy Codex / pi session is held too (`held: "busy"`) — they would queue the text as a message. `--force` overrides the hold. `--json` prints `{ ok, result: renamed\|sent\|held, session_id, pid, host, from, title, held, tmux: { renamed, from, to, note }, message }` |
@@ -261,7 +261,7 @@ hook output, bookkeeping entries, subagent (sidechain) messages.
   rewritten or replaced, or too far back to resume — reload without a cursor), `usage` (`--after`
   with `--before`, a bad `--limit`), `io`. A usage error clap catches (a missing target, an unknown
   flag, also behind grouped global flags like `-nH host`) is the same object with
-  `kind: "usage"`, exit 2 — clap's code; the usage errors fleet finds itself exit 1.
+  `kind: "usage"` and `host`, exit 2 — clap's code; the usage errors fleet finds itself exit 1.
 - `--before` settles what is open where its page ends: a reply's later blocks (after a tool
   call) are glued in, a question's outcome (or abandonment) is filled in, from the lines after.
 
@@ -329,7 +329,7 @@ pane in the milliseconds between the last read and the key.
 or `{ ok: true, session_id, harness, answered: true, prompt_kind: "question", id, steps }` after typing
 (`steps`: `[{ key } | { text }]`, what was typed). Failure (exit 1): `{ ok: false, kind, error }`;
 `outcome_uncertain` adds `screen` (the `--list` prompt now, or `null`), `prompt_kind` and `steps`.
-Kinds: `usage` (exit 2 when clap catches it), `target_not_found`, `target_ambiguous`,
+Kinds: `usage` (exit 2 when clap catches it, then with `host`), `target_not_found`, `target_ambiguous`,
 `human_attached`, `busy`, `prompt_not_on_screen` (not there, a different prompt, or touched —
 nothing typed), `prompt_incomplete`, `prompt_changed`, `outcome_uncertain`, `choice_invalid`,
 `question_not_found`, `question_not_active`, `question_answered` (already answered or declined),
@@ -359,9 +359,28 @@ ends a session and removes the tmux session it ran in:
   settle; then, only if that same process still runs in the foreground of the session's pane,
   the harness's exit command is typed — `/exit` for Claude Code, `/quit` for Codex (pi: none,
   it goes straight to the kill) — and the agent gets `--timeout` seconds (default 5, at most
-  600) to exit. Nothing is typed, `Escape` included, to an agent that is not in the foreground
-  of its pane's terminal (suspended with Ctrl-Z) or has exited (on Escape too): whatever is in
-  front of it never reads it, and it goes straight to the kill.
+  600) to exit. The process's pid, start time, terminal and foreground state are read in one
+  `ps`, so they always describe one process. Nothing is typed, `Escape` included, to an agent
+  that is not in the foreground of its pane's terminal or has exited (on Escape too):
+  - suspended (Ctrl-Z) or in the background with nothing in front of it but its own stopped
+    process group or the shell that started it, at its prompt, it goes straight to the kill;
+  - with a process of its own in front of it — reading its terminal in its process group, or in
+    a group of its own — such as Claude Code's Ctrl-G external editor, it is `busy`;
+  - suspended behind another job (one the user ran after Ctrl-Z), it is `host_shared`, since
+    the kill would end that job too.
+
+  Whether it is in front or not, another job **stopped** on the pane's terminal — outside the
+  agent's process group and not started by it (`vim`, Ctrl-Z, then `fg` back to the agent) —
+  is `host_shared` too: the kill would end it as well. A job running in the background
+  (`cmd &`) is not looked for (a prompt's own helpers, like `gitstatusd`, run that way): it
+  gets the hangup with the pane.
+
+  In these refusals nothing is typed or killed. Whether a child of the agent reads the
+  terminal is asked of `/proc` on Linux and of `lsof` elsewhere; when that cannot be told —
+  `lsof` missing, killed, exiting non-zero while a pid it said nothing of still runs, or not
+  done within 3 s (it is killed then) — close fails closed: `io`, nothing typed or killed.
+  The same look is taken again right before the kill: an editor opened by then is `busy`, a
+  pane now on another terminal `target_changed`, and the message says what was typed.
 - **Then the tmux session is killed** by its id (`$3`, never reused, unlike a name), whether the
   agent exited (its shell would stay) or not — in one tmux command with the check that the pane
   is still the one pane of its one window (`if-shell -F` on `session_id`, `session_windows`,
@@ -373,13 +392,25 @@ ends a session and removes the tmux session it ran in:
   types and kills nothing, and prints nothing but the result.
 
 `--json` prints one object: `{ ok: true, host, session_id, pid, harness, how, tmux_session,
-dry_run }`. `how` is `"exit"` when the agent was gone before the kill (on its exit command, on
-Escape, or by itself) and `"killed"` when it was still running when its tmux session was killed
+dry_run }`. `how` is `"exit"` whenever the agent was not alive at the end: gone before the kill
+(on its exit command, on Escape, or by itself, after the wait gave up on it too) or with its
+tmux session already gone at the kill. It is `"killed"` when it was still running when its tmux session was killed
 (under `-n`: `"exit"` when the agent is in front of its pane and the harness has an exit
 command); `tmux_session` is the name it had at the
 kill. Failures are `{ ok: false, host, kind, error }`, exit 1 — kinds `usage` (clap's too,
 wherever `--json` stands), `target_not_found`, `target_ambiguous`, `target_invalid`,
 `target_changed`, `host_shared`, `backend_unsupported`, `busy`, `io`.
+
+`busy` and `host_shared` failures add `reason`, which says which situation it is (any other
+kind has none; a caller that does not know a reason goes by `kind` alone):
+
+| kind | `reason` | when |
+|---|---|---|
+| `busy` | `locked` | another fleet command (`send`, `keys`, `answer`, another `close`) holds the session's lock — retry |
+| `busy` | `editor_open` | a process of the agent's own is in front of it: one in its process group reading its terminal, or one in a group of its own (Claude Code's Ctrl-G editor) — close it first |
+| `host_shared` | `shared_host` | its tmux session holds more than its one pane (another window or pane, a linked window), or no longer holds that pane, at the start or at the kill |
+| `host_shared` | `job_in_front` | the agent is suspended or in the background, and another job of the pane's shell is in front of it |
+| `host_shared` | `other_jobs` | another job is stopped on the pane's terminal (in front of the agent or behind it) |
 
 ### Harnesses
 
