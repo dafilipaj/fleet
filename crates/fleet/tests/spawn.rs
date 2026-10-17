@@ -807,6 +807,9 @@ fn spawn_resume_parse_failures_are_one_usage_object() {
         &["--local", "spawn", "--resume", "--bad", "--json"],
         &["--local", "spawn", "--json", "--resume", "--bad"],
         &["--local", "spawn", "--bad=1", "-Z", "--resume", "--json"],
+        // A flag given twice, however it is spelled.
+        &["spawn", "--name", "a", "--name", "b", "--json"],
+        &["spawn", "--json", "--name=a", "--name", "b"],
     ] {
         let out = env.cmd().args(args).output().unwrap();
         assert_eq!(out.status.code(), Some(1), "{args:?}: {}", stderr(&out));

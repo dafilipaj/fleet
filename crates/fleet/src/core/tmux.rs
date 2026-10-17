@@ -773,6 +773,249 @@ pub fn kill_if_still_stale(name: &str) -> KillOutcome {
     }
 }
 
+// --- one session per pane ----------------------------------------------------
+
+/// A tmux session by its id (`$3`), which the server never gives to another session, and
+/// the name it had when it was read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostSession {
+    pub id: String,
+    pub name: String,
+}
+
+/// How pane `pane` sits in its tmux session, read now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Hosting {
+    /// The pane is the only pane of the only window of this tmux session, and that window is
+    /// linked into no other session.
+    Alone(HostSession),
+    /// Tmux session `session` holds more than this pane: `windows` windows, `panes` panes —
+    /// or its one window is also linked into another session (`linked`).
+    Shared {
+        session: String,
+        windows: usize,
+        panes: usize,
+        linked: bool,
+    },
+    /// Confirmed: the server has no pane `pane` (or there is no server).
+    Gone,
+}
+
+/// Where pane `pane` (`%12`) lives: alone in its tmux session — one window, one pane, this
+/// one — or beside others. One `list-panes -a`: a single snapshot of the whole server, the
+/// session found by its id, so nothing can be renamed or moved between two reads. `Err` (as
+/// `io`) when tmux could not be asked (anything but "no server"): a failed query is never
+/// taken for the pane being gone.
+pub fn hosting(pane: &str) -> Result<Hosting> {
+    let listing = query(&[
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_id}\t#{window_id}\t#{window_linked}\t#{pane_id}\t#{session_name}",
+    ])?;
+    Ok(listing.map_or(Hosting::Gone, |l| hosting_of(pane, &l)))
+}
+
+/// [`hosting`] from its `list-panes -a` listing.
+fn hosting_of(pane: &str, listing: &str) -> Hosting {
+    let rows: Vec<Vec<&str>> = listing
+        .lines()
+        .map(|l| l.splitn(5, '\t').collect::<Vec<_>>())
+        .filter(|r| r.len() == 5)
+        .collect();
+    let Some(own) = rows.iter().find(|r| r[3] == pane) else {
+        return Hosting::Gone;
+    };
+    let mine: Vec<&Vec<&str>> = rows.iter().filter(|r| r[0] == own[0]).collect();
+    let windows: HashSet<&str> = mine.iter().map(|r| r[1]).collect();
+    let linked = own[2] != "0";
+    if mine.len() == 1 && !linked {
+        Hosting::Alone(HostSession {
+            id: own[0].to_string(),
+            name: own[4].to_string(),
+        })
+    } else {
+        Hosting::Shared {
+            session: own[4].to_string(),
+            windows: windows.len(),
+            panes: mine.len(),
+            linked,
+        }
+    }
+}
+
+/// What [`kill_if_alone`] found, in the same instant it killed or did not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KillAlone {
+    /// The tmux session was killed, and is confirmed gone; `.0` is its name at the kill.
+    Killed(String),
+    /// Not killed: the session (still there) no longer holds this pane alone.
+    Refused {
+        windows: usize,
+        panes: usize,
+        linked: bool,
+        /// The pane checked was this one (else this pane is no longer in it).
+        ours: bool,
+    },
+    /// Confirmed: the session no longer exists (or there is no server); nothing was killed.
+    Gone,
+}
+
+/// Kill tmux session `session` (its id, `$3`) only if, at that very instant, pane `pane`
+/// (`%12`) is the one pane of its one window, linked nowhere else. The check and the kill are
+/// one tmux command — `if-shell -F`, whose format is evaluated and whose kill runs in the same
+/// pass over this client's command queue, before the server reads any other client — so
+/// nothing can be renamed, replaced, split or linked between them; and ids, unlike names, are
+/// never reused. The outcome is then confirmed against the session list: `Killed` only once
+/// the id is gone from it. `Err` (as `io`) when tmux could not be asked, or answered
+/// something else.
+pub fn kill_if_alone(session: &str, pane: &str) -> Result<KillAlone> {
+    let is_id = |s: &str, sigil: char| {
+        s.strip_prefix(sigil)
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    };
+    if !is_id(session, '$') || !is_id(pane, '%') {
+        return Err(Error::tagged(
+            "io",
+            format!("not a tmux session / pane id: {session} / {pane}"),
+        ));
+    }
+    let out = tmux()
+        .args([
+            "if-shell",
+            "-F",
+            "-t",
+            session,
+            &alone_format(session, pane),
+            // The ids are digits behind a sigil, so they quote safely; the name is only
+            // expanded when printed, never parsed.
+            &format!(
+                "display-message -p -t '{session}' 'killed\t#{{session_name}}' ; kill-session -t '{session}'"
+            ),
+            &format!(
+                "display-message -p -t '{session}' 'refused\t#{{session_id}}\t#{{session_windows}}\t#{{window_panes}}\t#{{window_linked}}\t#{{pane_id}}'"
+            ),
+        ])
+        .output()
+        .map_err(|e| Error::tagged("io", format!("tmux: {e}")))?;
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    if !out.status.success() {
+        if no_server(&stderr) {
+            return Ok(KillAlone::Gone);
+        }
+        return Err(Error::tagged(
+            "io",
+            format!("tmux if-shell: {}", or_status(&stderr, out.status)),
+        ));
+    }
+    let exists = session_exists(session)?;
+    let f: Vec<&str> = stdout.lines().next().unwrap_or("").split('\t').collect();
+    match f[0] {
+        "killed" if !exists => Ok(KillAlone::Killed(f[1..].join("\t"))),
+        "killed" => Err(Error::tagged(
+            "io",
+            format!("tmux session {session} was killed but is still listed"),
+        )),
+        // No such session: `if-shell` fell back to another one, which the format (its
+        // session id) refused.
+        _ if !exists => Ok(KillAlone::Gone),
+        "refused" if f.len() == 6 && f[1] == session => Ok(KillAlone::Refused {
+            windows: f[2].parse().unwrap_or(0),
+            panes: f[3].parse().unwrap_or(0),
+            linked: f[4] != "0",
+            ours: f[5] == pane,
+        }),
+        _ => Err(Error::tagged(
+            "io",
+            format!("tmux if-shell: unexpected answer {:?}", stdout.trim()),
+        )),
+    }
+}
+
+/// The `if-shell -F` condition of [`kill_if_alone`]: true only for session `session` holding
+/// one window, unlinked, holding one pane, `pane`.
+fn alone_format(session: &str, pane: &str) -> String {
+    let eq = |var: &str, v: &str| format!("#{{==:#{{{var}}},{v}}}");
+    [
+        eq("session_windows", "1"),
+        eq("window_panes", "1"),
+        eq("window_linked", "0"),
+        eq("pane_id", pane),
+    ]
+    .into_iter()
+    .fold(eq("session_id", session), |all, c| {
+        format!("#{{&&:{all},{c}}}")
+    })
+}
+
+/// Does tmux session `id` (`$3`) exist? `false` with no server at all; `Err` (as `io`) when
+/// tmux could not be asked.
+pub fn session_exists(id: &str) -> Result<bool> {
+    Ok(query(&["list-sessions", "-F", "#{session_id}"])?
+        .is_some_and(|l| l.lines().any(|s| s.trim() == id)))
+}
+
+/// The terminal of pane `pane` (`/dev/ttys012`); `None` when the server has no such pane.
+pub fn pane_tty(pane: &str) -> Result<Option<String>> {
+    Ok(
+        query(&["list-panes", "-a", "-F", "#{pane_id}\t#{pane_tty}"])?.and_then(|l| {
+            l.lines()
+                .filter_map(|r| r.split_once('\t'))
+                .find(|(p, _)| *p == pane)
+                .map(|(_, t)| t.to_string())
+        }),
+    )
+}
+
+/// A read-only tmux query's stdout; `None` when no server is running (so nothing it asks
+/// about exists), `Err` (as `io`) for any other failure.
+fn query(args: &[&str]) -> Result<Option<String>> {
+    let out = tmux()
+        .args(args)
+        .output()
+        .map_err(|e| Error::tagged("io", format!("tmux: {e}")))?;
+    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    if out.status.success() {
+        Ok(Some(String::from_utf8_lossy(&out.stdout).to_string()))
+    } else if no_server(&stderr) {
+        Ok(None)
+    } else {
+        Err(Error::tagged(
+            "io",
+            format!(
+                "tmux {}: {}",
+                args.first().unwrap_or(&""),
+                or_status(&stderr, out.status)
+            ),
+        ))
+    }
+}
+
+/// Is this tmux's "no server" (nothing to connect to), as opposed to a failure?
+fn no_server(stderr: &str) -> bool {
+    stderr.starts_with("no server running on ")
+        || (stderr.starts_with("error connecting to ") && stderr.contains("No such file"))
+}
+
+fn or_status(stderr: &str, status: std::process::ExitStatus) -> String {
+    if stderr.is_empty() {
+        format!("exited {status}")
+    } else {
+        stderr.to_string()
+    }
+}
+
+/// Is process `pid` still running? A zombie (exited, not yet reaped) is not.
+pub fn process_alive(pid: i64) -> bool {
+    Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .is_some_and(|stat| !stat.is_empty() && !stat.starts_with('Z'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1013,5 +1256,95 @@ mod tests {
         let r = classify(&i, 86400);
         assert!(r.claude_checked, "an iTerm session is not a stale map");
         assert!(r.candidates.iter().all(|c| c.name != "idle-old"));
+    }
+
+    #[test]
+    fn a_pane_is_alone_only_as_the_one_pane_of_the_one_unlinked_window() {
+        let alone = |id: &str, name: &str| {
+            Hosting::Alone(HostSession {
+                id: id.into(),
+                name: name.into(),
+            })
+        };
+        let other = "$1\t@9\t0\t%9\twork\n";
+        assert_eq!(
+            hosting_of("%3", &format!("$4\t@1\t0\t%3\tjob\n{other}")),
+            alone("$4", "job")
+        );
+        // The session is found by its id: another one with the same name is not it.
+        assert_eq!(
+            hosting_of("%3", "$4\t@1\t0\t%3\tjob\n$5\t@2\t0\t%5\tjob\n"),
+            alone("$4", "job")
+        );
+        // A name with a tab or spaces is the whole last field.
+        assert_eq!(
+            hosting_of("%3", "$4\t@1\t0\t%3\tmy\tjob x\n"),
+            alone("$4", "my\tjob x")
+        );
+        assert_eq!(
+            hosting_of("%3", "$1\t@1\t0\t%3\twork\n$1\t@2\t0\t%4\twork\n"),
+            Hosting::Shared {
+                session: "work".into(),
+                windows: 2,
+                panes: 2,
+                linked: false
+            }
+        );
+        assert_eq!(
+            hosting_of("%3", "$4\t@1\t0\t%3\tjob\n$4\t@1\t0\t%4\tjob\n"),
+            Hosting::Shared {
+                session: "job".into(),
+                windows: 1,
+                panes: 2,
+                linked: false
+            }
+        );
+        // Its one window is linked into another session too: killing this one would not
+        // end it.
+        assert_eq!(
+            hosting_of("%3", "$4\t@1\t1\t%3\tjob\n$1\t@1\t1\t%3\twork\n"),
+            Hosting::Shared {
+                session: "job".into(),
+                windows: 1,
+                panes: 1,
+                linked: true
+            }
+        );
+        assert_eq!(hosting_of("%3", other), Hosting::Gone);
+        assert_eq!(hosting_of("%3", ""), Hosting::Gone);
+    }
+
+    #[test]
+    fn the_kill_condition_checks_every_identity_at_once() {
+        assert_eq!(
+            alone_format("$4", "%3"),
+            "#{&&:#{&&:#{&&:#{&&:#{==:#{session_id},$4},#{==:#{session_windows},1}},\
+             #{==:#{window_panes},1}},#{==:#{window_linked},0}},#{==:#{pane_id},%3}}"
+        );
+    }
+
+    #[test]
+    fn only_tmux_ids_are_put_in_a_kill() {
+        for (s, p) in [("job", "%3"), ("$4", "3"), ("$4'", "%3"), ("$", "%3")] {
+            let e = kill_if_alone(s, p).unwrap_err();
+            assert_eq!(e.kind(), "io", "{s} {p}");
+        }
+    }
+
+    #[test]
+    fn no_server_is_nothing_there_not_a_failure() {
+        // The unit tests' private socket has no server.
+        assert_eq!(hosting("%3").unwrap(), Hosting::Gone);
+        assert!(!session_exists("$4").unwrap());
+        assert_eq!(pane_tty("%3").unwrap(), None);
+        assert_eq!(kill_if_alone("$4", "%3").unwrap(), KillAlone::Gone);
+        assert!(no_server("no server running on /tmp/x/default"));
+        assert!(!no_server("can't find session: $4"));
+    }
+
+    #[test]
+    fn this_process_is_alive_and_a_bogus_pid_is_not() {
+        assert!(process_alive(std::process::id() as i64));
+        assert!(!process_alive(999_999_999));
     }
 }
