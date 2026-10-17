@@ -19,6 +19,74 @@ fn list_json_is_valid_array() {
     assert!(v.is_array());
 }
 
+// Every command whose `--json` failures are one object answers a command line clap rejects
+// with that object too: `usage`, its host included, wherever `--json` and the bad argument
+// stand — an unknown flag long or short, alone or in a cluster, before the target or after.
+#[test]
+fn every_json_usage_error_is_the_same_one_object() {
+    let env = common::Env::new();
+    // (command, the arguments it needs, the exit code its usage errors get)
+    let commands: [(&str, &[&str], i32); 6] = [
+        ("messages", &["pid:1"], 2),
+        ("answer", &["pid:1"], 2),
+        ("peek", &["pid:1"], 2),
+        ("keys", &["pid:1", "Enter"], 2),
+        ("close", &["pid:1"], 1),
+        ("spawn", &["hi"], 1),
+    ];
+    for (cmd, needs, code) in commands {
+        for bad in ["--bogus", "--bogus=1", "-x", "-xy"] {
+            let mut orders: Vec<Vec<&str>> = vec![
+                [&[cmd, bad, "--json"][..], needs].concat(),
+                [&[cmd, "--json", bad][..], needs].concat(),
+                [&[cmd][..], needs, &[bad, "--json"]].concat(),
+                [&[cmd][..], needs, &["--json", bad]].concat(),
+                [&["-n", cmd][..], needs, &["--json", bad]].concat(),
+            ];
+            orders.dedup();
+            for args in orders {
+                let out = env.cmd().args(&args).output().unwrap();
+                let stdout = common::stdout(&out);
+                assert_eq!(out.status.code(), Some(code), "{args:?}: {stdout}");
+                assert_eq!(stdout.trim().lines().count(), 1, "{args:?}: {stdout}");
+                let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+                let mut keys: Vec<&str> =
+                    v.as_object().unwrap().keys().map(|k| k.as_str()).collect();
+                keys.sort();
+                let want: &[&str] = if cmd == "spawn" {
+                    &["error", "host", "kind", "ok", "partial"]
+                } else {
+                    &["error", "host", "kind", "ok"]
+                };
+                assert_eq!(keys, want, "{args:?}: {v}");
+                assert_eq!(
+                    (&v["ok"], &v["kind"]),
+                    (&false.into(), &"usage".into()),
+                    "{args:?}"
+                );
+                assert!(
+                    v["host"].as_str().is_some_and(|h| !h.is_empty()),
+                    "{args:?}: {v}"
+                );
+                let flag = bad.split('=').next().unwrap();
+                let shown = if flag == "-xy" { "-x" } else { flag };
+                assert!(
+                    v["error"].as_str().unwrap().contains(shown),
+                    "{args:?}: {v}"
+                );
+            }
+        }
+        // Without --json, clap answers as always: nothing on stdout.
+        let out = env
+            .cmd()
+            .args([&[cmd, "--bogus"][..], needs].concat())
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{cmd}");
+        assert_eq!(common::stdout(&out), "", "{cmd}");
+    }
+}
+
 // Bare `fleet` opens the TUI on a terminal, but a piped stdout (this test, a
 // script, an agent) must get the one-shot list and *exit* — not the watch loop.
 // Enforced with a timeout so a regression fails the suite instead of hanging it.
