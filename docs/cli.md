@@ -365,10 +365,15 @@ Launch commands: Claude's is `FLEET_CMD` / config `claude`; the others' are conf
 ```
 
 Models: Claude's built-in list; Codex's from its `models_cache.json` (listed ones, its order);
+pi's from `pi --list-models` (ids `provider/model`). `id: ""` is the harness's own default,
+labelled `Default (<model>)` when its configured model is known, as written: Claude's from
+`ANTHROPIC_MODEL` in `fleet`'s environment, else `model` in `settings.json` under
+`$CLAUDE_CONFIG_DIR` (default `~/.claude`), the user-level default (project settings, which
+depend on the start directory, are not read); Codex's from `model` in `config.toml`; pi's from
+`defaultModel` in its `settings.json`. Otherwise plain `Default`.
 pi's from `pi --list-models` (ids `provider/model`), narrowed to the `enabledModels` patterns of
 pi's `settings.json` when set. `id: ""` is the harness's own default.
 Efforts: Claude `low…max`; Codex the levels its model cache lists; pi `off…max`.
-
 **Default model and effort.** Config `harnesses.<id>.model` / `harnesses.<id>.effort` (Settings →
 Models in the web writes them to every host) are what a spawn starts with when it picks no model:
 `spawn`, the web, bots, scheduled sessions and stack spawns alike. A picked model wins over the
