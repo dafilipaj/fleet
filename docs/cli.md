@@ -65,7 +65,7 @@ or its id.
   only the named one is inspected and read. Either way no context usage is read.
 
 Every verb that takes a session `<target>` accepts them (`peek`, `send`, `keys`, `rename`, `name`,
-`brief`, `spawn --from`, `stack …`). A **gone** session's brief is found by `id:<id>` too, but only
+`brief`, `spawn --from`, `stack …`; `close` takes nothing else). A **gone** session's brief is found by `id:<id>` too, but only
 when no live session matches — an ambiguous or malformed target stays an error.
 
 With `--json`, a target that does not resolve prints `{ ok: false, host, kind, error }` on stdout:
@@ -89,6 +89,7 @@ member (see [Stacks](#stacks)).
 | `fleet sleep <target> [--json]` (alias `deactivate`) | close a session but keep it [dormant](#session-recovery) (Deactivate in the app, which lists dormant sessions as **Inactive**): SIGTERM (then SIGKILL) its agent, kill its tmux window (or its tmux session when that was the only window; an iTerm tab is left — the app closes it), and put it in the dormant list, marked `slept`, instead of recently closed. `fleet restore <target>` (or `enter`, or Resume in the app) brings it back with `--resume`; `--all` and `restore.onBoot` leave it be. `--json`: `{ host, sessionId, title, process, terminal, dormant: DormantView, dryRun }` |
 | `fleet ask-done <target>` | ask a tmux session to report itself done once finished: types the [instruction](#ask-done) into it. A session waiting on a prompt is refused |
 | `fleet keys <target> <key>... [--json]` | press named keys in the session's terminal, in order (80 ms apart), holding the session's lock as `send` and `answer` do: `Escape` (interrupt a turn), `Enter`, `Up`, `Down`, `Left`, `Right`, `Tab`, `BTab` (Shift-Tab), `Space`, `C-c`. Names are tmux's, case-sensitive; any other name is refused (exit 1, kind `invalid_key`) and nothing is pressed. tmux sessions get one `send-keys` per key, iTerm sessions the bytes a terminal sends for the key. **Not atomic:** the first key that fails stops the call — the keys before it stay pressed (nothing can take them back), the rest are not sent, and the error says how many got through (`… — 1 of 3 keys pressed before it`). `--json`: `{ ok: true, host, target: { session_id, pid }, keys: [...] }`, or `{ ok: false, host, kind, error }` (exit 1) — kind `invalid_key`, `target_not_found`, `target_ambiguous`, `target_invalid`, `busy` (another fleet command is typing into the session; nothing is pressed), `backend_unsupported` (no tmux pane or iTerm session to drive) or `backend_failed` |
+| `fleet close <id:… \| pid:…> [--json] [--timeout <s>] [--expect-pid <n> --expect-start <t>]` | end a session that is alone in its own tmux session (the layout `spawn` creates): its exit command, then that tmux session is killed; exact targets only, `-n` touches nothing — see [Closing sessions](#closing-sessions) |
 | `fleet answer <target> [--json] [--allow-attached] (--list \| --choice <n> [--prompt <id>] \| --question <tool_use_id> --answers <json>)` | answer the prompt the session waits on by typing what a human would — only while the terminal shows that very prompt, untouched; see [Answering prompts](#answering-prompts) |
 | `fleet rename <target> <title> [--no-tmux-sync] [--force] [--json]` | rename the session's one title: Claude's `/rename` (the source of truth), then its tmux session follows as a slug of it (`Fix Login` → `fix-login`, `-2` on a collision) when the tmux session is that Claude session's own (one window, one pane). A session **waiting on a prompt** is held (exit 1; `--json`: exit 3) — typed keys would be its answer; busy sessions are fine (Claude runs `/rename` mid-turn without disturbing the turn). Codex gets `/rename`, pi `/name`; a busy Codex / pi session is held too (`held: "busy"`) — they would queue the text as a message. `--force` overrides the hold. `--json` prints `{ ok, result: renamed\|sent\|held, session_id, pid, host, from, title, held, tmux: { renamed, from, to, note }, message }` |
 | `fleet name [<target> \| --all [--settled]] [--apply] [--refresh] [--no-tmux-sync]` | suggest a name from what the session is doing; only `--apply` sends it (through the same path as `rename`, tmux included). `--all` = every session with a derived (cwd+hash) name. A derived-name session alone in a tmux session somebody named (`fleet new fix-login`) adopts that name (`(tmux)`, no model call) instead of getting a generated one. `--settled` (with `--all`) skips sessions with one prompt and no brief yet — the model reads the brief's Summary and the first three prompts, and a lone first prompt is often just a link. `--refresh` ignores the cache |
@@ -339,6 +340,50 @@ nothing typed), `prompt_incomplete`, `prompt_changed`, `outcome_uncertain`, `cho
 `not_waiting`, `answer_invalid`, `harness_unsupported` (`--question` on Codex / pi),
 `transcript_not_found`, `backend_unsupported` (no terminal fleet can drive, or `FLEET_FIXTURE`),
 `send_failed` (says how many keys went out), `io`.
+
+### Closing sessions
+
+`fleet [-n] close <target> [--json] [--timeout <seconds>] [--expect-pid <n> --expect-start <t>]`
+ends a session and removes the tmux session it ran in:
+
+- **Exact targets only:** `id:<session_id>` or `pid:<n>`. A bare pid, a fragment or a title is
+  `usage` — closing never matches loosely.
+- **That process only.** The agent is its pid plus its start time (`proc_start` in `list
+  --json`, the identity check behind exact targets). `--expect-pid` and `--expect-start` (both
+  or neither, else `usage`) name the process the caller saw: when the session is now run by
+  another one (resumed under a new process, a reused pid) it is `target_changed` and nothing is
+  touched. The same check runs again right before the kill; an agent that has exited by then
+  passes it (its pid may be another process's) unless the target now names another process.
+- **Only a session alone in its own tmux session**: one window, one pane, and that pane is the
+  session's — the "one tmux session per job" layout `fleet spawn` creates. Anything else is
+  refused and nothing is touched: `host_shared` (a window of a shared session like `work`, a
+  pane beside others), `backend_unsupported` (an iTerm tab).
+- **Graceful first**, under the per-session lock `send`, `keys` and `answer` take (`busy` when
+  another fleet command holds it): a `busy` or `waiting` session gets `Escape` and up to 3 s to
+  settle; then, only if that same process still runs in the foreground of the session's pane,
+  the harness's exit command is typed — `/exit` for Claude Code, `/quit` for Codex (pi: none,
+  it goes straight to the kill) — and the agent gets `--timeout` seconds (default 5, at most
+  600) to exit. Nothing is typed, `Escape` included, to an agent that is not in the foreground
+  of its pane's terminal (suspended with Ctrl-Z) or has exited (on Escape too): whatever is in
+  front of it never reads it, and it goes straight to the kill.
+- **Then the tmux session is killed** by its id (`$3`, never reused, unlike a name), whether the
+  agent exited (its shell would stay) or not — in one tmux command with the check that the pane
+  is still the one pane of its one window (`if-shell -F` on `session_id`, `session_windows`,
+  `window_panes`, `window_linked` and `pane_id`, then `kill-session`), so a session renamed or
+  replaced, or a pane split or a window added at that moment, is never hit: that is
+  `host_shared`, with nothing killed. The kill is confirmed against the session list; a tmux
+  query that fails (anything but "no server") is `io`, never success.
+- `-n` (or `FLEET_DRY_RUN=1`) runs every check (the lock included) and reports the plan; it
+  types and kills nothing, and prints nothing but the result.
+
+`--json` prints one object: `{ ok: true, host, session_id, pid, harness, how, tmux_session,
+dry_run }`. `how` is `"exit"` when the agent was gone before the kill (on its exit command, on
+Escape, or by itself) and `"killed"` when it was still running when its tmux session was killed
+(under `-n`: `"exit"` when the agent is in front of its pane and the harness has an exit
+command); `tmux_session` is the name it had at the
+kill. Failures are `{ ok: false, host, kind, error }`, exit 1 — kinds `usage` (clap's too,
+wherever `--json` stands), `target_not_found`, `target_ambiguous`, `target_invalid`,
+`target_changed`, `host_shared`, `backend_unsupported`, `busy`, `io`.
 
 ### Harnesses
 

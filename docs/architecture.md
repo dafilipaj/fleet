@@ -333,6 +333,7 @@ by — with no config, `local`):
 | `origin` | object \| null | `{ job, run }` of the [job](cli.md#bots) run that started the session (its tmux pane option `@fleet_job_run`); `null` when none |
 | `embed` | string \| null | the app whose [embedded panel](#embed-view) started the session (its tmux pane option `@fleet_embed`); `null` when none |
 | `git` | object \| null | the git checkout its cwd is in, read from the `.git` files: `{ branch, root, linked, repo }` — `branch` (`null` = detached), `root` (absolute), `linked` (`true` = a linked worktree, `false` = the main checkout), `repo` (GitHub `owner/name` of `origin`, `null` when none). `null` outside a checkout. The web UI links a session to a pull request by `repo` + `branch` (a linked worktree only), on any host |
+| `proc_start` | string \| null | the agent process's start time in RFC 3339 UTC (`2026-10-17T13:19:29Z`), read as the identity check reads it (`ps -o lstart`, what Claude records as `procStart`); with `pid`, what tells this process from a later one (`close --expect-pid/--expect-start`). `null` when it cannot be read |
 | `host` | string | which machine the row came from |
 
 `list --all-hosts --json` is the same array across every configured host.

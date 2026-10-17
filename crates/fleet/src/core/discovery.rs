@@ -104,6 +104,10 @@ pub struct Session {
     /// It reported its work finished (`fleet done`: `{ at, note }`) and was not prompted since;
     /// `null` otherwise. Stamped by `list`; `None` inside discovery.
     pub done: Option<crate::core::done::DoneRef>,
+    /// The agent process's start time, as the identity check reads it (`ps -o lstart` in UTC,
+    /// what Claude records as `procStart`), in RFC 3339 UTC (`2026-10-17T13:19:29Z`): with
+    /// `pid`, what tells this process from a later one. `null` when it cannot be read.
+    pub proc_start: Option<String>,
 }
 
 impl Default for Session {
@@ -138,6 +142,7 @@ impl Default for Session {
             embed: None,
             git: None,
             done: None,
+            proc_start: None,
         }
     }
 }
@@ -310,6 +315,7 @@ pub fn discover_checked() -> Result<Vec<Session>, String> {
     }
     crate::core::context::apply_native_1m(out.iter_mut().filter_map(|s| s.context.as_mut()));
     out.extend(discover_harnesses(&panes, None));
+    stamp_proc_starts(&mut out);
     out.sort_by_key(|s| std::cmp::Reverse(s.updated_at.unwrap_or(0)));
     Ok(out)
 }
@@ -433,6 +439,7 @@ fn claude_session(
         embed: pane.map(|p| p.embed.clone()).filter(|e| !e.is_empty()),
         git: None,
         done: None,
+        proc_start: None,
     }
 }
 
@@ -811,7 +818,11 @@ fn claude_exact_rows(exact: &Exact) -> Vec<Session> {
     live.into_iter()
         .map(|(reg, pid, p)| {
             let (backend, handle) = backend_from_env(&p.env, Some(p.tty.as_str()), &panes);
-            claude_session(reg, pid, p.tty.clone(), backend, handle, &panes, false)
+            Session {
+                // The start the identity check just compared with `procStart`.
+                proc_start: start_rfc3339(&p.start),
+                ..claude_session(reg, pid, p.tty.clone(), backend, handle, &panes, false)
+            }
         })
         .collect()
 }
@@ -838,6 +849,94 @@ impl Inspected {
             _ => self.start == single_spaced(proc_start),
         }
     }
+}
+
+/// Each row's [`Session::proc_start`], from one `ps` over their pids — the same reading
+/// ([`inspect`]'s `lstart`, in UTC) the identity check compares with `procStart`. An exact
+/// lookup has it from that check instead (a Claude session), or leaves it `None` (Codex /
+/// pi: [`process_start`] reads it when needed).
+fn stamp_proc_starts(rows: &mut [Session]) {
+    let pids: Vec<i64> = rows.iter().map(|r| r.pid).collect();
+    let starts = proc_starts(&pids);
+    for r in rows {
+        r.proc_start = starts.get(&r.pid).and_then(|s| start_rfc3339(s));
+    }
+}
+
+/// `ps -o lstart` (UTC) of each live pid of `pids`.
+fn proc_starts(pids: &[i64]) -> HashMap<i64, String> {
+    if pids.is_empty() {
+        return HashMap::new();
+    }
+    let list = pids
+        .iter()
+        .map(i64::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let Ok(out) = Command::new("ps")
+        .env("TZ", "UTC")
+        .env("LC_ALL", "C")
+        .args(["-o", "pid=,lstart=", "-p", &list])
+        .output()
+    else {
+        return HashMap::new();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| {
+            let (pid, start) = l.trim().split_once(' ')?;
+            Some((pid.parse().ok()?, single_spaced(start)))
+        })
+        .collect()
+}
+
+/// The live start time of process `pid`, as [`Session::proc_start`] carries it (RFC 3339
+/// UTC); `None` when there is no such process or its start cannot be read.
+pub fn process_start(pid: i64) -> Option<String> {
+    proc_starts(&[pid]).get(&pid).and_then(|s| start_rfc3339(s))
+}
+
+/// The terminal of process `pid` as `ps` names it (`ttys012`, `pts/3`); `None` when it has
+/// none or is gone.
+pub fn process_tty(pid: i64) -> Option<String> {
+    tty_of(pid)
+}
+
+/// Is process `pid` running in the foreground of its terminal — in the terminal's
+/// foreground process group (`ps` state `+`) and not stopped (`T`, as Ctrl-Z leaves it; `t`,
+/// traced)? What is typed on that terminal reaches only such a process. `false` when gone.
+pub fn process_foreground(pid: i64) -> bool {
+    Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .ok()
+        .is_some_and(|o| foreground_stat(String::from_utf8_lossy(&o.stdout).trim()))
+}
+
+fn foreground_stat(stat: &str) -> bool {
+    stat.contains('+') && !stat.contains(['T', 't', 'Z'])
+}
+
+/// `ps -o lstart` (UTC) → RFC 3339 UTC, to the second.
+pub fn start_rfc3339(lstart: &str) -> Option<String> {
+    parse_lstart(lstart).map(|t| {
+        t.and_utc()
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    })
+}
+
+/// Are two start times — RFC 3339 (as [`Session::proc_start`] and `close --expect-start`
+/// carry them) or `ps -o lstart` in UTC (as `procStart`) — the same instant, to the second?
+/// Either unreadable: no (an identity that cannot be checked fails closed).
+pub fn same_start(a: &str, b: &str) -> bool {
+    let at = |s: &str| {
+        chrono::DateTime::parse_from_rfc3339(s.trim())
+            .ok()
+            .map(|t| t.naive_utc())
+            .or_else(|| parse_lstart(s))
+            .map(|t| t.and_utc().timestamp())
+    };
+    matches!((at(a), at(b)), (Some(x), Some(y)) if x == y)
 }
 
 fn single_spaced(s: &str) -> String {
@@ -1301,6 +1400,61 @@ fn claude_prompts(cwd: &str, session_id: &str, n: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lstart_becomes_rfc3339_utc() {
+        assert_eq!(
+            start_rfc3339("Sat Oct 17 13:19:29 2026").as_deref(),
+            Some("2026-10-17T13:19:29Z")
+        );
+        // `ps` pads a one-digit day (and may pad more).
+        assert_eq!(
+            start_rfc3339("Fri  Oct  2 03:04:05   2026").as_deref(),
+            Some("2026-10-02T03:04:05Z")
+        );
+        for bad in [
+            "",
+            "soon",
+            "2026-10-17T13:19:29Z",
+            "Sat Oct 32 13:19:29 2026",
+        ] {
+            assert_eq!(start_rfc3339(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn same_start_is_one_instant_to_the_second_in_either_spelling() {
+        let rfc = "2026-10-17T13:19:29Z";
+        let lstart = "Sat Oct 17 13:19:29 2026";
+        assert!(same_start(rfc, lstart));
+        assert!(same_start(lstart, rfc));
+        assert!(same_start(rfc, rfc));
+        assert!(same_start(lstart, "Sat  Oct 17 13:19:29  2026"));
+        // Another offset, the same instant; sub-seconds do not count.
+        assert!(same_start(rfc, "2026-10-17T15:19:29+02:00"));
+        assert!(same_start(rfc, "2026-10-17T13:19:29.900Z"));
+        assert!(same_start(&format!(" {rfc} "), rfc));
+        // A second apart is another process.
+        assert!(!same_start(rfc, "2026-10-17T13:19:30Z"));
+        assert!(!same_start(lstart, "Sat Oct 17 13:19:28 2026"));
+        // Unreadable on either side fails closed — even the same text twice.
+        for bad in ["", "soon", "2026-10-17"] {
+            assert!(!same_start(bad, rfc), "{bad:?}");
+            assert!(!same_start(rfc, bad), "{bad:?}");
+            assert!(!same_start(bad, bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn only_a_running_foreground_process_is_in_front() {
+        for stat in ["S+", "R+", "Ss+", "S<+"] {
+            assert!(foreground_stat(stat), "{stat}");
+        }
+        // Background, stopped (Ctrl-Z, in front or not), traced, zombie, gone.
+        for stat in ["S", "Ss", "T", "T+", "t+", "Z+", ""] {
+            assert!(!foreground_stat(stat), "{stat}");
+        }
+    }
 
     // Without a screen to read (iTerm, a pane tmux would not capture), a pending escalated
     // command is taken as the approval prompt it almost always is.

@@ -103,6 +103,16 @@ impl Harness {
         }
     }
 
+    /// The slash command that ends a live session, when it has one (`fleet close` types it).
+    /// pi's is not relied on: `close` ends a pi session with its tmux session.
+    pub fn exit_command(self) -> Option<&'static str> {
+        match self {
+            Harness::Claude => Some("/exit"),
+            Harness::Codex => Some("/quit"),
+            Harness::Pi => None,
+        }
+    }
+
     /// Arguments that resume `session_id` (appended to the launcher). The id is bound so the
     /// harness can never read it as a flag: Claude's as `--resume=<id>`, Codex's after `--`
     /// (`codex resume -- <id>`: its positional session id, even one that starts with `-`).

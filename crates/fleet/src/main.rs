@@ -4,10 +4,10 @@ use clap::{CommandFactory, Parser, Subcommand};
 use colored::Colorize;
 
 use fleet::cli::{
-    answer as answer_cmd, brief as brief_cmd, commands, config_cmd, group, hosts as host_cmds,
-    init, jobs as jobs_cmd, mcp, messages as messages_cmd, prs as prs_cmd, repos as repos_cmd,
-    restore, schedule as schedule_cmd, skill, slack as slack_cmd, stack as stack_cmds,
-    tasks as tasks_cmd, tmux as tmux_cmds, usage as usage_cmd, web,
+    answer as answer_cmd, brief as brief_cmd, close as close_cmd, commands, config_cmd, group,
+    hosts as host_cmds, init, jobs as jobs_cmd, mcp, messages as messages_cmd, prs as prs_cmd,
+    repos as repos_cmd, restore, schedule as schedule_cmd, skill, slack as slack_cmd,
+    stack as stack_cmds, tasks as tasks_cmd, tmux as tmux_cmds, usage as usage_cmd, web,
 };
 use fleet::core::config;
 use fleet::core::discovery::Backend;
@@ -229,6 +229,24 @@ enum Commands {
         /// Print one JSON object: `{ ok, target: { session_id, pid }, keys }`, or `{ ok: false, kind, error }`
         #[arg(long)]
         json: bool,
+    },
+
+    /// End a session alone in its own tmux session: its exit command, then kill that tmux session
+    Close {
+        /// `id:<session_id>` or `pid:<n>` — exact only, never a fragment
+        target: String,
+        /// One JSON object: `{ ok, session_id, pid, harness, how, tmux_session, dry_run }`, or `{ ok: false, kind, error }`
+        #[arg(long)]
+        json: bool,
+        /// Seconds the agent gets to exit after its exit command, before its tmux session is killed
+        #[arg(long, value_name = "SECONDS", default_value_t = 5, value_parser = clap::value_parser!(u64).range(0..=600))]
+        timeout: u64,
+        /// Close only if the session's process is still this pid (with --expect-start): a list row's `pid`
+        #[arg(long, value_name = "PID", requires = "expect_start")]
+        expect_pid: Option<i64>,
+        /// Close only if the session's process started then (with --expect-pid): a list row's `proc_start`
+        #[arg(long, value_name = "PROC_START", requires = "expect_pid")]
+        expect_start: Option<String>,
     },
 
     /// Rename a session: Claude's own /rename (the title), then its tmux session follows
@@ -1563,6 +1581,20 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
         Commands::AskDone { target } => commands::ask_done(&target)?,
         Commands::Sleep { target, json } => commands::sleep(&target, json)?,
         Commands::Keys { target, keys, json } => commands::keys(&target, &keys, json)?,
+        Commands::Close {
+            target,
+            json,
+            timeout,
+            expect_pid,
+            expect_start,
+        } => close_cmd::run(close_cmd::Opts {
+            target,
+            json,
+            timeout,
+            expect: expect_pid
+                .zip(expect_start)
+                .map(|(pid, start)| close_cmd::Expect { pid, start }),
+        })?,
         Commands::Rename {
             target,
             name,
@@ -2149,7 +2181,8 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
 /// Commands whose `--json` failures are one `{ ok: false, kind, error }` object — usage
 /// errors clap catches included — and the exit code such a usage error gets: clap's 2, but
 /// `spawn`'s failures (as `docs/cli.md` promises them) all exit 1.
-const JSON_FAILURE_COMMANDS: &[(&str, i32)] = &[("messages", 2), ("answer", 2), ("spawn", 1)];
+const JSON_FAILURE_COMMANDS: &[(&str, i32)] =
+    &[("messages", 2), ("answer", 2), ("spawn", 1), ("close", 1)];
 
 /// The subcommand of [`JSON_FAILURE_COMMANDS`] the command line names with `--json`, read by
 /// clap itself with the error set aside — global flags in any spelling (`-nH host`,
@@ -2159,20 +2192,54 @@ fn json_failure_command() -> Option<String> {
 }
 
 /// [`json_failure_command`] of `args`. Clap's error-tolerant parse still stops reading at an
-/// argument it does not know (`spawn --resume --bad --json` never reached `--json`), so each
-/// such argument is set aside first and the rest parsed again: `--json` counts wherever it
-/// stands, as clap reads it — not as an option's value (`--name=--json`), nor after `--`.
+/// argument it does not know (`spawn --resume --bad --json` never reached `--json`), at an
+/// option whose value it rejects (`close pid:1 --timeout x --json`), or at one given twice
+/// or against another it conflicts with (`close pid:1 --timeout 3 --timeout 4 --json`), so
+/// each such argument — with its value — is set aside first and the rest parsed again:
+/// `--json` counts wherever it stands, as clap reads it — not as an option's value
+/// (`--name=--json`), nor after `--`.
 fn json_failure_command_in(mut args: Vec<std::ffi::OsString>) -> Option<String> {
     use clap::error::{ContextKind, ContextValue, ErrorKind};
     for _ in 0..args.len() {
         let Err(e) = Cli::command().try_get_matches_from(&args) else {
             break;
         };
-        let bad = match (e.kind(), e.get(ContextKind::InvalidArg)) {
-            (ErrorKind::UnknownArgument, Some(ContextValue::String(bad))) => bad,
+        // An unknown `--flag` (or `--flag=v`) goes alone; a `--opt V` whose value clap
+        // rejected takes that value with it (the very value: an option missing its value
+        // leaves the next argument alone); of an option given twice, or two that conflict,
+        // the first given of the one clap names goes, with its value when it takes one (clap
+        // names it `--opt <VALUE>`).
+        enum Value {
+            None,
+            Exactly(std::ffi::OsString),
+            Any,
+        }
+        let (bad, value) = match (e.kind(), e.get(ContextKind::InvalidArg)) {
+            (ErrorKind::UnknownArgument, Some(ContextValue::String(bad))) => (bad, Value::None),
+            (
+                ErrorKind::ValueValidation | ErrorKind::InvalidValue,
+                Some(ContextValue::String(bad)),
+            ) if bad.starts_with('-') => match e.get(ContextKind::InvalidValue) {
+                Some(ContextValue::String(v)) if !v.is_empty() => (bad, Value::Exactly(v.into())),
+                _ => break,
+            },
+            (ErrorKind::ArgumentConflict, Some(ContextValue::String(bad)))
+                if bad.starts_with('-') =>
+            {
+                (
+                    bad,
+                    if bad.contains(' ') {
+                        Value::Any
+                    } else {
+                        Value::None
+                    },
+                )
+            }
             _ => break,
         };
-        let flag = bad.split_once('=').map_or(bad.as_str(), |(flag, _)| flag);
+        let flag = bad
+            .split_once(['=', ' '])
+            .map_or(bad.as_str(), |(flag, _)| flag);
         let Some(at) = args
             .iter()
             .skip(1)
@@ -2185,7 +2252,16 @@ fn json_failure_command_in(mut args: Vec<std::ffi::OsString>) -> Option<String> 
         else {
             break;
         };
+        let separate = args[at + 1] == flag
+            && match &value {
+                Value::None => false,
+                Value::Exactly(v) => args.get(at + 2).is_some_and(|a| a == v),
+                Value::Any => args.get(at + 2).is_some(),
+            };
         args.remove(at + 1);
+        if separate {
+            args.remove(at + 1);
+        }
     }
     let m = Cli::command()
         .ignore_errors(true)
