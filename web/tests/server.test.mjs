@@ -16,7 +16,7 @@ import {
   validateSendText,
 } from '../lib/util.mjs';
 import { resolveStaticPath, readJsonBody, contentTypeFor, HttpError } from '../lib/http.mjs';
-import { createBackend, BackendError, createScriptProvider, ITERM_SCRIPT, TYPE_CHUNK, typeChunks } from '../lib/backends.mjs';
+import { createBackend, BackendError, createScriptProvider, ITERM_SCRIPT } from '../lib/backends.mjs';
 import { createFleet, trimTitle, TITLE_MAX } from '../lib/fleet.mjs';
 import { createFleetCli } from '../lib/fleet-cli.mjs';
 import { ensurePath, ensureUtf8Locale } from '../lib/config.mjs';
@@ -268,53 +268,10 @@ test('tmux peek uses capture-pane -p -J and tails the output', async () => {
   assert.equal(text, 'l1\nl2\nl3');
 });
 
-test('tmux send writes literal text (with --) then Enter separately', async () => {
-  const { calls, run } = recorder();
-  const backend = createBackend({ run, tmux: 'tmux', scriptPath: script, sleep: noSleep });
-  await backend.send({ backend: 'tmux', handle: '%1' }, '-starts-with-dash');
-  assert.equal(calls.length, 2);
-  assert.deepEqual(calls[0].args, ['send-keys', '-t', '%1', '-l', '--', '-starts-with-dash']);
-  assert.deepEqual(calls[1].args, ['send-keys', '-t', '%1', 'Enter']);
-});
-
-test('tmux send types a long line in pieces so Claude keeps all of it', async () => {
-  const { calls, run } = recorder();
-  const backend = createBackend({ run, tmux: 'tmux', scriptPath: script, sleep: noSleep });
-  const text = 'tok-0123456789 é '.repeat(120);
-  await backend.send({ backend: 'tmux', handle: '%1' }, text);
-  const typed = calls.slice(0, -1);
-  assert.ok(typed.length > 1);
-  for (const c of typed) {
-    assert.deepEqual(c.args.slice(0, 5), ['send-keys', '-t', '%1', '-l', '--']);
-    assert.ok(Buffer.byteLength(c.args[5]) <= TYPE_CHUNK);
-  }
-  assert.equal(typed.map((c) => c.args[5]).join(''), text);
-  assert.deepEqual(calls.at(-1).args, ['send-keys', '-t', '%1', 'Enter']);
-});
-
-test('typeChunks never splits a character', () => {
-  assert.deepEqual(typeChunks('', 4), []);
-  assert.deepEqual(typeChunks('abcé-fg', 4), ['abc', 'é-f', 'g']);
-});
-
-test('tmux send pastes a multi-line message so its newlines survive', async () => {
-  const { calls, run } = recorder();
-  const backend = createBackend({ run, tmux: 'tmux', scriptPath: script, sleep: noSleep });
-  await backend.send({ backend: 'tmux', handle: '%1' }, 'line one\nline two');
-  assert.equal(calls.length, 3);
-  const [load, paste, enter] = calls;
-  const buf = load.args[2];
-  assert.deepEqual(load.args, ['load-buffer', '-b', buf, '-']);
-  assert.equal(load.opts.input, 'line one\nline two');
-  assert.deepEqual(paste.args, ['paste-buffer', '-p', '-r', '-d', '-b', buf, '-t', '%1']);
-  assert.deepEqual(enter.args, ['send-keys', '-t', '%1', 'Enter']);
-});
-
-test('tmux keys sends the bare key name', async () => {
-  const { calls, run } = recorder();
-  const backend = createBackend({ run, tmux: 'tmux', scriptPath: script, sleep: noSleep });
-  await backend.keys({ backend: 'tmux', handle: '%1' }, 'Escape');
-  assert.deepEqual(calls[0].args, ['send-keys', '-t', '%1', 'Escape']);
+test('the backend has no way to type into a session: typing goes through the CLI and its lock', () => {
+  const backend = createBackend({ run: async () => ({ stdout: '', stderr: '' }), scriptPath: script });
+  assert.deepEqual(Object.keys(backend).sort(), ['closeIterm', 'peek']);
+  assert.doesNotMatch(ITERM_SCRIPT, /write text/);
 });
 
 test('iterm backend passes values as argv, never interpolated', async () => {
@@ -322,14 +279,10 @@ test('iterm backend passes values as argv, never interpolated', async () => {
   const backend = createBackend({ run, scriptPath: script, sleep: noSleep });
   const session = { backend: 'iterm', handle: 'ABC-123' };
   await backend.peek(session, 10);
-  await backend.send(session, 'rm -rf "$(pwd)"');
-  await backend.keys(session, 'Enter');
-  await backend.keys(session, 'Escape');
+  await backend.closeIterm({ backend: 'iterm', handle: 'x"; do shell script "y' });
   assert.deepEqual(calls.map((c) => c.args), [
     ['/tmp/fake.applescript', 'peek', 'ABC-123'],
-    ['/tmp/fake.applescript', 'send', 'ABC-123', 'rm -rf "$(pwd)"'],
-    ['/tmp/fake.applescript', 'enter', 'ABC-123'],
-    ['/tmp/fake.applescript', 'escape', 'ABC-123'],
+    ['/tmp/fake.applescript', 'close', 'x"; do shell script "y'],
   ]);
   assert.ok(calls.every((c) => c.file === '/usr/bin/osascript'));
 });
@@ -351,7 +304,7 @@ test('unknown backend and missing handle are 409', async () => {
     (e) => e instanceof BackendError && e.status === 409,
   );
   await assert.rejects(
-    () => backend.send({ backend: 'tmux', handle: '' }, 'hi'),
+    () => backend.peek({ backend: 'tmux', handle: '' }, 10),
     (e) => e instanceof BackendError && e.status === 409,
   );
 });

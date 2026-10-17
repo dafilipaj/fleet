@@ -9,7 +9,8 @@
 //! - **Exclusive input.** A terminal has no answer bound to a prompt id, so the sources of a
 //!   race are closed instead: no human may be attached to the session's tmux session (unless
 //!   `--allow-attached`), and a per-session lock keeps every other fleet command that types
-//!   (`answer`, `send`) out for the whole read → type → verify sequence.
+//!   (`answer`, `send`, `keys`, `close`, every rename, and the web server, which types through
+//!   them) out for the whole read → type → verify sequence.
 //! - A permission prompt is answered with **one key** where it takes one (Claude Code: the
 //!   answer's number; Codex: a shortcut no other answer shares), right after reading the screen.
 //! - Otherwise each key is checked for: before the next one the screen must show exactly the
@@ -20,8 +21,13 @@
 //!   with the same answers may have taken its place within a moment. Otherwise the outcome is
 //!   reported as uncertain (`outcome_uncertain`), never as success.
 //!
-//! What remains, with no client attached and the lock held: something outside fleet writing
-//! to the pane in the milliseconds between the last read and the key.
+//! What remains (docs/cli.md, "the approval race"): a terminal has no conditional key, so a
+//! client attaching after the check, or anything else writing to the pane, between the last
+//! read and the key can put another prompt under it. The post-key check reports only a prompt
+//! with the same answers still on screen after the key (another one following the one
+//! answered). The plain case — the read prompt answered by someone else, the key landing on the
+//! lookalike that replaced it, nothing after — comes back as `answered: true`: neither the
+//! screen nor the transcript ties a key to a prompt, so it is not detected, nor undone.
 
 use std::time::{Duration, Instant};
 
@@ -219,23 +225,34 @@ fn wait_for(s: &Session, within: Duration, ok: impl Fn(&str) -> bool) -> R<bool>
 }
 
 /// Did the key land? The prompt must leave the screen, and nothing that looks like it (`same`)
-/// may take its place within [`WATCH`]. `None`: yes; `Some(why)`: uncertain.
+/// may take its place within [`WATCH`]. `None`: yes; `Some(why)`: uncertain. A screen that
+/// cannot be read (the pane or tmux gone) proves nothing either way: uncertain too.
 fn landed(
     s: &Session,
     still: impl Fn(&str) -> bool,
     same: impl Fn(&str) -> bool,
-) -> R<Option<String>> {
-    if !wait_for(s, SETTLE, |screen| !still(screen))? {
-        return Ok(Some(
-            "the prompt is still on screen after the answer".into(),
-        ));
+) -> Option<String> {
+    let unread = |f: Failure| Some(format!("{} after the answer", f.message));
+    match wait_for(s, SETTLE, |screen| !still(screen)) {
+        Err(f) => return unread(f),
+        Ok(false) => return Some("the prompt is still on screen after the answer".into()),
+        Ok(true) => {}
     }
-    if wait_for(s, WATCH, &same)? {
-        return Ok(Some(
+    match wait_for(s, WATCH, &same) {
+        Err(f) => unread(f),
+        Ok(true) => Some(
             "another prompt with the same answers is on screen now — the key may have answered it instead".into(),
-        ));
+        ),
+        Ok(false) => None,
     }
-    Ok(None)
+}
+
+/// A screen that cannot be read once keys have gone out: say how many did.
+fn after_keys(done: usize, total: usize) -> impl Fn(Failure) -> Failure {
+    move |f| Failure {
+        kind: f.kind,
+        message: format!("{}; stopped after {done} of {total} keys", f.message),
+    }
 }
 
 fn press(s: &Session, step: &Step, done: usize, total: usize) -> R<()> {
@@ -460,7 +477,8 @@ fn choose(s: &Session, n: usize, want: Option<&str>, allow_attached: bool, dry: 
             let ok = wait_for(s, SETTLE, |screen| {
                 matches!(prompt::permission_prompt(screen, s.harness),
                     PromptRead::Prompt(now) if now.id == p.id && now.selected == expect)
-            })?;
+            })
+            .map_err(after_keys(i, total))?;
             if !ok {
                 return fail(
                     "prompt_changed",
@@ -476,7 +494,7 @@ fn choose(s: &Session, n: usize, want: Option<&str>, allow_attached: bool, dry: 
         s,
         |screen| matches!(prompt::permission_prompt(screen, s.harness), PromptRead::Prompt(now) if now.id == p.id),
         |screen| matches!(prompt::permission_prompt(screen, s.harness), PromptRead::Prompt(now) if same_answers(&now, &p)),
-    )?;
+    );
     Ok(outcome(s, "permission", &steps, fields, false, uncertain))
 }
 
@@ -626,7 +644,10 @@ fn answer_question(
     }
     let total = plan.len();
     for (i, planned) in plan.iter().enumerate() {
-        if i > 0 && !wait_for(s, SETTLE, |screen| form_at(screen, &qs, &planned.at))? {
+        if i > 0
+            && !wait_for(s, SETTLE, |screen| form_at(screen, &qs, &planned.at))
+                .map_err(after_keys(i, total))?
+        {
             return fail(
                 "prompt_changed",
                 format!(
@@ -640,7 +661,7 @@ fn answer_question(
         prompt::parse_form(screen).is_some_and(|f| f.shows(&qs).is_ok())
             || prompt::parse_review(screen).is_some()
     };
-    let uncertain = landed(s, shows_it, shows_it)?;
+    let uncertain = landed(s, shows_it, shows_it);
     Ok(outcome(s, "question", &steps, fields, false, uncertain))
 }
 

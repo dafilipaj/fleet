@@ -8,6 +8,8 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
+import { targetOf } from './fleet-cli.mjs';
+
 export const OPERATOR_NAME = 'operator';
 
 /** The host the operator's API helper calls: the bind address, or loopback for a wildcard bind. */
@@ -118,9 +120,10 @@ export const CLEAR_COMMAND = '/clear';
  *   config   normalized config (self, hosts, bind, port, operator: { dir, model, clearIdleMinutes })
  *   fleet    lib/fleet.mjs instance (localHost)
  *   spawner  lib/spawn.mjs spawner
- *   backend  lib/backends.mjs instance (send: the auto-clear; absent → none)
+ *   cli      lib/fleet-cli.mjs instance (send: the auto-clear, under the session's typing lock;
+ *            absent → none)
  */
-export function createOperator({ config, fleet, spawner, backend = null, now = Date.now, log = () => {}, checkEveryMs = 5 * 60 * 1000 }) {
+export function createOperator({ config, fleet, spawner, cli = null, now = Date.now, log = () => {}, checkEveryMs = 5 * 60 * 1000 }) {
   const dir = config.operator.dir;
   // The workspace's resolved path (a symlinked state dir), known after the first prepare().
   let real = dir;
@@ -164,18 +167,19 @@ export function createOperator({ config, fleet, spawner, backend = null, now = D
   // no context yet, which is what keeps it from being cleared again.
   async function tick() {
     const idleMs = config.operator.clearIdleMinutes * 60 * 1000;
-    if (!backend || !idleMs) return null;
+    if (!cli || !idleMs) return null;
     const s = await find({ force: true });
     if (!s || s.status !== 'idle' || !s.updated_at || !s.context?.used) return null;
     if (now() - s.updated_at < idleMs) return null;
-    await backend.send(s, CLEAR_COMMAND);
+    // Through the CLI, like every web path that types: it holds the session's typing lock.
+    await cli.send({ target: targetOf(s), text: CLEAR_COMMAND });
     log(`[fleet-web] operator: cleared ${s.session_id.slice(0, 8)} (idle ${Math.round((now() - s.updated_at) / 60000)}m)`);
     return s.session_id;
   }
 
   let timer = null;
   function start() {
-    if (timer || !backend || !config.operator.clearIdleMinutes) return;
+    if (timer || !cli || !config.operator.clearIdleMinutes) return;
     timer = setInterval(() => tick().catch((err) => log(`[fleet-web] operator auto-clear: ${err?.message ?? err}`)), checkEveryMs);
     timer.unref?.();
   }

@@ -19,10 +19,9 @@ function listen(server) {
 function fakeHost(self, sessions) {
   const calls = [];
   const cli = createFleetCli({ run: async () => ({ stdout: JSON.stringify(sessions), stderr: '' }) });
+  // Reading only: everything that types goes through the CLI (cli.send / keys / answer below).
   const backend = {
     peek: async (s, lines) => (calls.push(['peek', s.session_id, lines]), `screen of ${s.name}`),
-    send: async (s, text) => void calls.push(['send', s.session_id, text]),
-    keys: async (s, key) => void calls.push(['keys', s.session_id, key]),
   };
   const transcripts = { messages: async () => ({ messages: [{ role: 'user', text: 'hi' }], total: 1, truncated: false, updatedAt: 1 }) };
   const spawner = { spawn: async (req) => (calls.push(['spawn', req]), { name: req.name, dir: req.dir, tmuxSession: req.name, command: 'claude', trusted: false }) };
@@ -41,6 +40,9 @@ function fakeHost(self, sessions) {
     if (title === 'explode') throw new Error('tmux: boom');
     return { ok: true, result: 'renamed', title, from: 'app-9d', held: null, tmux: { renamed: true, from: 'fw-101010', to: 'fix-login', note: '⧉ fw-101010 → fix-login' }, message: `app-9d → ${title}` };
   };
+  cli.send = async ({ target, text }) => (calls.push(['send', target, text]), { ok: true, host: self, target: {} });
+  cli.keys = async ({ target, keys }) => (calls.push(['keys', target, ...keys]), { ok: true, host: self, keys });
+  cli.answer = async ({ target, question, answers }) => (calls.push(['answer', target, question, answers]), { ok: true, answered: true, prompt_kind: 'question', id: question, steps: [] });
   cli.harnesses = async () => {
     calls.push(['harnesses']);
     return [
@@ -162,9 +164,10 @@ test('peek/send/keys are served locally or proxied exactly once', async (t) => {
   assert.deepEqual(remote.calls.at(-1), ['peek', 'bbbbbbbb-0000-0000-0000-000000000002', 50]);
 
   assert.equal((await post(`${urls.laptop}/api/hosts/laptop/sessions/aaaaaaaa/send`, { text: 'go' })).status, 200);
-  assert.deepEqual(lap.calls.at(-1), ['send', 'aaaaaaaa-0000-0000-0000-000000000001', 'go']);
+  // Through the CLI, by the exact session id: it types under the session's lock.
+  assert.deepEqual(lap.calls.at(-1), ['send', 'id:aaaaaaaa-0000-0000-0000-000000000001', 'go']);
   assert.equal((await post(`${urls.laptop}/api/hosts/workstation/sessions/bbbbbbbb/keys`, { key: 'Escape' })).status, 200);
-  assert.deepEqual(remote.calls.at(-1), ['keys', 'bbbbbbbb-0000-0000-0000-000000000002', 'Escape']);
+  assert.deepEqual(remote.calls.at(-1), ['keys', 'id:bbbbbbbb-0000-0000-0000-000000000002', 'Escape']);
 
   const msgs = await get(`${urls.workstation}/api/hosts/laptop/sessions/aaaaaaaa/messages`);
   assert.equal(msgs.status, 200);
@@ -338,11 +341,11 @@ test('rename is POST-only, validated, served locally or proxied once, and a held
   assert.equal(local.body.result, 'renamed');
   assert.equal(local.body.title, 'Fix login');
   assert.equal(local.body.tmux.to, 'fix-login');
-  assert.deepEqual(lap.calls.at(-1), ['rename', 'aaaaaaaa-0000-0000-0000-000000000001', 'Fix login']);
+  assert.deepEqual(lap.calls.at(-1), ['rename', 'id:aaaaaaaa-0000-0000-0000-000000000001', 'Fix login']);
 
   const proxied = await post(`${base}/workstation/sessions/bbbbbbbb/rename`, { title: 'Docs refresh' });
   assert.equal(proxied.status, 200);
-  assert.deepEqual(remote.calls.at(-1), ['rename', 'bbbbbbbb-0000-0000-0000-000000000002', 'Docs refresh']);
+  assert.deepEqual(remote.calls.at(-1), ['rename', 'id:bbbbbbbb-0000-0000-0000-000000000002', 'Docs refresh']);
   assert.equal(lap.calls.filter((c) => c[0] === 'rename').length, 1, 'proxied, not run on the laptop');
 
   const held = await post(`${base}/workstation/sessions/bbbbbbbb/rename`, { title: 'while waiting' });
@@ -550,33 +553,228 @@ test('fleet CLI usage runs `fleet --local usage --json [--refresh]` and surfaces
   await assert.rejects(cli.usage(), /^FleetCliError: no Claude Code login found/);
 });
 
-test('answer types the keys for the pending question, only when it is safe to', async (t) => {
+test('answer goes through `fleet answer --question`; its refusals keep their kind', async (t) => {
   const id = 'cccccccc-0000-0000-0000-000000000003';
   const host = fakeHost('solo', [{ session_id: id, name: 'q', status: 'waiting', backend: 'tmux', handle: '%3', updated_at: 3 }]);
-  const questions = [{ question: 'Merge it?', header: 'Merge', multiSelect: false, options: [{ label: 'Yes', description: '' }, { label: 'No', description: '' }] }];
-  let answered = null;
-  host.transcripts = { messages: async () => ({ messages: [{ role: 'assistant', kind: 'question', id: 'tq1', questions, text: '', ...answered }], total: 1, truncated: false }) };
-  let screen = 'Merge it?\n❯ 1. Yes\n  2. No\nEnter to select · ↑/↓ to navigate';
-  host.backend.peek = async () => screen;
-  host.backend.type = async (s, text) => void host.calls.push(['type', s.session_id, text]);
+  // What the CLI says, by question id: a refusal with its kind, else answered.
+  const refusals = {
+    nope: ['question_not_found', 'no question nope in this session'],
+    bad: ['answer_invalid', 'answers[0]: single-select takes one option'],
+    moved: ['prompt_not_on_screen', 'the form has been touched — answer it there; nothing typed'],
+    done: ['question_answered', 'question done is already answered'],
+    held: ['busy', 'another fleet command is typing into this session; nothing typed'],
+    late: ['outcome_uncertain', 'the prompt is still on screen after the answer'],
+  };
+  host.cli.answer = async ({ target, question, answers }) => {
+    host.calls.push(['answer', target, question, answers]);
+    const r = refusals[question];
+    if (!r) return { ok: true, answered: true, prompt_kind: 'question', id: question, steps: [{ key: 'Enter' }] };
+    const e = new Error(r[1]);
+    e.kind = r[0];
+    e.report = { ok: false, kind: r[0], error: r[1] };
+    throw e;
+  };
   const config = normalizeConfig({ self: 'solo' }, { env: {}, home: '/home/tester' });
-  const api = createApi({ config, ...host, warmFleet: false, sleep: async () => {} });
+  const api = createApi({ config, ...host, warmFleet: false });
   const server = createHttpServer({ handleApi: api, uiDir: os.tmpdir() });
   const base = await listen(server);
   t.after(() => server.close());
-  const call = async (body) => (await post(`${base}/api/hosts/solo/sessions/${id}/answer`, body)).status;
+  const call = (toolUseId) => post(`${base}/api/hosts/solo/sessions/${id}/answer`, { toolUseId, answers: [{ options: [1] }] });
 
-  assert.equal(await call({ toolUseId: 'nope', answers: [{ options: [1] }] }), 404);
-  assert.equal(await call({ toolUseId: 'tq1', answers: [{ options: [0, 1] }] }), 400);
-  screen = 'Merge it?\n  1. Yes\n❯ 2. No\nEnter to select';
-  assert.equal(await call({ toolUseId: 'tq1', answers: [{ options: [1] }] }), 409, 'moved in the terminal');
-  assert.equal(host.calls.filter((c) => c[0] === 'keys' || c[0] === 'type').length, 0, 'nothing typed yet');
-  screen = 'Merge it?\n❯ 1. Yes\n  2. No\nEnter to select';
-  assert.equal(await call({ toolUseId: 'tq1', answers: [{ text: 'later' }] }), 200);
-  assert.deepEqual(
-    host.calls.filter((c) => c[0] === 'keys' || c[0] === 'type').map((c) => c[2]),
-    ['Down', 'Down', 'later', 'Enter'],
-  );
-  answered = { answers: ['later'] };
-  assert.equal(await call({ toolUseId: 'tq1', answers: [{ options: [0] }] }), 409, 'already answered');
+  assert.equal((await post(`${base}/api/hosts/solo/sessions/${id}/answer`, { answers: [] })).status, 400, 'no toolUseId');
+  const want = { nope: 404, bad: 400, moved: 409, done: 409, held: 409, late: 502 };
+  for (const [q, status] of Object.entries(want)) {
+    const res = await call(q);
+    assert.equal(res.status, status, q);
+    assert.equal(res.body.ok, false, q);
+    assert.equal(res.body.kind, refusals[q][0], q);
+    assert.equal(res.body.error, refusals[q][1], q);
+  }
+  const ok = await call('tq1');
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.answered, true);
+  assert.deepEqual(host.calls.at(-1), ['answer', `id:${id}`, 'tq1', [{ options: [1] }]]);
+});
+
+test('send / keys: another fleet command typing into the session makes them busy (409), nothing typed', async (t) => {
+  const id = 'dddddddd-0000-0000-0000-000000000004';
+  const host = fakeHost('solo', [{ session_id: id, name: 'b', status: 'busy', backend: 'tmux', handle: '%4', updated_at: 4 }]);
+  // The real CLI wrapper over a `fleet` that finds the session's lock held.
+  const argv = [];
+  const busy = createFleetCli({
+    bin: '/x/fleet',
+    run: async (file, args) => {
+      argv.push(args);
+      const e = new Error('another fleet command is typing into this session; nothing sent');
+      e.code = 1;
+      e.stdout = JSON.stringify({ ok: false, host: 'solo', kind: 'busy', error: 'another fleet command is typing into this session; nothing sent' });
+      throw e;
+    },
+  });
+  host.cli.send = busy.send;
+  host.cli.keys = busy.keys;
+  const config = normalizeConfig({ self: 'solo' }, { env: {}, home: '/home/tester' });
+  // No retry window here (the retry has its own test below): the first `busy` is the answer.
+  const api = createApi({ config, ...host, warmFleet: false, typingBusyRetryMs: 0 });
+  const server = createHttpServer({ handleApi: api, uiDir: os.tmpdir() });
+  const base = await listen(server);
+  t.after(() => server.close());
+
+  const sent = await post(`${base}/api/hosts/solo/sessions/${id}/send`, { text: '-rf now' });
+  assert.equal(sent.status, 409);
+  assert.equal(sent.body.kind, 'busy');
+  assert.match(sent.body.error, /another fleet command/);
+  const keyed = await post(`${base}/api/hosts/solo/sessions/${id}/keys`, { key: 'Escape' });
+  assert.equal(keyed.status, 409);
+  assert.equal(keyed.body.kind, 'busy');
+  assert.deepEqual(argv, [
+    ['send', '--json', '--', `id:${id}`, '-rf now'],
+    ['keys', '--json', '--', `id:${id}`, 'Escape'],
+  ]);
+  assert.deepEqual(host.calls.filter((c) => c[0] !== 'peek'), [], 'nothing typed any other way');
+});
+
+// The rename route once kept only a held report: `busy` (an agent's `fleet answer` holding the
+// session's lock) came back a 502 "rename failed", an error toast instead of the warning.
+test('rename: another fleet command typing into the session is a 409 busy, by the exact target', async (t) => {
+  const id = 'eeeeeeee-0000-0000-0000-000000000005';
+  const host = fakeHost('solo', [{ session_id: id, name: 'r', status: 'idle', backend: 'tmux', handle: '%5', updated_at: 5 }]);
+  const argv = [];
+  const busy = createFleetCli({
+    bin: '/x/fleet',
+    run: async (file, args) => {
+      argv.push(args);
+      const e = new Error('exit 1');
+      e.code = 1;
+      e.stdout = JSON.stringify({ ok: false, host: 'solo', kind: 'busy', error: 'another fleet command is typing into this session; nothing sent' });
+      throw e;
+    },
+  });
+  host.cli.rename = busy.rename;
+  const config = normalizeConfig({ self: 'solo' }, { env: {}, home: '/home/tester' });
+  const api = createApi({ config, ...host, warmFleet: false, typingBusyRetryMs: 0 });
+  const server = createHttpServer({ handleApi: api, uiDir: os.tmpdir() });
+  const base = await listen(server);
+  t.after(() => server.close());
+
+  const res = await post(`${base}/api/hosts/solo/sessions/eeeeeeee/rename`, { title: 'Fix login' });
+  assert.equal(res.status, 409);
+  assert.equal(res.body.ok, false);
+  assert.equal(res.body.kind, 'busy');
+  assert.match(res.body.error, /another fleet command/);
+  assert.deepEqual(argv, [['rename', `id:${id}`, 'Fix login', '--json']]);
+});
+
+// A fake `fleet` holding a per-session lock as the real one does: a second command while one
+// types answers `busy` and types nothing.
+function lockingCli({ outside = 0 } = {}) {
+  const typed = [];
+  const argv = [];
+  let holding = false;
+  let outsideLeft = outside;
+  const cli = createFleetCli({
+    bin: '/x/fleet',
+    run: async (file, args) => {
+      argv.push(args);
+      if (holding || outsideLeft > 0) {
+        if (!holding) outsideLeft -= 1;
+        const e = new Error('exit 1');
+        e.code = 1;
+        e.stdout = JSON.stringify({ ok: false, host: 'solo', kind: 'busy', error: 'another fleet command is typing into this session; nothing sent' });
+        throw e;
+      }
+      holding = true;
+      await new Promise((r) => setTimeout(r, 40));
+      holding = false;
+      typed.push(args.at(-1));
+      return { stdout: JSON.stringify({ ok: true, host: 'solo', target: {} }), stderr: '' };
+    },
+  });
+  return { cli, typed, argv };
+}
+
+async function lockingServer(t, fake, opts = {}) {
+  const id = 'ffffffff-0000-0000-0000-000000000006';
+  const host = fakeHost('solo', [{ session_id: id, name: 'q', status: 'idle', backend: 'tmux', handle: '%6', updated_at: 6 }]);
+  host.cli.send = fake.cli.send;
+  host.cli.keys = fake.cli.keys;
+  host.cli.answer = fake.cli.answer;
+  const config = normalizeConfig({ self: 'solo' }, { env: {}, home: '/home/tester' });
+  const api = createApi({ config, ...host, warmFleet: false, ...opts });
+  const server = createHttpServer({ handleApi: api, uiDir: os.tmpdir() });
+  const base = await listen(server);
+  t.after(() => server.close());
+  return `${base}/api/hosts/solo/sessions/${id}`;
+}
+
+// The outbox hands every unsent message to its own keepalive fetch on `pagehide`: they arrive
+// at once, and each once raced the others for the session's lock — the losers' `busy` dropped
+// silently. The server now types into one session one request at a time.
+test('sends to one session arrive together and are all typed, in order', async (t) => {
+  const fake = lockingCli();
+  const base = await lockingServer(t, fake, { typingBusyRetryMs: 0 });
+  const res = await Promise.all(['one', 'two', 'three'].map((text) => post(`${base}/send`, { text })));
+  assert.deepEqual(res.map((r) => r.status), [200, 200, 200], JSON.stringify(res));
+  assert.deepEqual(fake.typed, ['one', 'two', 'three']);
+  const key = await Promise.all([post(`${base}/send`, { text: 'four' }), post(`${base}/keys`, { key: 'Escape' })]);
+  assert.deepEqual(key.map((r) => r.status), [200, 200]);
+  assert.deepEqual(fake.typed, ['one', 'two', 'three', 'four', 'Escape']);
+});
+
+// Another fleet command (an agent's `fleet answer`, a naming pass) holding the lock for a
+// moment: send and keys wait it out briefly; past that, a 409 `busy` the outbox shows as failed.
+test('send and keys retry briefly while another fleet command holds the session; answer does not', async (t) => {
+  const fake = lockingCli({ outside: 2 });
+  const base = await lockingServer(t, fake, { typingBusyRetryMs: 2000 });
+  const sent = await post(`${base}/send`, { text: 'hello' });
+  assert.equal(sent.status, 200, JSON.stringify(sent.body));
+  assert.deepEqual(fake.typed, ['hello']);
+  assert.equal(fake.argv.length, 3, 'two busy refusals, then typed');
+
+  const stuck = lockingCli({ outside: 1000 });
+  const short = await lockingServer(t, stuck, { typingBusyRetryMs: 150 });
+  const refused = await post(`${short}/send`, { text: 'hello' });
+  assert.equal(refused.status, 409);
+  assert.equal(refused.body.kind, 'busy');
+  assert.ok(stuck.argv.length > 1, 'retried before giving up');
+  const before = stuck.argv.length;
+  const answered = await post(`${short}/answer`, { toolUseId: 'tq1', answers: [{ options: [1] }] });
+  assert.equal(answered.status, 409);
+  assert.equal(stuck.argv.length, before + 1, 'an answer is never retried');
+});
+
+// Every iTerm answer needs `--allow-attached` (an iTerm session always counts as attached), and
+// the question and answers must reach the CLI as one argument each.
+test('fleet CLI answer runs `fleet answer <target> --question= --answers= --json --allow-attached`', async () => {
+  const calls = [];
+  const cli = createFleetCli({
+    bin: '/x/fleet',
+    run: async (file, args) => (calls.push(args), { stdout: JSON.stringify({ ok: true, answered: true }), stderr: '' }),
+  });
+  await cli.answer({ target: 'id:abc', question: '-tq1', answers: [{ options: [1] }] });
+  assert.deepEqual(calls, [['answer', 'id:abc', '--question=-tq1', '--answers=[{"options":[1]}]', '--json', '--allow-attached']]);
+});
+
+// A peer's typing commands run as long as their CLI allows (answer 60 s, send 30 s plus the busy
+// retry): the proxy once gave up after 20 s, a 504 while the peer was still typing.
+test('typing actions proxied to a peer wait longer than the peer CLI may take', async (t) => {
+  const config = normalizeConfig({ self: 'laptop', hosts: { workstation: { web: 'http://workstation:1' } } }, { env: {}, home: '/home/tester' });
+  const timeouts = {};
+  const proxyToPeer = async (base, opts) => {
+    timeouts[opts.pathname.split('/').at(-1)] = opts.timeoutMs;
+    return { status: 200, body: { ok: true } };
+  };
+  const fleet = { localHost: async () => ({ ok: true, sessions: [] }), invalidate() {} };
+  const api = createApi({ config, fleet, backend: {}, transcripts: {}, spawner: {}, proxyToPeer, warmFleet: false });
+  const server = createHttpServer({ handleApi: api, uiDir: os.tmpdir() });
+  const base = await listen(server);
+  t.after(() => server.close());
+  for (const action of ['send', 'keys', 'answer', 'rename', 'kill']) {
+    assert.equal((await post(`${base}/api/hosts/workstation/sessions/abc/${action}`, {})).status, 200, action);
+  }
+  assert.ok(timeouts.answer > 60000, JSON.stringify(timeouts));
+  assert.ok(timeouts.send > 32000, JSON.stringify(timeouts));
+  assert.ok(timeouts.keys > 22000, JSON.stringify(timeouts));
+  assert.ok(timeouts.rename > 20000, JSON.stringify(timeouts));
+  assert.equal(timeouts.kill, 20000, 'other actions keep the default');
 });

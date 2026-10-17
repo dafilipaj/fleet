@@ -4,8 +4,11 @@
 // `fleet usage --json`, `fleet --local prs --json`, `fleet --local pr checkout --json`, `fleet config set`, `fleet --local repos …`, `fleet --local jobs …`, `fleet --local stack … --json`, `fleet --local restore … --json`) are documented in one
 // spot (see ARCHITECTURE.md).
 //
-// Peek/send/keys are NOT done through the CLI: `fleet peek` truncates to terminal width
-// and adds a header, so lib/backends.mjs drives tmux / iTerm directly.
+// Everything that types into a session goes through the CLI too (`fleet send --json`, `fleet keys
+// --json`, `fleet answer --question … --json`, `fleet rename --json`): each holds the session's
+// typing lock (core::lock), the one every fleet command takes, so the web server's keys never
+// interleave with an agent's `fleet answer`. Only reading the screen (peek) is done directly, by
+// lib/backends.mjs: `fleet peek` truncates to terminal width and adds a header.
 
 export class FleetCliError extends Error {
   constructor(message, { timedOut = false } = {}) {
@@ -13,6 +16,15 @@ export class FleetCliError extends Error {
     this.name = 'FleetCliError';
     this.timedOut = timedOut;
   }
+}
+
+/**
+ * The exact CLI target of a `fleet list` row: `id:<session_id>`, or `pid:<n>` for a row with no
+ * real session id. Never a fragment or a name — these commands type into a live agent.
+ */
+export function targetOf(session) {
+  const id = session?.session_id;
+  return id && !String(id).startsWith('pid-') ? `id:${id}` : `pid:${session?.pid}`;
 }
 
 /** clap's answer when the binary predates `fleet stack` (an older CLI on that host). */
@@ -87,7 +99,9 @@ export function createFleetCli({ run, bin = 'fleet', timeoutMs = 8000 } = {}) {
    * Rename one session: `fleet rename <target> <title> --json` — Claude's `/rename` (the
    * title, the source of truth) plus the derived tmux name. Resolves the report
    * ({ ok, result: renamed|sent|held, held, tmux, message, … }); a held session (waiting
-   * on a prompt, exit 3) resolves too, with `ok: false`. Throws FleetCliError otherwise.
+   * on a prompt, exit 3) resolves too, with `ok: false`. Throws FleetCliError otherwise,
+   * carrying `kind` and `report` as {@link typing} does (`busy`: another fleet command types
+   * into the session).
    */
   async function rename({ target, title, timeoutMs: t = 20 * 1000 } = {}) {
     const args = ['rename', String(target), String(title), '--json'];
@@ -98,9 +112,55 @@ export function createFleetCli({ run, bin = 'fleet', timeoutMs = 8000 } = {}) {
       // Held exits 3 with the report on stdout; anything else is a real failure.
       const report = tryObject(err?.stdout);
       if (report && report.result === 'held') return report;
-      throw wrap(err, 'fleet rename', t);
+      throw withKind(wrap(err, 'fleet rename', t), report);
     }
     return parseObject(stdout, 'fleet rename');
+  }
+
+  /**
+   * A command that types into a session, with `--json`: resolves its report (`ok: true`);
+   * throws FleetCliError carrying `kind` (the CLI's: `busy` while another fleet command types
+   * into the session, …) and `report` (the failure object) when it fails.
+   */
+  async function typing(args, what, t) {
+    let stdout;
+    try {
+      ({ stdout } = await run(bin, args, { timeout: t, env: { ...process.env, NO_COLOR: '1' } }));
+    } catch (err) {
+      throw withKind(wrap(err, what, t), tryObject(err?.stdout));
+    }
+    return parseObject(stdout, what);
+  }
+
+  /** `e` with the CLI's failure object (`{ ok: false, kind, error }`), when it printed one. */
+  function withKind(e, report) {
+    if (report && report.ok === false && typeof report.kind === 'string') {
+      e.kind = report.kind;
+      e.report = report;
+      if (typeof report.error === 'string' && report.error) e.message = report.error;
+    }
+    return e;
+  }
+
+  /** Type `text` and submit it: `fleet send --json -- <target> <text>`. */
+  async function send({ target, text, timeoutMs: t = 30 * 1000 } = {}) {
+    return typing(['send', '--json', '--', String(target), String(text)], 'fleet send', t);
+  }
+
+  /** Press named keys: `fleet keys --json -- <target> <key>…`. */
+  async function keys({ target, keys: names, timeoutMs: t = 20 * 1000 } = {}) {
+    return typing(['keys', '--json', '--', String(target), ...names.map(String)], 'fleet keys', t);
+  }
+
+  /**
+   * Answer a pending AskUserQuestion: `fleet answer <target> --question <id> --answers <json>
+   * --json --allow-attached` — the CLI's checked path (the question pending and untouched on
+   * screen, every key verified, the review checked). `--allow-attached`: the request is itself
+   * a person's (or their operator's) answer, made from the app.
+   */
+  async function answer({ target, question, answers, timeoutMs: t = 60 * 1000 } = {}) {
+    const args = ['answer', String(target), `--question=${question}`, `--answers=${JSON.stringify(answers)}`, '--json', '--allow-attached'];
+    return typing(args, 'fleet answer', t);
   }
 
   function tryObject(text) {
@@ -474,6 +534,9 @@ export function createFleetCli({ run, bin = 'fleet', timeoutMs = 8000 } = {}) {
     nameAll,
     nameOne,
     rename,
+    send,
+    keys,
+    answer,
     groupRun,
     groupCached,
     groupEdit,

@@ -2,33 +2,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { tailLines, sleep as defaultSleep } from './util.mjs';
+import { tailLines } from './util.mjs';
 
 /** Error with an HTTP status attached. */
-// Largest piece of text one `send-keys -l` types. Claude Code takes a burst of more than ~800
-// bytes as a paste (collapsed into `[Pasted text]`), and from one write of more than ~1 KB it keeps
-// only what follows the first 1 KB.
-export const TYPE_CHUNK = 512;
-
-/** Split `text` into pieces of at most `max` UTF-8 bytes, never inside a character. */
-export function typeChunks(text, max = TYPE_CHUNK) {
-  const out = [];
-  let cur = '';
-  let bytes = 0;
-  for (const ch of text) {
-    const n = Buffer.byteLength(ch);
-    if (bytes + n > max && cur) {
-      out.push(cur);
-      cur = '';
-      bytes = 0;
-    }
-    cur += ch;
-    bytes += n;
-  }
-  if (cur) out.push(cur);
-  return out;
-}
-
 export class BackendError extends Error {
   constructor(message, status = 500) {
     super(message);
@@ -61,40 +37,6 @@ on run argv
     tell application "iTerm2"
       return text of theSession
     end tell
-  else if theMode is "send" then
-    tell application "iTerm2"
-      tell theSession to write text (item 3 of argv) without newline
-    end tell
-    delay 0.2
-    tell application "iTerm2"
-      tell theSession to write text ""
-    end tell
-    return "ok"
-  else if theMode is "type" then
-    tell application "iTerm2"
-      tell theSession to write text (item 3 of argv) without newline
-    end tell
-    return "ok"
-  else if theMode is "enter" then
-    tell application "iTerm2"
-      tell theSession to write text ""
-    end tell
-    return "ok"
-  else if theMode is "escape" then
-    tell application "iTerm2"
-      tell theSession to write text (ASCII character 27) without newline
-    end tell
-    return "ok"
-  else if theMode is "up" then
-    tell application "iTerm2"
-      tell theSession to write text ((ASCII character 27) & "[A") without newline
-    end tell
-    return "ok"
-  else if theMode is "down" then
-    tell application "iTerm2"
-      tell theSession to write text ((ASCII character 27) & "[B") without newline
-    end tell
-    return "ok"
   else if theMode is "close" then
     tell application "iTerm2"
       tell theSession to close
@@ -120,18 +62,18 @@ export function createScriptProvider({ tmpdir = os.tmpdir(), fsImpl = fs } = {})
 }
 
 /**
- * Backend driver. `run(file, args, opts)` is injected so the logic stays testable.
+ * Backend driver: reads a session's screen (peek) and closes an iTerm tab. It never types into a
+ * session — the web server types only through the CLI (lib/fleet-cli.mjs: `send`, `keys`,
+ * `answer`, `rename`), which holds the session's typing lock. `run(file, args, opts)` is injected
+ * so the logic stays testable.
  */
 export function createBackend({
   run,
   tmux = 'tmux',
   osascript = '/usr/bin/osascript',
   scriptPath = createScriptProvider(),
-  sleep = defaultSleep,
-  enterDelayMs = 150,
 } = {}) {
   if (typeof run !== 'function') throw new TypeError('run must be a function');
-  let pasteSeq = 0;
 
   function requireHandle(session) {
     const handle = session?.handle;
@@ -149,15 +91,6 @@ export function createBackend({
     return b;
   }
 
-  /** Type `text` literally, a TYPE_CHUNK at a time, so a long line reaches the TUI whole. */
-  async function typeText(handle, text) {
-    const chunks = typeChunks(text);
-    for (const [i, chunk] of chunks.entries()) {
-      if (i > 0) await sleep(20);
-      await run(tmux, ['send-keys', '-t', handle, '-l', '--', chunk], { timeout: 8000 });
-    }
-  }
-
   async function peek(session, lines) {
     const backend = backendOf(session);
     const handle = requireHandle(session);
@@ -171,53 +104,11 @@ export function createBackend({
     return tailLines(stdout, lines);
   }
 
-  async function send(session, text) {
-    const backend = backendOf(session);
-    const handle = requireHandle(session);
-    if (backend === 'tmux') {
-      if (/[\r\n]/.test(text)) {
-        // tmux (3.6) drops newlines typed by `send-keys -l`, so a multi-line message would reach
-        // Claude as one line. Paste it as a bracketed paste instead: the TUI keeps the newlines.
-        const buf = `fleet-send-${process.pid}-${++pasteSeq}`;
-        await run(tmux, ['load-buffer', '-b', buf, '-'], { input: text, timeout: 8000 });
-        await run(tmux, ['paste-buffer', '-p', '-r', '-d', '-b', buf, '-t', handle], { timeout: 8000 });
-      } else {
-        await typeText(handle, text);
-      }
-      await sleep(enterDelayMs);
-      await run(tmux, ['send-keys', '-t', handle, 'Enter'], { timeout: 8000 });
-      return;
-    }
-    await run(osascript, [scriptPath(), 'send', handle, text], { timeout: 15000 });
-  }
-
-  async function keys(session, key) {
-    const backend = backendOf(session);
-    const handle = requireHandle(session);
-    if (backend === 'tmux') {
-      await run(tmux, ['send-keys', '-t', handle, key], { timeout: 8000 });
-      return;
-    }
-    const mode = { Escape: 'escape', Enter: 'enter', Up: 'up', Down: 'down' }[key] ?? 'enter';
-    await run(osascript, [scriptPath(), mode, handle], { timeout: 15000 });
-  }
-
-  /** Type `text` without submitting it (no Enter). */
-  async function type(session, text) {
-    const backend = backendOf(session);
-    const handle = requireHandle(session);
-    if (backend === 'tmux') {
-      await typeText(handle, text);
-      return;
-    }
-    await run(osascript, [scriptPath(), 'type', handle, text], { timeout: 15000 });
-  }
-
   /** Close the iTerm tab/pane hosting the session (best effort; the process should be dead already). */
   async function closeIterm(session) {
     const handle = requireHandle(session);
     await run(osascript, [scriptPath(), 'close', handle], { timeout: 15000 });
   }
 
-  return { peek, send, keys, type, closeIterm };
+  return { peek, closeIterm };
 }

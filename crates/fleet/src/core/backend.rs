@@ -100,12 +100,16 @@ end run"#
             &[handle],
         ),
         Backend::Tmux => {
+            // A capture tmux says failed (the pane or the server gone) is an error, never an
+            // empty screen: `answer` would read that as its prompt having gone, i.e. answered.
             let capture = |range: &[&str]| -> Result<String> {
                 let out = crate::core::tools::tmux_cmd()
                     .args(["capture-pane", "-t", handle, "-p"])
                     .args(range)
                     .output()?;
-                Ok(String::from_utf8_lossy(&out.stdout).to_string())
+                let text = String::from_utf8_lossy(&out.stdout).to_string();
+                tmux_ok(out, &format!("tmux capture-pane -t {handle}"))?;
+                Ok(text)
             };
             let visible = capture(&[])?;
             if history == 0 {
@@ -371,9 +375,12 @@ fn tmux_ok(out: std::process::Output, what: &str) -> Result<()> {
     Ok(())
 }
 
+/// Type `text` into the session and submit it. Its failures carry `send --json`'s kinds: no
+/// pane or iTerm session to drive is `backend_unsupported`, a tmux or iTerm call that fails is
+/// `backend_failed`.
 pub fn send(s: &Session, text: &str) -> Result<()> {
     deny_fixture()?;
-    let handle = require_handle(s)?;
+    let handle = require_handle(s).map_err(|e| e.tag("backend_unsupported"))?;
     match s.backend {
         Backend::Iterm => {
             // Two writes: a single `write text` sends text+newline as one chunk,
@@ -393,7 +400,8 @@ on run argv
 end run"#
                 ),
                 &[handle, text],
-            )?;
+            )
+            .map_err(|e| e.tag("backend_failed"))?;
             Ok(())
         }
         Backend::Tmux => {
@@ -401,22 +409,27 @@ end run"#
             // away, not a spawn failure — `?` alone would swallow it and report
             // a `/rename` that never landed as success, after which the tmux
             // session gets renamed anyway.
-            if text.contains(['\n', '\r']) {
-                paste_text(handle, text)?;
-                // Let the TUI finish taking the paste, or Enter can land inside it.
-                std::thread::sleep(std::time::Duration::from_millis(150));
-            } else {
-                type_text(handle, text)?;
-                // Codex and pi take keys arriving in one burst as a paste, and an Enter
-                // inside it never submits (Codex's slash-command popup also needs a beat).
-                if s.harness != Harness::Claude {
-                    std::thread::sleep(std::time::Duration::from_millis(300));
+            let typed = || -> Result<()> {
+                if text.contains(['\n', '\r']) {
+                    paste_text(handle, text)?;
+                    // Let the TUI finish taking the paste, or Enter can land inside it.
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                } else {
+                    type_text(handle, text)?;
+                    // Codex and pi take keys arriving in one burst as a paste, and an Enter
+                    // inside it never submits (Codex's slash-command popup also needs a beat).
+                    if s.harness != Harness::Claude {
+                        std::thread::sleep(std::time::Duration::from_millis(300));
+                    }
                 }
-            }
-            send_keys(handle, &["Enter"])?;
-            Ok(())
+                send_keys(handle, &["Enter"])
+            };
+            typed().map_err(|e| e.tag("backend_failed"))
         }
-        Backend::Unknown => require_handle(s).map(|_| ()),
+        Backend::Unknown => Err(Error::tagged(
+            "backend_unsupported",
+            format!("session {} has no controllable backend", s.label()),
+        )),
     }
 }
 
@@ -1838,6 +1851,20 @@ mod tests {
         assert!(e.to_string().contains("send-keys"), "{e}");
     }
 
+    // A failed capture read as an empty screen: to `answer`, its prompt gone — answered.
+    #[test]
+    fn a_capture_tmux_says_failed_is_an_error_not_an_empty_screen() {
+        let s = Session {
+            backend: Backend::Tmux,
+            handle: Some("%999999".into()),
+            ..Default::default()
+        };
+        for history in [0, 1000] {
+            let e = peek_history(&s, history).unwrap_err();
+            assert!(e.to_string().contains("capture-pane"), "{e}");
+        }
+    }
+
     #[test]
     fn keys_are_an_exact_allowlist_of_tmux_names() {
         for k in Key::ALL {
@@ -1887,6 +1914,35 @@ mod tests {
         assert!(screen_lines("\n\n", 40, false).is_empty());
         assert_eq!(parse_size("80 24"), (Some(80), Some(24)));
         assert_eq!(parse_size("junk"), (None, None));
+    }
+
+    // `send --json` documents `backend_unsupported` and `backend_failed`: its failures once
+    // came back untagged (`other`), which the web server turned into a 502.
+    #[test]
+    fn send_failures_carry_the_backend_kinds() {
+        let none = Session {
+            pid: 1,
+            ..Default::default()
+        };
+        assert_eq!(send(&none, "hi").unwrap_err().kind(), "backend_unsupported");
+        let unknown = Session {
+            pid: 1,
+            handle: Some("x".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            send(&unknown, "hi").unwrap_err().kind(),
+            "backend_unsupported"
+        );
+        for text in ["hi", "two\nlines"] {
+            let gone = Session {
+                backend: Backend::Tmux,
+                handle: Some("%999999".into()),
+                ..Default::default()
+            };
+            let e = send(&gone, text).unwrap_err();
+            assert_eq!(e.kind(), "backend_failed", "{e}");
+        }
     }
 
     #[test]

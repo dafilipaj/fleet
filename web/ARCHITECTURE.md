@@ -26,9 +26,9 @@ phone ──http──▶ workstation:7777 (self=workstation) ──http──�
 ```
 server.mjs            wiring: config → deps → API → HTTP server → listen
 lib/config.mjs        shared fleet config loader + binary resolution
-lib/fleet-cli.mjs     the ONLY place that invokes the `fleet` CLI (`list --json`, `name --all --apply`, `usage --json`, `config set`, `--local stack … --json`, `--local restore … --json`, …)
+lib/fleet-cli.mjs     the ONLY place that invokes the `fleet` CLI (`list --json`, `send` / `keys` / `answer` / `rename --json`, `name --all --apply`, `usage --json`, `config set`, `--local stack … --json`, `--local restore … --json`, …)
 lib/fleet.mjs         local discovery: cache (2s TTL), in-flight de-dup, never throws
-lib/backends.mjs      peek/send/keys straight to tmux / iTerm2 (osascript)
+lib/backends.mjs      peek straight from tmux / iTerm2 (osascript), and closing an iTerm tab; it never types
 lib/transcript.mjs    transcript JSONL → chat messages (Claude Code; Codex rollouts and pi sessions via the row's `transcript` path)
 lib/spawn-dirs.mjs    Settings → Start directories: validate a `spawnDirs` list, write it via `fleet config set`, hot-reload
 lib/repos.mjs         Settings → Git repos: `fleet repos` list/sync/timer, validate + write the `repos` config key
@@ -145,16 +145,34 @@ JSON report the CLI printed on stdout (`{ error, updated }`); other exit 2/3 →
 a timeout → 504; a CLI without the `stack` subcommand (clap "unrecognized subcommand") → 501;
 anything else → 502.
 
-Peek/send/keys do **not** go through `fleet peek/send` (those truncate to terminal width and
-add a header). `lib/backends.mjs` drives the backends directly, mirroring the CLI:
+**Typing goes through the CLI, under the session's lock.** Send, keys, answer and the operator's
+auto-`/clear` run `fleet send --json`, `fleet keys --json` and `fleet answer --question … --json
+--allow-attached` (rename already ran `fleet rename --json`), each by the exact target
+(`id:<session_id>`, else `pid:<n>`). Each holds the per-session typing lock every fleet command
+takes (docs/cli.md → Answering prompts), so the web server's keys never interleave with an
+agent's `fleet answer` and vice versa. The server's own typing requests into one session (send,
+keys, answer, rename) go one at a time, in arrival order: the outbox's keepalive sends on
+`pagehide` arrive together, and the lock would otherwise refuse all but one of them. While a
+command outside the server holds the lock, send and keys retry for up to 2 s; past that — and
+for an answer or a rename at once — the route answers **409** `{ ok: false, kind: "busy", error }`,
+nothing is typed, and the UI shows the message as failed (retry from its bubble). Peers get
+longer than their CLI may take for these actions (answer 75 s, send 45 s, keys and rename 30 s).
+A failure the CLI reports keeps its
+`kind`: 400 (`usage`, `answer_invalid`, `invalid_key`, `target_invalid`), 404
+(`target_not_found`, `question_not_found`, `transcript_not_found`), 409 (`busy`,
+`human_attached`, `target_ambiguous`, `not_waiting`, `question_answered`, `question_not_active`,
+`prompt_not_on_screen`, `prompt_incomplete`, `prompt_changed`, `backend_unsupported`,
+`harness_unsupported`), 502 anything else (`outcome_uncertain`, `send_failed`, `backend_failed`,
+`io`), 504 a timeout. The one exception is spawn's trust-dialog keys (`lib/spawn.mjs`), typed
+into a terminal it has just opened, before the session is registered — no session id to lock yet,
+as for `fleet spawn`.
 
-- **tmux** (handle = pane id): peek `capture-pane -p -J -t <h> -S -<n>`; send
-  `send-keys -t <h> -l -- <text>` in pieces of at most 512 bytes (a longer burst reaches
-  Claude as a paste, or loses its first ~1 KB), then `send-keys -t <h> Enter` (multi-line text:
-  `load-buffer` + `paste-buffer -p`); keys `send-keys -t <h> <Key>`.
+Peek does **not** go through `fleet peek` (it truncates to terminal width and adds a header).
+`lib/backends.mjs` reads the backends directly:
+
+- **tmux** (handle = pane id): `capture-pane -p -J -t <h> -S -<n>`.
 - **iterm** (handle = iTerm session id): one AppleScript written to a temp file, values passed
-  as argv (never interpolated). Send = `write text … without newline`, 0.2s, `write text ""`
-  (bracketed paste would swallow a trailing newline).
+  as argv (never interpolated): `peek` and `close` only.
 - **unknown** → 409.
 
 ## HTTP API
@@ -169,9 +187,10 @@ JSON everywhere, same origin, no auth. Errors are `{ "error": "message" }`.
 | GET | `/api/fleet` | `?local=1` = this host only | `{ self, hosts: [Host], snapshotAt }` — self first, then peers (`snapshotAt` only on the merged view) |
 | GET | `/api/hosts/:host/sessions/:id/peek` | `?lines=200` (10..2000) | `{ host, id, backend, lines, text, capturedAt }` |
 | GET | `/api/hosts/:host/sessions/:id/messages` | `?limit=60` (1..500) | `{ host, id, status, backend, name, limit, messages: [Message], total, truncated, updatedAt, capturedAt }` |
-| POST | `/api/hosts/:host/sessions/:id/send` | `{ text }` (1..8000 chars, not blank) | `{ ok: true }` |
-| POST | `/api/hosts/:host/sessions/:id/keys` | `{ key }`, one of `Enter`, `Escape`, `Up`, `Down` | `{ ok: true }` |
-| POST | `/api/hosts/:host/sessions/:id/rename` | `{ title }` (trimmed, 1..64 chars, one line) | `{ ok: true, host, id, result, title, from, tmux, message, … }` — the `fleet rename --json` report. **409** `{ error, result: "held", held: "waiting", … }` when the session is waiting on a prompt (nothing typed); 400 bad title; 404 unknown session; 502/504 CLI failure / timeout. Proxied once to a peer like the other session actions |
+| POST | `/api/hosts/:host/sessions/:id/send` | `{ text }` (1..8000 chars, not blank) | `{ ok: true, host, target }` — `fleet send --json`; **409** `{ ok: false, kind: "busy", error }` while another fleet command types into the session (nothing typed); other failures as above |
+| POST | `/api/hosts/:host/sessions/:id/keys` | `{ key }`, one of `Enter`, `Escape`, `Up`, `Down` | `{ ok: true, host, target, keys }` — `fleet keys --json`; 409 `busy` as for send |
+| POST | `/api/hosts/:host/sessions/:id/answer` | `{ toolUseId, answers: [{ options: [index…], text? }] }` (one per question) | the `fleet answer --question … --json` report (`{ ok: true, answered: true, prompt_kind: "question", id, steps, … }`); refusals `{ ok: false, kind, error }` with the status above (nothing typed, except `prompt_changed` (409), `io` and `outcome_uncertain` (502): keys may have gone out, the error says how many) |
+| POST | `/api/hosts/:host/sessions/:id/rename` | `{ title }` (trimmed, 1..64 chars, one line) | `{ ok: true, host, id, result, title, from, tmux, message, … }` — the `fleet rename --json` report. **409** `{ error, result: "held", held: "waiting", … }` when the session is waiting on a prompt, or `{ ok: false, kind: "busy", error }` while another fleet command types into it (nothing typed); 400 bad title; 404 unknown session; 502/504 CLI failure / timeout. Proxied once to a peer like the other session actions |
 | POST | `/api/hosts/:host/spawn` | `{ name?, dir?, prompt?, model?, harness? }` | `{ ok, host, name, dir, tmuxSession, command, trusted, model, harness }` — `harness`: `claude` (default) \| `codex` \| `pi` |
 | GET | `/api/hosts/:host/harnesses` | `?refresh=1` skips the 10 min cache | `{ host, harnesses: [{ id, label, command, installed, models: [{ id, label }] }] }` — `fleet --local harness list --json`; Claude's models are `web.models`; a CLI without `harness` → Claude alone. Proxied once to a peer |
 | POST | `/api/hosts/:host/sessions/:id/kill` | `{}` | `{ ok: true, host, id, name, process, terminal }` |

@@ -80,14 +80,14 @@ member (see [Stacks](#stacks)).
 | --- | --- |
 | `fleet` | `watch` on a terminal; a one-shot `list` when stdout is piped |
 | `fleet list [--json] [-a, --all-hosts]` (alias `ls`) | live sessions: title, status, age, context usage (`ctx 62%`), terminal, cwd. `--json` is an array whose rows all carry `host`; `-a` queries every configured host in parallel. The text view ends with `N dormant (fleet restore)` when a reboot left [dormant sessions](#session-recovery). Every local `list` also records the [snapshot](#session-recovery) |
-| `fleet peek <target> [--lines N]` | what the session's terminal shows now (default 40 lines): a `▼ <title> (<backend>, <status>) — <dir>` header, then each line cut to this terminal's width |
+| `fleet peek <target> [--lines N]` | what the session's terminal shows now (default 40 lines): a `▼ <title> (<backend>, <status>) — <dir>` header, then each line cut to this terminal's width. A pane tmux cannot capture (just closed, or its server gone) is an error (exit 1, tmux's message), never an empty box |
 | `fleet peek <target> --json [--lines N] [--ansi]` | the screen whole, for programs: `{ ok: true, host, target: { session_id, pid }, backend, status, cols, rows, lines: [...], truncated }` — no header, no clipping, the last N lines that have content (trailing blank lines and trailing spaces dropped). tmux: lines it wrapped are joined (`capture-pane -J`), and N counts those logical lines — the capture reaches back into the scrollback until each of the N is whole (up to what tmux still holds), but never more than 2,000 rows: a line longer than that comes back with its start cut and `truncated: true` (otherwise `false`; always `false` for iTerm); `cols`/`rows` are the pane's. iTerm: its visible screen as shown, `cols`/`rows` the session's. Escape sequences are stripped unless `--ansi` (tmux `-e`; iTerm gives none). On failure `{ ok: false, host, kind, error }`, exit 1 — kind `target_not_found`, `target_ambiguous`, `target_invalid`, `backend_unsupported` or `backend_failed`; a command line clap rejects (an unknown flag, wherever `--json` stands) is the same object with kind `usage`, exit 2 |
 | `fleet messages <target> [--json] [--after <cursor> \| --before <cursor>] [--limit N]` | the session's conversation from its transcript: prompts, replies, tool calls (never their output) and questions, oldest first — see [Messages](#messages). Without a cursor the newest `--limit` (default 100, max 500); `--after` everything newer (cheap enough to poll every second); `--before` the `--limit` entries before ("show earlier") |
-| `fleet send <target> <text>` | type text into the session and press Enter (fails while another fleet command types into it) |
-| `fleet keys <target> <key>... [--json]` | press named keys in the session's terminal, in order (80 ms apart), holding the session's lock as `send` and `answer` do: `Escape` (interrupt a turn), `Enter`, `Up`, `Down`, `Left`, `Right`, `Tab`, `BTab` (Shift-Tab), `Space`, `C-c`. Names are tmux's, case-sensitive; any other name is refused (exit 1, kind `invalid_key`) and nothing is pressed. tmux sessions get one `send-keys` per key, iTerm sessions the bytes a terminal sends for the key. **Not atomic:** the first key that fails stops the call — the keys before it stay pressed (nothing can take them back), the rest are not sent, and the error says how many got through (`… — 1 of 3 keys pressed before it`). `--json`: `{ ok: true, host, target: { session_id, pid }, keys: [...] }`, or `{ ok: false, host, kind, error }` (exit 1) — kind `invalid_key`, `target_not_found`, `target_ambiguous`, `target_invalid`, `busy` (another fleet command is typing into the session; nothing is pressed), `backend_unsupported` (no tmux pane or iTerm session to drive) or `backend_failed`; a command line clap rejects is the same object with kind `usage`, exit 2 |
+| `fleet send <target> <text> [--json]` | type text into the session and press Enter, under the session's typing lock: while another fleet command (the web server's included) types into it, it fails at once and sends nothing (kind `busy`). `--json`: `{ ok: true, host, target: { session_id, pid } }`, or `{ ok: false, host, kind, error }` (exit 1) — kind `busy`, `target_not_found`, `target_ambiguous`, `target_invalid`, `backend_unsupported` (no tmux pane or iTerm session to drive), `backend_failed` (tmux or iTerm refused; part of the text may have gone out) or `io` (the lock could not be taken); a command line clap rejects (an unknown flag, a missing text, wherever `--json` stands) is the same object with kind `usage`, exit 2. Text starting with `-` goes after `--` |
+| `fleet keys <target> <key>... [--json]` | press named keys in the session's terminal, in order (80 ms apart), holding the session's lock as `send` and `answer` do: `Escape` (interrupt a turn), `Enter`, `Up`, `Down`, `Left`, `Right`, `Tab`, `BTab` (Shift-Tab), `Space`, `C-c`. Names are tmux's, case-sensitive; any other name is refused (exit 1, kind `invalid_key`) and nothing is pressed. tmux sessions get one `send-keys` per key, iTerm sessions the bytes a terminal sends for the key. **Not atomic:** the first key that fails stops the call — the keys before it stay pressed (nothing can take them back), the rest are not sent, and the error says how many got through (`… — 1 of 3 keys pressed before it`). `--json`: `{ ok: true, host, target: { session_id, pid }, keys: [...] }`, or `{ ok: false, host, kind, error }` (exit 1) — kind `invalid_key`, `target_not_found`, `target_ambiguous`, `target_invalid`, `busy` (another fleet command is typing into the session; nothing is pressed), `backend_unsupported` (no tmux pane or iTerm session to drive) or `backend_failed`; a command line clap rejects (an unknown flag, wherever `--json` stands) is the same object with kind `usage`, exit 2 |
 | `fleet close <id:… \| pid:…> [--json] [--timeout <s>] [--expect-pid <n> --expect-start <t>]` | end a session that is alone in its own tmux session (the layout `spawn` creates): its exit command, then that tmux session is killed; exact targets only, `-n` touches nothing — see [Closing sessions](#closing-sessions) |
 | `fleet answer <target> [--json] [--allow-attached] (--list \| --choice <n> [--prompt <id>] \| --question <tool_use_id> --answers <json>)` | answer the prompt the session waits on by typing what a human would — only while the terminal shows that very prompt, untouched; see [Answering prompts](#answering-prompts) |
-| `fleet rename <target> <title> [--no-tmux-sync] [--force] [--json]` | rename the session's one title: Claude's `/rename` (the source of truth), then its tmux session follows as a slug of it (`Fix Login` → `fix-login`, `-2` on a collision) when the tmux session is that Claude session's own (one window, one pane). A session **waiting on a prompt** is held (exit 1; `--json`: exit 3) — typed keys would be its answer; busy sessions are fine (Claude runs `/rename` mid-turn without disturbing the turn). Codex gets `/rename`, pi `/name`; a busy Codex / pi session is held too (`held: "busy"`) — they would queue the text as a message. `--force` overrides the hold. `--json` prints `{ ok, result: renamed\|sent\|held, session_id, pid, host, from, title, held, tmux: { renamed, from, to, note }, message }` |
+| `fleet rename <target> <title> [--no-tmux-sync] [--force] [--json]` | rename the session's one title: Claude's `/rename` (the source of truth), then its tmux session follows as a slug of it (`Fix Login` → `fix-login`, `-2` on a collision) when the tmux session is that Claude session's own (one window, one pane). A session **waiting on a prompt** is held (exit 1; `--json`: exit 3) — typed keys would be its answer; busy sessions are fine (Claude runs `/rename` mid-turn without disturbing the turn). Codex gets `/rename`, pi `/name`; a busy Codex / pi session is held too (`held: "busy"`) — they would queue the text as a message. `--force` overrides the hold. It types under the session's typing lock (see [Answering prompts](#answering-prompts)): another fleet command typing into the session makes it fail at once (kind `busy`, nothing sent); and, unless forced, the terminal is read again under the lock — a prompt that came up since the lookup holds it as waiting. `--json` prints `{ ok, result: renamed\|sent\|held, session_id, pid, host, from, title, held, tmux: { renamed, from, to, note }, message }`; a failure before that report (`busy`, a target error) is `{ ok: false, host, kind, error }` (exit 1) |
 | `fleet name [<target> \| --all] [--apply] [--refresh] [--no-tmux-sync]` | suggest a name from what the session is doing; only `--apply` sends it (through the same path as `rename`, tmux included). `--all` = every session with a derived (cwd+hash) name. A derived-name session alone in a tmux session somebody named (`fleet new fix-login`) adopts that name (`(tmux)`, no model call) instead of getting a generated one. `--refresh` ignores the cache |
 | `fleet group [-a, --all-hosts] [--json] [--apply] [--refresh] [--consolidate] [--input <file\|->] [--cached]` | sort sessions into work-stream groups (the web Board view) — see [Grouping](#grouping). Reads sessions and asks `claude -p`; never sends anything to a session |
 | `fleet group --rename <group id> --label <l>` / `--move <host/id> (--to <group id> \| --label <l>)` / `--create --label <l>` / `--delete <group id>` | edit the stored groups by hand (the Board's rename / drag'n'drop) — see [Grouping](#grouping) |
@@ -279,7 +279,12 @@ hook output, bookkeeping entries, subagent (sidechain) messages.
   question's full text, its options and descriptions). Types nothing.
 - `--choice <n> [--prompt <id>]`: pick answer `n` of the permission prompt on screen. With
   `--prompt`, only if the screen still shows the prompt `--list` returned (its `id` fingerprints the
-  title, the detail and the answers, so another command's prompt has another).
+  title, the detail and the answers, so another command's prompt has another — the detail as
+  drawn, indentation and blank lines included: two commands that differ only in whitespace are two
+  prompts. Left out: a side frame (a box character at the left edge and one at the end of a line;
+  an indented line keeps its box characters), trailing blanks, and Claude Code's frame rules,
+  which are as wide as the pane — so the frame's width is not part of the id; a line the harness
+  wraps differently after a resize still changes it, and the answer is refused).
 - `--question <tool_use_id> --answers '<json>'`: answer a pending `AskUserQuestion` (Claude Code;
   the id is the `question` entry's `id` in [`fleet messages`](#messages)). It must be the one call
   waiting: an abandoned question, or another asked since (even in the same words), is
@@ -287,21 +292,40 @@ hook output, bookkeeping entries, subagent (sidechain) messages.
   `{ "options": [index…], "text": "…" }` — 0-based option indexes; single-select takes exactly one
   option or a text, multi-select any options and/or a text, at least one; text is one line,
   ≤ 2000 characters, with no control characters or escape sequences. The session must be `waiting`.
+  With two or more questions the answer is checked on the review screen, which joins picks and
+  text with `", "`; an answer it could not tell from another — an option labelled `A, B` against
+  the options `A` and `B`, or text that reads as an option — is refused (`answer_invalid`, nothing
+  typed).
 
 **Exclusive input.** A terminal binds no answer to a prompt id, so the sources of a race are closed
 instead. With a terminal client attached to the session's tmux session — a human who could be typing
 — nothing is typed (`human_attached`) unless `--allow-attached` is given; an iTerm session always
 counts as attached. And a per-session lock (an `flock` under `$FLEET_LOCK_DIR`, else
-`${XDG_RUNTIME_DIR:-cache dir}/fleet/locks`) is held for the whole read → type → verify sequence,
-also by `fleet send`: a second command typing into the same session fails at once (`busy`).
+`${XDG_RUNTIME_DIR:-cache dir}/fleet/locks`) is held for the whole read → type → verify sequence.
+Every fleet command that types into a running session takes the same lock — `send`, `keys`,
+`close` and every rename (`rename`, `name --apply`, `tmux rename`, the dashboard) — and so does the
+web server, which types only through these commands (its send, keys, answer and the operator's
+auto-`/clear`), so a second one fails at once (`busy`) instead of interleaving its keys. Typed
+without it, into a terminal just opened, where no registered session runs yet: `spawn` and
+`restore` (the launch line into a new pane's shell), and the web server's spawn answering the
+agent's first-run "trust this folder" dialog (the session has no id to lock until it is past it).
 
 Nothing is typed unless the terminal shows that very prompt **untouched** at the bottom of the
 visible screen — at most a short footer under its answers and no input box; for a form also every
 tab unanswered, no box ticked, nothing typed, the cursor on the first answer. The same words quoted
 in the conversation, or left in the scrollback, never count. 1000 lines of scrollback are read too,
 only to reach the top of a Claude Code prompt whose command is taller than the window; when even
-that does not reach it — or a rule inside the command makes its frame ambiguous — it is
-`prompt_incomplete` (answer it in the terminal).
+that does not reach it — or the rules at its left edge are not exactly its frame's (a lone or
+extra dashed rule, a dashed pair with no header above it), so the frame cannot be told from a
+command's own lines — it is `prompt_incomplete` (answer it in the terminal). A Codex approval has no
+frame: it is everything between the last conversation item (the line at the left edge above it)
+and its answers, and exactly one line of it may read as its title ("Would you like to …", "Allow
+…"); a command line that reads like one too, or a top out of reach (60 lines), is
+`prompt_incomplete`. That can refuse a harmless prompt: a command or reason that wraps so a line
+starts with `Allow `, `Do you want to` or `Proceed?`, or that says "needs your approval" anywhere,
+is `prompt_incomplete` too (answer it in the terminal). (The column-0 rules are an assumption about how Claude Code draws: the frame
+from column 0, everything inside it padded. A line the terminal wraps to column 0 itself — a width
+it measured wrong — breaks it; only a synthetic Bash layout backs it so far.)
 
 No key is typed blind:
 
@@ -316,10 +340,35 @@ No key is typed blind:
   many keys went out).
 - After the last key the screen is read again: the prompt must be gone, and for 300 ms no prompt
   with the same answers may stand in its place (a queued prompt the key may have answered instead).
-  Only then is it `answered: true`; otherwise `outcome_uncertain`, with what is on screen now.
+  Only then is it `answered: true`; otherwise `outcome_uncertain`, with what is on screen now. A
+  terminal that can no longer be read (its pane or tmux gone) proves nothing: `outcome_uncertain`
+  after the last key, `io` (saying how many keys went out) before it.
 
-What remains, with no client attached and the lock held: something outside fleet writing to the
-pane in the milliseconds between the last read and the key.
+**What remains: the approval race.** A terminal has no "answer prompt X" operation — a key goes to
+whatever is on screen when it arrives — so nothing can make the key conditional on the prompt
+read a moment earlier. The lock keeps every other fleet command (and the web server) out, and
+attached clients are checked once, before the first key. Not covered:
+
+- a client that **attaches after** that check, answers the prompt (A) and leaves the next one (B)
+  — with the same answers — on screen in the moments before fleet's key: the key then answers B
+  (a permission prompt with a one-key answer has the whole read → key window; a cursor answer is
+  checked again before each key, so only the last gap);
+- anything else writing to the pane (`tmux send-keys` from another tool, an iTerm script) in that
+  same window.
+
+**What the post-key check detects, exactly:** a prompt with the same answers still on screen
+within 300 ms of the key (or the read prompt not gone within 1.5 s) is `outcome_uncertain`.
+That is the case where *another* prompt follows the one the key answered — usually fleet's key
+landed on A and B came up behind it, so the report may be a false alarm. **The plain two-prompt
+case above is not detected:** the key answers B, B leaves the screen, nothing follows, and the
+result is `answered: true` — for the wrong prompt. With identical commands the two prompts even
+have the same `id`, so `--prompt` cannot tell them apart either. fleet has no cheap, sound way to
+detect it: the screen keeps no record of which prompt a key answered, Claude Code's transcript does
+not tie a prompt on screen to its tool call, and Codex records the call that asked (an escalated
+command, with its justification) but not the decision. Nothing
+can undo it either. Making it exclusive would mean taking the terminal away from its user
+(read-only or locked clients, a moved pane) for every answer, which fleet does not do. Answer only
+sessions nobody is about to drive by hand, and treat `outcome_uncertain` as "look at it now".
 
 `-n` / `--dry-run` (and MCP `dry_run: true`) does every check and types nothing:
 `{ ok: true, answered: false, dry_run: true, prompt_kind, …, steps }`.
@@ -1038,7 +1087,7 @@ fleet mcp --http [--bind 127.0.0.1] [--port 7778] --token-file ~/.config/fleet/m
 | `FLEET_SNAPSHOT` | the [session-recovery](#session-recovery) snapshot (default `${XDG_STATE_HOME:-~/.local/state}/fleet/snapshot.json`) |
 | `FLEET_BOOT_ID` | override this boot's id (tests; a different value simulates a reboot) |
 | `FLEET_GROUPS_STATE` | `fleet group` state file (default `${XDG_STATE_HOME:-~/.local/state}/fleet/groups.json`) |
-| `FLEET_LOCK_DIR` | where the per-session typing locks of `fleet answer` / `fleet send`, and the `spawn --resume` reservations, live (default `${XDG_RUNTIME_DIR:-cache dir}/fleet/locks`) |
+| `FLEET_LOCK_DIR` | where the per-session typing locks (`answer`, `send`, `keys`, `close`, renames), and the `spawn --resume` reservations, live (default `${XDG_RUNTIME_DIR:-cache dir}/fleet/locks`) |
 | `FLEET_FIXTURE=<sessions.json>` | read a canned fleet from a file instead of the live registry (demo/tests; backends are inert) |
 | `NO_COLOR=1` | no colors |
 | `FLEET_NO_TTY=1` | never prompt on the terminal: confirmations fail as if there were none (set by `fleet mcp`) |

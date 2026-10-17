@@ -152,7 +152,7 @@ test('operator: stamp marks its row; tick clears an operator idle for an hour, o
     config,
     fleet: { localHost: async () => ({ ok: true, sessions }) },
     spawner: {},
-    backend: { send: async (s, text) => void sent.push([s.session_id, text]) },
+    cli: { send: async ({ target, text }) => void sent.push([target, text]) },
     now: () => t0,
   });
   await operator.prepare();
@@ -166,7 +166,7 @@ test('operator: stamp marks its row; tick clears an operator idle for an hour, o
   assert.equal(await operator.tick(), null, 'busy');
   op.status = 'idle';
   assert.equal(await operator.tick(), 'op-0000-1111');
-  assert.deepEqual(sent, [['op-0000-1111', '/clear']]);
+  assert.deepEqual(sent, [['id:op-0000-1111', '/clear']]);
   // Claude Code starts a new session: no context until it is used.
   Object.assign(op, { session_id: 'op-2222', context: null, updated_at: t0 });
   t0 += 2 * 3600 * 1000;

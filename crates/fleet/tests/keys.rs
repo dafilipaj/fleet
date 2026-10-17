@@ -195,3 +195,23 @@ fn keys_need_at_least_one_key() {
         .unwrap();
     assert_eq!(out.status.code(), Some(2), "clap usage error");
 }
+
+// `fleet send --json` shares `keys`'s object: the target, and the host it ran on.
+#[test]
+fn send_json_says_where_the_text_went() {
+    let Some((f, pid, rec)) = recorder() else {
+        return;
+    };
+    let out = f.fleet(&["send", "--json", &format!("pid:{pid}"), "hi"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(|k| k.as_str()).collect();
+    keys.sort();
+    assert_eq!(keys, ["host", "ok", "target"], "{v}");
+    assert_eq!(v["ok"], true, "{v}");
+    assert!(v["host"].as_str().is_some_and(|h| !h.is_empty()), "{v}");
+    assert_eq!(v["target"]["pid"], pid);
+    assert_eq!(v["target"]["session_id"], SID);
+    f.wait_for("the text and its Enter", || received(&rec).ends_with(b"\r"));
+    assert_eq!(received(&rec), b"hi\r");
+}

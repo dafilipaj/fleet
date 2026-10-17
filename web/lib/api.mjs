@@ -4,8 +4,8 @@
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { HttpError, readJsonBody } from './http.mjs';
-import { clampLines, findSession, resolveHost, sleep as defaultSleep, validateKey, validateSendText, validateTitle } from './util.mjs';
-import { answerSteps, screenShowsPrompt, validateAnswer } from './questions.mjs';
+import { clampLines, findSession, resolveHost, validateKey, validateSendText, validateTitle } from './util.mjs';
+import { targetOf } from './fleet-cli.mjs';
 import { resolveAllowedDir, validateSpawnRequest } from './spawn.mjs';
 import {
   fetchPeerHost as defaultFetchPeerHost,
@@ -104,6 +104,12 @@ const HARNESSES_TTL_MS = 10 * 60 * 1000;
 const DORMANT_ROUTE = /^\/api\/hosts\/([^/]+)\/dormant(?:\/(restore|forget))?$/;
 /** A restore types launch lines into new tmux panes; `--all` may bring back many sessions. */
 const DORMANT_PROXY_MS = 6 * 60 * 1000;
+/**
+ * A typing action on a peer: longer than its CLI may take there (lib/fleet-cli.mjs: answer 60 s,
+ * send 30 s, keys and rename 20 s) plus the busy retry, so the proxy never gives up (504) while the
+ * peer still types. Waiting behind the peer's other requests into the same session can add more.
+ */
+const TYPING_PROXY_MS = { answer: 75 * 1000, send: 45 * 1000, keys: 30 * 1000, rename: 30 * 1000 };
 /** Restored sessions register in `fleet list` within seconds: refresh the list and stacks then. */
 const DORMANT_SETTLE_MS = [3000, 10000];
 
@@ -119,11 +125,11 @@ export const DEFAULT_QUICK_REPLIES = [
  * @param {object} deps
  *   config      normalized config (lib/config.mjs)
  *   fleet       lib/fleet.mjs instance (local discovery)
- *   backend     lib/backends.mjs instance (peek/send/keys)
+ *   backend     lib/backends.mjs instance (peek: reading the screen; typing goes through `cli`)
  *   transcripts lib/transcript.mjs reader
  *   spawner     lib/spawn.mjs spawner
  *   killer      lib/kill.mjs killer (kill action; absent → 501)
- *   cli         lib/fleet-cli.mjs instance — `rename`, `usage`, `prs`, `prCheckout` (absent → 501)
+ *   cli         lib/fleet-cli.mjs instance — `send`, `keys`, `answer`, `rename`, `usage`, `prs`, `prCheckout` (absent → 501)
  *   autoNamer   lib/autoname.mjs instance (autoname route + health; absent → 501)
  *   spawnNamer  lib/autoname.mjs#createSpawnNamer — a targeted naming pass after an unnamed
  *               spawn with a first prompt (only when web.autoName is enabled; absent → none)
@@ -149,6 +155,28 @@ export const DEFAULT_QUICK_REPLIES = [
  * @returns {(req, url) => Promise<{status, body}>}  throws HttpError / BackendError.
  *   The function carries `.refreshFleet()` and `.stop()` (clears the background refresh).
  */
+/** The HTTP status of a typing command's failure, by the CLI's `kind`; anything else is 502. */
+const TYPING_STATUS = {
+  usage: 400,
+  answer_invalid: 400,
+  invalid_key: 400,
+  target_invalid: 400,
+  target_not_found: 404,
+  question_not_found: 404,
+  transcript_not_found: 404,
+  busy: 409,
+  human_attached: 409,
+  target_ambiguous: 409,
+  not_waiting: 409,
+  question_answered: 409,
+  question_not_active: 409,
+  prompt_not_on_screen: 409,
+  prompt_incomplete: 409,
+  prompt_changed: 409,
+  backend_unsupported: 409,
+  harness_unsupported: 409,
+};
+
 export function createApi({
   config,
   fleet,
@@ -184,13 +212,12 @@ export function createApi({
   streamFromPeer = defaultStreamFromPeer,
   peerFleetTimeoutMs = 6000,
   peerProxyTimeoutMs = 20000,
+  typingBusyRetryMs = 2000,
   peerUploadTimeoutMs = 15 * 60 * 1000,
   warmFleet = true,
   fleetRefreshMs = 3000,
   fleetIdleAfterMs = 90 * 1000,
   logError = () => {},
-  sleep = defaultSleep,
-  answerKeyGapMs = 80,
 }) {
   // Each host advertises whether it has a notes explorer (like its spawnDirs).
   const notesInfo = () => (notes ? { notes: { name: notes.name ?? null } } : {});
@@ -307,12 +334,16 @@ export function createApi({
       const check = validateTitle(body.title);
       if (!check.ok) throw new HttpError(check.error, 400);
       const session = await resolveLocalSession(id);
-      // The session id, never a fuzzy name: `fleet rename` types into a live agent.
-      const target = session.session_id && !session.session_id.startsWith('pid-') ? session.session_id : String(session.pid);
+      // The exact target, never a fuzzy name: `fleet rename` types into a live agent.
       let report;
       try {
-        report = await cli.rename({ target, title: check.title });
+        report = await oneAtATime(session, () => cli.rename({ target: targetOf(session), title: check.title }));
       } catch (err) {
+        if (err?.kind && !err.timedOut) {
+          // `busy` and the other refusals the CLI names: their status, as for send and keys.
+          const error = `rename failed: ${err.message}`;
+          return { status: TYPING_STATUS[err.kind] ?? 502, body: { host: config.self, id: session.session_id, ...err.report, ok: false, kind: err.kind, error } };
+        }
         throw new HttpError(`rename failed: ${err?.message ?? err}`, err?.timedOut ? 504 : 502);
       }
       if (report.result === 'held') {
@@ -327,8 +358,7 @@ export function createApi({
       const check = validateSendText(body.text);
       if (!check.ok) throw new HttpError(check.error, 400);
       const session = await resolveLocalSession(id);
-      await backend.send(session, check.text);
-      return { status: 200, body: { ok: true } };
+      return typeThroughCli('send', session, () => cli.send({ target: targetOf(session), text: check.text }), { retryBusy: true });
     }
 
     if (action === 'answer') return answerQuestion(id, body);
@@ -337,37 +367,76 @@ export function createApi({
     const check = validateKey(body.key);
     if (!check.ok) throw new HttpError(check.error, 400);
     const session = await resolveLocalSession(id);
-    await backend.keys(session, check.key);
-    return { status: 200, body: { ok: true } };
+    return typeThroughCli('keys', session, () => cli.keys({ target: targetOf(session), keys: [check.key] }), { retryBusy: true });
   }
 
   /**
-   * Answer the session's pending AskUserQuestion prompt by typing what a human would. Only the
-   * prompt named by `toolUseId`, only while it is unanswered, the session waits, and the
-   * terminal shows it untouched — anything else is a 409 and nothing is typed.
+   * Run `fn` after every earlier typing request of this server into the same session has
+   * finished: the CLI's lock refuses a second command at once (`busy`), so requests arriving
+   * together (the outbox's keepalive sends on `pagehide`, quick key taps) would otherwise
+   * refuse each other, and a refused message would be lost.
+   */
+  const typingQueues = new Map();
+  function oneAtATime(session, fn) {
+    const key = targetOf(session);
+    const run = (typingQueues.get(key) ?? Promise.resolve()).then(fn);
+    const tail = run.then(
+      () => {},
+      () => {},
+    );
+    typingQueues.set(key, tail);
+    tail.then(() => {
+      if (typingQueues.get(key) === tail) typingQueues.delete(key);
+    });
+    return run;
+  }
+
+  /**
+   * Type into a session through the CLI (lib/fleet-cli.mjs), never straight into tmux: the CLI
+   * holds the session's typing lock — the one every fleet command takes — so these keys never
+   * interleave with another command's (an agent's `fleet answer`, a rename). This server's own
+   * requests into one session go one at a time ({@link oneAtATime}). With `retryBusy` (send,
+   * keys — never an answer, which checks the screen it saw), `busy` from a command outside this
+   * server is retried for up to `typingBusyRetryMs`. A failure the CLI reports keeps its `kind`
+   * (`busy`: another command is still typing there; nothing was typed — the UI shows it failed).
+   */
+  async function typeThroughCli(what, session, call, { retryBusy = false } = {}) {
+    if (typeof cli?.[what] !== 'function') throw new HttpError(`${what} is not available on this server`, 501);
+    let report;
+    try {
+      report = await oneAtATime(session, async () => {
+        const until = Date.now() + (retryBusy ? typingBusyRetryMs : 0);
+        for (let wait = 100; ; wait = Math.min(wait * 2, 500)) {
+          try {
+            return await call();
+          } catch (err) {
+            if (err?.kind !== 'busy' || Date.now() + wait > until) throw err;
+            await new Promise((r) => setTimeout(r, wait));
+          }
+        }
+      });
+    } catch (err) {
+      if (err?.timedOut) throw new HttpError(`${what} failed: ${err.message}`, 504);
+      if (!err?.kind) throw new HttpError(`${what} failed: ${err?.message ?? err}`, 502);
+      return { status: TYPING_STATUS[err.kind] ?? 502, body: { ...err.report, ok: false, kind: err.kind, error: err.message } };
+    }
+    return { status: 200, body: { ...report, ok: true } };
+  }
+
+  /**
+   * Answer the session's pending AskUserQuestion prompt by typing what a human would, through
+   * `fleet answer --question` (docs/cli.md → Answering prompts): only the prompt named by
+   * `toolUseId`, only while it is unanswered, the session waits and the terminal shows it
+   * untouched, every key checked on screen — anything else types nothing (409, or 400/404), except
+   * `prompt_changed` (409), `io` and `outcome_uncertain` (502), which may come after keys went out.
    */
   async function answerQuestion(id, body) {
     const session = await resolveLocalSession(id);
     const toolUseId = typeof body.toolUseId === 'string' ? body.toolUseId : '';
     if (!toolUseId) throw new HttpError('toolUseId is required', 400);
-    const result = await transcripts.messages(session, 500);
-    const prompt = result?.messages.find((m) => m.kind === 'question' && m.id === toolUseId);
-    if (!prompt) throw new HttpError('no such question in this session', 404);
-    if (prompt.answers || prompt.declined) throw new HttpError('this question has already been answered', 409);
-    if (session.status !== 'waiting') throw new HttpError('the session is not waiting on a question', 409);
-    const check = validateAnswer(body, prompt.questions);
-    if (!check.ok) throw new HttpError(check.error, 400);
-    const screen = await backend.peek(session, 80);
-    if (!screenShowsPrompt(screen, prompt.questions)) {
-      throw new HttpError('the terminal is not showing this question untouched — answer it there', 409);
-    }
-    for (const step of answerSteps(prompt.questions, check.answers)) {
-      if (step.text) await backend.type(session, step.text);
-      else await backend.keys(session, step.key);
-      await sleep(answerKeyGapMs);
-    }
+    const result = await typeThroughCli('answer', session, () => cli.answer({ target: targetOf(session), question: toolUseId, answers: body.answers }));
     refreshFleet();
-    return { status: 200, body: { ok: true } };
+    return result;
   }
 
   async function localSpawn(req) {
@@ -680,6 +749,7 @@ export function createApi({
         req,
         url,
         host: decodeURIComponent(rawHost),
+        timeoutMs: TYPING_PROXY_MS[action] ?? peerProxyTimeoutMs,
         local: () => localSessionAction({ action, id, url, req }),
       });
     }

@@ -322,6 +322,14 @@ impl Hold {
     }
 }
 
+/// Does the screen end in a prompt — a permission prompt (whole or not) or a question form —
+/// whose answer typed text would be?
+pub fn shows_prompt(screen: &str, harness: crate::core::harness::Harness) -> bool {
+    use crate::core::prompt::{self, PromptRead};
+    !matches!(prompt::permission_prompt(screen, harness), PromptRead::None)
+        || prompt::is_question_form(screen)
+}
+
 /// What [`apply_rename`] did.
 #[derive(Debug)]
 pub enum RenameOutcome {
@@ -348,13 +356,30 @@ impl RenameOutcome {
 /// `fleet tmux rename` of a single-Claude session, the dashboard's rename buffer
 /// and the web UI (through `fleet rename --json`) all come through here, so the
 /// "never type into a live turn" rule can't be forgotten in one of them.
+///
+/// It types under the session's lock (see [`crate::core::lock`]), like every other command
+/// that types into a session: `/rename …` and its Enter never land between the keys of an
+/// answer. And under the lock, unless forced, the terminal is read once more: a prompt that
+/// came up since the session was looked up holds the rename as a waiting session would.
 pub fn apply_rename(s: &Session, title: &str, o: RenameOpts) -> Result<RenameOutcome> {
     if !o.force
         && let Some(h) = hold(s)
     {
         return Ok(RenameOutcome::Held(h, h.message(s)));
     }
+    let lock = crate::core::lock::for_typing(s).map_err(|e| {
+        let kind = match e {
+            crate::core::lock::LockError::Busy => "busy",
+            crate::core::lock::LockError::Io(_) => "io",
+        };
+        Error::tagged(kind, format!("{e}; nothing sent"))
+    })?;
+    if !o.force && lock.is_some() && shows_prompt(&backend::peek(s)?, s.harness) {
+        let h = Hold::Waiting;
+        return Ok(RenameOutcome::Held(h, h.message(s)));
+    }
     backend::send(s, &s.harness.rename_command(title))?;
+    drop(lock);
     if !o.sync_tmux {
         return Ok(RenameOutcome::Sent(None));
     }

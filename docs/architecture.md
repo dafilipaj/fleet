@@ -84,8 +84,10 @@ Every machine runs the same `server.mjs`. It:
 - serves the static UI, installable as a PWA: the React app built to `web/ui/dist/`
   (`fleet web build`; until then `/` is a "not built" placeholder);
 - exposes **its own** sessions, discovered with `fleet list --json` (cached ~2 s);
-- drives its own backends directly for peek/send/keys (it needs untruncated, header-free output —
-  which the CLI now also gives, as `fleet peek --json` and `fleet keys`);
+- reads its own sessions' screens directly (peek: it needs untruncated, header-free output), but
+  types into them only through the CLI — `fleet send`, `fleet keys`, `fleet answer --question`,
+  `fleet rename`, all `--json` — so every key it sends goes under the session's typing lock
+  (`core::lock`), the one every fleet command takes; a `busy` lock is a 409 with `kind: "busy"`;
 - reads chat transcripts from `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`;
 - for the whole-fleet view, fetches each peer's local list over HTTP and merges.
 
@@ -272,6 +274,11 @@ One title per session, one source of truth (`core::title`):
   Nothing is queued by fleet — a held rename is refused
   with a message and retried by the caller. Known gap: text half-typed into the session's prompt
   box would be prefixed to `/rename`.
+- **Under the typing lock**: every rename types through `title::apply_rename`, which takes the
+  session's typing lock (`core::lock`) first: another fleet command typing there (an answer's keys)
+  makes it fail at once, nothing sent (kind `busy`; `fleet rename --json` prints it as one object).
+  Holding the lock, and unless forced, it reads the terminal once more: a permission prompt or
+  question form that came up since the session was looked up holds the rename as `waiting`.
 
 ## JSON contracts
 
@@ -463,15 +470,35 @@ answered tabs; for the final Enter the whole review). `core::lock` is the per-se
 - A capture is the scrollback, a mark, then the visible screen. A prompt is live only when its
   numbered answers are on the visible screen and end it (≤ 4 footer lines after them, no input
   box); the scrollback only extends a prompt upward.
-- Claude Code's permission prompt is framed: a solid rule above it, dashed rules in pairs inside
-  setting off the command; everything in the frame is its detail. No frame in the capture, or an odd
-  number of dashed rules between the rule found and the title (that rule is inside the command):
-  incomplete. Codex's has no frame: its detail is what lies between the title and the answers. The
-  `id` is `p1.<FNV-1a of title, detail and answers>`.
+- Claude Code's permission prompt is framed: a solid rule above it, then a header, then
+  optionally one dashed pair setting off the command; everything in the frame is its detail. The
+  frame's rules are drawn from column 0 while everything inside it is padded, so a rule-like line
+  of the command (indented) is content, never the frame. No frame in the capture, or column-0
+  rules between the top (the nearest solid one) and the title that are not exactly that shape (a
+  lone or third dashed rule, a pair with no header above it): incomplete. **Assumption:** Claude
+  Code pads every line inside the frame. Only a synthetic Bash fixture backs it (no captured Edit,
+  Write, MCP or plan-approval layout), and a terminal that autowraps a line Ink measured narrower
+  than it draws (emoji, ZWJ, ambiguous-width characters) puts the overflow at column 0, where a
+  crafted command could forge a frame. Binding the identity to the pending `tool_use` in the
+  transcript, with the screen only confirming that the prompt is up, would remove it; not done.
+- Codex's approval has no frame, and its title, command and reason share one indent. The prompt
+  is everything between the last line drawn from column 0 above the answers (the last conversation
+  item, `•` / `›`) and the answers; exactly one line of it may read as a title, else (a command line
+  like `Allow …`) incomplete, and a top out of reach (60 lines) is incomplete too. Its detail is
+  that whole span but the title.
+- The `id` is `p2.<FNV-1a of the title, every line of the detail as drawn (indentation, blank and
+  rule-like lines kept; a side frame — a box character at the left edge and one at the end; an
+  indented line keeps its box characters — trailing blanks and Claude Code's frame rules, as wide
+  as the pane, dropped), and the answers>` — whitespace is part of a command, the frame's width is
+  not (a line wrapped differently after a resize still changes the id). (`p1.` ids hashed trimmed lines; they no longer match.)
 - A question form is parsed whole (tabs with ☐/☒, the active question, rows with checkboxes and
   descriptions, "Type something", Submit/Next, "Chat about this") and matched against the
   transcript's one active question; the review screen (`● question` / `→ answer`, multi-select picks
-  and typed text joined with `", "`, wrapped lines rejoined at a space) is compared exactly.
+  and typed text joined with `", "`, wrapped lines rejoined at a space) is compared exactly. Since
+  that join is ambiguous (an option labelled `A, B` vs the options `A` and `B`), an answer to a
+  multi-question form whose review text another choice would also produce is refused up front
+  (`answer_invalid`).
+- A capture tmux reports as failed (pane or server gone) is an error, never an empty screen.
 
 ### `fleet group --json`
 
@@ -506,10 +533,10 @@ JSON over HTTP, errors as `{ "error": "..." }`. At a high level:
 | GET | `/api/fleet[?local=1]` | `{ self, hosts: [{ name, ok, error?, sessions, spawnDirs, notes?, stacks? }], snapshotAt }` — `stacks`: that host's [session stacks](#session-stacks), compact (`{ id, label, host, members: [{ session, host, live }] }`), from which the merged view stamps `stack: { id, label, host }` on the rows of members running on *other* hosts; sessions are `list --json` objects + `host` (a Codex session with no transcript yet gets `session_id: "pid-<pid>"` until it has one) (`title` capped at 300 chars) + `editorUrl` (the "Open in editor" link for its cwd, built by the server that answered — see [Session briefs](#session-briefs)); the merged view is a warm background-refreshed snapshot |
 | GET | `/api/hosts/:host/sessions/:id/peek?lines=N` | plain-text screen |
 | GET | `/api/hosts/:host/sessions/:id/messages?limit=N` | conversation (no tool calls) from the transcript; an AskUserQuestion call is a message of `kind: "question"` with `id` (the tool use id), `questions` (`[{ question, header, multiSelect, options: [{ label, description }] }]`), `text` (a markdown rendering) and, once it has a result, `answers` (per question, the answer string) or `declined: true`; a prompt typed while Claude works and still in its queue is a `kind: "user"` message with `queued: true`, always last (prompts it took mid-turn show where it took them) |
-| POST | `/api/hosts/:host/sessions/:id/send` | `{ text }` → typed + Enter |
-| POST | `/api/hosts/:host/sessions/:id/keys` | `{ key }` (Enter, Escape, …) |
-| POST | `/api/hosts/:host/sessions/:id/answer` | `{ toolUseId, answers: [{ options: [index…], text? }] }` (one per question) → types the arrows/Enter/text a human would into the pending AskUserQuestion prompt. 400 bad answer (single-select: one option or text; multi-select: at least one), 404 unknown question, **409** (nothing typed) when it is already answered, the session isn't waiting, or the terminal isn't showing that prompt untouched (first question, cursor on option 1) |
-| POST | `/api/hosts/:host/sessions/:id/rename` | `{ title }` (1–64 chars, one line) → `fleet rename <session_id> <title> --json`; 200 with the report, **409** when held (waiting on a prompt, or a busy Codex / pi session; nothing typed), 400 bad title, 502 CLI failure |
+| POST | `/api/hosts/:host/sessions/:id/send` | `{ text }` → typed + Enter, by `fleet send --json` (under the session's typing lock: **409** `kind: "busy"` while another fleet command types there, nothing sent) |
+| POST | `/api/hosts/:host/sessions/:id/keys` | `{ key }` (Enter, Escape, …), by `fleet keys --json` (409 `busy` likewise) |
+| POST | `/api/hosts/:host/sessions/:id/answer` | `{ toolUseId, answers: [{ options: [index…], text? }] }` (one per question) → `fleet answer --question <toolUseId> --answers <json> --json --allow-attached`: the CLI's checked answer (docs/cli.md → Answering prompts), its report passed through. Refusals keep the CLI's `kind`: 400 (`answer_invalid`), 404 (`question_not_found`), **409** (nothing typed: `busy`, `question_answered`, `question_not_active`, `not_waiting`, `prompt_not_on_screen`, …; except `prompt_changed`, which may come after keys went out), 502 `outcome_uncertain` and `io` (keys may have gone out: the error says how many). `--allow-attached`: the request is itself a person's answer (or their operator's), made from the app |
+| POST | `/api/hosts/:host/sessions/:id/rename` | `{ title }` (1–64 chars, one line) → `fleet rename id:<session_id> <title> --json`; 200 with the report, **409** when held (waiting on a prompt, or a busy Codex / pi session; nothing typed) or `busy` (another fleet command types into the session), 400 bad title, 502 CLI failure |
 | POST | `/api/hosts/:host/spawn` | `{ name?, dir?, prompt?, model?, harness? }` → new tmux session running that [harness](#other-harnesses) (`claude` default, `codex`, `pi`; its launcher is config `claude` / `harnesses.<id>.command`; `-n <name>` for Claude and pi only); `dir` must resolve inside one of the host's `spawnDirs` (else 400); a prompt too long to type (the launch line over ~900 bytes) is written to `~/.claude/fleet-prompts/` and passed as `"$(cat <file>)"`; a first-run trust prompt is accepted (Claude: Down + Enter; Codex: Enter on "Trust and continue"); when the agent never starts (the pane is still just a shell after ~10s) the tmux session is killed and the answer is 502 with the pane's last lines |
 | GET | `/api/hosts/:host/harnesses[?refresh=1]` | `{ host, harnesses: [{ id, label, command, installed, models }] }` — `fleet --local harness list --json`, cached 10 min; Claude's `models` are `web.models`. An older CLI answers Claude alone |
 | GET | `/api/hosts/:host/usage[?refresh=1]` | that host's usage limits (Claude's subscription, plus Codex in `providers`): `fleet usage --json` + `host` (see [Subscription usage](#subscription-usage)); 502 with the CLI's reason (no login, endpoint down with nothing cached) |
