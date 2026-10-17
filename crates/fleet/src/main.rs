@@ -2178,11 +2178,17 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
     Ok(0)
 }
 
-/// Commands whose `--json` failures are one `{ ok: false, kind, error }` object — usage
+/// Commands whose `--json` failures are one `{ ok: false, host, kind, error }` object — usage
 /// errors clap catches included — and the exit code such a usage error gets: clap's 2, but
-/// `spawn`'s failures (as `docs/cli.md` promises them) all exit 1.
-const JSON_FAILURE_COMMANDS: &[(&str, i32)] =
-    &[("messages", 2), ("answer", 2), ("spawn", 1), ("close", 1)];
+/// `spawn`'s and `close`'s failures (as `docs/cli.md` promises them) all exit 1.
+const JSON_FAILURE_COMMANDS: &[(&str, i32)] = &[
+    ("messages", 2),
+    ("answer", 2),
+    ("peek", 2),
+    ("keys", 2),
+    ("spawn", 1),
+    ("close", 1),
+];
 
 /// The subcommand of [`JSON_FAILURE_COMMANDS`] the command line names with `--json`, read by
 /// clap itself with the error set aside — global flags in any spelling (`-nH host`,
@@ -2240,13 +2246,24 @@ fn json_failure_command_in(mut args: Vec<std::ffi::OsString>) -> Option<String> 
         let flag = bad
             .split_once(['=', ' '])
             .map_or(bad.as_str(), |(flag, _)| flag);
+        // A short flag clap names alone (`-x`) may stand in a cluster (`-xy`, `-nx`): that
+        // whole argument goes.
+        let short = flag
+            .strip_prefix('-')
+            .filter(|c| c.chars().count() == 1 && *c != "-")
+            .and_then(|c| c.chars().next());
         let Some(at) = args
             .iter()
             .skip(1)
             .take_while(|a| *a != "--")
             .position(|a| {
                 a.to_str().is_some_and(|a| {
-                    a == flag || a.strip_prefix(flag).is_some_and(|v| v.starts_with('='))
+                    a == flag
+                        || a.strip_prefix(flag).is_some_and(|v| v.starts_with('='))
+                        || short.is_some_and(|c| {
+                            a.strip_prefix('-')
+                                .is_some_and(|rest| !rest.starts_with('-') && rest.contains(c))
+                        })
                 })
             })
         else {
@@ -2300,10 +2317,11 @@ fn parse_failure(e: clap::Error) -> ! {
             .iter()
             .find(|(c, _)| *c == cmd)
             .map_or(2, |(_, code)| *code);
+        let host = commands::host_label();
         let v = if cmd == "spawn" {
-            commands::spawn_error_json(&Error::tagged("usage", first), &commands::host_label())
+            commands::spawn_error_json(&Error::tagged("usage", first), &host)
         } else {
-            serde_json::json!({ "ok": false, "kind": "usage", "error": first })
+            serde_json::json!({ "ok": false, "host": host, "kind": "usage", "error": first })
         };
         println!("{v}");
         eprint!("{rendered}");

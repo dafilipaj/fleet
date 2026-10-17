@@ -18,13 +18,36 @@ use serde_json::Value;
 /// `quits` it exits on `/quit` + Enter (Codex's exit command) only. In mode
 /// `escexits` it exits on Escape instead, leaving behind a child that logs whatever reaches
 /// the terminal after it to `<log>.after` — as the shell a real agent leaves would read it.
+/// In mode `edits` it opens an "editor" at once: a child reading its terminal, in the
+/// agent's own process group, as Claude Code's Ctrl-G editor is (`<log>.editor` holds its
+/// pid). `editpg` gives that editor a process group of its own, puts it in front and waits
+/// for it; `exitedits` opens it on `/exit` instead (and does not exit). `helper` starts a
+/// child in its own process group that does not read the terminal (its stdin `/dev/null`,
+/// as an MCP server's is not the terminal either; `<log>.editor` holds its pid), then acts as
+/// `exits`.
 const AGENT: &str = r#"
-use strict; use Time::HiRes qw(time sleep);
+use strict; use Time::HiRes qw(time sleep); use POSIX ();
 my ($log, $mode, $sessions, $tmux, $pidfile) = @ARGV;
 my $reg = "$sessions/$$.json";
 system("stty raw -echo");
 if ($pidfile) { open(my $p, ">", "$pidfile.tmp") or die; print $p $$; close $p; rename("$pidfile.tmp", $pidfile); }
 open(my $f, ">", $log) or die; select((select($f), $| = 1)[0]);
+sub editor {
+  my ($own) = @_;
+  my $k = fork();
+  if ($k == 0) { POSIX::setpgid(0, 0) if $own; exec("sleep", "300") or die; }
+  if ($own) { POSIX::setpgid($k, $k); $SIG{TTOU} = "IGNORE"; POSIX::tcsetpgrp(0, $k); }
+  open(my $e, ">", "$log.editor.tmp") or die; print $e $k; close $e; rename("$log.editor.tmp", "$log.editor");
+  return $k;
+}
+editor(0) if $mode eq "edits";
+if ($mode eq "editpg") { my $k = editor(1); waitpid($k, 0); }
+if ($mode eq "helper") {
+  my $k = fork();
+  if ($k == 0) { open(STDIN, "<", "/dev/null"); exec("sleep", "300") or die; }
+  open(my $e, ">", "$log.editor.tmp") or die; print $e $k; close $e; rename("$log.editor.tmp", "$log.editor");
+  $mode = "exits";
+}
 my $seen = "";
 while (sysread(STDIN, my $b, 64)) {
   printf $f "%.4f %s\n", time, unpack("H*", $b);
@@ -48,9 +71,40 @@ while (sysread(STDIN, my $b, 64)) {
   if ($seen =~ m{/exit\r}) {
     $seen = "";
     exit 0 if $mode eq "exits";
+    editor(0) if $mode eq "exitedits";
     system($tmux, "split-window", "-d", "-t", $ENV{TMUX_PANE}, "sleep 60") if $mode eq "splits";
   }
 }
+"#;
+
+/// A shell with job control, as far as `close` can tell: it starts the agent (`$agent`, by
+/// `/bin/sh`) in a process group of its own and gives it the terminal; once `$flag` exists it
+/// gives the terminal to a new job (`sleep`, its pid in `$flag.job`) or, for `shell`, takes
+/// it back itself (and writes `$flag.job` empty). For `stopped` it starts a job that stops at
+/// once (as `vim`, Ctrl-Z, `fg %1` leaves it), the agent still in front.
+const JOB_SHELL: &str = r#"
+use strict; use Time::HiRes qw(sleep); use POSIX ();
+my ($agent, $flag, $front) = @ARGV;
+$SIG{TTOU} = "IGNORE";
+my $a = fork();
+if ($a == 0) { POSIX::setpgid(0, 0); exec("/bin/sh", "-c", "exec $agent") or die; }
+POSIX::setpgid($a, $a); POSIX::tcsetpgrp(0, $a);
+sleep 0.05 until -e $flag;
+my $j = "";
+if ($front eq "stopped") {
+  $j = fork();
+  if ($j == 0) { POSIX::setpgid(0, 0); kill("STOP", $$); exec("sleep", "300") or die; }
+  POSIX::setpgid($j, $j);
+  sleep 0.02 until waitpid($j, POSIX::WNOHANG | POSIX::WUNTRACED) == $j;
+} elsif ($front eq "job") {
+  $j = fork();
+  if ($j == 0) { POSIX::setpgid(0, 0); exec("sleep", "300") or die; }
+  POSIX::setpgid($j, $j); POSIX::tcsetpgrp(0, $j);
+} else {
+  POSIX::tcsetpgrp(0, POSIX::getpgrp());
+}
+open(my $p, ">", "$flag.job.tmp") or die; print $p $j; close $p; rename("$flag.job.tmp", "$flag.job");
+sleep 300;
 "#;
 
 struct Agent {
@@ -80,9 +134,36 @@ impl Agent {
     /// An agent run by the pane's shell, which outlives it (`exec sleep`) — as a real one
     /// started from a login shell leaves its shell behind when it exits.
     fn under_shell(name: &str, mode: &str) -> Option<Agent> {
+        Self::launched(name, mode, |_, line| format!("{line}; exec sleep 300"))
+    }
+
+    /// An agent started by a shell with job control ([`JOB_SHELL`]), in a process group of
+    /// its own and in front. Once `<name>.front` exists, the shell brings `front` to the
+    /// front: `job` (a new job, its pid in `<name>.front.job`) or `shell` (itself, at its
+    /// prompt) — as a user would after suspending the agent with Ctrl-Z.
+    fn job_control(name: &str, mode: &str, front: &str) -> Option<Agent> {
+        Self::launched(name, mode, |f, line| {
+            let script = f.env.path("jobshell.pl");
+            std::fs::write(&script, JOB_SHELL).unwrap();
+            format!(
+                "exec perl '{}' \"{}\" '{}' '{front}'",
+                script.display(),
+                line.replace('"', "\\\""),
+                f.env.path(&format!("{name}.front")).display()
+            )
+        })
+    }
+
+    /// An agent run by `wrap(fleet, its command line)`, the pane's own process: it learns
+    /// the agent's pid from the pid file the agent writes, and registers that instead.
+    fn launched(
+        name: &str,
+        mode: &str,
+        wrap: impl Fn(&FakeFleet, &str) -> String,
+    ) -> Option<Agent> {
         let f = FakeFleet::new()?;
         let (sid, log, line) = Self::line(&f, name, mode, true);
-        let shell = f.agent(name, &sid, 80, 24, &format!("{line}; exec sleep 300"));
+        let shell = f.agent(name, &sid, 80, 24, &wrap(&f, &line));
         let pidfile = f.env.path(&format!("{name}.pid"));
         f.wait_for("the agent to start", || log.exists() && pidfile.exists());
         let pid: i64 = std::fs::read_to_string(&pidfile)
@@ -284,6 +365,39 @@ impl Agent {
     fn alive(&self) -> bool {
         fleet::core::tmux::process_alive(self.pid)
     }
+
+    /// The pid the file `<name>` (in the test dir) holds, once it is written.
+    fn pid_in(&self, name: &str) -> String {
+        let path = self.f.env.path(name);
+        self.f.wait_for(name, || path.exists());
+        std::fs::read_to_string(&path).unwrap().trim().to_string()
+    }
+
+    /// The pid of the editor an `edits` / `editpg` / `exitedits` agent opened.
+    fn editor(&self) -> String {
+        let path = format!("{}.editor", self.log.display());
+        self.f
+            .wait_for("the editor", || std::path::Path::new(&path).exists());
+        std::fs::read_to_string(&path).unwrap().trim().to_string()
+    }
+
+    /// Nothing typed, nothing killed: what fleet asked tmux (`log`, a [`Self::logging_wrapper`]'s).
+    fn untouched(&self, log: &std::path::Path) {
+        let sent = std::fs::read_to_string(log).unwrap_or_default();
+        for verb in ["send-keys", "paste-buffer", "if-shell", "kill-session"] {
+            assert!(!sent.contains(verb), "no {verb}:\n{sent}");
+        }
+        assert!(self.tmux_session_exists(), "nothing was killed");
+    }
+}
+
+/// `kill <sig> <pid>` — for processes the test started.
+fn signal(sig: &str, pid: &str) -> bool {
+    std::process::Command::new("kill")
+        .args([sig, pid])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
 }
 
 fn keys_of(v: &Value) -> Vec<String> {
@@ -292,11 +406,41 @@ fn keys_of(v: &Value) -> Vec<String> {
     k
 }
 
+/// `{ ok: false, host, kind, error }` — and `reason` too for the kinds that carry one
+/// (`busy`, `host_shared`), never for the others.
 fn failure_shape(v: &Value, kind: &str) {
     assert_eq!(v["ok"], false, "{v}");
     assert_eq!(v["kind"], kind, "{v}");
     assert!(v["error"].as_str().is_some_and(|e| !e.is_empty()), "{v}");
-    assert_eq!(keys_of(v), ["error", "host", "kind", "ok"], "{v}");
+    if matches!(kind, "busy" | "host_shared") {
+        assert!(v["reason"].as_str().is_some_and(|r| !r.is_empty()), "{v}");
+        assert_eq!(keys_of(v), ["error", "host", "kind", "ok", "reason"], "{v}");
+    } else {
+        assert_eq!(keys_of(v), ["error", "host", "kind", "ok"], "{v}");
+    }
+}
+
+/// A refusal of `kind` for `reason`.
+fn refused(v: &Value, kind: &str, reason: &str) {
+    failure_shape(v, kind);
+    assert_eq!(v["reason"], reason, "{v}");
+}
+
+/// A directory of fake tools (`name` → sh `script`) and the `PATH` that puts it first.
+fn fake_tools(a: &Agent, tag: &str, tools: &[(&str, &str)]) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = a.f.env.path(&format!("bin-{tag}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, script) in tools {
+        let p = dir.join(name);
+        std::fs::write(&p, format!("#!/bin/sh\n{script}\n")).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    format!(
+        "{}:{}",
+        dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    )
 }
 
 #[test]
@@ -376,7 +520,7 @@ fn a_shared_tmux_session_is_refused_untouched() {
     assert!(out.status.success(), "{}", stderr(&out));
     let (code, v, _) = a.close(&["close", &a.target(), "--json"]);
     assert_eq!(code, 1, "{v}");
-    failure_shape(&v, "host_shared");
+    refused(&v, "host_shared", "shared_host");
     assert!(v["error"].as_str().unwrap().contains("2 window(s)"), "{v}");
     // …or, with that window gone, a second pane beside the agent's.
     let out = a.f.tmux(&["kill-window", "-t", &format!("{s}:1")]);
@@ -386,12 +530,12 @@ fn a_shared_tmux_session_is_refused_untouched() {
     assert!(out.status.success(), "{}", stderr(&out));
     let (code, v, _) = a.close(&["close", &a.target(), "--json"]);
     assert_eq!(code, 1, "{v}");
-    failure_shape(&v, "host_shared");
+    refused(&v, "host_shared", "shared_host");
     assert!(v["error"].as_str().unwrap().contains("2 pane(s)"), "{v}");
     // -n checks the same.
     let (code, v, _) = a.close(&["-n", "close", &a.target(), "--json"]);
     assert_eq!(code, 1, "{v}");
-    failure_shape(&v, "host_shared");
+    refused(&v, "host_shared", "shared_host");
 
     std::thread::sleep(std::time::Duration::from_millis(300));
     assert!(a.received().is_empty(), "nothing was typed");
@@ -584,7 +728,7 @@ fn a_pane_split_at_the_kill_stops_it() {
         &["close", &a.target(), "--json", "--timeout", "0"],
     );
     assert_eq!(code, 1, "{v} {err}");
-    failure_shape(&v, "host_shared");
+    refused(&v, "host_shared", "shared_host");
     assert!(v["error"].as_str().unwrap().contains("2 pane(s)"), "{v}");
     assert!(
         v["error"].as_str().unwrap().contains("nothing killed"),
@@ -627,7 +771,7 @@ fn a_pane_added_before_the_kill_stops_it() {
     };
     let (code, v, err) = a.close(&["close", &a.target(), "--json", "--timeout", "1"]);
     assert_eq!(code, 1, "{v} {err}");
-    failure_shape(&v, "host_shared");
+    refused(&v, "host_shared", "shared_host");
     assert!(
         v["error"].as_str().unwrap().contains("nothing killed"),
         "{v}"
@@ -651,7 +795,7 @@ fn a_held_lock_is_busy() {
     held.lock().unwrap();
     let (code, v, _) = a.close(&["close", &a.target(), "--json"]);
     assert_eq!(code, 1, "{v}");
-    failure_shape(&v, "busy");
+    refused(&v, "busy", "locked");
     std::thread::sleep(std::time::Duration::from_millis(300));
     assert!(a.received().is_empty());
     assert!(a.tmux_session_exists() && a.alive());
@@ -863,5 +1007,307 @@ fn a_pi_session_goes_straight_to_the_kill() {
         "pi has no exit command: nothing typed"
     );
     assert!(!a.tmux_session_exists());
+    a.f.wait_for("the agent to die with its pane", || !a.alive());
+}
+
+#[test]
+fn an_agent_with_its_editor_open_is_refused_untouched() {
+    // Claude Code's Ctrl-G editor, in the agent's own process group (as it spawns it) or in
+    // one of its own in front: whatever is typed would go into the editor.
+    for (name, mode) in [("cl-edit", "edits"), ("cl-editpg", "editpg")] {
+        let Some(a) = Agent::start(name, mode) else {
+            return;
+        };
+        let editor = a.editor();
+        a.busy();
+        let (tmux, log) = a.logging_wrapper("editor");
+        for args in [
+            &["close", &a.target(), "--json"][..],
+            &["-n", "close", &a.target(), "--json"],
+        ] {
+            let (code, v, err) = a.close_with(&[("FLEET_TMUX", &tmux)], args);
+            assert_eq!(code, 1, "{mode} {args:?}: {v} {err}");
+            refused(&v, "busy", "editor_open");
+            let e = v["error"].as_str().unwrap();
+            assert!(e.contains(&format!("pid {editor}")), "{mode}: {v}");
+            assert!(e.contains("nothing typed, nothing killed"), "{mode}: {v}");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(a.received().is_empty(), "{mode}: nothing was typed");
+        a.untouched(&log);
+        assert!(a.alive(), "{mode}");
+        assert!(signal("-KILL", &editor));
+    }
+}
+
+#[test]
+fn an_editor_opened_before_the_kill_stops_it() {
+    let Some(a) = Agent::start("cl-lateedit", "exitedits") else {
+        return;
+    };
+    let (code, v, err) = a.close(&["close", &a.target(), "--json", "--timeout", "1"]);
+    let editor = a.editor();
+    assert_eq!(code, 1, "{v} {err}");
+    refused(&v, "busy", "editor_open");
+    let e = v["error"].as_str().unwrap();
+    assert!(e.contains(&format!("pid {editor}")), "{v}");
+    assert!(e.contains("exit command was typed, nothing killed"), "{v}");
+    assert_eq!(a.received(), b"/exit\r");
+    assert!(a.tmux_session_exists() && a.alive(), "nothing was killed");
+    assert!(signal("-KILL", &editor));
+}
+
+#[test]
+fn a_suspended_agent_behind_another_job_is_refused_untouched() {
+    let Some(a) = Agent::job_control("cl-job", "exits", "job") else {
+        return;
+    };
+    // Busy, so it would get Escape first. Ctrl-Z, then the user runs something else.
+    a.busy();
+    let pid = a.pid.to_string();
+    assert!(signal("-STOP", &pid));
+    std::fs::write(a.f.env.path("cl-job.front"), "").unwrap();
+    let job = a.pid_in("cl-job.front.job");
+    let (tmux, log) = a.logging_wrapper("job");
+    for args in [
+        &["close", &a.target(), "--json"][..],
+        &["-n", "close", &a.target(), "--json"],
+    ] {
+        let (code, v, err) = a.close_with(&[("FLEET_TMUX", &tmux)], args);
+        assert_eq!(code, 1, "{args:?}: {v} {err}");
+        refused(&v, "host_shared", "job_in_front");
+        let e = v["error"].as_str().unwrap();
+        assert!(e.contains(&format!("pid {job}")), "{v}");
+        assert!(
+            e.contains("the agent is suspended behind it, and closing would kill that job too"),
+            "{v}"
+        );
+        assert!(e.contains("nothing typed, nothing killed"), "{v}");
+    }
+    a.untouched(&log);
+    assert!(a.alive(), "the agent was not killed");
+    assert!(signal("-0", &job), "nor the user's job");
+    let _ = signal("-KILL", &pid);
+    let _ = signal("-KILL", &job);
+}
+
+#[test]
+fn a_suspended_agent_behind_its_shells_prompt_gets_nothing_typed_and_is_killed() {
+    let Some(a) = Agent::job_control("cl-prompt", "exits", "shell") else {
+        return;
+    };
+    a.busy();
+    let pid = a.pid.to_string();
+    assert!(signal("-STOP", &pid));
+    std::fs::write(a.f.env.path("cl-prompt.front"), "").unwrap();
+    a.pid_in("cl-prompt.front.job");
+    let (tmux, log) = a.logging_wrapper("prompt");
+    let (code, v, err) = a.close_with(&[("FLEET_TMUX", &tmux)], &["close", &a.target(), "--json"]);
+    assert_eq!(code, 0, "{v} {err}");
+    assert_eq!(v["how"], "killed", "{v}");
+    let sent = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        !sent.contains("send-keys") && !sent.contains("paste-buffer"),
+        "nothing typed, Escape included:\n{sent}"
+    );
+    assert!(!a.tmux_session_exists());
+    // The kill ended the stopped agent itself (nothing here signals it).
+    a.f.wait_for("the stopped agent to die with its tmux session", || {
+        !a.alive()
+    });
+}
+
+#[test]
+fn an_agent_off_its_panes_terminal_at_the_kill_is_target_changed() {
+    let Some(a) = Agent::start("cl-tty2", "ignores") else {
+        return;
+    };
+    // Once something is typed, tmux says the agent's pane is on another terminal: the check
+    // right before the kill must see it.
+    let typed = a.f.env.path("typed");
+    let tmux = a.wrapper(
+        "tty2",
+        &format!(
+            "for a in \"$@\"; do case \"$a\" in send-keys|paste-buffer) touch '{t}';; '#{{pane_id}}'?'#{{pane_tty}}') if [ -e '{t}' ]; then \"$T\" \"$@\" | sed 's|/dev/.*|/dev/fleet-test-nowhere|'; exit 0; fi;; esac; done\nexec \"$T\" \"$@\"",
+            t = typed.display()
+        ),
+    );
+    let (code, v, err) = a.close_with(
+        &[("FLEET_TMUX", &tmux)],
+        &["close", &a.target(), "--json", "--timeout", "0"],
+    );
+    assert_eq!(code, 1, "{v} {err}");
+    failure_shape(&v, "target_changed");
+    let e = v["error"].as_str().unwrap();
+    assert!(e.contains("no longer runs in pane"), "{v}");
+    assert!(e.contains("exit command was typed, nothing killed"), "{v}");
+    assert_eq!(a.received(), b"/exit\r");
+    assert!(a.tmux_session_exists() && a.alive(), "nothing was killed");
+}
+
+#[test]
+fn an_agent_gone_by_the_kill_is_how_exit() {
+    let Some(a) = Agent::start("cl-late-exit", "ignores") else {
+        return;
+    };
+    // The wait gives up on it; then, at the kill, it exits by itself and takes its pane (and
+    // tmux session) with it: nothing was killed.
+    let tmux = a.wrapper_at_kill(
+        "late",
+        &format!(
+            "kill {}\nwhile \"$T\" has-session -t '={}' 2>/dev/null; do sleep 0.05; done",
+            a.pid, a.session
+        ),
+    );
+    let (code, v, err) = a.close_with(
+        &[("FLEET_TMUX", &tmux)],
+        &["close", &a.target(), "--json", "--timeout", "0"],
+    );
+    assert_eq!(code, 0, "{v} {err}");
+    assert_eq!(v["how"], "exit", "{v}");
+    assert_eq!(v["tmux_session"], a.session.as_str());
+    assert!(!a.alive() && !a.tmux_session_exists());
+}
+
+#[test]
+fn another_stopped_job_in_the_pane_is_refused_untouched() {
+    // `vim`, Ctrl-Z, `fg %1`: the agent is back in front, the stopped `vim` behind it on the
+    // same terminal. The kill would end that job too.
+    let Some(a) = Agent::job_control("cl-stopped", "exits", "stopped") else {
+        return;
+    };
+    std::fs::write(a.f.env.path("cl-stopped.front"), "").unwrap();
+    let job = a.pid_in("cl-stopped.front.job");
+    let (tmux, log) = a.logging_wrapper("stopped");
+    for args in [
+        &["close", &a.target(), "--json"][..],
+        &["-n", "close", &a.target(), "--json"],
+    ] {
+        let (code, v, err) = a.close_with(&[("FLEET_TMUX", &tmux)], args);
+        assert_eq!(code, 1, "{args:?}: {v} {err}");
+        refused(&v, "host_shared", "other_jobs");
+        let e = v["error"].as_str().unwrap();
+        assert!(e.contains(&format!("pid {job}")), "{v}");
+        assert!(e.contains("nothing typed, nothing killed"), "{v}");
+    }
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(a.received().is_empty(), "nothing was typed");
+    a.untouched(&log);
+    assert!(a.alive(), "the agent was not killed");
+    assert!(signal("-0", &job), "nor the stopped job");
+    let _ = signal("-KILL", &job);
+}
+
+#[test]
+fn an_lsof_that_fails_hangs_or_is_missing_refuses_untouched() {
+    // Where `/proc` is, it is read instead of running `lsof`.
+    if std::path::Path::new("/proc/self/fd").is_dir() {
+        return;
+    }
+    // A child in the agent's foreground group (as its MCP servers are): whether it reads the
+    // terminal takes `lsof`.
+    let Some(a) = Agent::start("cl-lsof", "helper") else {
+        return;
+    };
+    let helper = a.editor();
+    for (tag, script) in [
+        ("fails", "exit 1"),
+        ("killed", "kill -9 $$"),
+        ("hangs", "exec sleep 30"),
+    ] {
+        let path = fake_tools(&a, tag, &[("lsof", script)]);
+        let (tmux, log) = a.logging_wrapper(tag);
+        let t0 = std::time::Instant::now();
+        let (code, v, err) = a.close_with(
+            &[("FLEET_TMUX", &tmux), ("PATH", &path)],
+            &["close", &a.target(), "--json"],
+        );
+        assert!(t0.elapsed() < std::time::Duration::from_secs(10), "{tag}");
+        assert_eq!(code, 1, "{tag}: {v} {err}");
+        failure_shape(&v, "io");
+        let e = v["error"].as_str().unwrap();
+        assert!(e.contains("nothing typed, nothing killed"), "{tag}: {v}");
+        a.untouched(&log);
+    }
+    // No `lsof` at all.
+    let (tmux, log) = a.logging_wrapper("missing");
+    let (code, v, err) = a.close_with(
+        &[("FLEET_TMUX", &tmux), ("PATH", "/bin:/usr/bin")],
+        &["close", &a.target(), "--json"],
+    );
+    assert_eq!(code, 1, "{v} {err}");
+    failure_shape(&v, "io");
+    a.untouched(&log);
+    assert!(a.received().is_empty(), "nothing was typed");
+    // The real one: the child reads `/dev/null`, not the terminal — no false `busy`.
+    let (code, v, err) = a.close(&["close", &a.target(), "--json"]);
+    assert_eq!(code, 0, "{v} {err}");
+    assert_eq!(v["how"], "exit", "{v}");
+    assert_eq!(a.received(), b"/exit\r");
+    let _ = signal("-KILL", &helper);
+}
+
+#[test]
+fn a_ps_failure_after_typing_says_what_was_typed() {
+    let Some(a) = Agent::start("cl-ps", "ignores") else {
+        return;
+    };
+    // `ps` breaks once something is typed.
+    let typed = a.f.env.path("ps-typed");
+    let tmux = a.wrapper(
+        "ps",
+        &format!(
+            "for a in \"$@\"; do case \"$a\" in send-keys|paste-buffer) touch '{}';; esac; done\nexec \"$T\" \"$@\"",
+            typed.display()
+        ),
+    );
+    let path = fake_tools(
+        &a,
+        "ps",
+        &[(
+            "ps",
+            &format!(
+                "[ -e '{}' ] && {{ echo 'ps: broken' >&2; exit 1; }}\nexec /bin/ps \"$@\"",
+                typed.display()
+            ),
+        )],
+    );
+    let (code, v, err) = a.close_with(
+        &[("FLEET_TMUX", &tmux), ("PATH", &path)],
+        &["close", &a.target(), "--json", "--timeout", "0"],
+    );
+    assert_eq!(code, 1, "{v} {err}");
+    failure_shape(&v, "io");
+    let e = v["error"].as_str().unwrap();
+    assert!(e.contains("exit command was typed, nothing killed"), "{v}");
+    assert_eq!(a.received(), b"/exit\r");
+    assert!(a.tmux_session_exists() && a.alive(), "nothing was killed");
+}
+
+#[test]
+fn waiting_for_the_exit_reads_only_the_agent() {
+    let Some(a) = Agent::start("cl-wait", "ignores") else {
+        return;
+    };
+    // Every `ps` fleet runs, logged: the wait for the exit must not read every process each
+    // time it looks.
+    let log = a.f.env.path("ps.log");
+    let path = fake_tools(
+        &a,
+        "pslog",
+        &[(
+            "ps",
+            &format!("echo \"$*\" >> '{}'\nexec /bin/ps \"$@\"", log.display()),
+        )],
+    );
+    let (code, v, err) = a.close_with(
+        &[("PATH", &path)],
+        &["close", &a.target(), "--json", "--timeout", "2"],
+    );
+    assert_eq!(code, 0, "{v} {err}");
+    assert_eq!(v["how"], "killed", "{v}");
+    let calls = std::fs::read_to_string(&log).unwrap();
+    let whole = calls.lines().filter(|l| l.starts_with("-A ")).count();
+    assert!(whole <= 3, "{whole} reads of every process:\n{calls}");
     a.f.wait_for("the agent to die with its pane", || !a.alive());
 }
