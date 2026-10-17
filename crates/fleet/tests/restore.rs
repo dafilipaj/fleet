@@ -20,6 +20,7 @@ id=""
 prev=""
 for a in "$@"; do
   [ "$prev" = "--resume" ] && id="$a"
+  case "$a" in --resume=*) id="${a#--resume=}" ;; esac
   prev="$a"
 done
 [ -n "$id" ] || id="fake-$$-0000"
@@ -293,7 +294,7 @@ fn a_reboot_leaves_sessions_dormant_and_restore_brings_them_back() {
     assert!(text.contains("new-session -d -s fleet-test-a"), "{text}");
     assert!(
         text.contains(&format!(
-            "--dangerously-skip-permissions --model test-model --resume {id}"
+            "--dangerously-skip-permissions --model test-model --resume={id}"
         )),
         "{text}"
     );
@@ -340,7 +341,7 @@ fn a_reboot_leaves_sessions_dormant_and_restore_brings_them_back() {
     let last = r.launches().lines().last().unwrap_or_default().to_string();
     assert_eq!(
         last,
-        format!("--dangerously-skip-permissions --model test-model --resume {id}"),
+        format!("--dangerously-skip-permissions --model test-model --resume={id}"),
         "same flags, same session id, no prompt and no -n"
     );
     let canon = |p: &str| std::fs::canonicalize(p).unwrap();
@@ -420,7 +421,7 @@ fn a_lone_claude_session_comes_back_in_its_own_tmux_session() {
     });
     assert_eq!(
         r.launches().lines().last().unwrap_or_default(),
-        "--chrome --resume lone-1234-abcd"
+        "--chrome --resume=lone-1234-abcd"
     );
     assert_eq!(
         r.tmux(&["list-sessions", "-F", "#{session_name}"]).trim(),
@@ -584,7 +585,7 @@ fn sessions_closed_within_a_boot_are_recently_closed_not_dormant() {
     assert_eq!(windows.lines().count(), 2, "{windows}");
     assert_eq!(
         r.launches().lines().last().unwrap_or_default(),
-        format!("--resume {c_id}")
+        format!("--resume={c_id}")
     );
 
     // --- the whole tmux session comes back under its name.

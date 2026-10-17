@@ -10,7 +10,7 @@
 //! [`record`] runs on every local discovery that already has fresh rows (`fleet list`). When it
 //! sees a new **boot id**, whatever the old boot was running becomes **dormant**; [`restore`]
 //! brings a dormant entry back: the same tmux session name, windows, panes and cwds, and each
-//! Claude pane re-launched with `<launcher> <flags> --resume <sessionId>`. The session id stays
+//! Claude pane re-launched with `<launcher> <flags> --resume=<sessionId>`. The session id stays
 //! the same (only `--fork-session` mints a new one), so groups, stacks and briefs carry over.
 //!
 //! Within one boot a session that disappears was closed on purpose and is *not* dormant —
@@ -560,7 +560,7 @@ fn flags_beyond(launcher: &str, flags: &[String]) -> Vec<String> {
 }
 
 /// The shell line typed into a restored pane:
-/// `cd <cwd> && <launcher> <flags the launcher lacks> --resume <sessionId>`, under the GitHub
+/// `cd <cwd> && <launcher> <flags the launcher lacks> --resume=<sessionId>`, under the GitHub
 /// identity the session had (an identity no longer configured here is an error, not a resume
 /// as the user).
 pub fn resume_line(launcher: &str, cwd: &str, c: &ClaudeSnap) -> Result<String> {
@@ -582,7 +582,8 @@ pub fn resume_line(launcher: &str, cwd: &str, c: &ClaudeSnap) -> Result<String> 
         cmd.push(' ');
         cmd.push_str(&tools::shq_min(&f));
     }
-    cmd.push_str(" --resume ");
+    // Bound to its flag (`--resume=<id>`): an id can never be read as a flag of its own.
+    cmd.push_str(" --resume=");
     cmd.push_str(&tools::shq_min(&c.session_id));
     Ok(launch_command(
         cwd,
@@ -2610,11 +2611,11 @@ mod tests {
         };
         assert_eq!(
             resume_line("claude", "/w/app", &c).unwrap(),
-            "cd '/w/app' && claude --dangerously-skip-permissions --model opus --add-dir /a --resume abcd-1234"
+            "cd '/w/app' && claude --dangerously-skip-permissions --model opus --add-dir /a --resume=abcd-1234"
         );
         assert_eq!(
             resume_line("cl --dangerously-skip-permissions --model=x", "/w", &c).unwrap(),
-            "cd '/w' && cl --dangerously-skip-permissions --model=x --add-dir /a --resume abcd-1234"
+            "cd '/w' && cl --dangerously-skip-permissions --model=x --add-dir /a --resume=abcd-1234"
         );
     }
 
@@ -3026,7 +3027,7 @@ garbage";
         assert_eq!(log[7], "select-window -t %1.0");
         assert_eq!(
             log[8],
-            "send-keys -t %1.0 -l 'cd '\\''/tmp'\\'' && claude --resume s-1'"
+            "send-keys -t %1.0 -l 'cd '\\''/tmp'\\'' && claude --resume=s-1'"
         );
         assert_eq!(log[9], "send-keys -t %1.0 Enter");
         assert_eq!(log.len(), 10, "s-2 runs elsewhere: no second launch");
@@ -3357,7 +3358,7 @@ garbage";
         );
         assert_eq!(
             log[1],
-            "send-keys -t %new -l 'cd '\\''/tmp'\\'' && claude --chrome --resume s-1'"
+            "send-keys -t %new -l 'cd '\\''/tmp'\\'' && claude --chrome --resume=s-1'"
         );
         assert_eq!(launched.len(), 1);
         // Running elsewhere: nothing opened.
