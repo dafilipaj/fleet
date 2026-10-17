@@ -197,6 +197,29 @@ fn codex_shortcut(label: &str) -> Option<String> {
     }
 }
 
+/// Does the live list ending at `last` have the shape of Codex's approval answers, read whole
+/// or not? An answer (or a line it wraps onto) names its shortcut (`(y)`, `(p)`, `(esc)`), or
+/// the footer is the approval's ("Press enter to confirm or esc to cancel", wrapped or not).
+/// Its popups (/model, /approvals, /review: "… or esc to go back"), its transcript pager and a
+/// numbered draft have neither.
+fn codex_answer_shape(lines: &[&str], last: usize, footer: &[&str]) -> bool {
+    let answers = lines[..=last].iter().rev().take_while(|c| !c.is_empty());
+    answers.chain(footer).any(|c| codex_shortcut(c).is_some())
+        || footer.join(" ").contains("esc to cancel")
+}
+
+/// Is the live list typed into the input box — a draft, not a prompt? Claude Code draws its
+/// input box between two plain rules from column 0, pi its editor too: a raw screen line that
+/// is such a rule under the list (not a boxed prompt's bottom, `╰───╯`, nor a padded line).
+/// Codex's composer has a footer of its own: "? for shortcuts", "92% context left", "⏎ send ⌃J
+/// newline …". Neither is ever under a live prompt's answers.
+fn in_input_box(raw_below: &[&str], footer: &[&str], claude: bool) -> bool {
+    const COMPOSER: [&str; 3] = ["? for shortcuts", "context left", "⏎ send"];
+    let composer = |c: &&str| COMPOSER.iter().any(|m| c.contains(m));
+    raw_below.iter().any(|l| is_solid_rule(l.trim_end()))
+        || (!claude && footer.iter().any(composer))
+}
+
 /// The permission / approval prompt the screen ends in, if any, read the way `harness` draws
 /// it. Claude Code frames its prompt (a solid rule above it) and puts what it is about inside
 /// the frame; Codex has no frame and puts it between the title and the answers.
@@ -208,8 +231,28 @@ pub fn permission_prompt(screen: &str, harness: Harness) -> PromptRead {
     if footer.iter().any(|c| c.contains("Enter to select")) {
         return PromptRead::None; // an AskUserQuestion form: answered with --question
     }
+    let claude = harness == Harness::Claude;
+    let raw: Vec<&str> = screen.lines().filter(|l| *l != VISIBLE_MARK).collect();
+    if in_input_box(&raw[last + 1..], &footer, claude) {
+        return PromptRead::None;
+    }
+    // Codex (and pi, read by its rules): a list with the approval's answer shape is an approval,
+    // and one that cannot be read whole is never taken for no prompt — a rename typed into it
+    // would be its answer, and after a key it may be the one answered or a queued one. A list
+    // without that shape (a popup, the transcript pager, a draft) is an approval only when it
+    // is read whole under its title.
+    let shaped = !claude && codex_answer_shape(&lines, last, &footer);
+    let unread = |why: &str| {
+        if shaped {
+            PromptRead::Incomplete(why.into())
+        } else {
+            PromptRead::None
+        }
+    };
+    const UNREAD_ANSWERS: &str = "the approval prompt's answers cannot be read whole";
     // Walk up the answer list: numbered N, N-1, … 1; a label that wraps continues on
-    // un-numbered lines under it.
+    // un-numbered lines under it (Claude Code: up to 3; Codex wraps a long one further: the
+    // command prefix in "don't ask again for commands that start with …").
     let Some((_, mut expect, _)) = option_line(lines[last]) else {
         return PromptRead::None;
     };
@@ -220,7 +263,7 @@ pub fn permission_prompt(screen: &str, harness: Harness) -> PromptRead {
         let c = lines[i];
         if let Some((cursor, n, label)) = option_line(c) {
             if n != expect {
-                return PromptRead::None;
+                return unread(UNREAD_ANSWERS);
             }
             let mut full = label.to_string();
             for w in wrapped.drain(..).rev() {
@@ -239,19 +282,19 @@ pub fn permission_prompt(screen: &str, harness: Harness) -> PromptRead {
                 break i;
             }
             expect -= 1;
-        } else if !c.is_empty() && wrapped.len() < 3 && !is_rule(c) {
+        } else if !c.is_empty() && (wrapped.len() < 3 || !claude) && !is_rule(c) {
             wrapped.push(c);
         } else {
-            return PromptRead::None;
+            return unread(UNREAD_ANSWERS);
         }
         let Some(up) = i.checked_sub(1) else {
-            return PromptRead::None;
+            return unread(UNREAD_ANSWERS);
         };
         i = up;
     };
     choices.reverse();
     if choices.len() < 2 {
-        return PromptRead::None;
+        return unread(UNREAD_ANSWERS);
     }
     let cursors: Vec<usize> = choices
         .iter()
@@ -259,9 +302,8 @@ pub fn permission_prompt(screen: &str, harness: Harness) -> PromptRead {
         .map(|(_, c)| c.n)
         .collect();
     let [selected] = cursors[..] else {
-        return PromptRead::None;
+        return unread(UNREAD_ANSWERS);
     };
-    let claude = harness == Harness::Claude;
     let reach = if claude {
         MAX_CLAUDE_PROMPT_LINES
     } else {
@@ -272,28 +314,33 @@ pub fn permission_prompt(screen: &str, harness: Harness) -> PromptRead {
     if !claude {
         // Codex draws no frame: its title, command and reason share one indent, under the last
         // conversation item (`•`, `›`), which starts at column 0. All between it and the
-        // answers is the prompt; out of reach, the prompt cannot be told whole.
-        match (floor..top)
+        // answers is the prompt; out of reach — or not on the captured text at all (a fresh or
+        // cleared pane) — the prompt cannot be told whole. It is one if it has the answer shape
+        // or a title in sight.
+        let Some(above) = (floor..top)
             .rev()
             .find(|&j| literal[j].starts_with(|c: char| !c.is_whitespace()))
-        {
-            Some(above) => floor = above + 1,
-            None if floor > 0 => {
-                return PromptRead::Incomplete(
-                    "the top of the approval prompt is off the captured screen".into(),
-                );
-            }
-            None => {}
-        }
+        else {
+            const TOPLESS: &str = "the top of the approval prompt is off the captured screen";
+            return if (floor..top).any(|j| is_title(lines[j])) {
+                PromptRead::Incomplete(TOPLESS.into())
+            } else {
+                unread(TOPLESS)
+            };
+        };
+        floor = above + 1;
     }
     // The title: the nearest prompt-like line above the answers. In a Codex prompt it must be
-    // the only one: a line of its command that reads like a title ("Allow …") would otherwise
-    // cut the real title and everything above it out of the prompt.
+    // the only one, and read as a title: a line of its command that does ("Allow …") or ends
+    // in "?" would otherwise cut the real title and everything above it out of the prompt. So
+    // a Codex approval with none — not even a line ending in "?" — is not told whole either;
+    // a list with no title and without the answer shape is no approval at all.
     let titles: Vec<usize> = (floor..top).filter(|&j| is_title(lines[j])).collect();
     let asks: Vec<usize> = (floor..top).filter(|&j| lines[j].ends_with('?')).collect();
     let t = match (claude, &titles[..], &asks[..]) {
-        (true, [.., t], _) | (true, [], [.., t]) | (false, [t], _) | (false, [], [t]) => *t,
-        (true, [], []) | (false, [], []) => return PromptRead::None,
+        (true, [.., t], _) | (true, [], [.., t]) | (false, [t], _) => *t,
+        (true, [], []) => return PromptRead::None,
+        (false, [], _) => return unread("no line of the approval prompt reads as its title"),
         (false, _, _) => {
             return PromptRead::Incomplete(
                 "more than one line of the approval prompt reads as its title (one is inside its command)".into(),
@@ -936,9 +983,23 @@ mod tests {
         );
         assert_eq!(permission_prompt("", Harness::Claude), PromptRead::None);
         assert_eq!(
+            permission_prompt("Steps:\n❯ 1. build\n  2. test\n", Harness::Claude),
+            PromptRead::None
+        );
+        // Codex: a live list under no title is an approval only with the approval's answer shape
+        // (a shortcut, its footer); then it is not told whole, so not "no prompt" either (a
+        // rename typed into it would be its answer).
+        assert_eq!(
             permission_prompt("Steps:\n❯ 1. build\n  2. test\n", Harness::Codex),
             PromptRead::None
         );
+        for shaped in [
+            "Steps:\n❯ 1. build (y)\n  2. test (esc)\n",
+            "Steps:\n❯ 1. build\n  2. test\n\n  Press enter to confirm or esc to cancel\n",
+        ] {
+            let r = permission_prompt(shaped, Harness::Codex);
+            assert!(matches!(r, PromptRead::Incomplete(_)), "{r:?}");
+        }
     }
 
     fn two() -> Vec<Question> {
@@ -1249,6 +1310,337 @@ mod tests {
         // Within reach, the same prompt is read whole.
         let p = prompt(&tall(10), Harness::Codex);
         assert_eq!(p.title, "Would you like to run the following command?");
+    }
+
+    /// [`CODEX_EXEC`] running a command that starts with `first` and has a line ending in "?".
+    fn codex_asking(first: &str) -> String {
+        CODEX_EXEC.replace(
+            "  $ touch probe.txt\n",
+            &format!("  $ bash -lc '{first}\n  echo really?\n  echo same\n  echo part 2\n  ls'\n"),
+        )
+    }
+
+    // Codex, the capture holding no line at column 0 (a fresh or cleared pane, the prompt's head
+    // clipped off): read from its first line, a command line ending in "?" became the title, and
+    // two commands differing only in the clipped head got one id. Refused, like a top out of reach.
+    #[test]
+    fn a_codex_prompt_with_no_column_0_line_captured_is_incomplete() {
+        let clipped = |first: &str| {
+            let full = codex_asking(first);
+            full[full.find("  echo really?").unwrap()..].to_string()
+        };
+        for first in ["rm -rf /w/app", "echo hi"] {
+            let r = permission_prompt(&clipped(first), Harness::Codex);
+            assert!(matches!(r, PromptRead::Incomplete(_)), "{r:?}");
+        }
+    }
+
+    // The top in sight (a column-0 line above), but no line under it reads as a title. A command
+    // line ending in "?" was once taken for one ("echo really?": the command's head and the real
+    // title cut off); with no such line it was no prompt at all, so a rename was typed into it
+    // and the post-answer check took it for gone. Either way: not told whole.
+    #[test]
+    fn a_codex_prompt_under_its_top_but_without_a_title_is_incomplete() {
+        let untitled = |first: &str| {
+            codex_asking(first).replace("  Would you like to run the following command?\n", "")
+        };
+        for first in ["rm -rf /w/app", "echo hi"] {
+            let asks = untitled(first);
+            assert!(asks.contains("\n• Running") && asks.contains("\n  echo really?\n"));
+            let r = permission_prompt(&asks, Harness::Codex);
+            assert!(matches!(r, PromptRead::Incomplete(_)), "{r:?}");
+            let plain = asks.replace("echo really?", "echo really");
+            let r = permission_prompt(&plain, Harness::Codex);
+            assert!(matches!(r, PromptRead::Incomplete(_)), "{r:?}");
+        }
+    }
+
+    // The reach, exactly: the last conversation item 60 lines above the first answer is in it,
+    // 61 lines above is not.
+    #[test]
+    fn a_codex_prompt_is_read_from_at_most_60_lines_above_its_answers() {
+        assert_eq!(MAX_CODEX_PROMPT_LINES, 60, "the docs say 60");
+        let tall = |n: usize| {
+            let body: String = (0..n).map(|i| format!("  echo part {i}\n")).collect();
+            CODEX_EXEC.replace(
+                "  $ touch probe.txt\n",
+                &format!("  $ bash -lc '\n{body}  ls'\n"),
+            )
+        };
+        let up = |screen: &str| {
+            let lines: Vec<&str> = screen.lines().collect();
+            let item = lines.iter().position(|l| l.starts_with("• ")).unwrap();
+            let first = lines.iter().position(|l| l.starts_with("› 1. ")).unwrap();
+            first - item
+        };
+        let n = (0..100).find(|&n| up(&tall(n)) == 60).unwrap();
+        let p = prompt(&tall(n), Harness::Codex);
+        assert_eq!(p.title, "Would you like to run the following command?");
+        assert!(p.detail.iter().any(|d| d == "echo part 0"), "{p:?}");
+        assert_eq!(up(&tall(n + 1)), 61);
+        let r = permission_prompt(&tall(n + 1), Harness::Codex);
+        assert!(matches!(r, PromptRead::Incomplete(_)), "{r:?}");
+    }
+
+    // With the last conversation item captured, even as the first line, the prompt is read whole.
+    #[test]
+    fn a_codex_prompt_under_a_column_0_line_is_read_whole() {
+        let full = codex_asking("rm -rf /w/app");
+        let from_item = &full[full.find("• Running").unwrap()..];
+        let p = prompt(from_item, Harness::Codex);
+        assert_eq!(p.title, "Would you like to run the following command?");
+        assert!(
+            p.detail.iter().any(|d| d.contains("rm -rf /w/app")),
+            "{p:?}"
+        );
+        assert_eq!(p.id, prompt(&full, Harness::Codex).id);
+        assert_ne!(p.id, prompt(&codex_asking("echo hi"), Harness::Codex).id);
+    }
+
+    /// `screen` without the approval's answer shape: no shortcut in an answer, no footer.
+    fn unshaped(screen: &str) -> String {
+        let s = [" (y)", " (p)", " (esc)"]
+            .iter()
+            .fold(screen.to_string(), |s, k| s.replace(k, ""));
+        s.replace("  Press enter to confirm or esc to cancel\n", "")
+            .replace("  Press enter to confirm or esc to\n  cancel\n", "")
+    }
+
+    // The title in sight, but no line at column 0 captured above it (a fresh or cleared pane):
+    // what stood above the title is unknown, so the prompt is not told whole — read from its
+    // first line, it would be. With or without the answer shape: the title makes it an approval.
+    #[test]
+    fn a_codex_title_in_sight_with_no_column_0_line_captured_is_incomplete() {
+        let full = codex_asking("rm -rf /w/app");
+        let from_title = &full[full.find("  Would you like").unwrap()..];
+        for screen in [from_title.to_string(), unshaped(from_title)] {
+            let r = permission_prompt(&screen, Harness::Codex);
+            assert!(matches!(r, PromptRead::Incomplete(_)), "{r:?}");
+        }
+        assert_eq!(
+            prompt(&full, Harness::Codex).title,
+            "Would you like to run the following command?"
+        );
+    }
+
+    const CODEX_40: &str = include_str!("../../../../testdata/codex/exec-approval-pane-40.txt");
+
+    /// The recorded 40-column approval, its "don't ask again" answer naming a longer prefix: it
+    /// wraps onto 4 lines under the answer.
+    fn codex_40_long_prefix() -> String {
+        let s = CODEX_40.replace(
+            "     commands that start with `touch\n     approval-probe.txt` (p)\n",
+            "     commands that start with `npm run\n     build --workspace packages/web\n     \
+             --if-present --include-workspace-\n     root` (p)\n",
+        );
+        assert_ne!(s, CODEX_40);
+        s
+    }
+
+    // Codex wraps a long answer onto as many lines as it takes. Capped at 3 like Claude Code's,
+    // a 4th made the walk give up: a live approval read as no prompt, and after a key as
+    // answered while it was still on screen.
+    #[test]
+    fn a_codex_answer_wrapped_onto_more_than_3_lines_is_read_whole() {
+        let p = prompt(&codex_40_long_prefix(), Harness::Codex);
+        assert_eq!(p.title, "Would you like to run the following");
+        assert_eq!(
+            p.choices[1].label,
+            "Yes, and don't ask again for commands that start with `npm run build --workspace \
+             packages/web --if-present --include-workspace- root` (p)"
+        );
+        assert_eq!(
+            p.choices
+                .iter()
+                .map(|c| c.key.as_deref())
+                .collect::<Vec<_>>(),
+            [Some("y"), Some("p"), None]
+        );
+        assert_ne!(p.id, prompt(CODEX_40, Harness::Codex).id);
+        // Claude Code's labels keep the cap: its prompts read as before.
+        assert_eq!(
+            permission_prompt(&codex_40_long_prefix(), Harness::Claude),
+            PromptRead::None
+        );
+    }
+
+    // Once a live list has the approval's answer shape, answers the walk cannot read are an
+    // approval not told whole — never "no prompt". Without the shape, the same list is none.
+    #[test]
+    fn a_codex_approval_whose_answers_cannot_be_read_is_incomplete() {
+        let screen = codex_40_long_prefix();
+        let broken = [
+            // The capture starts inside the answers: answer 1 is off it.
+            screen[screen.find("  2. Yes, and").unwrap()..].to_string(),
+            // A wrapped line that reads as a rule.
+            screen.replace(
+                "     build --workspace packages/web\n",
+                "     ------------\n",
+            ),
+            // A wrapped line that reads as another answer.
+            screen.replace("     build --workspace", "     12. build --workspace"),
+            // A blank line inside the answers.
+            screen.replace("     root` (p)\n", "\n     root` (p)\n"),
+        ];
+        for s in &broken {
+            let r = permission_prompt(s, Harness::Codex);
+            assert!(matches!(r, PromptRead::Incomplete(_)), "{r:?}\n{s}");
+            let bare = unshaped(s);
+            assert!(!bare.contains("(y)") && !bare.contains("esc to"), "{bare}");
+            assert_eq!(permission_prompt(&bare, Harness::Codex), PromptRead::None);
+        }
+    }
+
+    // Screens ending in a numbered list with the cursor on it that are no prompt: Codex's
+    // popups (/model, /approvals, /review) and transcript pager, a numbered draft in its
+    // composer, one in Claude Code's input box under a line ending in "?", pi's editor under a
+    // tool's output quoting an approval's answers. Read as an incomplete approval, they made
+    // `--list` report one and every answer after which one came back `outcome_uncertain`.
+    // Synthetic layouts.
+    const NOT_PROMPTS: [(&str, &str); 8] = [
+        (
+            "/model popup",
+            "\
+› Fix the flaky tests
+
+• I pinned the seed in parser.rs; the suite passes.
+
+  Select Model and Effort
+  Access legacy models by running codex -m <model_name> or in your config.toml
+
+› 1. gpt-5-codex (current)  Optimized for coding tasks with many tools.
+  2. gpt-5                  Broad world knowledge with strong general reasoning.
+
+  Press enter to confirm or esc to go back
+",
+        ),
+        (
+            "/approvals popup",
+            "\
+• I pinned the seed in parser.rs; the suite passes.
+
+  Select Approval Mode
+
+› 1. Read Only (current)  Codex can read files and answer questions.
+  2. Auto                 Codex can read, edit and run commands in the workspace.
+  3. Full Access          Codex can edit and run commands with network access.
+
+  Press enter to confirm or esc to go back
+",
+        ),
+        (
+            "/review popup",
+            "\
+• I pinned the seed in parser.rs; the suite passes.
+
+  Select a review preset
+
+› 1. Review against a base branch  (PR Style)
+  2. Review uncommitted changes
+  3. Review a commit
+  4. Custom review instructions
+
+  Press enter to confirm or esc to go back
+",
+        ),
+        (
+            "Ctrl+T transcript pager",
+            "\
+/ T R A N S C R I P T / / / / / / / / / / / / / / / / / / / / / / / / / / / /
+• I pinned the seed in parser.rs; the suite passes.
+
+› 1. Run the full suite again
+  2. Then open a PR
+
+───────────────────────────────────────────────────────────────── 100% ─
+  ↑/↓ to scroll   pgup/pgdn to page   home/end to jump
+  q to quit   esc to edit prev
+",
+        ),
+        (
+            "Codex composer, numbered draft",
+            "\
+› Fix the flaky tests
+
+• I pinned the seed in parser.rs; the suite passes.
+
+› 1. Run the full suite again
+  2. Then open a PR
+
+  ? for shortcuts                                           92% context left
+",
+        ),
+        (
+            "Codex composer after an approval, numbered draft",
+            "\
+✔ You approved codex to run touch approval-probe.txt this time
+
+• Working (2s • esc to interrupt)
+
+› 1. Run the full suite again (y)
+  2. Then open a PR (esc)
+
+  ⏎ send   ⌃J newline   ⌃T transcript   ⌃C quit
+",
+        ),
+        (
+            "Claude Code input box, numbered draft under a question",
+            "\
+❯ Clean the build output
+⏺ Should I also clear the cache?
+⏺ Bash(rm -rf build)
+  ⎿  (No content)
+⏺ Removed build/.
+
+────────────────────────────────────────────────────────────────────────────────
+❯ 1. clear the cache too
+  2. then rebuild
+────────────────────────────────────────────────────────────────────────────────
+  ? for shortcuts
+",
+        ),
+        (
+            "pi editor under a tool's output",
+            concat!(
+                " $ fleet answer worker-3 --list | sed -n 2,5p\n",
+                "   $ rm -rf build\n",
+                " ❯ 1. Yes, proceed (y)\n",
+                "   2. No, and tell Codex what to do differently (esc)\n",
+                "\n",
+                "────────────────────────────────────────────────────────────────────────────────\n",
+                "\n",
+                "────────────────────────────────────────────────────────────────────────────────\n",
+                "~/code/app (main)\n",
+                "↑1.2k ↓300 R12k $0.012 3.1%/200k\n",
+            ),
+        ),
+    ];
+
+    #[test]
+    fn popups_pagers_and_drafts_are_no_prompt() {
+        use crate::core::title::shows_prompt;
+        for (what, screen) in NOT_PROMPTS {
+            for h in [Harness::Codex, Harness::Pi, Harness::Claude] {
+                assert_eq!(
+                    permission_prompt(screen, h),
+                    PromptRead::None,
+                    "{what}, {h:?}"
+                );
+                assert!(!shows_prompt(screen, h), "{what}, {h:?}");
+            }
+        }
+        // A real approval with the answer shape and no title stays incomplete: the recorded
+        // 40-column one without its title, and the /approvals popup were its footer the approval's.
+        let untitled = CODEX_40.replace("  Would you like to run the following\n  command?\n", "");
+        assert_ne!(untitled, CODEX_40);
+        let approval_footer = NOT_PROMPTS[1].1.replace("esc to go back", "esc to cancel");
+        for s in [&untitled, &approval_footer] {
+            for h in [Harness::Codex, Harness::Pi] {
+                let r = permission_prompt(s, h);
+                assert!(matches!(r, PromptRead::Incomplete(_)), "{h:?}: {r:?}");
+                assert!(shows_prompt(s, h));
+            }
+        }
     }
 
     // Claude Code 2.1's review screen, as captured (wording synthetic).

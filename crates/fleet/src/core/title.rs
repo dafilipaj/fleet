@@ -573,6 +573,28 @@ mod tests {
         assert!(!is_generic_tmux_name("", None));
     }
 
+    // A Codex approval the screen cannot tell whole (no column-0 line over it, or no title) is
+    // still a prompt the rename's text would answer: held, never taken for "no prompt".
+    #[test]
+    fn a_codex_approval_not_read_whole_holds_a_rename() {
+        use crate::core::harness::Harness;
+        let answers =
+            "› 1. Yes, proceed (y)\n  2. No (esc)\n\n  Press enter to confirm or esc to cancel\n";
+        let whole = format!(
+            "• Running ls\n\n  Would you like to run the following command?\n\n  $ ls\n\n{answers}"
+        );
+        let topless =
+            format!("  Would you like to run the following command?\n\n  $ ls\n\n{answers}");
+        let untitled = format!("• Running ls\n\n  $ ls\n\n{answers}");
+        for screen in [&whole, &topless, &untitled] {
+            assert!(shows_prompt(screen, Harness::Codex), "{screen}");
+        }
+        assert!(!shows_prompt(
+            "• Done\n\n› Ask Codex to do anything\n",
+            Harness::Codex
+        ));
+    }
+
     #[test]
     fn only_a_waiting_session_is_held_unless_forced() {
         let mut s = named("auth-spike", "user");
