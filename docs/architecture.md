@@ -294,6 +294,11 @@ One title per session, one source of truth (`core::title`):
   Nothing is queued by fleet — a held rename is refused
   with a message and retried by the caller. Known gap: text half-typed into the session's prompt
   box would be prefixed to `/rename`.
+- **Under the typing lock**: every rename types through `title::apply_rename`, which takes the
+  session's typing lock (`core::lock`) first: another fleet command typing there (an answer's keys)
+  makes it fail at once, nothing sent (kind `busy`; `fleet rename --json` prints it as one object).
+  Holding the lock, and unless forced, it reads the terminal once more: a permission prompt or
+  question form that came up since the session was looked up holds the rename as `waiting`.
 
 ## JSON contracts
 
@@ -489,15 +494,35 @@ answered tabs; for the final Enter the whole review). `core::lock` is the per-se
 - A capture is the scrollback, a mark, then the visible screen. A prompt is live only when its
   numbered answers are on the visible screen and end it (≤ 4 footer lines after them, no input
   box); the scrollback only extends a prompt upward.
-- Claude Code's permission prompt is framed: a solid rule above it, dashed rules in pairs inside
-  setting off the command; everything in the frame is its detail. No frame in the capture, or an odd
-  number of dashed rules between the rule found and the title (that rule is inside the command):
-  incomplete. Codex's has no frame: its detail is what lies between the title and the answers. The
-  `id` is `p1.<FNV-1a of title, detail and answers>`.
+- Claude Code's permission prompt is framed: a solid rule above it, then a header, then
+  optionally one dashed pair setting off the command; everything in the frame is its detail. The
+  frame's rules are drawn from column 0 while everything inside it is padded, so a rule-like line
+  of the command (indented) is content, never the frame. No frame in the capture, or column-0
+  rules between the top (the nearest solid one) and the title that are not exactly that shape (a
+  lone or third dashed rule, a pair with no header above it): incomplete. **Assumption:** Claude
+  Code pads every line inside the frame. Only a synthetic Bash fixture backs it (no captured Edit,
+  Write, MCP or plan-approval layout), and a terminal that autowraps a line Ink measured narrower
+  than it draws (emoji, ZWJ, ambiguous-width characters) puts the overflow at column 0, where a
+  crafted command could forge a frame. Binding the identity to the pending `tool_use` in the
+  transcript, with the screen only confirming that the prompt is up, would remove it; not done.
+- Codex's approval has no frame, and its title, command and reason share one indent. The prompt
+  is everything between the last line drawn from column 0 above the answers (the last conversation
+  item, `•` / `›`) and the answers; exactly one line of it may read as a title, else (a command line
+  like `Allow …`) incomplete, and a top out of reach (60 lines) is incomplete too. Its detail is
+  that whole span but the title.
+- The `id` is `p2.<FNV-1a of the title, every line of the detail as drawn (indentation, blank and
+  rule-like lines kept; a side frame — a box character at the left edge and one at the end; an
+  indented line keeps its box characters — trailing blanks and Claude Code's frame rules, as wide
+  as the pane, dropped), and the answers>` — whitespace is part of a command, the frame's width is
+  not (a line wrapped differently after a resize still changes the id). (`p1.` ids hashed trimmed lines; they no longer match.)
 - A question form is parsed whole (tabs with ☐/☒, the active question, rows with checkboxes and
   descriptions, "Type something", Submit/Next, "Chat about this") and matched against the
   transcript's one active question; the review screen (`● question` / `→ answer`, multi-select picks
-  and typed text joined with `", "`, wrapped lines rejoined at a space) is compared exactly.
+  and typed text joined with `", "`, wrapped lines rejoined at a space) is compared exactly. Since
+  that join is ambiguous (an option labelled `A, B` vs the options `A` and `B`), an answer to a
+  multi-question form whose review text another choice would also produce is refused up front
+  (`answer_invalid`).
+- A capture tmux reports as failed (pane or server gone) is an error, never an empty screen.
 
 ### `fleet group --json`
 

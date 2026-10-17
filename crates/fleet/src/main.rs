@@ -188,6 +188,9 @@ enum Commands {
         target: String,
         /// The message to send
         text: String,
+        /// Print one JSON object: `{ ok, target: { session_id, pid } }`, or `{ ok: false, kind, error }`
+        #[arg(long)]
+        json: bool,
     },
 
     /// Run by an agent inside its session: its work is finished and nothing waits on the user.
@@ -1576,7 +1579,7 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
             answers,
             allow_attached,
         })?,
-        Commands::Send { target, text } => commands::send(&target, &text)?,
+        Commands::Send { target, text, json } => commands::send(&target, &text, json)?,
         Commands::Done { note, cancel } => commands::done(note, cancel)?,
         Commands::AskDone { target } => commands::ask_done(&target)?,
         Commands::Sleep { target, json } => commands::sleep(&target, json)?,
@@ -2183,6 +2186,7 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
 /// `spawn`'s and `close`'s failures (as `docs/cli.md` promises them) all exit 1.
 const JSON_FAILURE_COMMANDS: &[(&str, i32)] = &[
     ("messages", 2),
+    ("send", 2),
     ("answer", 2),
     ("peek", 2),
     ("keys", 2),

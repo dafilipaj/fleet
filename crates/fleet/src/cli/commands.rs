@@ -285,22 +285,49 @@ pub fn peek(target: &str, lines: usize) -> Result<()> {
     Ok(())
 }
 
-pub fn send(target: &str, text: &str) -> Result<()> {
-    let s = discovery::resolve_target(target)?;
-    // Never interleave with another fleet command typing into the same session. (A canned
-    // fleet's backends are inert: nothing to lock.)
-    let _lock = if discovery::is_fixture() {
-        None
-    } else {
-        Some(crate::core::lock::try_lock(&s).map_err(|e| Error::Other(e.to_string()))?)
+/// The session's typing lock (see [`crate::core::lock`]) for a command about to type into `s`,
+/// its failure tagged `busy` (another fleet command is typing
+/// there) or `io`; `nothing` says what was not done.
+fn typing_lock(s: &Session, nothing: &str) -> Result<Option<crate::core::lock::SessionLock>> {
+    crate::core::lock::for_typing(s).map_err(|e| {
+        let kind = match e {
+            crate::core::lock::LockError::Busy => "busy",
+            crate::core::lock::LockError::Io(_) => "io",
+        };
+        Error::tagged(kind, format!("{e}; {nothing}"))
+    })
+}
+
+/// `fleet send <target> <text>`: type the text and submit it. `--json`: `{ ok, host, target:
+/// { session_id, pid } }`, or `{ ok: false, host, kind, error }` (exit 1).
+pub fn send(target: &str, text: &str, json: bool) -> Result<()> {
+    let run = || -> Result<Session> {
+        let s = discovery::resolve_target(target)?;
+        // Never interleave with another fleet command typing into the same session.
+        let _lock = typing_lock(&s, "nothing sent")?;
+        backend::send(&s, text)?;
+        Ok(s)
     };
-    backend::send(&s, text)?;
-    println!(
-        "sent to {} ({}): {}",
-        s.headline().bold(),
-        s.backend.label(),
-        text
-    );
+    let s = match run() {
+        Ok(s) => s,
+        Err(e) if json => return Err(json_failure(e)),
+        Err(e) => return Err(e),
+    };
+    if json {
+        let v = serde_json::json!({
+            "ok": true,
+            "host": host_label(),
+            "target": { "session_id": s.session_id, "pid": s.pid },
+        });
+        println!("{}", serde_json::to_string_pretty(&v)?);
+    } else {
+        println!(
+            "sent to {} ({}): {}",
+            s.headline().bold(),
+            s.backend.label(),
+            text
+        );
+    }
     Ok(())
 }
 
@@ -377,17 +404,7 @@ pub fn keys(target: &str, names: &[String], json: bool) -> Result<()> {
         let keys = parse_keys(names)?;
         let s = discovery::resolve_target(target)?;
         // The same per-session lock as `send` and `answer`: their keys never interleave.
-        let _lock = if discovery::is_fixture() {
-            None
-        } else {
-            Some(crate::core::lock::try_lock(&s).map_err(|e| {
-                let kind = match e {
-                    crate::core::lock::LockError::Busy => "busy",
-                    crate::core::lock::LockError::Io(_) => "io",
-                };
-                Error::tagged(kind, format!("{e}; nothing pressed"))
-            })?)
-        };
+        let _lock = typing_lock(&s, "nothing pressed")?;
         backend::keys(&s, &keys)?;
         Ok((s, keys))
     };
@@ -523,7 +540,12 @@ pub fn rename(target: &str, name: &str, no_tmux_sync: bool, force: bool, json: b
         tmux: None,
         message: String::new(),
     };
-    let outcome = apply_rename(&s, &name, opts)?;
+    let outcome = match apply_rename(&s, &name, opts) {
+        Ok(o) => o,
+        // `busy` (another command typing into it) and the rest: one JSON object, as documented.
+        Err(e) if json => return Err(json_failure(e)),
+        Err(e) => return Err(e),
+    };
     let tmux_note = outcome.tmux_note();
     match &outcome {
         RenameOutcome::Held(h, why) => {

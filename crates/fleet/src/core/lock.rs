@@ -1,7 +1,13 @@
 //! One fleet command at a time types into a session: an exclusive lock per session (an
 //! `flock` on a file named after it), held for a whole read-screen → type → verify sequence,
-//! so two `fleet answer` / `fleet send` runs cannot interleave their keys. A lock already held
-//! fails fast — nothing waits for it.
+//! so two fleet commands cannot interleave their keys. Every path that types into a running
+//! session takes it: `send`, `keys`, `answer`, `close` and every rename (`rename`,
+//! `name --apply`, `tmux rename`, the dashboard — all through `title::apply_rename`), and the
+//! web server, which types only through those commands (`web/lib/fleet-cli.mjs`). Typed
+//! without it, into a terminal just opened, where no registered session runs yet: `spawn` and
+//! `restore` (the launch line), and the web spawn's answer to the agent's first-run trust
+//! dialog (no session id to lock until it is past it). A lock already held fails fast —
+//! nothing waits for it.
 
 use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
@@ -76,6 +82,19 @@ pub fn lock_path(s: &Session) -> PathBuf {
 /// Take the session's lock, or say who has it.
 pub fn try_lock(s: &Session) -> Result<SessionLock, LockError> {
     try_lock_at(&lock_path(s))
+}
+
+/// [`try_lock`] for a command about to type into `s`: `None` when nothing can be typed there
+/// at all — a canned fleet (`FLEET_FIXTURE`: inert backends) or a session with no terminal
+/// fleet can drive (typing fails before any key) — so no lock file is made for it.
+pub fn for_typing(s: &Session) -> Result<Option<SessionLock>, LockError> {
+    if crate::core::discovery::is_fixture()
+        || s.handle.is_none()
+        || s.backend == crate::core::discovery::Backend::Unknown
+    {
+        return Ok(None);
+    }
+    try_lock(s).map(Some)
 }
 
 /// How long a `spawn --resume` holds a session it started whose host is unknown or idle: the

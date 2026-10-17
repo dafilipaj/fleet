@@ -242,7 +242,51 @@ pub fn validate_answer(answers: &Value, questions: &[Question]) -> Result<Vec<An
             text: (!text.is_empty()).then(|| text.to_string()),
         });
     }
+    // Two or more questions end on the review screen, the last check before the answers are
+    // submitted: it must tell this answer from every other one, or it checks nothing.
+    if questions.len() > 1 {
+        for (i, (q, a)) in questions.iter().zip(&out).enumerate() {
+            let shown = review_text(q, a);
+            if review_readings(q, &shown, a.text.as_deref()) > 1 {
+                return Err(format!(
+                    "answers[{i}]: the review screen would show \"{shown}\" for another choice too (a label with \", \" in it, or text that reads as an option) — pick options whose review cannot be mistaken"
+                ));
+            }
+        }
+    }
     Ok(out)
+}
+
+/// How many answers to `q` the review screen shows as `shown` (see [`review_text`]), counted
+/// up to 2: any options, in option order, then `text` or nothing — `text` being the one this
+/// answer types, since nobody else types into the session. One reading: the review tells the
+/// answer apart; more: an option labelled `A, B` and the options `A` and `B` (or a typed `B`)
+/// look the same there.
+fn review_readings(q: &Question, shown: &str, text: Option<&str>) -> usize {
+    let labels: Vec<&str> = q.options.iter().map(|o| o.label.as_str()).collect();
+    if !q.multi_select {
+        return labels.iter().filter(|l| **l == shown).count() + usize::from(text == Some(shown));
+    }
+    /// Ways to read `rest` as labels from `labels[from..]` (in order), then optionally `text`,
+    /// joined with `", "`: at least one part.
+    fn ways(rest: &str, labels: &[&str], from: usize, text: Option<&str>) -> usize {
+        let mut n = usize::from(text == Some(rest));
+        for (i, l) in labels.iter().enumerate().skip(from) {
+            let Some(after) = rest.strip_prefix(l) else {
+                continue;
+            };
+            if after.is_empty() {
+                n += 1;
+            } else if let Some(next) = after.strip_prefix(", ") {
+                n += ways(next, labels, i + 1, text);
+            }
+            if n > 1 {
+                break;
+            }
+        }
+        n
+    }
+    ways(shown, &labels, 0, text)
 }
 
 /// One thing to do at the terminal: press a key (tmux key name) or type text literally.
@@ -617,6 +661,43 @@ mod tests {
                 },
             ])
         );
+    }
+
+    // The review screen joins picks with ", ": an option labelled "A, B" and the options "A"
+    // and "B" read the same there, so it could not tell one from the other.
+    #[test]
+    fn an_answer_the_review_screen_cannot_tell_apart_is_refused() {
+        let q = normalize_questions(&json!({
+            "questions": [
+                { "question": "Which letters?", "header": "Letters", "multiSelect": true,
+                  "options": [{ "label": "A, B" }, { "label": "A" }, { "label": "B" }, { "label": "C" }] },
+                { "question": "Which city?", "header": "City", "multiSelect": false,
+                  "options": [{ "label": "Paris" }, { "label": "Rome" }] }
+            ]
+        }))
+        .unwrap();
+        let check = |v: Value| validate_answer(&v, &q);
+        for ambiguous in [
+            json!([{ "options": [0] }, { "options": [0] }]),
+            json!([{ "options": [1, 2] }, { "options": [0] }]),
+            json!([{ "options": [1], "text": "B" }, { "options": [0] }]),
+            json!([{ "options": [3] }, { "text": "Rome" }]),
+            // "A, B, C": the options A, B and C, or "A, B" and C.
+            json!([{ "options": [0, 3] }, { "options": [1] }]),
+        ] {
+            let e = check(ambiguous.clone()).unwrap_err();
+            assert!(e.contains("review screen"), "{ambiguous}: {e}");
+        }
+        // Readable one way only: fine.
+        for clear in [
+            json!([{ "options": [1, 3] }, { "options": [1] }]),
+            json!([{ "options": [2, 3] }, { "text": "Zagreb" }]),
+            json!([{ "text": "D" }, { "options": [0] }]),
+        ] {
+            assert!(check(clear.clone()).is_ok(), "{clear}");
+        }
+        // A lone question has no review screen: nothing to tell apart.
+        assert!(validate_answer(&json!([{ "options": [0] }]), &q[..1]).is_ok());
     }
 
     #[test]
