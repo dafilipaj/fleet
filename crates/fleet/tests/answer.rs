@@ -15,7 +15,8 @@ use serde_json::{Value, json};
 
 /// A permission prompt in Claude Code 2.1's layout (wording synthetic). Keys move the cursor;
 /// a digit picks that answer, Enter the one under the cursor. Args: key log, answer file,
-/// mode (`replace`: the answer reveals another prompt with the same answers — a queued one).
+/// mode (`replace`: the answer reveals another prompt with the same answers — a queued one;
+/// `vanish`: the answer ends the agent, and with it its pane and tmux server).
 const FAKE_PERMISSION: &str = r#"#!/bin/bash
 log="$1"; out="$2"; mode="$3"; cmd="rm -rf build"
 labels=("Yes" "Yes, and always allow access to /w/app from this project" "No")
@@ -49,6 +50,7 @@ while IFS= read -r -s -n1 -d '' c; do
            [ "$rest" = "[B" ] && [ $cur -lt 2 ] && cur=$((cur+1))
            [ "$rest" = "[A" ] && [ $cur -gt 0 ] && cur=$((cur-1)) ;;
     [1-3]) echo "picked=$c" >> "$out"
+           [ "$mode" = vanish ] && exit
            if [ "$mode" = replace ] && [ "$cmd" = "rm -rf build" ]; then cmd="rm -rf dist"; cur=0
            else printf '\033[2J\033[H● done\n'; sleep 60; exit; fi ;;
     $'\n'|$'\r') echo "picked=$((cur+1))" > "$out"; printf '\033[2J\033[H● done\n'; sleep 60; exit ;;
@@ -61,7 +63,8 @@ done
 /// behaves like the real one: ↑/↓ move the cursor, typing on "Type something" fills it in,
 /// Enter picks (single-select) or ticks (multi-select; on "Submit" it submits).
 /// Args: single|multi, key log, answer file, mischief (1: the cursor jumps a row by itself
-/// after the first key — a human pressing ↓ mid-answer; 2: Rome starts ticked).
+/// after the first key — a human pressing ↓ mid-answer; 2: Rome starts ticked; 3: the agent
+/// exits on the first key, and with it its pane).
 const FAKE_FORM: &str = r#"#!/bin/bash
 mode="$1"; log="$2"; out="$3"; mischief="$4"
 labels=("Paris" "Rome"); descs=("The French capital" "The Italian capital")
@@ -120,6 +123,7 @@ while IFS= read -r -s -n1 -d '' c; do
     typed="$typed$c"
   fi
   keys=$((keys+1))
+  [ "$mischief" = 3 ] && exit
   if [ "$mischief" = 1 ] && [ $keys -eq 1 ]; then cur=$((cur+1)); fi
   draw
 done
@@ -227,6 +231,19 @@ impl Server {
     }
 
     fn agent_cmd(&self, name: &str, cmd: &str, session_id: &str, ready: &str) -> String {
+        self.agent_as(name, cmd, session_id, ready, "waiting")
+    }
+
+    /// [`Server::agent_cmd`], registered with `status` (what the registry says the session is
+    /// doing, whatever its screen shows).
+    fn agent_as(
+        &self,
+        name: &str,
+        cmd: &str,
+        session_id: &str,
+        ready: &str,
+        status: &str,
+    ) -> String {
         let session = format!("fleet-test-{name}");
         self.tmux(&[
             "new-session",
@@ -242,7 +259,7 @@ impl Server {
         let pid = self.tmux(&["display-message", "-p", "-t", &session, "#{pane_pid}"]);
         assert!(!pid.is_empty(), "no pane pid");
         let reg = json!({ "pid": pid.parse::<i64>().unwrap(), "sessionId": session_id, "cwd": "/w",
-                          "status": "waiting", "kind": "interactive", "name": name });
+                          "status": status, "kind": "interactive", "name": name });
         std::fs::write(
             self.env.path(&format!("home/.claude/sessions/{pid}.json")),
             reg.to_string(),
@@ -366,7 +383,7 @@ fn a_permission_prompt_is_answered_with_one_key_only_while_on_screen() {
     // Refusals type nothing.
     let refused: [(&[&str], &str); 3] = [
         (
-            &["--choice", "2", "--prompt", "p1.00000000"],
+            &["--choice", "2", "--prompt", "p2.00000000"],
             "prompt_not_on_screen",
         ),
         (&["--choice", "4"], "choice_invalid"),
@@ -658,6 +675,103 @@ fn a_key_that_reveals_a_lookalike_prompt_is_not_claimed_as_answered() {
     assert_eq!(keys(&log), "3", "one key went out");
 }
 
+// The pane (and the tmux server) gone right after the key: its captures fail, and an empty
+// failed capture once read as "the prompt is gone" — answered.
+#[test]
+fn a_terminal_gone_after_the_key_is_never_claimed_as_answered() {
+    let Some(s) = Server::new() else { return };
+    let (log, out) = s.files("vanish");
+    let pid = s.agent_cmd(
+        "vanish",
+        &format!(
+            "'{}' '{}' '{}' vanish",
+            s.env.path("bin/permission").display(),
+            log.display(),
+            out.display()
+        ),
+        "s-vanish",
+        "Do you want to proceed?",
+    );
+    let (code, v, _) = s.fleet(&["answer", &pid, "--choice", "3", "--json"]);
+    assert_eq!(
+        (code, v["kind"].as_str()),
+        (1, Some("outcome_uncertain")),
+        "{v}"
+    );
+    assert_ne!(v["answered"], true);
+    assert!(
+        v["error"].as_str().unwrap_or("").contains("capture-pane"),
+        "{v}"
+    );
+    assert_eq!(read(&out).trim(), "picked=3", "the key went out");
+}
+
+// The registry says the session is busy (no hold for a Claude rename), but its screen shows a
+// permission prompt that came up since: under the lock the screen is read again, and the
+// rename is held — `/rename …` and its Enter would have answered the prompt.
+#[test]
+fn a_rename_reads_the_screen_again_under_the_lock() {
+    let Some(s) = Server::new() else { return };
+    let (log, out) = s.files("reread");
+    let pid = s.agent_as(
+        "reread",
+        &format!(
+            "'{}' '{}' '{}'",
+            s.env.path("bin/permission").display(),
+            log.display(),
+            out.display()
+        ),
+        "s-reread",
+        "Do you want to proceed?",
+        "busy",
+    );
+    let (code, _, err) = s.fleet(&["rename", &pid, "probe", "--no-tmux-sync"]);
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("waiting"), "{err}");
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(read(&log), "", "nothing typed into the prompt");
+    assert_eq!(read(&out), "");
+}
+
+// The form's pane exits on the first key: the next read fails. That is `io`, saying how many
+// keys went out — never `answered`.
+#[test]
+fn a_form_gone_after_the_first_key_says_how_many_keys_went_out() {
+    let Some(s) = Server::new() else { return };
+    s.question_transcript("s-gone", false);
+    let (log, out) = s.files("gone");
+    let pid = s.agent_cmd(
+        "gone",
+        &format!(
+            "'{}' single '{}' '{}' 3",
+            s.env.path("bin/form").display(),
+            log.display(),
+            out.display()
+        ),
+        "s-gone",
+        "Enter to select",
+    );
+    let (code, v, _) = s.fleet(&[
+        "answer",
+        &pid,
+        "--question",
+        "tq1",
+        "--answers",
+        "[{\"options\":[1]}]",
+        "--json",
+    ]);
+    assert_eq!((code, v["kind"].as_str()), (1, Some("io")), "{v}");
+    assert!(
+        v["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("stopped after 1 of 2 keys"),
+        "{v}"
+    );
+    assert_ne!(v["answered"], true);
+    assert_eq!(keys(&log), DOWN, "one key went out");
+}
+
 #[test]
 fn another_fleet_command_holding_the_session_makes_it_busy() {
     let Some(s) = Server::new() else { return };
@@ -683,6 +797,23 @@ fn another_fleet_command_holding_the_session_makes_it_busy() {
     let (code, _, err) = s.fleet(&["send", &pid, "hello"]);
     assert_eq!(code, 1);
     assert!(err.contains("another fleet command"), "{err}");
+    // So does a rename, even forced past the waiting hold: `/rename …` and its Enter never
+    // land between an answer's keys.
+    let (code, _, err) = s.fleet(&["rename", &pid, "probe", "--force", "--no-tmux-sync"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("another fleet command"), "{err}");
+    // With `--json`, both say so as one object: kind `busy`.
+    let (code, v, _) = s.fleet(&["send", "--json", "--", &pid, "hello"]);
+    assert_eq!((code, v["kind"].as_str()), (1, Some("busy")), "{v}");
+    let (code, v, _) = s.fleet(&[
+        "rename",
+        &pid,
+        "probe",
+        "--force",
+        "--no-tmux-sync",
+        "--json",
+    ]);
+    assert_eq!((code, v["kind"].as_str()), (1, Some("busy")), "{v}");
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(read(&log), "");
     drop(held);

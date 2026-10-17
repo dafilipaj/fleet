@@ -26,8 +26,9 @@ fn list_json_is_valid_array() {
 fn every_json_usage_error_is_the_same_one_object() {
     let env = common::Env::new();
     // (command, the arguments it needs, the exit code its usage errors get)
-    let commands: [(&str, &[&str], i32); 6] = [
+    let commands: [(&str, &[&str], i32); 7] = [
         ("messages", &["pid:1"], 2),
+        ("send", &["pid:1", "hello"], 2),
         ("answer", &["pid:1"], 2),
         ("peek", &["pid:1"], 2),
         ("keys", &["pid:1", "Enter"], 2),
