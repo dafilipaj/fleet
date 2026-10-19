@@ -290,6 +290,10 @@ pub struct RenameOpts {
 /// renamed to …" appeared inline, the turn finished normally; the model gets a
 /// system reminder about the new name). An older Claude that queues input while
 /// busy would run it after the turn instead — also harmless.
+///
+/// Nor is text already in the session's **input box** (a prompt Escape put back, a
+/// draft): `/rename foo` typed after it would go out with it as one prompt — the
+/// stopped prompt run again — so that holds too, read off the screen under the lock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Hold {
@@ -297,6 +301,8 @@ pub enum Hold {
     Waiting,
     /// Mid-turn in a harness that would queue the text as a message (Codex, pi).
     Busy,
+    /// Text in the input box: `/rename foo` would be glued onto it and submit both.
+    Input,
 }
 
 /// Would typing `/rename` into this session be unsafe right now?
@@ -316,6 +322,10 @@ impl Hold {
             ),
             Hold::Busy => format!(
                 "{} is busy — nothing sent, rename it once the turn is over (--force overrides)",
+                s.headline()
+            ),
+            Hold::Input => format!(
+                "{} has text in its input box — the rename would go out with it as one prompt; nothing sent, rename it once the box is clear (--force overrides)",
                 s.headline()
             ),
         }
@@ -359,8 +369,10 @@ impl RenameOutcome {
 ///
 /// It types under the session's lock (see [`crate::core::lock`]), like every other command
 /// that types into a session: `/rename …` and its Enter never land between the keys of an
-/// answer. And under the lock, unless forced, the terminal is read once more: a prompt that
-/// came up since the session was looked up holds the rename as a waiting session would.
+/// answer. And under the lock, unless forced, its input box is read off the screen
+/// ([`crate::core::input`], as `send` reads it): a prompt that came up since the session was
+/// looked up holds the rename as a waiting session would, and text in the box holds it as
+/// [`Hold::Input`]. A box fleet cannot find or read holds nothing, as for `send` by default.
 pub fn apply_rename(s: &Session, title: &str, o: RenameOpts) -> Result<RenameOutcome> {
     if !o.force
         && let Some(h) = hold(s)
@@ -374,9 +386,16 @@ pub fn apply_rename(s: &Session, title: &str, o: RenameOpts) -> Result<RenameOut
         };
         Error::tagged(kind, format!("{e}; nothing sent"))
     })?;
-    if !o.force && lock.is_some() && shows_prompt(&backend::peek(s)?, s.harness) {
-        let h = Hold::Waiting;
-        return Ok(RenameOutcome::Held(h, h.message(s)));
+    if !o.force && lock.is_some() {
+        use crate::core::input::{self, InputRead};
+        let h = match input::of(s)? {
+            InputRead::Prompt => Some(Hold::Waiting),
+            InputRead::Typed(_) => Some(Hold::Input),
+            _ => None,
+        };
+        if let Some(h) = h {
+            return Ok(RenameOutcome::Held(h, h.message(s)));
+        }
     }
     backend::send(s, &s.harness.rename_command(title))?;
     drop(lock);

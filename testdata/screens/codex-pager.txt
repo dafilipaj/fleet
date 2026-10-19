@@ -1,0 +1,14 @@
+/ T R A N S C R I P T / / / / / / / / / / / / / / / / / / / / / / / / / / / /
+› fix the flaky login test
+
+• Fixed the flaky login test.
+
+[38;5;244m──────────────────────────────────────────────────────────────── 100% ─[39m
+  [2m↑/↓ to scroll   pgup/pgdn to page   home/end to jump[0m
+  [2mq to quit   esc to edit prev[0m
+
+
+
+
+
+

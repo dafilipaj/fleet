@@ -1,0 +1,14 @@
+• Fixed the flaky login test.
+
+[48;5;236m
+[1m›[0m[48;5;236m fix the flaky login test
+
+  then run the full suite
+
+
+[49m  [2m98% context left[0m
+
+
+
+
+

@@ -1,0 +1,14 @@
+› fix the flaky login test
+
+■ Conversation interrupted - tell the model what to do differently.
+
+[48;2;7;2;27m
+[1m›[0m[48;2;7;2;27m fix the flaky login test
+
+
+[49m  [2mgpt-6 medium · 2% used[0m
+
+
+
+
+
