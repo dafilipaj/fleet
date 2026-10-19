@@ -107,24 +107,13 @@ end run"#
             &[handle],
         ),
         Backend::Tmux => {
-            // A capture tmux says failed (the pane or the server gone) is an error, never an
-            // empty screen: `answer` would read that as its prompt having gone, i.e. answered.
-            let capture = |range: &[&str]| -> Result<String> {
-                let out = crate::core::tools::tmux_cmd()
-                    .args(["capture-pane", "-t", handle, "-p"])
-                    .args(range)
-                    .output()?;
-                let text = String::from_utf8_lossy(&out.stdout).to_string();
-                tmux_ok(out, &format!("tmux capture-pane -t {handle}"))?;
-                Ok(text)
-            };
-            let visible = capture(&[])?;
+            let visible = tmux_capture(handle, &[])?;
             if history == 0 {
                 return Ok(visible);
             }
             // The scrollback above the screen, then a mark where the screen starts: what is
             // on screen now is told apart from what scrolled (or was cleared) off it.
-            let above = capture(&["-S", &format!("-{history}"), "-E", "-1"])?;
+            let above = tmux_capture(handle, &["-S", &format!("-{history}"), "-E", "-1"])?;
             Ok(format!(
                 "{above}{}\n{visible}",
                 crate::core::prompt::VISIBLE_MARK
@@ -132,6 +121,31 @@ end run"#
         }
         Backend::Unknown => require_handle(s).map(|_| String::new()),
     }
+}
+
+/// [`peek`] with the text's attributes, when the backend has them: `(screen, styled)`. tmux
+/// keeps them as escape sequences (`capture-pane -e`, `true`); iTerm's text has none
+/// (`false`). `send` reads its input box this way: faint text there is a placeholder.
+pub fn peek_styled(s: &Session) -> Result<(String, bool)> {
+    deny_fixture()?;
+    let handle = require_handle(s)?;
+    match s.backend {
+        Backend::Tmux => Ok((tmux_capture(handle, &["-e"])?, true)),
+        _ => peek(s).map(|text| (text, false)),
+    }
+}
+
+/// One `capture-pane -p` of `handle`, with `args`. A capture tmux says failed (the pane or the
+/// server gone) is an error, never an empty screen: `answer` would read that as its prompt
+/// having gone, i.e. answered — and `send` as an empty input box.
+fn tmux_capture(handle: &str, args: &[&str]) -> Result<String> {
+    let out = crate::core::tools::tmux_cmd()
+        .args(["capture-pane", "-t", handle, "-p"])
+        .args(args)
+        .output()?;
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    tmux_ok(out, &format!("tmux capture-pane -t {handle}"))?;
+    Ok(text)
 }
 
 /// What a session's terminal shows, whole: no header, no clipping to our own width.

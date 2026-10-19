@@ -36,6 +36,10 @@ Pure logic plus thin process wrappers; no printing. Everything a future front-en
   - iTerm: AppleScript via `osascript`; values are passed as argv, never interpolated into the
     script. Text is written without a newline, then an empty write submits it (a trailing newline
     would be swallowed by bracketed paste).
+- **input** — reads a session's input box (Claude Code's prompt, Codex's composer, pi's editor)
+  off a capture that keeps the text's attributes (tmux `capture-pane -e`): `send`, `rename` and
+  `close` never type after text already there or into a prompt, a faint placeholder or
+  suggestion aside ([cli.md](cli.md#sending)).
 - **naming** — generates short kebab-case titles by asking `claude -p --model haiku` what a
   session is working on (falls back to git branch / first prompt); cached across runs.
 - **tmux** — tmux-*session* management inherited from `ws`: matching, sanitizing, stale detection.
@@ -538,6 +542,36 @@ answered tabs; for the final Enter the whole review). `core::lock` is the per-se
   multi-question form whose review text another choice would also produce is refused up front
   (`answer_invalid`).
 - A capture tmux reports as failed (pane or server gone) is an error, never an empty screen.
+
+### `fleet send --json`
+
+See [cli.md](cli.md#sending). Under the session's typing lock, `core::input` reads the visible
+screen once with its text attributes (`backend::peek_styled`: tmux `capture-pane -p -e`; iTerm's
+text has none) and the text is typed under that same lock. Text in the box (`reason: "text"`) or
+a prompt in its place (`"prompt"`) holds the send; no box found (`"no_input_box"`) or none
+readable (`"unreadable"`) types, adding `warning: <reason>` to `{ ok: true, host, target }` and
+one line on stderr — unless `--require-empty`, which holds on those too. Held is `{ ok: false,
+host, kind: "send_held", reason, error, input? }`, exit 3, `input` the box's text when it shows
+any: sensitive (whatever was typed or pasted there), so it is in that field alone, never in
+`error` or on stderr. `warning`, `reason` and `input` are additions: every other result keeps its
+shape, and every other failure exit 1. A host running an older fleet rejects `--force` and
+`--require-empty` sent through `-H` (exit 2, `usage`). `rename` (`held: "input"` / `"waiting"`)
+and `close` (no exit command, straight to the kill) read the box the same way.
+
+- The capture is parsed into cells (character, faint, bold, reverse video, foreground and background
+  colour — palette or 24-bit, its numbers never read as attributes); tmux carries attributes
+  from one line to the next, so the parse does too. Plain text decides where Claude Code's and
+  pi's boxes are (the prompt check `answer --list` uses runs first); Codex's composer is bounded
+  by its background, or else by its footer (the last rows on screen, under a blank row, one of
+  them drawn faint, bold or in a colour, one with a footer's known text; `unreadable`, never
+  empty, when those rows cannot be told from the composer's), its `[Image #N]` attachment rows
+  above it included; the attributes decide what in the box is typed, and Claude Code's IDE pill (a leading `[…]` in a colour of its own) is left
+  out.
+- **Assumption:** the harnesses draw what an empty box shows faint, and typed text never.
+  Claude Code 2.1's rendering was read from its code (placeholder `chalk.dim`, its drawn cursor
+  `\e[7m` on the placeholder's first character, none with the terminal's cursor, the IDE pill
+  `[${…}] ` in the theme's `ide` colour); the fixtures in `testdata/screens` are tmux captures of
+  synthetic screens in each layout (`gen.sh` there makes them), not of live sessions.
 
 ### `fleet group --json`
 

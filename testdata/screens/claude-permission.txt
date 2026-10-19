@@ -1,0 +1,14 @@
+⏺ Removing the build output
+
+[38;5;244m────────────────────────────────────────────────────────────────────────────────
+[39m Bash command
+
+   rm -rf build
+   Remove the build output
+
+ Do you want to proceed?
+ [36m❯ 1. Yes[39m
+   2. No
+
+ [2mEsc to cancel · Tab to amend[0m
+

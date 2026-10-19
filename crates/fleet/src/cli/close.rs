@@ -13,13 +13,16 @@
 //!   when another fleet command holds it): a busy or waiting session gets Escape and up to
 //!   [`SETTLE`] to go idle; then, if the agent still owns its pane, the harness's own exit
 //!   command ([`crate::core::harness::Harness::exit_command`]) is typed and the agent gets
-//!   `--timeout` seconds to exit. Only an agent in the foreground of its pane's terminal
-//!   owns it ([`owns`], from one `ps`): one suspended (Ctrl-Z) or exited (on Escape too) gets
-//!   nothing typed, Escape included, and goes straight to the kill — unless something else
-//!   is in front of it: a process of its own (Claude Code's Ctrl-G editor) is `busy`, another
-//!   job is `host_shared`, and nothing is typed or killed. Another job stopped on the pane's
-//!   terminal (the kill would end it too) is `host_shared` as well. The same look is taken
-//!   again right before the kill. `busy` and `host_shared` failures carry a `reason`
+//!   `--timeout` seconds to exit — unless its input box holds text (the prompt Escape put
+//!   back, a draft) or a prompt waits there ([`box_clear`]): the command would go out with
+//!   that text, or answer that prompt, so it goes straight to the kill. Only an agent in the
+//!   foreground of its pane's terminal owns it ([`owns`], from one `ps`): one suspended
+//!   (Ctrl-Z) or exited (on Escape too) gets nothing typed, Escape included, and goes
+//!   straight to the kill — unless something else is in front of it: a process of its own
+//!   (Claude Code's Ctrl-G editor) is `busy`, another job is `host_shared`, and nothing is
+//!   typed or killed. Another job stopped on the pane's terminal (the kill would end it too)
+//!   is `host_shared` as well. The same look is taken again right before the kill. `busy`
+//!   and `host_shared` failures carry a `reason`
 //!   ([`LOCKED`], [`EDITOR_OPEN`], [`SHARED_HOST`], [`JOB_IN_FRONT`], [`OTHER_JOBS`]).
 //! - **Fails closed:** when who reads the pane's terminal cannot be told (`lsof` missing,
 //!   failing, or slower than [`discovery::LSOF_DEADLINE`]) it is `io`, with nothing typed.
@@ -369,6 +372,7 @@ fn close(o: &Opts, dry_run: bool) -> Result<Closed> {
         standing = owns(&agent, &pane, typed)?;
     }
     let mut exited = match (standing, exit) {
+        (Standing::Owns, Some(_)) if !box_clear(&s) => false,
         (Standing::Owns, Some(cmd)) => {
             backend::send(&s, cmd).map_err(|e| e.tag("io"))?;
             typed = "its exit command was typed";
@@ -581,6 +585,19 @@ fn start_of(s: &Session) -> Option<String> {
     s.proc_start
         .clone()
         .or_else(|| discovery::process_start(s.pid))
+}
+
+/// May the exit command be typed into `s`'s input box? Not when it holds text — a prompt
+/// Escape put back, a draft: the command would go out with it as one prompt, and that prompt
+/// would run — or a prompt waits in its place, which would take it as its answer; nor when the
+/// screen cannot be read. The kill ends the session either way. A box fleet cannot find or
+/// read (a layout it does not know) does not stop it, as it does not stop `send`.
+fn box_clear(s: &Session) -> bool {
+    use crate::core::input::{self, InputRead};
+    matches!(
+        input::of(s),
+        Ok(InputRead::Empty | InputRead::NoBox | InputRead::Unclear(_))
+    )
 }
 
 /// Wait (≤ [`SETTLE`]) for the session to stop being busy or waiting — or to be gone.

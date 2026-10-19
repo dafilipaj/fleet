@@ -182,15 +182,30 @@ enum Commands {
         allow_attached: bool,
     },
 
-    /// Type text into a session and submit it
+    /// Type text into a session and submit it — held while its input box holds text
+    ///
+    /// Under the session's typing lock, fleet first reads the input box off the screen (tmux:
+    /// with its text attributes). A placeholder or suggestion, drawn faint, counts as empty.
+    /// Text in the box (Claude Code puts an interrupted prompt back there; typed text would go
+    /// out with it as one prompt) or a prompt waiting for its answer holds the send: exit 3,
+    /// nothing typed. No input box fleet can find, or one it cannot read (iTerm gives no text
+    /// attributes), types as before, with a warning; --require-empty holds then too. --force
+    /// types without reading the box. After `keys Escape`, wait about a second before sending:
+    /// Claude Code puts the stopped prompt back only once the turn has stopped.
     Send {
         /// sessionId prefix, derived name, or pid; `pid:<n>` / `id:<session_id>` match exactly
         target: String,
         /// The message to send
         text: String,
-        /// Print one JSON object: `{ ok, target: { session_id, pid } }`, or `{ ok: false, kind, error }`
+        /// Print one JSON object: `{ ok, target: { session_id, pid }, warning? }`, or `{ ok: false, kind, error }` (held: kind `send_held`, with `reason` and `input` — the box's text, which may be sensitive)
         #[arg(long)]
         json: bool,
+        /// Type without reading the input box, whatever it holds
+        #[arg(long)]
+        force: bool,
+        /// Hold also when fleet cannot find the input box or read it, not only when it holds text
+        #[arg(long)]
+        require_empty: bool,
     },
 
     /// Run by an agent inside its session: its work is finished and nothing waits on the user.
@@ -1618,7 +1633,13 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
             answers,
             allow_attached,
         })?,
-        Commands::Send { target, text, json } => commands::send(&target, &text, json)?,
+        Commands::Send {
+            target,
+            text,
+            json,
+            force,
+            require_empty,
+        } => commands::send(&target, &text, json, force, require_empty)?,
         Commands::Done { note, cancel } => commands::done(note, cancel)?,
         Commands::AskDone { target } => commands::ask_done(&target)?,
         Commands::Sleep { target, json } => commands::sleep(&target, json)?,

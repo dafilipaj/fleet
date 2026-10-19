@@ -1,0 +1,34 @@
+
+  [38;5;75m>_ [1m[39mOpenAI Codex[0;2m (v0.163.0)[0m
+     [2m/private/tmp/example-capture[0m
+
+[2m  To get started, describe a task or try one of these commands:[0m
+
+  /init[2m - create an AGENTS.md file with instructions for Codex[0m
+  /status[2m - show current session configuration[0m
+  /permissions[2m - choose what Codex is allowed to do[0m
+  /model[2m - choose what model and reasoning effort to use[0m
+  /review[2m - review any changes and find issues[0m
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[1m›[0m [2mAsk Codex to do anything[0m
+
+  [38;5;223mGPT-6-Astra high[39m · [38;5;216mContext 0% used[39m · [38;5;175m5h 0% left[39m · [38;5;175mweekly 50% left[39m
+  [1m←[0m for agents · [1m?[0m for shortcuts                                                     ⚠ [38;5;179m1 warning[39m · [1mf2[0m to view

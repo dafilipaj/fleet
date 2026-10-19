@@ -298,27 +298,78 @@ fn typing_lock(s: &Session, nothing: &str) -> Result<Option<crate::core::lock::S
     })
 }
 
-/// `fleet send <target> <text>`: type the text and submit it. `--json`: `{ ok, host, target:
-/// { session_id, pid } }`, or `{ ok: false, host, kind, error }` (exit 1).
-pub fn send(target: &str, text: &str, json: bool) -> Result<()> {
-    let run = || -> Result<Session> {
+/// The exit code of a `send` held by what its session's input box shows.
+pub const SEND_HELD_EXIT: i32 = 3;
+
+/// `fleet send <target> <text>`: type the text and submit it — unless the session's input box
+/// already holds text or a prompt waits in its place (see [`crate::core::input`]), or, with
+/// `require_empty`, the box cannot be found or read either. `force` types without reading it.
+/// `--json`: `{ ok, host, target: { session_id, pid }, warning? }` — `warning` the reason a
+/// box that could not be found or read did not hold it —, or `{ ok: false, host, kind, error }`
+/// (exit 1). Held: kind `send_held`, its `reason`, and the box's text as `input` when it shows
+/// any (exit [`SEND_HELD_EXIT`]); that text goes nowhere else, stderr included.
+pub fn send(target: &str, text: &str, json: bool, force: bool, require_empty: bool) -> Result<()> {
+    let mut shown: Option<String> = None;
+    let mut warned: Option<(&'static str, &'static str)> = None;
+    let mut run = || -> Result<Session> {
         let s = discovery::resolve_target(target)?;
-        // Never interleave with another fleet command typing into the same session.
-        let _lock = typing_lock(&s, "nothing sent")?;
+        // Never interleave with another fleet command typing into the same session — and read
+        // the input box under that same lock, so no fleet command types between the read and
+        // the text. (No lock: nothing can be typed there at all, and `backend::send` says so.)
+        let lock = typing_lock(&s, "nothing sent")?;
+        if !force && lock.is_some() {
+            let read = crate::core::input::of(&s).map_err(|e| {
+                let e = e.tag("backend_failed");
+                Error::tagged(
+                    e.kind(),
+                    format!("cannot read the input box: {e}; nothing sent"),
+                )
+            })?;
+            if let Some(reason) = read.reason() {
+                if read.holds(require_empty) {
+                    shown = read.text().map(str::to_string);
+                    return Err(Error::tagged_exit_for(
+                        SEND_HELD_EXIT,
+                        "send_held",
+                        reason,
+                        read.message(),
+                    ));
+                }
+                warned = read.warning().map(|w| (reason, w));
+            }
+        }
         backend::send(&s, text)?;
+        drop(lock);
         Ok(s)
     };
     let s = match run() {
         Ok(s) => s,
-        Err(e) if json => return Err(json_failure(e)),
+        Err(e) if json => {
+            let mut v = e.json();
+            v["host"] = host_label().into();
+            if let Some(text) = shown {
+                v["input"] = text.into();
+            }
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string())
+            );
+            return Err(e);
+        }
         Err(e) => return Err(e),
     };
+    if let Some((_, why)) = warned {
+        eprintln!("{} {why}", "warning:".yellow());
+    }
     if json {
-        let v = serde_json::json!({
+        let mut v = serde_json::json!({
             "ok": true,
             "host": host_label(),
             "target": { "session_id": s.session_id, "pid": s.pid },
         });
+        if let Some((reason, _)) = warned {
+            v["warning"] = reason.into();
+        }
         println!("{}", serde_json::to_string_pretty(&v)?);
     } else {
         println!(

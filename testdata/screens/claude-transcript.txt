@@ -1,0 +1,14 @@
+⏺ Bash(cargo test)
+  ⎿  test result: ok. 42 passed; 0 failed
+
+⏺ The suite passes: 42 tests, 0 failures.
+
+  [2mShowing detailed transcript · ctrl+o to toggle[0m
+
+
+
+
+
+
+
+
