@@ -634,6 +634,63 @@ test('send / keys: another fleet command typing into the session makes them busy
   assert.deepEqual(host.calls.filter((c) => c[0] !== 'peek'), [], 'nothing typed any other way');
 });
 
+// `fleet send` holds (exit 3) while the session's input box holds text — after an Escape, Claude
+// Code puts the stopped prompt back there. Nothing was typed: a 409 with the CLI's reason and the
+// box's text, not a 502, and no retry.
+test('send: an input box that is not empty holds it (409), with the reason and the text', async (t) => {
+  const id = 'dddddddd-0000-0000-0000-000000000014';
+  const host = fakeHost('solo', [{ session_id: id, name: 'b', status: 'idle', backend: 'tmux', handle: '%4', updated_at: 4 }]);
+  const argv = [];
+  const held = createFleetCli({
+    bin: '/x/fleet',
+    run: async (file, args) => {
+      argv.push(args);
+      const error = 'the input box already holds text — the text would go out with it as one prompt; nothing sent';
+      const e = new Error(error);
+      e.code = 3;
+      e.stdout = JSON.stringify({ ok: false, host: 'solo', kind: 'send_held', reason: 'text', error, input: 'fix the login test' });
+      throw e;
+    },
+  });
+  host.cli.send = held.send;
+  const config = normalizeConfig({ self: 'solo' }, { env: {}, home: '/home/tester' });
+  const api = createApi({ config, ...host, warmFleet: false });
+  const server = createHttpServer({ handleApi: api, uiDir: os.tmpdir() });
+  const base = await listen(server);
+  t.after(() => server.close());
+
+  const sent = await post(`${base}/api/hosts/solo/sessions/${id}/send`, { text: 'run the tests' });
+  assert.equal(sent.status, 409);
+  assert.equal(sent.body.ok, false);
+  assert.equal(sent.body.kind, 'send_held');
+  assert.equal(sent.body.reason, 'text');
+  assert.equal(sent.body.input, 'fix the login test');
+  assert.doesNotMatch(sent.body.error, /fix the login test/, 'the text only in `input`');
+  assert.deepEqual(argv, [['send', '--json', '--', `id:${id}`, 'run the tests']], 'one try, never retried');
+});
+
+// A box the CLI cannot find or read does not hold a send by default: it types, and its report
+// says so (`warning`) — passed through as a 200.
+test('send: typed with a warning, the warning reaches the caller', async (t) => {
+  const id = 'dddddddd-0000-0000-0000-000000000015';
+  const host = fakeHost('solo', [{ session_id: id, name: 'b', status: 'idle', backend: 'tmux', handle: '%4', updated_at: 4 }]);
+  const warned = createFleetCli({
+    bin: '/x/fleet',
+    run: async () => ({ stdout: JSON.stringify({ ok: true, host: 'solo', target: { session_id: id, pid: 4 }, warning: 'no_input_box' }), stderr: 'warning: typed without knowing the input box was empty\n' }),
+  });
+  host.cli.send = warned.send;
+  const config = normalizeConfig({ self: 'solo' }, { env: {}, home: '/home/tester' });
+  const api = createApi({ config, ...host, warmFleet: false });
+  const server = createHttpServer({ handleApi: api, uiDir: os.tmpdir() });
+  const base = await listen(server);
+  t.after(() => server.close());
+
+  const sent = await post(`${base}/api/hosts/solo/sessions/${id}/send`, { text: 'run the tests' });
+  assert.equal(sent.status, 200);
+  assert.equal(sent.body.ok, true);
+  assert.equal(sent.body.warning, 'no_input_box');
+});
+
 // The rename route once kept only a held report: `busy` (an agent's `fleet answer` holding the
 // session's lock) came back a 502 "rename failed", an error toast instead of the warning.
 test('rename: another fleet command typing into the session is a 409 busy, by the exact target', async (t) => {

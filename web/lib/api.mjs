@@ -165,6 +165,7 @@ const TYPING_STATUS = {
   question_not_found: 404,
   transcript_not_found: 404,
   busy: 409,
+  send_held: 409,
   human_attached: 409,
   target_ambiguous: 409,
   not_waiting: 409,

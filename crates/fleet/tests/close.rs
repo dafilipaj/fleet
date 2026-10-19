@@ -24,12 +24,19 @@ use serde_json::Value;
 /// for it; `exitedits` opens it on `/exit` instead (and does not exit). `helper` starts a
 /// child in its own process group that does not read the terminal (its stdin `/dev/null`,
 /// as an MCP server's is not the terminal either; `<log>.editor` holds its pid), then acts as
-/// `exits`.
+/// `exits`. `restores` draws Claude Code's input box holding the prompt Escape put back
+/// (testdata/screens/live/claude-restored.txt, a live capture) on Escape, and `drafted` draws it at once; both then
+/// act as `exits`.
 const AGENT: &str = r#"
 use strict; use Time::HiRes qw(time sleep); use POSIX ();
-my ($log, $mode, $sessions, $tmux, $pidfile) = @ARGV;
+my ($log, $mode, $sessions, $tmux, $pidfile, $screen) = @ARGV;
 my $reg = "$sessions/$$.json";
 system("stty raw -echo");
+sub draw {
+  open(my $s, "<", $screen) or die; local $/; my $t = <$s>; close $s;
+  $t =~ s/\n/\r\n/g; syswrite(STDOUT, "\e[H\e[2J$t");
+}
+draw() if $mode eq "drafted";
 if ($pidfile) { open(my $p, ">", "$pidfile.tmp") or die; print $p $$; close $p; rename("$pidfile.tmp", $pidfile); }
 open(my $f, ">", $log) or die; select((select($f), $| = 1)[0]);
 sub editor {
@@ -52,6 +59,7 @@ my $seen = "";
 while (sysread(STDIN, my $b, 64)) {
   printf $f "%.4f %s\n", time, unpack("H*", $b);
   $seen .= $b;
+  draw() if $b =~ /\x1b/ && $mode eq "restores";
   if ($b =~ /\x1b/ && -e $reg) {
     local $/; open(my $r, "<", $reg) or next; my $j = <$r>; close $r;
     $j =~ s/"status":"busy"/"status":"idle"/;
@@ -70,7 +78,7 @@ while (sysread(STDIN, my $b, 64)) {
   exit 0 if $mode eq "quits" && $seen =~ m{/quit\r};
   if ($seen =~ m{/exit\r}) {
     $seen = "";
-    exit 0 if $mode eq "exits";
+    exit 0 if $mode eq "exits" || $mode eq "restores" || $mode eq "drafted";
     editor(0) if $mode eq "exitedits";
     system($tmux, "split-window", "-d", "-t", $ENV{TMUX_PANE}, "sleep 60") if $mode eq "splits";
   }
@@ -120,7 +128,8 @@ impl Agent {
     fn start(name: &str, mode: &str) -> Option<Agent> {
         let f = FakeFleet::new()?;
         let (sid, log, line) = Self::line(&f, name, mode, false);
-        let pid = f.agent(name, &sid, 80, 24, &format!("exec {line}"));
+        // As big as the live capture `restores` and `drafted` draw: narrower, its rules wrap.
+        let pid = f.agent(name, &sid, 110, 34, &format!("exec {line}"));
         f.wait_for("the agent to start", || log.exists());
         Some(Agent {
             pid,
@@ -225,12 +234,16 @@ impl Agent {
         };
         // Where its registry entry is (`<its pid>.json`), to mark it idle on Escape.
         let reg = f.env.path("home/.claude/sessions");
+        // What `restores` and `drafted` draw: an input box holding a prompt.
+        let screen = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../testdata/screens/live/claude-restored.txt");
         let line = format!(
-            "perl '{}' '{}' '{mode}' '{}' '{}' '{pidfile}'",
+            "perl '{}' '{}' '{mode}' '{}' '{}' '{pidfile}' '{}'",
             script.display(),
             log.display(),
             reg.display(),
-            f.env.tmux_wrapper().display()
+            f.env.tmux_wrapper().display(),
+            screen.display()
         );
         (sid, log, line)
     }
@@ -621,6 +634,36 @@ fn a_busy_agent_gets_escape_first() {
     assert_eq!(v["how"], "exit", "{v}");
     assert_eq!(a.received(), b"\x1b/exit\r");
     assert!(!a.tmux_session_exists());
+}
+
+// Escape stopped the turn and put its prompt back in the input box: `/exit` typed after it
+// would go out with it as one prompt, and that prompt would run. Straight to the kill.
+#[test]
+fn a_prompt_back_in_the_box_after_escape_gets_no_exit_command() {
+    let Some(a) = Agent::start("cl-restored", "restores") else {
+        return;
+    };
+    a.busy();
+    let (code, v, err) = a.close(&["close", &a.target(), "--json", "--timeout", "1"]);
+    assert_eq!(code, 0, "{v} {err}");
+    assert_eq!(v["how"], "killed", "{v}");
+    assert_eq!(a.received(), b"\x1b", "Escape, and nothing after it");
+    assert!(!a.tmux_session_exists());
+    a.f.wait_for("the agent to die with its pane", || !a.alive());
+}
+
+// An idle session with a draft in its input box: nothing typed, killed.
+#[test]
+fn a_draft_in_the_box_gets_nothing_typed_and_is_killed() {
+    let Some(a) = Agent::start("cl-drafted", "drafted") else {
+        return;
+    };
+    let (code, v, err) = a.close(&["close", &a.target(), "--json"]);
+    assert_eq!(code, 0, "{v} {err}");
+    assert_eq!(v["how"], "killed", "{v}");
+    assert_eq!(a.received(), b"", "nothing typed");
+    assert!(!a.tmux_session_exists());
+    a.f.wait_for("the agent to die with its pane", || !a.alive());
 }
 
 #[test]

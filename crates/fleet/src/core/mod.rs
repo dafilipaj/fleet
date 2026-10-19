@@ -9,6 +9,7 @@ pub mod discovery;
 pub mod grouping;
 pub mod harness;
 pub mod hosts;
+pub mod input;
 pub mod jobs;
 pub mod lock;
 pub mod naming;

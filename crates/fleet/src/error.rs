@@ -33,12 +33,13 @@ pub enum Error {
     },
 
     /// [`Error::Tagged`] for a command that keeps its own exit code for it (`stack`: 2 for
-    /// ambiguous, 3 for no match).
+    /// ambiguous, 3 for no match; `send`: 3 when held, `reason` saying why).
     #[error("{msg}")]
     TaggedExit {
         code: i32,
         kind: &'static str,
         msg: String,
+        reason: Option<&'static str>,
     },
 }
 
@@ -82,6 +83,22 @@ impl Error {
             code,
             kind,
             msg: msg.into(),
+            reason: None,
+        }
+    }
+
+    /// [`Error::tagged_exit`] with a `reason` that narrows `kind` down, as [`Error::tagged_for`].
+    pub fn tagged_exit_for(
+        code: i32,
+        kind: &'static str,
+        reason: &'static str,
+        msg: impl Into<String>,
+    ) -> Self {
+        Error::TaggedExit {
+            code,
+            kind,
+            msg: msg.into(),
+            reason: Some(reason),
         }
     }
 
@@ -142,7 +159,7 @@ impl Error {
     /// What narrows [`Error::kind`] down, when the failure says.
     pub fn reason(&self) -> Option<&'static str> {
         match self {
-            Error::Tagged { reason, .. } => *reason,
+            Error::Tagged { reason, .. } | Error::TaggedExit { reason, .. } => *reason,
             Error::Partial { source, .. } => source.reason(),
             _ => None,
         }

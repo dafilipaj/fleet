@@ -36,6 +36,10 @@ Pure logic plus thin process wrappers; no printing. Everything a future front-en
   - iTerm: AppleScript via `osascript`; values are passed as argv, never interpolated into the
     script. Text is written without a newline, then an empty write submits it (a trailing newline
     would be swallowed by bracketed paste).
+- **input** — reads a session's input box (Claude Code's prompt, Codex's composer, pi's editor)
+  off a capture that keeps the text's attributes (tmux `capture-pane -e`): `send`, `rename` and
+  `close` never type after text already there or into a prompt, a faint placeholder or
+  suggestion aside ([cli.md](cli.md#sending)).
 - **naming** — generates short kebab-case titles by asking `claude -p --model haiku` what a
   session is working on (falls back to git branch / first prompt); cached across runs.
 - **tmux** — tmux-*session* management inherited from `ws`: matching, sanitizing, stale detection.
@@ -515,6 +519,36 @@ answered tabs; for the final Enter the whole review). `core::lock` is the per-se
   (`answer_invalid`).
 - A capture tmux reports as failed (pane or server gone) is an error, never an empty screen.
 
+### `fleet send --json`
+
+See [cli.md](cli.md#sending). Under the session's typing lock, `core::input` reads the visible
+screen once with its text attributes (`backend::peek_styled`: tmux `capture-pane -p -e`; iTerm's
+text has none) and the text is typed under that same lock. Text in the box (`reason: "text"`) or
+a prompt in its place (`"prompt"`) holds the send; no box found (`"no_input_box"`) or none
+readable (`"unreadable"`) types, adding `warning: <reason>` to `{ ok: true, host, target }` and
+one line on stderr — unless `--require-empty`, which holds on those too. Held is `{ ok: false,
+host, kind: "send_held", reason, error, input? }`, exit 3, `input` the box's text when it shows
+any: sensitive (whatever was typed or pasted there), so it is in that field alone, never in
+`error` or on stderr. `warning`, `reason` and `input` are additions: every other result keeps its
+shape, and every other failure exit 1. A host running an older fleet rejects `--force` and
+`--require-empty` sent through `-H` (exit 2, `usage`). `rename` (`held: "input"` / `"waiting"`)
+and `close` (no exit command, straight to the kill) read the box the same way.
+
+- The capture is parsed into cells (character, faint, bold, reverse video, foreground and background
+  colour — palette or 24-bit, its numbers never read as attributes); tmux carries attributes
+  from one line to the next, so the parse does too. Plain text decides where Claude Code's and
+  pi's boxes are (the prompt check `answer --list` uses runs first); Codex's composer is bounded
+  by its background, or else by its footer (the last rows on screen, under a blank row, one of
+  them drawn faint, bold or in a colour, one with a footer's known text; `unreadable`, never
+  empty, when those rows cannot be told from the composer's), its `[Image #N]` attachment rows
+  above it included; the attributes decide what in the box is typed, and Claude Code's IDE pill (a leading `[…]` in a colour of its own) is left
+  out.
+- **Assumption:** the harnesses draw what an empty box shows faint, and typed text never.
+  Claude Code 2.1's rendering was read from its code (placeholder `chalk.dim`, its drawn cursor
+  `\e[7m` on the placeholder's first character, none with the terminal's cursor, the IDE pill
+  `[${…}] ` in the theme's `ide` colour); the fixtures in `testdata/screens` are tmux captures of
+  synthetic screens in each layout (`gen.sh` there makes them), not of live sessions.
+
 ### `fleet group --json`
 
 See [cli.md](cli.md#grouping) for the shape. State file: `groups.json` (below).
@@ -548,10 +582,10 @@ JSON over HTTP, errors as `{ "error": "..." }`. At a high level:
 | GET | `/api/fleet[?local=1]` | `{ self, hosts: [{ name, ok, error?, sessions, spawnDirs, notes?, stacks? }], snapshotAt }` — `stacks`: that host's [session stacks](#session-stacks), compact (`{ id, label, host, members: [{ session, host, live }] }`), from which the merged view stamps `stack: { id, label, host }` on the rows of members running on *other* hosts; sessions are `list --json` objects + `host` (a Codex session with no transcript yet gets `session_id: "pid-<pid>"` until it has one) (`title` capped at 300 chars) + `editorUrl` (the "Open in editor" link for its cwd, built by the server that answered — see [Session briefs](#session-briefs)); the merged view is a warm background-refreshed snapshot |
 | GET | `/api/hosts/:host/sessions/:id/peek?lines=N` | plain-text screen |
 | GET | `/api/hosts/:host/sessions/:id/messages?limit=N` | conversation (no tool calls) from the transcript; an AskUserQuestion call is a message of `kind: "question"` with `id` (the tool use id), `questions` (`[{ question, header, multiSelect, options: [{ label, description }] }]`), `text` (a markdown rendering) and, once it has a result, `answers` (per question, the answer string) or `declined: true`; a prompt typed while Claude works and still in its queue is a `kind: "user"` message with `queued: true`, always last (prompts it took mid-turn show where it took them) |
-| POST | `/api/hosts/:host/sessions/:id/send` | `{ text }` → typed + Enter, by `fleet send --json` (under the session's typing lock: **409** `kind: "busy"` while another fleet command types there, nothing sent) |
+| POST | `/api/hosts/:host/sessions/:id/send` | `{ text }` → typed + Enter, by `fleet send --json` (under the session's typing lock: **409** `kind: "busy"` while another fleet command types there, **409** `kind: "send_held"` with `reason` (and `input`, the box's text — sensitive) while the session's input box holds text or a prompt waits in its place — nothing sent either way; a box the CLI cannot find or read is typed into, with the CLI's `warning` in the 200) |
 | POST | `/api/hosts/:host/sessions/:id/keys` | `{ key }` (Enter, Escape, …), by `fleet keys --json` (409 `busy` likewise) |
 | POST | `/api/hosts/:host/sessions/:id/answer` | `{ toolUseId, answers: [{ options: [index…], text? }] }` (one per question) → `fleet answer --question <toolUseId> --answers <json> --json --allow-attached`: the CLI's checked answer (docs/cli.md → Answering prompts), its report passed through. Refusals keep the CLI's `kind`: 400 (`answer_invalid`), 404 (`question_not_found`), **409** (nothing typed: `busy`, `question_answered`, `question_not_active`, `not_waiting`, `prompt_not_on_screen`, …; except `prompt_changed`, which may come after keys went out), 502 `outcome_uncertain` and `io` (keys may have gone out: the error says how many). `--allow-attached`: the request is itself a person's answer (or their operator's), made from the app |
-| POST | `/api/hosts/:host/sessions/:id/rename` | `{ title }` (1–64 chars, one line) → `fleet rename id:<session_id> <title> --json`; 200 with the report, **409** when held (waiting on a prompt, or a busy Codex / pi session; nothing typed) or `busy` (another fleet command types into the session), 400 bad title, 502 CLI failure |
+| POST | `/api/hosts/:host/sessions/:id/rename` | `{ title }` (1–64 chars, one line) → `fleet rename id:<session_id> <title> --json`; 200 with the report, **409** when held (waiting on a prompt, text in its input box, or a busy Codex / pi session; nothing typed) or `busy` (another fleet command types into the session), 400 bad title, 502 CLI failure |
 | POST | `/api/hosts/:host/spawn` | `{ name?, dir?, prompt?, model?, harness? }` → new tmux session running that [harness](#other-harnesses) (`claude` default, `codex`, `pi`; its launcher is config `claude` / `harnesses.<id>.command`; `-n <name>` for Claude and pi only); `dir` must resolve inside one of the host's `spawnDirs` (else 400); a prompt too long to type (the launch line over ~900 bytes) is written to `~/.claude/fleet-prompts/` and passed as `"$(cat <file>)"`; a first-run trust prompt is accepted (Claude: Down + Enter; Codex: Enter on "Trust and continue"); when the agent never starts (the pane is still just a shell after ~10s) the tmux session is killed and the answer is 502 with the pane's last lines |
 | GET | `/api/hosts/:host/harnesses[?refresh=1]` | `{ host, harnesses: [{ id, label, command, installed, models }] }` — `fleet --local harness list --json`, cached 10 min; Claude's `models` are `web.models`. An older CLI answers Claude alone |
 | GET | `/api/hosts/:host/usage[?refresh=1]` | that host's usage limits (Claude's subscription, plus Codex in `providers`): `fleet usage --json` + `host` (see [Subscription usage](#subscription-usage)); 502 with the CLI's reason (no login, endpoint down with nothing cached) |

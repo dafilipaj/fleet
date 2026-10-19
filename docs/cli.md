@@ -84,11 +84,11 @@ member (see [Stacks](#stacks)).
 | `fleet peek <target> [--lines N]` | what the session's terminal shows now (default 40 lines): a `▼ <title> (<backend>, <status>) — <dir>` header, then each line cut to this terminal's width. A pane tmux cannot capture (just closed, or its server gone) is an error (exit 1, tmux's message), never an empty box |
 | `fleet peek <target> --json [--lines N] [--ansi]` | the screen whole, for programs: `{ ok: true, host, target: { session_id, pid }, backend, status, cols, rows, lines: [...], truncated }` — no header, no clipping, the last N lines that have content (trailing blank lines and trailing spaces dropped). tmux: lines it wrapped are joined (`capture-pane -J`), and N counts those logical lines — the capture reaches back into the scrollback until each of the N is whole (up to what tmux still holds), but never more than 2,000 rows: a line longer than that comes back with its start cut and `truncated: true` (otherwise `false`; always `false` for iTerm); `cols`/`rows` are the pane's. iTerm: its visible screen as shown, `cols`/`rows` the session's. Escape sequences are stripped unless `--ansi` (tmux `-e`; iTerm gives none). On failure `{ ok: false, host, kind, error }`, exit 1 — kind `target_not_found`, `target_ambiguous`, `target_invalid`, `backend_unsupported` or `backend_failed`; a command line clap rejects (an unknown flag, wherever `--json` stands) is the same object with kind `usage`, exit 2 |
 | `fleet messages <target> [--json] [--after <cursor> \| --before <cursor>] [--limit N]` | the session's conversation from its transcript: prompts, replies, tool calls (never their output) and questions, oldest first — see [Messages](#messages). Without a cursor the newest `--limit` (default 100, max 500); `--after` everything newer (cheap enough to poll every second); `--before` the `--limit` entries before ("show earlier") |
-| `fleet send <target> <text> [--json]` | type text into the session and press Enter, under the session's typing lock: while another fleet command (the web server's included) types into it, it fails at once and sends nothing (kind `busy`). `--json`: `{ ok: true, host, target: { session_id, pid } }`, or `{ ok: false, host, kind, error }` (exit 1) — kind `busy`, `target_not_found`, `target_ambiguous`, `target_invalid`, `backend_unsupported` (no tmux pane or iTerm session to drive), `backend_failed` (tmux or iTerm refused; part of the text may have gone out) or `io` (the lock could not be taken); a command line clap rejects (an unknown flag, a missing text, wherever `--json` stands) is the same object with kind `usage`, exit 2. Text starting with `-` goes after `--` |
-| `fleet keys <target> <key>... [--json]` | press named keys in the session's terminal, in order (80 ms apart), holding the session's lock as `send` and `answer` do: `Escape` (interrupt a turn), `Enter`, `Up`, `Down`, `Left`, `Right`, `Tab`, `BTab` (Shift-Tab), `Space`, `C-c`. Names are tmux's, case-sensitive; any other name is refused (exit 1, kind `invalid_key`) and nothing is pressed. tmux sessions get one `send-keys` per key, iTerm sessions the bytes a terminal sends for the key. **Not atomic:** the first key that fails stops the call — the keys before it stay pressed (nothing can take them back), the rest are not sent, and the error says how many got through (`… — 1 of 3 keys pressed before it`). `--json`: `{ ok: true, host, target: { session_id, pid }, keys: [...] }`, or `{ ok: false, host, kind, error }` (exit 1) — kind `invalid_key`, `target_not_found`, `target_ambiguous`, `target_invalid`, `busy` (another fleet command is typing into the session; nothing is pressed), `backend_unsupported` (no tmux pane or iTerm session to drive) or `backend_failed`; a command line clap rejects (an unknown flag, wherever `--json` stands) is the same object with kind `usage`, exit 2 |
-| `fleet close <id:… \| pid:…> [--json] [--timeout <s>] [--expect-pid <n> --expect-start <t>]` | end a session that is alone in its own tmux session (the layout `spawn` creates): its exit command, then that tmux session is killed; exact targets only, `-n` touches nothing — see [Closing sessions](#closing-sessions) |
+| `fleet send <target> <text> [--json] [--force] [--require-empty]` | type text into the session and press Enter. Under the session's typing lock, the input box is read off the screen first: text in it (Claude Code puts a prompt stopped with Escape back there) or a prompt waiting for its answer **holds** the send — nothing typed, exit 3, kind `send_held` with a `reason`; no box fleet can find or read types as before, with a warning (`--require-empty` holds then too) — see [Sending](#sending). `--force` types without reading the box. After `keys Escape`, wait about a second before sending. While another fleet command (the web server's included) types into the session, it fails at once and sends nothing (kind `busy`). `--json`: `{ ok: true, host, target: { session_id, pid }, warning? }`, or `{ ok: false, host, kind, error }` (exit 1; held: exit 3, plus `reason` and `input` — the box's text, sensitive) — kind `send_held`, `busy`, `target_not_found`, `target_ambiguous`, `target_invalid`, `backend_unsupported` (no tmux pane or iTerm session to drive), `backend_failed` (tmux or iTerm refused: the screen could not be read, nothing sent; or typing failed, and part of the text may have gone out) or `io` (the lock could not be taken); a command line clap rejects (an unknown flag, a missing text, wherever `--json` stands) is the same object with kind `usage`, exit 2. Text starting with `-` goes after `--` |
+| `fleet keys <target> <key>... [--json]` | press named keys in the session's terminal, in order (80 ms apart), holding the session's lock as `send` and `answer` do: `Escape` (interrupt a turn), `Enter`, `Up`, `Down`, `Left`, `Right`, `Tab`, `BTab` (Shift-Tab), `Space`, `C-c`. Names are tmux's, case-sensitive; any other name is refused (exit 1, kind `invalid_key`) and nothing is pressed. tmux sessions get one `send-keys` per key, iTerm sessions the bytes a terminal sends for the key. **Not atomic:** the first key that fails stops the call — the keys before it stay pressed (nothing can take them back), the rest are not sent, and the error says how many got through (`… — 1 of 3 keys pressed before it`). After `Escape`, wait about a second before a `send`: Claude Code puts the stopped prompt back in its input box only once the turn has stopped, and a `send` that reads the box before then types after it (see [Sending](#sending)). `--json`: `{ ok: true, host, target: { session_id, pid }, keys: [...] }`, or `{ ok: false, host, kind, error }` (exit 1) — kind `invalid_key`, `target_not_found`, `target_ambiguous`, `target_invalid`, `busy` (another fleet command is typing into the session; nothing is pressed), `backend_unsupported` (no tmux pane or iTerm session to drive) or `backend_failed`; a command line clap rejects (an unknown flag, wherever `--json` stands) is the same object with kind `usage`, exit 2 |
+| `fleet close <id:… \| pid:…> [--json] [--timeout <s>] [--expect-pid <n> --expect-start <t>]` | end a session that is alone in its own tmux session (the layout `spawn` creates): its exit command (not when its input box holds text or a prompt), then that tmux session is killed; exact targets only, `-n` touches nothing — see [Closing sessions](#closing-sessions) |
 | `fleet answer <target> [--json] [--allow-attached] (--list \| --choice <n> [--prompt <id>] \| --question <tool_use_id> --answers <json>)` | answer the prompt the session waits on by typing what a human would — only while the terminal shows that very prompt, untouched; see [Answering prompts](#answering-prompts) |
-| `fleet rename <target> <title> [--no-tmux-sync] [--force] [--json]` | rename the session's one title: Claude's `/rename` (the source of truth), then its tmux session follows as a slug of it (`Fix Login` → `fix-login`, `-2` on a collision) when the tmux session is that Claude session's own (one window, one pane). A session **waiting on a prompt** is held (exit 1; `--json`: exit 3) — typed keys would be its answer; busy sessions are fine (Claude runs `/rename` mid-turn without disturbing the turn). Codex gets `/rename`, pi `/name`; a busy Codex / pi session is held too (`held: "busy"`) — they would queue the text as a message. `--force` overrides the hold. It types under the session's typing lock (see [Answering prompts](#answering-prompts)): another fleet command typing into the session makes it fail at once (kind `busy`, nothing sent); and, unless forced, the terminal is read again under the lock — a prompt that came up since the lookup holds it as waiting. `--json` prints `{ ok, result: renamed\|sent\|held, session_id, pid, host, from, title, held, tmux: { renamed, from, to, note }, message }`; a failure before that report (`busy`, a target error) is `{ ok: false, host, kind, error }` (exit 1) |
+| `fleet rename <target> <title> [--no-tmux-sync] [--force] [--json]` | rename the session's one title: Claude's `/rename` (the source of truth), then its tmux session follows as a slug of it (`Fix Login` → `fix-login`, `-2` on a collision) when the tmux session is that Claude session's own (one window, one pane). A session **waiting on a prompt** is held (exit 1; `--json`: exit 3) — typed keys would be its answer; busy sessions are fine (Claude runs `/rename` mid-turn without disturbing the turn). Codex gets `/rename`, pi `/name`; a busy Codex / pi session is held too (`held: "busy"`) — they would queue the text as a message. `--force` overrides the hold. It types under the session's typing lock (see [Answering prompts](#answering-prompts)): another fleet command typing into the session makes it fail at once (kind `busy`, nothing sent); and, unless forced, the input box is read under the lock, as `send` reads it ([Sending](#sending)) — a prompt that came up since the lookup holds it as waiting, and text in the box (a prompt Escape put back, a draft: `/rename` would go out with it as one prompt) holds it as `held: "input"`; a box fleet cannot find or read holds nothing. `--json` prints `{ ok, result: renamed\|sent\|held, session_id, pid, host, from, title, held, tmux: { renamed, from, to, note }, message }`; a failure before that report (`busy`, a target error) is `{ ok: false, host, kind, error }` (exit 1) |
 | `fleet name [<target> \| --all] [--apply] [--refresh] [--no-tmux-sync]` | suggest a name from what the session is doing; only `--apply` sends it (through the same path as `rename`, tmux included). `--all` = every session with a derived (cwd+hash) name. A derived-name session alone in a tmux session somebody named (`fleet new fix-login`) adopts that name (`(tmux)`, no model call) instead of getting a generated one. `--refresh` ignores the cache |
 | `fleet group [-a, --all-hosts] [--json] [--apply] [--refresh] [--consolidate] [--input <file\|->] [--cached]` | sort sessions into work-stream groups (the web Board view) — see [Grouping](#grouping). Reads sessions and asks `claude -p`; never sends anything to a session |
 | `fleet group --rename <group id> --label <l>` / `--move <host/id> (--to <group id> \| --label <l>)` / `--create --label <l>` / `--delete <group id>` | edit the stored groups by hand (the Board's rename / drag'n'drop) — see [Grouping](#grouping) |
@@ -269,6 +269,123 @@ hook output, bookkeeping entries, subagent (sidechain) messages.
 - `--before` settles what is open where its page ends: a reply's later blocks (after a tool
   call) are glued in, a question's outcome (or abandonment) is filled in, from the lines after.
 
+### Sending
+
+`fleet send <target> <text> [--force] [--require-empty]` types into the session's input box and
+presses Enter, so it first reads that box. Escape stopping a turn before Claude Code has written
+anything puts the stopped prompt back in its input box; text typed after it goes out with it as
+one prompt — the very prompt the person stopped.
+
+**One read, one lock.** `send` takes the session's typing lock (the one `answer`, `keys`, `close`
+and every rename take), reads the visible screen once — tmux: `capture-pane -p -e`, the text's
+attributes kept — and holds the lock until after its Enter. No fleet command can type between the
+read and the text; see the limits below for what can.
+
+**What counts as empty.** Whatever the harness draws faint (SGR 2) in the box is not typed:
+Claude Code's placeholder (`Try "…"`, "Press up to edit queued messages") and its prompt
+suggestions, Codex's placeholder ("Ask Codex to do anything"). Claude Code draws its own cursor in
+reverse video on the placeholder's first character; that cell counts as the placeholder when
+faint text follows it. With an IDE connected, Claude Code starts the box's first line with a pill
+naming the IDE's selection (`[⧉ 12 lines selected] `, `[⧉ In main.rs] `) in a colour of its own:
+a leading `[…]` all in one colour — not the terminal's default, not faint, not the colour of the
+text after it — is that pill and is not typed, unless it is a paste or image marker. Anything else
+in the box is text: a restored prompt, typed text, a `[Pasted text …]` or `[...Truncated text …]`
+marker, an `[Image #…]` tag. Colours are read as colours, never as attributes: the numbers of a
+24-bit `38;2;r;g;b` (or 256-colour `38;5;n`) never turn faint or reverse video on. The box is:
+
+- Claude Code: between the last two rules drawn from column 0, its first line `❯ …`, every line
+  under it indented. Bash mode (`! …`) is never empty: text typed there would run as a shell
+  command.
+- Codex: the last `› …` line at column 0, and the rows under it drawn on that line's background
+  (the composer's own, painted across its width), every one indented, the first row past them
+  that shows anything indented too (the footer, or a popup) or none. Where that line has no
+  background (or iTerm gives no attributes), down to its footer instead: the rows that show
+  anything at the very bottom of the screen, indented, one of them saying what a footer fleet
+  knows says (`? for shortcuts`, `… context left`, `… % used`, `⏎ send`, `… to edit previous
+  message`, `… again to quit`, `… to queue message`), every line above them indented. Those words
+  count only there, since they can be typed. One row of them drawn as typed text never is
+  (faint, bold or in a colour) is enough: Codex's key hints are bold, while its status row can be
+  plain (no colours) and a flash ("Copied selection") is. When those rows are not sure to be the
+  footer — no blank row above them, none of them drawn so, or no attributes at all — the box is
+  never read as empty: `unreadable`. The image attachments
+  Codex draws above that line (`[Image #1]` rows, a blank row between, as when a prompt with an
+  image is recalled) are in the box, and are text: they go out with the next prompt.
+- pi: between the last two rules drawn from column 0.
+
+A permission prompt, a question form or its review screen on screen (as `answer --list` reads
+them) comes first: the box is not there then.
+
+**What the read decides.** Each case has a `reason`:
+
+| `reason` | the screen shows | by default | `--require-empty` | `input` |
+| --- | --- | --- | --- | --- |
+| — | an empty box | typed | typed | — |
+| `text` | text in the box | **held** | **held** | that text, faint text and the IDE pill left out, its lines joined with `\n` |
+| `prompt` | a permission prompt or question waiting for its answer, in place of the box | **held** | **held** | — |
+| `no_input_box` | no box fleet can find: a menu or picker, the transcript view, a dialog, a layout it does not know | typed, with a warning | **held** | — |
+| `unreadable` | the box shows text, but the screen came without text attributes (iTerm: AppleScript gives text only), so a placeholder or suggestion cannot be told from typed text. A blank box is still known to be empty there | typed, with a warning | **held** | the text as shown |
+
+**Held** only on evidence by default: text in the box or a prompt in its place is something
+typing would harm — the stopped prompt sent again glued to the new one, a permission prompt's
+Enter taken as its answer. A box fleet cannot find or read is not evidence of anything, and
+holding there would hold every send whenever a harness changes its layout, every iTerm session
+showing a suggestion, and every caller that cannot pass `--force` (the web server's send and the
+operator's `/clear` never do). So it types as `send` did before reading the box, and says so.
+A caller that would rather hold than type blind — a UI that shows the person why and lets them
+choose — passes `--require-empty`, which holds on all four.
+
+- **Held:** exit 3, nothing typed, the message on stderr; with `--json`, `{ ok: false, host,
+  kind: "send_held", reason, error, input }` on stdout — `input` only when the box shows text.
+- **Typed with a warning:** exit 0, one line on stderr (`warning: typed without knowing the
+  input box was empty: …`); with `--json`, `{ ok: true, host, target: { session_id, pid },
+  warning }`, `warning` the reason (`no_input_box` or `unreadable`). An empty box has no
+  `warning`.
+- **`--force`** skips the read and types after whatever the box holds, still under the lock —
+  `--require-empty` or not. `fleet peek` shows what the screen holds.
+
+**`input` is sensitive.** It is whatever the person typed or pasted into the box — a draft, a
+pasted secret, `! export TOKEN=…` in bash mode. It is only ever in `--json`'s `input` field:
+never in `error`, never on stderr, so it stays out of agent transcripts and logs that keep a
+command's messages. A caller that shows or logs `input` decides who may see it.
+
+**Where it applies.** Every `send` into a tmux pane or an iTerm session: the web server's send
+and the operator's `/clear` run `fleet send --json` (a held one is a 409 there, a warning passes
+through in the 200), and `-H <host>` runs `fleet --local send` on that host, so the check is that
+host's fleet's. An older fleet there types without it, and rejects `--force` and
+`--require-empty` as unknown flags: exit 2, kind `usage` (with `--json`), nothing typed. `send`
+has no other way into a session — no Codex app-server or SDK channel: it always types keys. A
+session with no terminal fleet can drive (`backend_unsupported`), or a `FLEET_FIXTURE` one, is
+refused before any read, as before. `rename` and `name --apply` read the box the same way, under
+the same lock, and hold on text (`held: "input"`) or a prompt (`held: "waiting"`); `close` types
+its exit command only when the box holds neither, and kills the session otherwise.
+
+**Limits.**
+
+- Faint is the one signal: a harness that drew typed text faint, or a placeholder not faint,
+  would be misread. Synthetic screens in each harness's layout back it (`testdata/screens`), and
+  live captures of Claude Code 2.1.303 and Codex 0.163.0 (`testdata/screens/live`): empty,
+  typed, multi-line, a prompt Escape put back (Claude Code; Codex does not put one back), a
+  draft during a turn and after Escape stopped it. pi's layout is synthetic only.
+- **Known gap: Codex's usage-limit menu.** "Approaching rate limits — Switch to … for lower
+  credit usage?" replaces the composer with a menu that is not read as a prompt, so it is no
+  input box (`no_input_box`). A plain `send` types into it with a warning, and its Enter picks
+  the menu's first choice (switch model); `send --require-empty` holds there. Left as is.
+- **Known gap: Codex in a narrow pane.** Codex cuts its footer short instead of wrapping it, and
+  drops hints: below about 36 columns, "Context N% used" is cut off and "? for shortcuts"
+  dropped, so no footer text fleet knows is left. Where its composer has no background (as in
+  the live captures), there is then no input box (`no_input_box`): a plain `send` types with a
+  warning, `send --require-empty` holds. Keep Codex panes at least 36 columns wide.
+- A `[…]` typed alone in the box, in one colour that is not the terminal's default, reads as the
+  IDE pill: an empty box.
+- An image placeholder drawn faint is not detected: Claude Code 2.1.303 draws its `[Image #N]`
+  as typed text (plain, in a colour, or in an OSC 8 link), but one it drew faint would read as
+  an empty box, and the image would go out with the next send, `--require-empty` or not.
+- **Escape, then wait about a second before `send`.** The read is one moment. Fleet commands wait
+  for the lock, but the agent itself can redraw its box after the read: Claude Code puts the
+  stopped prompt back only once the turn has stopped, so `keys Escape` followed at once by
+  `send` can read the box still empty and glue the text to the prompt that appears right after.
+  A person typing into an attached terminal is not held either.
+
 ### Answering prompts
 
 `fleet answer <target>` answers the prompt a session is waiting on, from outside its terminal:
@@ -435,9 +552,15 @@ ends a session and removes the tmux session it ran in:
   settle; then, only if that same process still runs in the foreground of the session's pane,
   the harness's exit command is typed — `/exit` for Claude Code, `/quit` for Codex (pi: none,
   it goes straight to the kill) — and the agent gets `--timeout` seconds (default 5, at most
-  600) to exit. The process's pid, start time, terminal and foreground state are read in one
-  `ps`, so they always describe one process. Nothing is typed, `Escape` included, to an agent
-  that is not in the foreground of its pane's terminal or has exited (on Escape too):
+  600) to exit. Before that command, its input box is read as `send` reads it
+  ([Sending](#sending)): when it holds text — the prompt the Escape put back, a draft — or a
+  prompt waits in its place, or the pane cannot be captured, nothing more is typed and the
+  session goes straight to the kill (`how: "killed"`): the command would go out with that text
+  as one prompt, and that prompt would run, or it would answer that prompt. No box fleet can
+  find (`no_input_box`) does not stop it, as it does not stop `send`. The process's pid, start
+  time, terminal and foreground state are read in one `ps`, so they always describe one
+  process. Nothing is typed, `Escape` included, to an agent that is not in the foreground of
+  its pane's terminal or has exited (on Escape too):
   - suspended (Ctrl-Z) or in the background with nothing in front of it but its own stopped
     process group or the shell that started it, at its prompt, it goes straight to the kill;
   - with a process of its own in front of it — reading its terminal in its process group, or in
@@ -1181,7 +1304,7 @@ pointing into its world (a shell it provides, or one it trusts; or set `default-
 | 0 | success |
 | 1 | error, bad usage |
 | 2 | tmux, `stack` and `restore` commands: ambiguous match (candidates are printed) |
-| 3 | `rename --json`: held; `brief --set`/`--edit`: the brief changed since it was opened (nothing saved); `brief --regenerate`: hourly cap reached; `stack set`/`edit`: the StackBrief changed since it was opened; `stack`: no stack matches; `restore`: no dormant (with `--closed`: recently closed) session matches; tmux commands: nothing to act on — no sessions, no match, or a confirmation was needed but there is no terminal (use `-f`) |
+| 3 | `send`: held — text in the input box or a prompt in its place (with `--require-empty`, also no box found or read), nothing typed (kind `send_held`, see [Sending](#sending)); `rename --json`: held; `brief --set`/`--edit`: the brief changed since it was opened (nothing saved); `brief --regenerate`: hourly cap reached; `stack set`/`edit`: the StackBrief changed since it was opened; `stack`: no stack matches; `restore`: no dormant (with `--closed`: recently closed) session matches; tmux commands: nothing to act on — no sessions, no match, or a confirmation was needed but there is no terminal (use `-f`) |
 | 4 | host unreachable |
 | 127 | a required tool (tmux, node) was not found |
 

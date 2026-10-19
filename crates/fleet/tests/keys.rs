@@ -10,17 +10,22 @@ use common::{stderr, stdout};
 const SID: &str = "aaaaaaaa-1111-2222-3333-444444444444";
 
 /// A fake agent logging each read as `<unix seconds> <hex bytes>`; `(fleet, pid, log path)`.
+/// It draws Claude Code's empty input box first (testdata/screens/live, a live capture of a
+/// 110x34 pane): `send` types only into one.
 fn recorder() -> Option<(FakeFleet, i64, std::path::PathBuf)> {
     let f = FakeFleet::new()?;
     let rec = f.env.path("received.log");
+    let empty_box = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../testdata/screens/live/claude-empty.txt");
     let script = format!(
-        "stty raw -echo; exec perl -MTime::HiRes=time -e '\
+        "cat '{}'; stty raw -echo; exec perl -MTime::HiRes=time -e '\
          open(my $f, \">\", $ARGV[0]) or die; select((select($f), $| = 1)[0]); \
          while (sysread(STDIN, my $b, 64)) {{ printf $f \"%.4f %s\\n\", time, unpack(\"H*\", $b) }}' \
          '{}'",
+        empty_box.display(),
         rec.display()
     );
-    let pid = f.agent("keys", SID, 80, 24, &script);
+    let pid = f.agent("keys", SID, 110, 34, &script);
     // The log appears once `stty raw` has run and perl owns the tty.
     f.wait_for("the recorder to start", || rec.exists());
     Some((f, pid, rec))
