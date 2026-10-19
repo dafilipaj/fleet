@@ -1,0 +1,14 @@
+ Fixed the flaky login test.
+
+ Select a model
+ [36m→ model-a[39m
+   model-b
+ [2m↑↓ navigate · enter select · esc cancel
+
+
+
+
+
+
+
+
