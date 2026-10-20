@@ -54,10 +54,12 @@ fn every_json_usage_error_is_the_same_one_object() {
                 let mut keys: Vec<&str> =
                     v.as_object().unwrap().keys().map(|k| k.as_str()).collect();
                 keys.sort();
-                let want: &[&str] = if cmd == "spawn" {
-                    &["error", "host", "kind", "ok", "partial"]
-                } else {
-                    &["error", "host", "kind", "ok"]
+                // `spawn`'s own shape; `answer`'s, whose failures all carry `detail` and
+                // `pane` (`null` here: no screen check ran).
+                let want: &[&str] = match cmd {
+                    "spawn" => &["error", "host", "kind", "ok", "partial"],
+                    "answer" => &["detail", "error", "host", "kind", "ok", "pane"],
+                    _ => &["error", "host", "kind", "ok"],
                 };
                 assert_eq!(keys, want, "{args:?}: {v}");
                 assert_eq!(
@@ -984,6 +986,16 @@ fn path_only_host_refusals_answer_json() {
         .unwrap();
     assert_refused(&out, "another host (`workstation`)");
     assert_eq!(common::stdout(&out), "");
+    // `answer`'s failure object carries `detail` and `pane` there too, both `null`.
+    let out = stubs
+        .cmd(&env, true)
+        .args(["-H", "workstation", "answer", "x", "--list", "--json"])
+        .output()
+        .unwrap();
+    let v = json_refusal(&out, "another host (`workstation`)");
+    for k in ["detail", "pane"] {
+        assert_eq!(v.get(k), Some(&serde_json::Value::Null), "{k}: {v}");
+    }
     assert_eq!(stubs.ran(), "", "nothing went over ssh");
 }
 

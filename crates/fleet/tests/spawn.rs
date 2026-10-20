@@ -205,6 +205,15 @@ fn spawn_json_says_where_the_session_landed() {
     assert!(pane.starts_with('%'), "{pane}");
     let panes = r.tmux(&["list-panes", "-t", "=fleet-test-a:", "-F", "#{pane_id}"]);
     assert_eq!(panes.trim(), pane);
+    // A new session starts at 200x50, not tmux's 80x24: a tall prompt fits.
+    let size = r.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        &pane,
+        "#{pane_width}x#{pane_height}",
+    ]);
+    assert_eq!(size.trim(), "200x50");
     assert!(v["command"].as_str().unwrap().contains("'say hi'"), "{v}");
     assert!(r.agent_argv().ends_with(&["say hi".to_string()]));
 
