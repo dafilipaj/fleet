@@ -497,7 +497,9 @@ answered tabs; for the final Enter the whole review). `core::lock` is the per-se
 
 - A capture is the scrollback, a mark, then the visible screen. A prompt is live only when its
   numbered answers are on the visible screen and end it (≤ 4 footer lines after them, no input
-  box); the scrollback only extends a prompt upward.
+  box); the scrollback only extends a prompt upward. A pane with no scrollback (a fullscreen
+  TUI's alternate screen) has nothing above the mark: tmux would return the screen's first line
+  for `capture-pane -S -N -E -1`, so `history_size` is asked first.
 - Claude Code's permission prompt is framed: a solid rule above it, then a header, then
   optionally one dashed pair setting off the command; everything in the frame is its detail. The
   frame's rules are drawn from column 0 while everything inside it is padded, so a rule-like line
@@ -541,6 +543,20 @@ answered tabs; for the final Enter the whole review). `core::lock` is the per-se
   that join is ambiguous (an option labelled `A, B` vs the options `A` and `B`), an answer to a
   multi-question form whose review text another choice would also produce is refused up front
   (`answer_invalid`).
+- A form is answerable only read whole: its numbered rows run without a gap up to row 1 on the
+  capture, and its head (tabs, question) is read up to the form's top rule or tab bar. Otherwise
+  it is clipped (`prompt_incomplete`) — the form taller than the pane (Claude Code's fullscreen
+  TUI keeps no scrollback, so its top is nowhere), or a long list drawn a window at a time. A
+  question whose options have previews (`preview` in the tool input, kept as a flag on
+  `core::questions::QuestionOption`, not serialized) is drawn side by side and never matched or
+  answered (`layout_unsupported`). **Assumption:** only synthetic layouts back the clipping rules;
+  how Claude Code 2.1.303 windows a long list (and whether a scroll marker sits in it) is not
+  captured yet.
+- Every refusal by a screen check says which one as a `core::prompt::Detail` (`detail` in the
+  JSON: `no_form`, `clipped`, `layout_unsupported`, `tabs`, `question`, `options`, `touched`,
+  `cursor_moved`, `different_prompt`), with the pane's size — codes only, never screen or
+  transcript text, so a caller can log them; `error` stays free text. `PromptRead::Incomplete`
+  carries its code beside its reason, `Form::check` / `Form::ready` theirs beside their words.
 - A capture tmux reports as failed (pane or server gone) is an error, never an empty screen.
 
 ### `fleet send --json`

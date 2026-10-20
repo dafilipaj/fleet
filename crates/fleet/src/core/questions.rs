@@ -10,6 +10,11 @@ pub const QUESTION_TOOL: &str = "AskUserQuestion";
 pub struct QuestionOption {
     pub label: String,
     pub description: String,
+    /// The option has a preview (`preview` in the tool input): Claude Code draws the options
+    /// with the focused one's preview beside them, a layout fleet does not read off the screen.
+    /// Not serialized: the question's JSON stays as it was.
+    #[serde(skip)]
+    pub preview: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -45,6 +50,9 @@ pub fn normalize_questions(input: &Value) -> Option<Vec<Question>> {
                     .map(|o| QuestionOption {
                         label: str_of(o.get("label")),
                         description: str_of(o.get("description")),
+                        preview: o.get("preview").is_some_and(|v| {
+                            !v.is_null() && v.as_str().is_none_or(|t| !t.trim().is_empty())
+                        }),
                     })
                     .collect()
             })
@@ -469,6 +477,20 @@ mod tests {
         .unwrap()
     }
 
+    // An option with a preview is drawn beside it: kept as a flag (fleet does not read that
+    // layout), never in the question's JSON. A blank or null preview is none.
+    #[test]
+    fn an_options_preview_is_a_flag_left_out_of_the_json() {
+        let q = normalize_questions(&json!({ "questions": [{ "question": "Which layout?", "header": "Layout",
+            "options": [{ "label": "Grid", "description": "Cards", "preview": "┌──┐\n│  │\n└──┘" },
+                        { "label": "List", "preview": "  " }, { "label": "Table", "preview": null }] }] }))
+        .unwrap();
+        let flags: Vec<bool> = q[0].options.iter().map(|o| o.preview).collect();
+        assert_eq!(flags, [true, false, false]);
+        let v = serde_json::to_value(&q[0].options[0]).unwrap();
+        assert_eq!(v, json!({ "label": "Grid", "description": "Cards" }));
+    }
+
     #[test]
     fn normalize_keeps_question_header_multiselect_and_labelled_options() {
         let q = qs();
@@ -477,7 +499,8 @@ mod tests {
             q[1].options[0],
             QuestionOption {
                 label: "Paris".into(),
-                description: "FR".into()
+                description: "FR".into(),
+                preview: false,
             }
         );
         assert!(q[0].multi_select);

@@ -122,6 +122,14 @@ goes ahead as before). It is judged from `--dir`, where the shell will run it: `
 `agent` in that directory, and the login shell starts there. Under
 [`FLEET_PATH_ONLY`](#path-only-mode) `PATH` alone decides: no install dirs, no login shell.
 
+**Size.** Every tmux session fleet creates — a tmux spawn (and `handoff`, `stack spawn`, `pr
+spawn`, a job run), `fleet tmux new`, a [restore](#session-recovery) — starts at 200 columns by 50 rows (`new-session -x 200 -y 50`), not tmux's 80x24 for a detached
+session: Claude Code's fullscreen TUI keeps no scrollback, so a prompt taller than the pane is cut
+off where [`fleet answer`](#answering-prompts) cannot read it (`clipped`). tmux keeps the size as
+the session's `default-size`, so its later windows start at it too; a client attaching resizes it
+to its terminal as usual. A window opened in an existing session (`--tmux-session`, a closed
+session's window) gets that session's size, and sessions that already exist are never resized.
+
 A tmux spawn (and `handoff`, `stack spawn`, `pr spawn`, a job run) starts its pane without the
 variables an agent sets to describe itself to its tools — the agent that ran `fleet`, whose
 markers would make the new session act as part of it (a nested `claude` takes its session id,
@@ -403,7 +411,19 @@ its exit command only when the box holds neither, and kills the session otherwis
   in an input box are `null`), or a Claude Code **question** form
   `{ kind: "question", id: <tool_use id> | null, questions | null, active, untouched }` (the id comes
   from the transcript: the pending `AskUserQuestion` the form shows, checked whole — tabs, the active
-  question's full text, its options and descriptions). Types nothing.
+  question's full text, its options and descriptions; never a question whose options have
+  previews, see `layout_unsupported` below). A question form not all of which is on screen
+  (`detail: "clipped"`, whichever check finds it) is
+  `{ kind: "question", incomplete: true, id: null, questions: null, active: null, untouched: false }`
+  — no id even when what is visible reads as a pending question.
+  Beside `prompt`: `answerable` — whether `--choice` / `--question` would pass the screen checks
+  now: the prompt shown whole (for a form: its rows up to row 1 and its head up to its top rule
+  or tab bar, so none of it is off screen), untouched, its first question active; not the
+  attached-client, lock or transcript checks (`question_not_active`, `not_waiting`) — so a
+  caller offers an answer only for `prompt.id` equal to its question and `answerable: true`;
+  `detail` — why not, the code a refusal would carry (below; `null` when answerable, `no_form`
+  when `prompt` is `null`); and `pane` — `{ cols, rows }`, the pane's size (`null` outside tmux).
+  The screen is read once per `--list`; the size is one more tmux query. Types nothing.
 - `--choice <n> [--prompt <id>]`: pick answer `n` of the permission prompt on screen. With
   `--prompt`, only if the screen still shows the prompt `--list` returned (its `id` fingerprints the
   title, the detail and the answers, so another command's prompt has another — the detail as
@@ -517,14 +537,66 @@ sessions nobody is about to drive by hand, and treat `outcome_uncertain` as "loo
 `-n` / `--dry-run` (and MCP `dry_run: true`) does every check and types nothing:
 `{ ok: true, answered: false, dry_run: true, prompt_kind, …, steps }`.
 
-`--json` success: `{ ok: true, session_id, harness, prompt }` for `--list`;
+**A form taller than the pane.** Claude Code's fullscreen TUI keeps no scrollback: a question
+form taller than the pane loses its top (tabs, question, first rows) where no capture reaches, and
+Claude Code may draw a long option list a window at a time. Such a form is `prompt_incomplete` with
+`detail: "clipped"` — its rows not running up to row 1, rows left out, or its head (the question
+above row 1) not reaching the form's top rule or tab bar — never matched and never typed into.
+Sessions fleet creates start at 200x50 for this ([Spawning](#spawning)); a smaller one (an older
+session, a client that attached at a small size) can still clip a tall form: answer it there, or
+make the pane bigger.
+
+**Why a refusal: `detail`.** Every failure object `answer --json` prints carries `detail` and
+`pane` beside `kind` and `error` — also a usage error clap catches and a
+[`FLEET_PATH_ONLY`](#path-only-mode) refusal, reported before `answer` runs (both `null` there). `error` is free text and may quote the screen (a label, a title); `detail` never does —
+it is one code from a fixed set, so a caller can log it — or `null` for a failure that is not a
+screen check (`busy`, `human_attached`, `choice_invalid`, `answer_invalid`, `question_*`,
+`not_waiting`, `io`, `send_failed`, `outcome_uncertain`, …). `pane` is `{ cols, rows }`, the
+session's pane size when the failure was reported — `null` before the target is known (`usage`,
+`target_*`) or outside tmux. Neither carries screen or transcript text. The codes:
+
+| `detail` | kind | when |
+| --- | --- | --- |
+| `no_form` | `prompt_not_on_screen` | the screen does not end in a prompt of the kind asked about: no question form for `--question`, no permission prompt for `--choice` (an input box, a list quoted in the conversation, nothing) |
+| `clipped` | `prompt_incomplete` | it is there, but not all of it is on the captured screen: a form's top or first rows off it, or only some of its rows shown (above); a Claude Code permission prompt whose frame is out of reach, a Codex approval whose top is, answers that do not run up to answer 1 |
+| `layout_unsupported` | `prompt_incomplete` | it is there in a layout fleet does not read: a question whose options have previews (drawn beside them; fleet never reads or answers that layout), a permission frame that cannot be told from its command, a Codex approval with no title or two, answers it cannot walk (a blank or rule-like line among them) |
+| `tabs` | `prompt_not_on_screen` | the form's tabs are not the question's (another number, other headers), or no tabs for a question in several parts |
+| `question` | `prompt_not_on_screen` | the form asks another question |
+| `options` | `prompt_not_on_screen` | the form's answers are not the question's: a label or description, single vs. multi-select, the rows after the options |
+| `touched` | `prompt_not_on_screen` | the form has a tab answered (☒), a box ticked or text typed |
+| `cursor_moved` | `prompt_not_on_screen` | the cursor is off the first answer, or the form shows another of the call's questions |
+| `different_prompt` | `prompt_not_on_screen` | another prompt: not the `--prompt` id, a question form for `--choice`, a permission prompt for `--question`; in `--list`, a form no pending question of the transcript accounts for |
+
+`prompt_changed` (keys went out, then the screen was not what they lead to) carries the code for
+what the screen showed instead, the last time it was read: `cursor_moved` (the cursor elsewhere),
+`touched` (other boxes, text, answered tabs, or other answers on the review screen), or one of
+the above. A refusal for a clipped form, in full:
+
+```json
+{ "ok": false, "kind": "prompt_incomplete", "error": "the question form's answers run off the captured screen (taller than the terminal) — answer it there; nothing typed",
+  "detail": "clipped", "pane": { "cols": 80, "rows": 24 } }
+```
+
+and `--list` for a form fleet can answer now, then for one it cannot:
+
+```json
+{ "ok": true, "session_id": "…", "harness": "claude",
+  "prompt": { "kind": "question", "id": "toolu_…", "questions": […], "active": 0, "untouched": true },
+  "answerable": true, "detail": null, "pane": { "cols": 200, "rows": 50 } }
+{ "ok": true, "session_id": "…", "harness": "claude",
+  "prompt": { "kind": "question", "incomplete": true, "id": null, "questions": null, "active": null, "untouched": false },
+  "answerable": false, "detail": "clipped", "pane": { "cols": 80, "rows": 24 } }
+```
+
+`--json` success: `{ ok: true, session_id, harness, prompt, answerable, detail, pane }` for `--list`;
 `{ ok: true, session_id, harness, answered: true, prompt_kind: "permission", prompt, choice: { n, label }, method, steps }`
 or `{ ok: true, session_id, harness, answered: true, prompt_kind: "question", id, steps }` after typing
-(`steps`: `[{ key } | { text }]`, what was typed). Failure (exit 1): `{ ok: false, kind, error }`;
+(`steps`: `[{ key } | { text }]`, what was typed). Failure (exit 1): `{ ok: false, kind, error, detail, pane }`;
 `outcome_uncertain` adds `screen` (the `--list` prompt now, or `null`), `prompt_kind` and `steps`.
 Kinds: `usage` (exit 2 when clap catches it, then with `host`), `target_not_found`, `target_ambiguous`,
 `human_attached`, `busy`, `prompt_not_on_screen` (not there, a different prompt, or touched —
-nothing typed), `prompt_incomplete`, `prompt_changed`, `outcome_uncertain`, `choice_invalid`,
+nothing typed), `prompt_incomplete` (there, but not read whole — `clipped` or
+`layout_unsupported`; nothing typed), `prompt_changed`, `outcome_uncertain`, `choice_invalid`,
 `question_not_found`, `question_not_active`, `question_answered` (already answered or declined),
 `not_waiting`, `answer_invalid`, `harness_unsupported` (`--question` on Codex / pi),
 `transcript_not_found`, `backend_unsupported` (no terminal fleet can drive, or `FLEET_FIXTURE`),
@@ -958,7 +1030,7 @@ alone lists. Alias: `fleet t …`; `enter` (alias `e`), `last` and `new` also ex
 | `fleet tmux list [-q] [--json]` (alias `ls`) | sessions, most recently attached first (`-q`: names only). The text view adds [dormant](#session-recovery) sessions, dimmed and marked `◌ … dormant`; `-q` and `--json` list live sessions only |
 | `fleet tmux enter <query>` (alias `e`) | attach by exact > prefix > substring match (case-insensitive); a [dormant](#session-recovery) session is restored first when no live one matches |
 | `fleet tmux last` | attach to the session you were in before the current one |
-| `fleet tmux new [name] [-d] [-C <dir>] [-- cmd]` | attach to, or create, a session (default `main`). `-d` creates without attaching |
+| `fleet tmux new [name] [-d] [-C <dir>] [-- cmd]` | attach to, or create, a session (default `main`). `-d` creates without attaching. A new session starts at 200x50 (see [Spawning](#spawning)) |
 | `fleet tmux kill <query> [-f]` | kill a session (asks first; `-f` skips) |
 | `fleet tmux rename <query> <name>` | rename a tmux session — when it hosts exactly one Claude session (one window, one pane), the rename goes through that session's title instead (`fleet rename`), so the two stay in sync |
 | `fleet tmux stale [--kill] [--older-than 24h] [--no-fleet-check] [-f] [-q] [--json]` | idle shells nothing uses; lists only unless `--kill` |
@@ -1039,7 +1111,9 @@ What a restore does:
   when a live session already has that name. Windows are recreated in order (with their names,
   unless tmux named them itself), panes are split in each pane's recorded cwd and the recorded
   layout is reapplied (`select-layout`); the active window and pane are selected again. A cwd that
-  no longer exists becomes `$HOME`, with a warning.
+  no longer exists becomes `$HOME`, with a warning. The session starts at 200x50, or at its first
+  window's recorded size where that is larger (see [Spawning](#spawning)); a window of several
+  panes ends at its recorded layout's size, which `select-layout` sets.
 - **Each Claude pane** gets `cd <cwd> && <launcher> <flags> --resume <sessionId>` typed into its
   shell (the shell loads your profile, like `spawn`). `<launcher>` is what `spawn` uses (`FLEET_CMD`
   → config `claude` → `claude`); the flags are the replay-safe ones the session was started with —

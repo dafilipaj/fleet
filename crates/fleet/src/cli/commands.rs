@@ -218,8 +218,14 @@ pub fn list_rows() -> Vec<Session> {
 /// A `--json` command failing: print `{ ok: false, host, kind, error }` on stdout, then
 /// hand the error back (it still goes to stderr and sets the exit code).
 pub fn json_failure(e: Error) -> Error {
+    json_failure_with(e, |_| {})
+}
+
+/// [`json_failure`], the object extended by `extend` first (a command's own failure fields).
+pub fn json_failure_with(e: Error, extend: impl FnOnce(&mut serde_json::Value)) -> Error {
     let mut v = e.json();
     v["host"] = host_label().into();
+    extend(&mut v);
     println!(
         "{}",
         serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string())

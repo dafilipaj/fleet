@@ -285,8 +285,27 @@ pub fn new_session(name: &str, dir: Option<&str>, cmd: &[String]) -> Result<()> 
     run(&args.iter().map(String::as_str).collect::<Vec<_>>())
 }
 
+/// The size a tmux session fleet creates starts at: columns, rows. tmux's own default for a
+/// detached session is 80x24, too small for a tall prompt — Claude Code's fullscreen TUI keeps
+/// no scrollback, so what does not fit is off the captured screen and `fleet answer` cannot
+/// read it. An attaching client resizes it to its terminal as usual; tmux keeps the size as the
+/// session's `default-size`, so later windows start at it too.
+pub const NEW_SESSION_SIZE: (u32, u32) = (200, 50);
+
+/// `-x <cols> -y <rows>` for a `new-session`: [`NEW_SESSION_SIZE`], or larger where `at_least`
+/// asks for more (a restored layout).
+pub fn size_args(at_least: Option<(u32, u32)>) -> [String; 4] {
+    let (mut x, mut y) = NEW_SESSION_SIZE;
+    if let Some((w, h)) = at_least {
+        x = x.max(w);
+        y = y.max(h);
+    }
+    ["-x".into(), x.to_string(), "-y".into(), y.to_string()]
+}
+
 fn new_session_args(name: &str, dir: Option<&str>, env: &[String], cmd: &[String]) -> Vec<String> {
     let mut args: Vec<String> = ["new-session", "-d", "-s", name].map(String::from).into();
+    args.extend(size_args(None));
     if let Some(d) = dir {
         args.extend(["-c".into(), d.into()]);
     }
@@ -1041,6 +1060,10 @@ mod tests {
                 "-d",
                 "-s",
                 "w",
+                "-x",
+                "200",
+                "-y",
+                "50",
                 "-c",
                 "/tmp",
                 "-e",
@@ -1052,8 +1075,18 @@ mod tests {
         );
         assert_eq!(
             new_session_args("w", None, &[], &[]),
-            ["new-session", "-d", "-s", "w"]
+            ["new-session", "-d", "-s", "w", "-x", "200", "-y", "50"]
         );
+    }
+
+    // A new session starts at 200x50 (tmux's own default is 80x24), or at a restored layout's
+    // size where that is larger.
+    #[test]
+    fn a_new_session_starts_at_200_by_50_or_larger() {
+        assert_eq!(size_args(None), ["-x", "200", "-y", "50"]);
+        assert_eq!(size_args(Some((120, 40))), ["-x", "200", "-y", "50"]);
+        assert_eq!(size_args(Some((300, 30))), ["-x", "300", "-y", "50"]);
+        assert_eq!(size_args(Some((150, 80))), ["-x", "200", "-y", "80"]);
     }
 
     fn sess(name: &str, last: i64, att: i64) -> TmuxSession {
