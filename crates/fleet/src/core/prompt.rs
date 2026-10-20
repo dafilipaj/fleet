@@ -77,13 +77,78 @@ pub struct ScreenPrompt {
     pub selected: usize,
 }
 
+/// Why the prompt on screen cannot be answered as it stands: a code from a fixed set (`detail`
+/// in `fleet answer --json`), so a caller can log it. Never screen or transcript text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Detail {
+    /// No prompt or form of the kind asked about ends the screen.
+    NoForm,
+    /// One is there, but not all of it is on the captured screen: its top cut off, or only some
+    /// of its answers shown (a list too tall for the pane, drawn a window at a time).
+    Clipped,
+    /// One is there in a layout fleet cannot read for sure: options with previews beside them,
+    /// a frame or a title it cannot tell, answers it cannot walk.
+    LayoutUnsupported,
+    /// The form's tabs are not the question's.
+    Tabs,
+    /// The form asks another question.
+    Question,
+    /// The form's answers are not the question's: labels, descriptions, single or
+    /// multi-select, the rows after them.
+    Options,
+    /// Something is done to it already: a tab answered, a box ticked, text typed.
+    Touched,
+    /// Its cursor is off the first answer (or the form shows another of its questions).
+    CursorMoved,
+    /// The screen shows another prompt than the one asked about.
+    DifferentPrompt,
+}
+
+impl Detail {
+    pub const ALL: [Detail; 9] = [
+        Detail::NoForm,
+        Detail::Clipped,
+        Detail::LayoutUnsupported,
+        Detail::Tabs,
+        Detail::Question,
+        Detail::Options,
+        Detail::Touched,
+        Detail::CursorMoved,
+        Detail::DifferentPrompt,
+    ];
+
+    pub fn code(self) -> &'static str {
+        match self {
+            Detail::NoForm => "no_form",
+            Detail::Clipped => "clipped",
+            Detail::LayoutUnsupported => "layout_unsupported",
+            Detail::Tabs => "tabs",
+            Detail::Question => "question",
+            Detail::Options => "options",
+            Detail::Touched => "touched",
+            Detail::CursorMoved => "cursor_moved",
+            Detail::DifferentPrompt => "different_prompt",
+        }
+    }
+
+    /// The failure kind a refusal for it is: a prompt on screen but not read whole is
+    /// `prompt_incomplete`; one that is not there, another, or touched `prompt_not_on_screen`.
+    pub fn kind(self) -> &'static str {
+        match self {
+            Detail::Clipped | Detail::LayoutUnsupported => "prompt_incomplete",
+            _ => "prompt_not_on_screen",
+        }
+    }
+}
+
 /// What reading a permission prompt off the screen found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PromptRead {
     None,
     /// A prompt is there, but not all of it: what it is about is out of the captured text, so
-    /// it could not be told apart from another prompt with the same answers.
-    Incomplete(String),
+    /// it could not be told apart from another prompt with the same answers. Why, as a code
+    /// ([`Detail::Clipped`] or [`Detail::LayoutUnsupported`]) and in words.
+    Incomplete(Detail, String),
     Prompt(ScreenPrompt),
 }
 
@@ -242,9 +307,9 @@ pub fn permission_prompt(screen: &str, harness: Harness) -> PromptRead {
     // without that shape (a popup, the transcript pager, a draft) is an approval only when it
     // is read whole under its title.
     let shaped = !claude && codex_answer_shape(&lines, last, &footer);
-    let unread = |why: &str| {
+    let unread = |detail: Detail, why: &str| {
         if shaped {
-            PromptRead::Incomplete(why.into())
+            PromptRead::Incomplete(detail, why.into())
         } else {
             PromptRead::None
         }
@@ -263,7 +328,8 @@ pub fn permission_prompt(screen: &str, harness: Harness) -> PromptRead {
         let c = lines[i];
         if let Some((cursor, n, label)) = option_line(c) {
             if n != expect {
-                return unread(UNREAD_ANSWERS);
+                // Answers left out: a list drawn a window at a time.
+                return unread(Detail::Clipped, UNREAD_ANSWERS);
             }
             let mut full = label.to_string();
             for w in wrapped.drain(..).rev() {
@@ -285,16 +351,17 @@ pub fn permission_prompt(screen: &str, harness: Harness) -> PromptRead {
         } else if !c.is_empty() && (wrapped.len() < 3 || !claude) && !is_rule(c) {
             wrapped.push(c);
         } else {
-            return unread(UNREAD_ANSWERS);
+            return unread(Detail::LayoutUnsupported, UNREAD_ANSWERS);
         }
         let Some(up) = i.checked_sub(1) else {
-            return unread(UNREAD_ANSWERS);
+            // The captured text starts inside the answers: answer 1 is above it.
+            return unread(Detail::Clipped, UNREAD_ANSWERS);
         };
         i = up;
     };
     choices.reverse();
     if choices.len() < 2 {
-        return unread(UNREAD_ANSWERS);
+        return unread(Detail::LayoutUnsupported, UNREAD_ANSWERS);
     }
     let cursors: Vec<usize> = choices
         .iter()
@@ -302,7 +369,7 @@ pub fn permission_prompt(screen: &str, harness: Harness) -> PromptRead {
         .map(|(_, c)| c.n)
         .collect();
     let [selected] = cursors[..] else {
-        return unread(UNREAD_ANSWERS);
+        return unread(Detail::LayoutUnsupported, UNREAD_ANSWERS);
     };
     let reach = if claude {
         MAX_CLAUDE_PROMPT_LINES
@@ -323,9 +390,9 @@ pub fn permission_prompt(screen: &str, harness: Harness) -> PromptRead {
         else {
             const TOPLESS: &str = "the top of the approval prompt is off the captured screen";
             return if (floor..top).any(|j| is_title(lines[j])) {
-                PromptRead::Incomplete(TOPLESS.into())
+                PromptRead::Incomplete(Detail::Clipped, TOPLESS.into())
             } else {
-                unread(TOPLESS)
+                unread(Detail::Clipped, TOPLESS)
             };
         };
         floor = above + 1;
@@ -340,9 +407,15 @@ pub fn permission_prompt(screen: &str, harness: Harness) -> PromptRead {
     let t = match (claude, &titles[..], &asks[..]) {
         (true, [.., t], _) | (true, [], [.., t]) | (false, [t], _) => *t,
         (true, [], []) => return PromptRead::None,
-        (false, [], _) => return unread("no line of the approval prompt reads as its title"),
+        (false, [], _) => {
+            return unread(
+                Detail::LayoutUnsupported,
+                "no line of the approval prompt reads as its title",
+            );
+        }
         (false, _, _) => {
             return PromptRead::Incomplete(
+                Detail::LayoutUnsupported,
                 "more than one line of the approval prompt reads as its title (one is inside its command)".into(),
             );
         }
@@ -357,6 +430,7 @@ pub fn permission_prompt(screen: &str, harness: Harness) -> PromptRead {
             .find(|&j| frame_rule(j) && is_solid_rule(lines[j]))
         else {
             return PromptRead::Incomplete(
+                Detail::Clipped,
                 "the top of the permission prompt is off the captured screen".into(),
             );
         };
@@ -374,6 +448,7 @@ pub fn permission_prompt(screen: &str, harness: Harness) -> PromptRead {
         };
         if !shaped {
             return PromptRead::Incomplete(
+                Detail::LayoutUnsupported,
                 "the permission prompt's frame is ambiguous (a rule inside its command)".into(),
             );
         }
@@ -465,6 +540,10 @@ pub struct Form {
     /// The active question, its wrapped lines joined.
     pub question: String,
     pub rows: Vec<FormRow>,
+    /// The head (tabs, question) was read up to the form's top: its rule or its tab bar. Not
+    /// when the walk up from row 1 ran off the captured text (the form taller than the pane,
+    /// which a fullscreen TUI keeps no scrollback for) or past [`MAX_FORM_HEAD_LINES`].
+    pub head_whole: bool,
 }
 
 /// "Submit" / "Next" in a multi-select form (no number), with or without the cursor.
@@ -508,19 +587,27 @@ fn parse_tabs(c: &str) -> Option<Vec<(String, bool)>> {
 
 /// The question form the screen ends in, if any.
 pub fn parse_form(screen: &str) -> Option<Form> {
+    read_form(screen).ok()
+}
+
+/// The question form the screen ends in, or why there is none to read: [`Detail::NoForm`] (no
+/// live list with the form's footer, "Enter to select"), [`Detail::Clipped`] (the footer is
+/// there, but its numbered rows do not run whole up to row 1 on the captured text: row 1 above
+/// it, or rows left out — a list too tall for the pane is drawn a window at a time).
+pub fn read_form(screen: &str) -> Result<Form, Detail> {
     let (lines, visible_from) = screen_lines(screen);
-    let (last, footer) = live_answers(&lines, visible_from)?;
+    let (last, footer) = live_answers(&lines, visible_from).ok_or(Detail::NoForm)?;
     if !footer.iter().any(|c| c.contains("Enter to select")) {
-        return None;
+        return Err(Detail::NoForm);
     }
     // Up from the last numbered row ("Chat about this") to row 1, over descriptions, the
     // Submit/Next row and the rule before "Chat about this".
     let mut first = None;
-    let mut expect = option_line(lines[last])?.1;
+    let mut expect = option_line(lines[last]).ok_or(Detail::NoForm)?.1;
     for i in (0..=last).rev() {
         if let Some((_, n, _)) = option_line(lines[i]) {
             if n != expect {
-                return None;
+                return Err(Detail::Clipped);
             }
             if n == 1 {
                 first = Some(i);
@@ -529,21 +616,24 @@ pub fn parse_form(screen: &str) -> Option<Form> {
             expect -= 1;
         }
         if last - i > 200 {
-            return None;
+            return Err(Detail::Clipped);
         }
     }
-    let first = first?;
+    let first = first.ok_or(Detail::Clipped)?;
     // The head: the tabs line and the question, up to the form's top rule.
     let floor = first.saturating_sub(MAX_FORM_HEAD_LINES);
     let mut tabs = Vec::new();
     let mut question = Vec::new();
+    let mut head_whole = false;
     for j in (floor..first).rev() {
         let c = lines[j];
         if is_solid_rule(c) {
+            head_whole = true;
             break;
         }
         if let Some(t) = parse_tabs(c) {
             tabs = t;
+            head_whole = true;
             break;
         }
         if !c.is_empty() {
@@ -581,10 +671,11 @@ pub fn parse_form(screen: &str) -> Option<Form> {
             row.description.push_str(c);
         }
     }
-    Some(Form {
+    Ok(Form {
         tabs,
         question: squash(&question.join(" ")),
         rows,
+        head_whole,
     })
 }
 
@@ -600,6 +691,17 @@ impl Form {
     /// question, by header), the active question's full text, its options in order with
     /// their descriptions, then "Type something" (or what was typed there) and the rest.
     pub fn shows(&self, questions: &[Question]) -> Result<usize, String> {
+        self.check(questions).map_err(|(_, why)| why)
+    }
+
+    /// [`Form::shows`], saying why not as a code as well as in words. A form whose head was
+    /// not read up to its top that fails on its tabs or its question is
+    /// [`Detail::Clipped`] (what was read is the tail of a question, not another one), and so
+    /// is one showing only the first of the question's options.
+    pub fn check(&self, questions: &[Question]) -> Result<usize, (Detail, String)> {
+        let head = |d: Detail| {
+            if self.head_whole { d } else { Detail::Clipped }
+        };
         if !self.tabs.is_empty() {
             let headers: Vec<&str> = self.tabs.iter().map(|(h, _)| h.as_str()).collect();
             let want: Vec<&str> = questions.iter().map(|q| q.header.trim()).collect();
@@ -609,24 +711,48 @@ impl Form {
                     .zip(&want)
                     .any(|(h, w)| !w.is_empty() && h != w)
             {
-                return Err(format!(
-                    "the form's tabs ({}) are not this question's",
-                    headers.join(", ")
+                return Err((
+                    head(Detail::Tabs),
+                    format!(
+                        "the form's tabs ({}) are not this question's",
+                        headers.join(", ")
+                    ),
                 ));
             }
         } else if questions.len() != 1 {
-            return Err("the form has no tabs, the question has several parts".into());
+            return Err((
+                head(Detail::Tabs),
+                "the form has no tabs, the question has several parts".into(),
+            ));
         }
         let Some(active) = questions
             .iter()
             .position(|q| squash(&q.question) == self.question)
         else {
-            return Err("the form asks another question".into());
+            return Err((
+                head(Detail::Question),
+                "the form asks another question".into(),
+            ));
         };
         let q = &questions[active];
         let k = q.options.len();
         if self.rows.len() < k + 2 {
-            return Err("the form has other answers".into());
+            // The question's first options and nothing after them: a list drawn a window at
+            // a time, the rest out of it.
+            let numbered: Vec<&FormRow> = self.rows.iter().filter(|r| r.n.is_some()).collect();
+            let cut = numbered.len() <= k
+                && numbered
+                    .iter()
+                    .zip(&q.options)
+                    .all(|(r, o)| squash(&r.label) == squash(&o.label));
+            return Err(if cut {
+                (
+                    Detail::Clipped,
+                    "the form shows only some of its answers".into(),
+                )
+            } else {
+                (Detail::Options, "the form has other answers".into())
+            });
         }
         for (row, opt) in self.rows.iter().zip(&q.options) {
             if row.n.is_none()
@@ -634,22 +760,26 @@ impl Form {
                 || (!opt.description.trim().is_empty()
                     && squash(&row.description) != squash(&opt.description))
             {
-                return Err(format!(
-                    "the form's answer \"{}\" is not this question's",
-                    row.label
+                return Err((
+                    Detail::Options,
+                    format!("the form's answer \"{}\" is not this question's", row.label),
                 ));
             }
             if q.multi_select != row.checked.is_some() {
-                return Err(
+                return Err((
+                    Detail::Options,
                     "the form's kind (single / multi-select) is not this question's".into(),
-                );
+                ));
             }
         }
         if self.rows[k].n != Some(k + 1) {
-            return Err("the form has other answers".into());
+            return Err((Detail::Options, "the form has other answers".into()));
         }
         if q.multi_select && self.rows[k + 1].n.is_some() {
-            return Err("the multi-select form has no Submit / Next row".into());
+            return Err((
+                Detail::Options,
+                "the multi-select form has no Submit / Next row".into(),
+            ));
         }
         Ok(active)
     }
@@ -657,14 +787,47 @@ impl Form {
     /// Nothing done to it yet: every tab unanswered, no box ticked, nothing typed, the cursor
     /// on the first answer.
     pub fn untouched(&self, q: &Question) -> bool {
+        self.fresh(q).is_ok()
+    }
+
+    /// [`Form::untouched`], or what was done to it: [`Detail::Touched`] (a tab answered, a box
+    /// ticked, text typed), else [`Detail::CursorMoved`] (the cursor off the first answer).
+    pub fn fresh(&self, q: &Question) -> Result<(), Detail> {
         let k = q.options.len();
-        self.tabs.iter().all(|(_, touched)| !touched)
-            && self.rows.iter().all(|r| r.checked != Some(true))
-            && self
-                .rows
-                .get(k)
-                .is_some_and(|r| r.label.starts_with("Type something"))
-            && self.cursor() == Some(0)
+        let typed = !self
+            .rows
+            .get(k)
+            .is_some_and(|r| r.label.starts_with("Type something"));
+        if typed
+            || self.tabs.iter().any(|(_, touched)| *touched)
+            || self.rows.iter().any(|r| r.checked == Some(true))
+        {
+            return Err(Detail::Touched);
+        }
+        if self.cursor() != Some(0) {
+            return Err(Detail::CursorMoved);
+        }
+        Ok(())
+    }
+
+    /// Can `questions` be answered on this form as it stands? It shows them whole
+    /// ([`Form::check`]) with its head read up to its top — so no part of it is off the
+    /// captured screen — on the first question, untouched. Else why not, as a code and in words.
+    pub fn ready(&self, questions: &[Question]) -> Result<(), (Detail, String)> {
+        let active = self.check(questions)?;
+        if !self.head_whole {
+            return Err((
+                Detail::Clipped,
+                "the form's top is off the captured screen".into(),
+            ));
+        }
+        const TOUCHED: &str = "the form has been touched (moved, ticked, typed or answered)";
+        self.fresh(&questions[active])
+            .map_err(|d| (d, TOUCHED.into()))?;
+        if active != 0 {
+            return Err((Detail::CursorMoved, TOUCHED.into()));
+        }
+        Ok(())
     }
 
     /// The ticked rows of a multi-select (indexes into `rows`).
@@ -680,7 +843,7 @@ impl Form {
 
 /// Is the screen showing this `AskUserQuestion` prompt, untouched, as its live form?
 pub fn screen_shows_question(screen: &str, questions: &[Question]) -> bool {
-    parse_form(screen).is_some_and(|f| f.shows(questions) == Ok(0) && f.untouched(&questions[0]))
+    parse_form(screen).is_some_and(|f| f.ready(questions).is_ok())
 }
 
 /// The review screen after the last question: the tabs, each question with the answer it
@@ -862,7 +1025,7 @@ mod tests {
         let window: String = window.into_iter().rev().map(|l| format!("{l}\n")).collect();
         assert!(matches!(
             permission_prompt(&window, Harness::Claude),
-            PromptRead::Incomplete(_)
+            PromptRead::Incomplete(..)
         ));
     }
 
@@ -883,7 +1046,7 @@ mod tests {
         ];
         // Two title-like lines in one prompt: which is the title cannot be told. Refused.
         for r in &reads {
-            assert!(matches!(r, PromptRead::Incomplete(_)), "{r:?}");
+            assert!(matches!(r, PromptRead::Incomplete(..)), "{r:?}");
         }
         // The id covers the whole prompt, from the conversation above it down to the answers:
         // two commands that differ only above a line ending in "?" are two prompts.
@@ -998,7 +1161,7 @@ mod tests {
             "Steps:\n❯ 1. build\n  2. test\n\n  Press enter to confirm or esc to cancel\n",
         ] {
             let r = permission_prompt(shaped, Harness::Codex);
-            assert!(matches!(r, PromptRead::Incomplete(_)), "{r:?}");
+            assert!(matches!(r, PromptRead::Incomplete(..)), "{r:?}");
         }
     }
 
@@ -1157,7 +1320,7 @@ mod tests {
         );
         assert!(matches!(
             permission_prompt(&inside, Harness::Claude),
-            PromptRead::Incomplete(_)
+            PromptRead::Incomplete(..)
         ));
     }
 
@@ -1204,7 +1367,7 @@ mod tests {
         );
         assert!(matches!(
             permission_prompt(&flush, Harness::Claude),
-            PromptRead::Incomplete(_)
+            PromptRead::Incomplete(..)
         ));
     }
 
@@ -1282,7 +1445,7 @@ mod tests {
         };
         for first in ["rm -rf /w/app", "echo hi"] {
             let r = permission_prompt(&with(first, "Allow listing"), Harness::Codex);
-            assert!(matches!(r, PromptRead::Incomplete(_)), "{r:?}");
+            assert!(matches!(r, PromptRead::Incomplete(..)), "{r:?}");
         }
         let a = prompt(&with("rm -rf /w/app", "echo really?"), Harness::Codex);
         let b = prompt(&with("echo hi", "echo really?"), Harness::Codex);
@@ -1306,7 +1469,7 @@ mod tests {
             )
         };
         let r = permission_prompt(&tall(MAX_CODEX_PROMPT_LINES + 10), Harness::Codex);
-        assert!(matches!(r, PromptRead::Incomplete(_)), "{r:?}");
+        assert!(matches!(r, PromptRead::Incomplete(..)), "{r:?}");
         // Within reach, the same prompt is read whole.
         let p = prompt(&tall(10), Harness::Codex);
         assert_eq!(p.title, "Would you like to run the following command?");
@@ -1331,7 +1494,7 @@ mod tests {
         };
         for first in ["rm -rf /w/app", "echo hi"] {
             let r = permission_prompt(&clipped(first), Harness::Codex);
-            assert!(matches!(r, PromptRead::Incomplete(_)), "{r:?}");
+            assert!(matches!(r, PromptRead::Incomplete(..)), "{r:?}");
         }
     }
 
@@ -1348,10 +1511,10 @@ mod tests {
             let asks = untitled(first);
             assert!(asks.contains("\n• Running") && asks.contains("\n  echo really?\n"));
             let r = permission_prompt(&asks, Harness::Codex);
-            assert!(matches!(r, PromptRead::Incomplete(_)), "{r:?}");
+            assert!(matches!(r, PromptRead::Incomplete(..)), "{r:?}");
             let plain = asks.replace("echo really?", "echo really");
             let r = permission_prompt(&plain, Harness::Codex);
-            assert!(matches!(r, PromptRead::Incomplete(_)), "{r:?}");
+            assert!(matches!(r, PromptRead::Incomplete(..)), "{r:?}");
         }
     }
 
@@ -1379,7 +1542,7 @@ mod tests {
         assert!(p.detail.iter().any(|d| d == "echo part 0"), "{p:?}");
         assert_eq!(up(&tall(n + 1)), 61);
         let r = permission_prompt(&tall(n + 1), Harness::Codex);
-        assert!(matches!(r, PromptRead::Incomplete(_)), "{r:?}");
+        assert!(matches!(r, PromptRead::Incomplete(..)), "{r:?}");
     }
 
     // With the last conversation item captured, even as the first line, the prompt is read whole.
@@ -1415,7 +1578,7 @@ mod tests {
         let from_title = &full[full.find("  Would you like").unwrap()..];
         for screen in [from_title.to_string(), unshaped(from_title)] {
             let r = permission_prompt(&screen, Harness::Codex);
-            assert!(matches!(r, PromptRead::Incomplete(_)), "{r:?}");
+            assert!(matches!(r, PromptRead::Incomplete(..)), "{r:?}");
         }
         assert_eq!(
             prompt(&full, Harness::Codex).title,
@@ -1484,7 +1647,7 @@ mod tests {
         ];
         for s in &broken {
             let r = permission_prompt(s, Harness::Codex);
-            assert!(matches!(r, PromptRead::Incomplete(_)), "{r:?}\n{s}");
+            assert!(matches!(r, PromptRead::Incomplete(..)), "{r:?}\n{s}");
             let bare = unshaped(s);
             assert!(!bare.contains("(y)") && !bare.contains("esc to"), "{bare}");
             assert_eq!(permission_prompt(&bare, Harness::Codex), PromptRead::None);
@@ -1637,7 +1800,7 @@ mod tests {
         for s in [&untitled, &approval_footer] {
             for h in [Harness::Codex, Harness::Pi] {
                 let r = permission_prompt(s, h);
-                assert!(matches!(r, PromptRead::Incomplete(_)), "{h:?}: {r:?}");
+                assert!(matches!(r, PromptRead::Incomplete(..)), "{h:?}: {r:?}");
                 assert!(shows_prompt(s, h));
             }
         }
@@ -1700,5 +1863,307 @@ Ready to submit your answers?
             prompt(&split, Harness::Claude).detail,
             ["Bash command", "Remove the build output", "rm -rf build"]
         );
+    }
+
+    // --- refusal codes; forms that do not fit the pane -------------------------------------
+    //
+    // SYNTHETIC: the screens below are drawn by these helpers in the layout of the fixtures
+    // above (Claude Code 2.1's form, wording synthetic), as a fullscreen TUI shows them: no
+    // scrollback, the last rows of the drawing. They are not captures of Claude Code 2.1.303;
+    // real fullscreen captures (a long question, long descriptions, previews, tabs,
+    // multi-select) are to replace them, from a live test.
+
+    /// About `n` characters of synthetic prose (whole words), starting at word `seed`.
+    fn prose(seed: usize, n: usize) -> String {
+        const WORDS: [&str; 13] = [
+            "the", "build", "cache", "keeps", "every", "artifact", "until", "the", "next",
+            "release", "so", "rebuilds", "stay",
+        ];
+        let mut s = String::new();
+        let mut i = seed;
+        while s.len() < n {
+            if !s.is_empty() {
+                s.push(' ');
+            }
+            s.push_str(WORDS[i % WORDS.len()]);
+            i += 1;
+        }
+        s
+    }
+
+    /// `text` wrapped at `cols` columns, every line after `indent` blanks.
+    fn wrap(text: &str, cols: usize, indent: usize) -> Vec<String> {
+        let pad = " ".repeat(indent);
+        let mut out = Vec::new();
+        let mut line = String::new();
+        for w in text.split_whitespace() {
+            if !line.is_empty() && indent + line.len() + 1 + w.len() > cols {
+                out.push(format!("{pad}{line}"));
+                line.clear();
+            }
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(w);
+        }
+        if !line.is_empty() {
+            out.push(format!("{pad}{line}"));
+        }
+        out
+    }
+
+    /// One question shaped like the one refused in the field: 4 options, a question of about
+    /// 177 characters, descriptions of about 174 to 358 (wording synthetic).
+    fn long_question() -> Vec<Question> {
+        let options: Vec<serde_json::Value> = [174, 230, 290, 358]
+            .iter()
+            .enumerate()
+            .map(|(i, n)| json!({ "label": format!("Option {}", i + 1), "description": prose(i + 1, *n) }))
+            .collect();
+        normalize_questions(&json!({ "questions": [
+            { "question": format!("{}?", prose(0, 176)), "header": "Plan", "options": options }
+        ] }))
+        .unwrap()
+    }
+
+    /// Everything the fullscreen TUI draws at `cols` columns: some conversation, then the form
+    /// for `qs` (its first question) untouched, wrapped to the width.
+    fn tui(qs: &[Question], cols: usize) -> Vec<String> {
+        let q = &qs[0];
+        let rule = "─".repeat(cols);
+        let tabs: Vec<String> = qs.iter().map(|q| format!("☐ {}", q.header)).collect();
+        let mut l = vec![
+            "❯ Plan the release".to_string(),
+            "⏺ A few options first.".into(),
+            String::new(),
+            rule.clone(),
+            format!("←  {}  ✔ Submit  →", tabs.join("  ")),
+            String::new(),
+        ];
+        l.extend(wrap(&q.question, cols, 0));
+        l.push(String::new());
+        for (i, o) in q.options.iter().enumerate() {
+            let m = if i == 0 { "❯ " } else { "  " };
+            l.push(format!("{m}{}. {}", i + 1, o.label));
+            l.extend(wrap(&o.description, cols, 5));
+        }
+        let k = q.options.len();
+        l.push(format!("  {}. Type something.", k + 1));
+        l.push(rule);
+        l.push(format!("  {}. Chat about this", k + 2));
+        l.push(String::new());
+        l.push("Enter to select · Tab/Arrow keys to navigate · Esc to cancel".into());
+        l
+    }
+
+    /// What a pane `rows` high captures of `lines` with no scrollback (a fullscreen TUI keeps
+    /// none): the last `rows` of them, all on the visible screen.
+    fn pane(lines: &[String], rows: usize) -> String {
+        let from = lines.len().saturating_sub(rows);
+        let mut s = format!("{VISIBLE_MARK}\n");
+        for l in &lines[from..] {
+            s.push_str(l);
+            s.push('\n');
+        }
+        s
+    }
+
+    /// Why an answer to `qs` would be refused on `screen` (`None`: it would be typed), as
+    /// `fleet answer --question` decides it from the screen.
+    fn why(screen: &str, qs: &[Question]) -> Option<Detail> {
+        match read_form(screen) {
+            Err(d) => Some(d),
+            Ok(f) => f.ready(qs).err().map(|(d, _)| d),
+        }
+    }
+
+    #[test]
+    fn refusal_codes_are_a_fixed_set_and_documented() {
+        let codes: Vec<&str> = Detail::ALL.iter().map(|d| d.code()).collect();
+        assert_eq!(
+            codes,
+            [
+                "no_form",
+                "clipped",
+                "layout_unsupported",
+                "tabs",
+                "question",
+                "options",
+                "touched",
+                "cursor_moved",
+                "different_prompt"
+            ]
+        );
+        let docs = include_str!("../../../../docs/cli.md");
+        for d in Detail::ALL {
+            assert!(docs.contains(&format!("`{}`", d.code())), "{d:?}");
+            let kind = if matches!(d, Detail::Clipped | Detail::LayoutUnsupported) {
+                "prompt_incomplete"
+            } else {
+                "prompt_not_on_screen"
+            };
+            assert_eq!(d.kind(), kind, "{d:?}");
+        }
+    }
+
+    // The question refused in the field, at tmux's default size for a detached session (80x24)
+    // and at the size fleet now gives the sessions it creates (200x50).
+    #[test]
+    fn a_form_taller_than_the_pane_is_clipped_and_fits_at_200_by_50() {
+        let qs = long_question();
+        let narrow = tui(&qs, 80);
+        assert!(narrow.len() > 30, "taller than 80x24: {}", narrow.len());
+        let screen = pane(&narrow, 24);
+        assert_eq!(why(&screen, &qs), Some(Detail::Clipped), "{screen}");
+        assert!(is_question_form(&screen), "the footer is on screen");
+        let wide = tui(&qs, 200);
+        assert!(wide.len() <= 50, "{}", wide.len());
+        let screen = pane(&wide, 50);
+        assert_eq!(why(&screen, &qs), None, "{screen}");
+        assert!(screen_shows_question(&screen, &qs));
+        let f = read_form(&screen).unwrap();
+        assert!(f.head_whole);
+        assert_eq!(f.rows.len(), 6);
+    }
+
+    #[test]
+    fn a_form_cut_anywhere_is_clipped() {
+        let qs = long_question();
+        let full = tui(&qs, 80);
+        let at = |pred: &dyn Fn(&str) -> bool| full.iter().position(|l| pred(l)).unwrap();
+        let tabs = at(&|l: &str| l.starts_with('←'));
+        let row1 = at(&|l: &str| l.starts_with("❯ 1. "));
+        let below = |i: usize| pane(&full, full.len() - i - 1);
+        // The tab bar just off screen, the question whole: it reads as the question, but a tab
+        // answered (☒) up there could not be seen. Not whole: clipped.
+        let screen = below(tabs);
+        let f = read_form(&screen).unwrap();
+        assert!(!f.head_whole);
+        assert_eq!(f.shows(&qs), Ok(0));
+        assert_eq!(why(&screen, &qs), Some(Detail::Clipped));
+        // The question's first line off screen: what is left reads as another question, but it
+        // is the tail of this one.
+        let screen = below(tabs + 2);
+        assert_eq!(
+            read_form(&screen).unwrap().check(&qs).map_err(|(d, _)| d),
+            Err(Detail::Clipped)
+        );
+        assert_eq!(why(&screen, &qs), Some(Detail::Clipped));
+        // Row 1 off screen: the rows do not run up to 1.
+        assert_eq!(read_form(&below(row1)), Err(Detail::Clipped));
+        // Some options left out, the rows after them shown (a list drawn a window at a time):
+        // the numbers skip.
+        let opt3 = at(&|l: &str| l.starts_with("  3. "));
+        let typed = at(&|l: &str| l.contains("5. Type something."));
+        let mut windowed = full.clone();
+        windowed.drain(opt3..typed);
+        assert_eq!(
+            read_form(&pane(&windowed, 50)),
+            Err(Detail::Clipped),
+            "{windowed:#?}"
+        );
+        // Only the first options shown, nothing numbered after them (at 200 columns, where the
+        // last one's description stays within the footer's few lines).
+        let wide = tui(&qs, 200);
+        let opt3 = wide.iter().position(|l| l.starts_with("  3. ")).unwrap();
+        let mut first_two = wide[..opt3].to_vec();
+        first_two.extend([
+            String::new(),
+            "Enter to select · Tab/Arrow keys to navigate · Esc to cancel".into(),
+        ]);
+        let screen = pane(&first_two, 50);
+        let f = read_form(&screen).unwrap();
+        assert!(f.head_whole);
+        assert_eq!(f.check(&qs).map_err(|(d, _)| d), Err(Detail::Clipped));
+        // Fewer rows that are not the question's first options: other answers, not a cut list.
+        let renamed = normalize_questions(&json!({ "questions": [{
+            "question": "Pick a color", "header": "Color",
+            "options": [{ "label": "Green" }, { "label": "Blue" }, { "label": "Teal" }] }] }))
+        .unwrap();
+        let single = color_form().replace("☐ Color  ☐ Fruits", "☐ Color");
+        assert_eq!(why(&single, &renamed), Some(Detail::Options));
+    }
+
+    #[test]
+    fn every_other_refusal_says_which_check_failed() {
+        let q = two();
+        assert_eq!(why(&color_form(), &q), None);
+        let cases = [
+            (color_form().replace("☐ Fruits", "☐ Shapes"), Detail::Tabs),
+            (color_form().replace("  ☐ Fruits", ""), Detail::Tabs),
+            (
+                color_form().replace("Pick a color\n", "Pick a colour\n"),
+                Detail::Question,
+            ),
+            (color_form().replace("1. Red", "1. Rose"), Detail::Options),
+            (
+                color_form().replace("The color blue", "The colour blue"),
+                Detail::Options,
+            ),
+            (
+                color_form().replace("☐ Fruits", "☒ Fruits"),
+                Detail::Touched,
+            ),
+            (
+                color_form().replace("3. Type something.", "3. Oslo"),
+                Detail::Touched,
+            ),
+            (
+                fruits_form().replace("[ ] Pear", "[✔] Pear"),
+                Detail::Touched,
+            ),
+            (
+                color_form()
+                    .replace("❯ 1. Red", "  1. Red")
+                    .replace("  2. Blue", "❯ 2. Blue"),
+                Detail::CursorMoved,
+            ),
+            // The second question's tab active, nothing done: the cursor moved to it.
+            (fruits_form(), Detail::CursorMoved),
+            (CLAUDE_BASH.to_string(), Detail::NoForm),
+            (String::new(), Detail::NoForm),
+        ];
+        for (screen, want) in cases {
+            assert_eq!(why(&screen, &q), Some(want), "{screen}");
+        }
+    }
+
+    #[test]
+    fn an_incomplete_permission_prompt_says_why_as_a_code() {
+        let detail = |screen: &str, h: Harness| match permission_prompt(screen, h) {
+            PromptRead::Incomplete(d, _) => d,
+            other => panic!("not incomplete: {other:?}"),
+        };
+        // A command taller than the window: the frame's top is off the captured text.
+        let body: String = (0..80).map(|i| format!(" echo part {i}\n")).collect();
+        let tall = CLAUDE_BASH.replace(" rm -rf build\n╌", &format!("{body}╌"));
+        let window: Vec<&str> = tall.lines().rev().take(45).collect();
+        let window: String = window.into_iter().rev().map(|l| format!("{l}\n")).collect();
+        assert_eq!(detail(&window, Harness::Claude), Detail::Clipped);
+        // A rule inside the command: the frame cannot be told.
+        let inside = CLAUDE_BASH.replace(
+            " rm -rf build\n",
+            " echo start\n────────────────────────────────────────\n echo end\n",
+        );
+        assert_eq!(detail(&inside, Harness::Claude), Detail::LayoutUnsupported);
+        // Codex: the capture starting inside the answers is clipped; a blank line inside them, a
+        // wrapped line that reads as a rule, two titles are a layout it cannot walk.
+        let screen = codex_40_long_prefix();
+        let from_2 = screen[screen.find("  2. Yes, and").unwrap()..].to_string();
+        assert_eq!(detail(&from_2, Harness::Codex), Detail::Clipped);
+        let blank = screen.replace("     root` (p)\n", "\n     root` (p)\n");
+        assert_eq!(detail(&blank, Harness::Codex), Detail::LayoutUnsupported);
+        let titles = CODEX_EXEC.replace(
+            "  $ touch probe.txt\n",
+            "  $ bash -lc 'rm -rf x\n  Allow listing\n  ls'\n",
+        );
+        assert_eq!(detail(&titles, Harness::Codex), Detail::LayoutUnsupported);
+        // The top out of reach above a tall command.
+        let body: String = (0..70).map(|i| format!("  echo part {i}\n")).collect();
+        let far = CODEX_EXEC.replace(
+            "  $ touch probe.txt\n",
+            &format!("  $ bash -lc '\n{body}  ls'\n"),
+        );
+        assert_eq!(detail(&far, Harness::Codex), Detail::Clipped);
     }
 }

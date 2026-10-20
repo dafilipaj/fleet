@@ -9,6 +9,13 @@ import { MODEL_ID_RE } from './config.mjs';
 
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/;
 
+/**
+ * The size a new tmux session starts at, as the fleet CLI's (`core::tmux::NEW_SESSION_SIZE`):
+ * tmux's own 80x24 is too small for a tall prompt, which Claude Code's fullscreen TUI then cuts
+ * off with no scrollback to read it from. An attaching client resizes it as usual.
+ */
+export const NEW_SESSION_SIZE = ['-x', '200', '-y', '50'];
+
 /** POSIX single-quote shell escaping (same as the fleet CLI's `shq`). */
 export function shq(s) {
   return `'${String(s).replace(/'/g, `'\\''`)}'`;
@@ -208,7 +215,7 @@ export function createSpawner({
       throw Object.assign(new Error(`tmux session "${name}" already exists`), { status: 409 });
     }
     // oh-my-zsh's "Would you like to update? [Y/n]" reads one key: the first typed character.
-    await run(tmux, ['new-session', '-d', '-s', name, '-c', dir, '-e', 'DISABLE_AUTO_UPDATE=true'], { timeout: 8000 });
+    await run(tmux, ['new-session', '-d', '-s', name, ...NEW_SESSION_SIZE, '-c', dir, '-e', 'DISABLE_AUTO_UPDATE=true'], { timeout: 8000 });
     const launch = { launcher: launchers[harness] || (harness === 'claude' ? launcher : harness), harness, name: nameGiven ? name : null, prompt, model };
     let command = launchCommand(launch);
     if (Buffer.byteLength(command) > TYPED_LINE_MAX) {

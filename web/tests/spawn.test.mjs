@@ -73,7 +73,7 @@ test('spawner creates the tmux session then types the launcher', async () => {
   const res = await sp.spawn({ name: 'job', dir: '/tmp', prompt: 'go' });
   assert.equal(res.tmuxSession, 'job');
   assert.deepEqual(calls[0], ['tmux', 'has-session', '-t', '=job']);
-  assert.deepEqual(calls[1], ['tmux', 'new-session', '-d', '-s', 'job', '-c', '/tmp', '-e', 'DISABLE_AUTO_UPDATE=true']);
+  assert.deepEqual(calls[1], ['tmux', 'new-session', '-d', '-s', 'job', '-x', '200', '-y', '50', '-c', '/tmp', '-e', 'DISABLE_AUTO_UPDATE=true']);
   assert.deepEqual(calls[2], ['tmux', 'capture-pane', '-p', '-t', 'job:'], 'waits for the shell prompt');
   const keys = calls.filter((c) => c[1] === 'send-keys');
   assert.deepEqual(keys[0], ['tmux', 'send-keys', '-t', 'job:', '-l', '--', "claude -n 'job' 'go'"]);

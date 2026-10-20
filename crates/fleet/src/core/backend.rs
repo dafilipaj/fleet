@@ -84,6 +84,19 @@ pub fn peek(s: &Session) -> Result<String> {
     peek_history(s, 0)
 }
 
+/// The size of the session's terminal, `(cols, rows)`, where it costs one tmux call: a tmux
+/// pane's. `None` for iTerm, under `FLEET_FIXTURE`, or when the pane does not answer.
+pub fn pane_size(s: &Session) -> Option<(u32, u32)> {
+    if s.backend != Backend::Tmux || deny_fixture().is_err() {
+        return None;
+    }
+    let size = tmux_query(s.handle.as_deref()?, "#{pane_width} #{pane_height}").ok()?;
+    match parse_size(&size) {
+        (Some(cols), Some(rows)) => Some((cols, rows)),
+        _ => None,
+    }
+}
+
 /// [`peek`] plus up to `history` lines of tmux scrollback above the screen (what scrolled off
 /// the top: the head of a tall prompt). iTerm gives its session's text as it has it.
 pub fn peek_history(s: &Session, history: usize) -> Result<String> {
@@ -107,8 +120,17 @@ end run"#
                 return Ok(visible);
             }
             // The scrollback above the screen, then a mark where the screen starts: what is
-            // on screen now is told apart from what scrolled (or was cleared) off it.
-            let above = tmux_capture(handle, &["-S", &format!("-{history}"), "-E", "-1"])?;
+            // on screen now is told apart from what scrolled (or was cleared) off it. With no
+            // scrollback at all (a fullscreen TUI's alternate screen keeps none), nothing is
+            // above the mark: tmux would give the screen's first line for `-E -1`, and a form
+            // cut at the top of the screen would read with that line twice. A pane that cannot
+            // say is captured as before (and a pane gone fails that capture).
+            let none = tmux_query(handle, "#{history_size}").is_ok_and(|h| h == "0");
+            let above = if none {
+                String::new()
+            } else {
+                tmux_capture(handle, &["-S", &format!("-{history}"), "-E", "-1"])?
+            };
             Ok(format!(
                 "{above}{}\n{visible}",
                 crate::core::prompt::VISIBLE_MARK
@@ -1534,14 +1556,17 @@ fn tmux_spawn_args(
     sh: &str,
 ) -> Vec<String> {
     let mut a: Vec<String> = if exists {
+        // A window in a session that is there already: its size is the session's.
         vec!["new-window".into(), "-t".into(), format!("={session}:")]
     } else {
-        vec![
+        let mut a = vec![
             "new-session".into(),
             "-d".into(),
             "-s".into(),
             session.into(),
-        ]
+        ];
+        a.extend(crate::core::tmux::size_args(None));
+        a
     };
     a.extend(
         [
@@ -1591,7 +1616,13 @@ mod tests {
             ["new-window", "-t", "=fleet:"]
         );
         let fresh = tmux_spawn_args("fleet", "/tmp", false, &["A=1".into()], "/bin/sh");
-        assert_eq!(fresh[..4], ["new-session", "-d", "-s", "fleet"]);
+        assert_eq!(
+            fresh[..8],
+            ["new-session", "-d", "-s", "fleet", "-x", "200", "-y", "50"]
+        );
+        // A window in an existing session is left at that session's size.
+        let window = tmux_spawn_args("fleet", "/tmp", true, &[], "/bin/sh");
+        assert!(!window.contains(&"-x".to_string()), "{window:?}");
         let at = fresh.iter().position(|a| a == "-c").unwrap();
         assert_eq!(
             fresh[at..at + 6],

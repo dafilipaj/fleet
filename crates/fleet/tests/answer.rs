@@ -438,6 +438,11 @@ impl Server {
         let input = json!({ "questions": [{ "question": "Which city?", "header": "City", "multiSelect": multi,
             "options": [{ "label": "Paris", "description": "The French capital" },
                         { "label": "Rome", "description": "The Italian capital" }] }] });
+        self.question_transcript_of(session_id, input);
+    }
+
+    /// A transcript whose last call is a pending `AskUserQuestion` `tq1` with this input.
+    fn question_transcript_of(&self, session_id: &str, input: Value) {
         let lines = [
             json!({ "type": "user", "message": { "role": "user", "content": "plan the trip" } }),
             json!({ "type": "assistant", "message": { "id": "m1", "role": "assistant", "stop_reason": "tool_use",
@@ -509,22 +514,35 @@ fn a_permission_prompt_is_answered_with_one_key_only_while_on_screen() {
         json!(["Bash command", "Remove the build output", "rm -rf build"])
     );
     assert_eq!(p["untouched"], true);
+    assert_eq!(v["answerable"], true, "{v}");
+    assert_eq!(v["detail"], Value::Null);
+    assert_eq!(v["pane"], json!({ "cols": 200, "rows": 50 }));
     let id = p["id"].as_str().unwrap().to_string();
 
-    // Refusals type nothing.
-    let refused: [(&[&str], &str); 3] = [
+    // Refusals type nothing. Each says which check failed as a code (`detail`, `null` for a
+    // refusal that is no screen check) and how big the pane is (`null` before the target is
+    // known).
+    let pane = json!({ "cols": 200, "rows": 50 });
+    let refused: [(&[&str], &str, Value, Value); 3] = [
         (
             &["--choice", "2", "--prompt", "p2.00000000"],
             "prompt_not_on_screen",
+            json!("different_prompt"),
+            pane.clone(),
         ),
-        (&["--choice", "4"], "choice_invalid"),
-        (&["--question", "tq"], "usage"),
+        (&["--choice", "4"], "choice_invalid", Value::Null, pane),
+        (&["--question", "tq"], "usage", Value::Null, Value::Null),
     ];
-    for (args, kind) in refused {
+    for (args, kind, detail, pane) in refused {
         let mut all = vec!["answer", pid.as_str(), "--json"];
         all.extend_from_slice(args);
         let (code, v, _) = s.fleet(&all);
         assert_eq!((code, v["kind"].as_str()), (1, Some(kind)), "{args:?}");
+        assert_eq!(
+            (&v["detail"], &v["pane"]),
+            (&detail, &pane),
+            "{args:?}: {v}"
+        );
     }
     // A dry run says what it would type, and types nothing.
     let (code, v, _) = s.fleet(&[
@@ -565,10 +583,14 @@ fn a_prompt_merely_quoted_in_the_conversation_gets_nothing() {
     let (code, v, _) = s.fleet(&["answer", &pid, "--list", "--json"]);
     assert_eq!(code, 0);
     assert_eq!(v["prompt"], Value::Null, "{v}");
+    assert_eq!(
+        (&v["answerable"], &v["detail"]),
+        (&json!(false), &json!("no_form"))
+    );
     let (code, v, _) = s.fleet(&["answer", &pid, "--choice", "1", "--json"]);
     assert_eq!(
-        (code, v["kind"].as_str()),
-        (1, Some("prompt_not_on_screen"))
+        (code, v["kind"].as_str(), v["detail"].as_str()),
+        (1, Some("prompt_not_on_screen"), Some("no_form"))
     );
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(read(&log), "");
@@ -598,6 +620,10 @@ fn a_pending_question_is_answered_key_by_key_against_the_screen() {
     assert_eq!(v["prompt"]["kind"], "question", "{v}");
     assert_eq!(v["prompt"]["id"], "tq1");
     assert_eq!(v["prompt"]["untouched"], true);
+    assert_eq!(
+        (&v["answerable"], &v["detail"]),
+        (&json!(true), &Value::Null)
+    );
 
     let bad: [(&[&str], &str); 4] = [
         (
@@ -721,6 +747,7 @@ fn a_form_that_moves_under_the_answer_stops_it() {
         "{v}"
     );
     assert!(v["error"].as_str().unwrap().contains("after 1 of"), "{v}");
+    assert_eq!(v["detail"], "cursor_moved", "{v}");
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(read(&out), "", "nothing was submitted");
     assert_eq!(keys(&log), DOWN);
@@ -757,8 +784,148 @@ fn a_form_already_touched_is_refused() {
         (1, Some("prompt_not_on_screen")),
         "{v}"
     );
+    assert_eq!(v["detail"], "touched", "{v}");
+    assert_eq!(v["pane"], json!({ "cols": 200, "rows": 50 }), "{v}");
+    // `--list` names the question, and says it cannot be answered now, and why.
+    let (code, v, _) = s.fleet(&["answer", &pid, "--list", "--json"]);
+    assert_eq!(code, 0);
+    assert_eq!(v["prompt"]["id"], "tq1", "{v}");
+    assert_eq!(
+        (&v["answerable"], &v["detail"]),
+        (&json!(false), &json!("touched"))
+    );
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(read(&log), "");
+}
+
+// SYNTHETIC screens: the "Which city?" form of `FAKE_FORM`, cut as a fullscreen TUI cuts a form
+// taller than its pane (no scrollback above the screen). Not Claude Code 2.1.303 captures; real
+// ones come from a live test.
+const RULE: &str = "────────────────────────────────────────────────────────────";
+
+/// Row 1 off the top: the rows do not run up to it.
+fn cut_above_row_2() -> String {
+    format!(
+        "     The French capital\n  2. Rome\n     The Italian capital\n  3. Type something.\n\
+         {RULE}\n  4. Chat about this\n\nEnter to select · Tab/Arrow keys to navigate · Esc to cancel\n"
+    )
+}
+
+/// The rule and the tab bar off the top, the question whole: what is there reads as the
+/// question, but a tab answered up there could not be seen.
+fn cut_above_question() -> String {
+    format!("Which city?\n\n❯ 1. Paris\n{}", cut_above_row_2())
+}
+
+// The refusal from the field: a form taller than the pane, its top cut off. It is named as
+// such — `prompt_incomplete`, `clipped` — with the pane's size, and `--list` says the form
+// cannot be answered now, and why.
+#[test]
+fn a_form_cut_off_by_the_pane_is_named_clipped() {
+    let Some(s) = Server::new() else { return };
+    let pane = json!({ "cols": 200, "rows": 50 });
+    // Either way the same object: `incomplete`, no id — even where what is visible reads as
+    // the pending question (the head cut off): a caller must not offer an answer for it.
+    for (name, screen) in [
+        ("rows", cut_above_row_2()),
+        ("head", cut_above_question()),
+        // Nothing above row 1: no question text, so no pending question matches and the newest
+        // one's own check names the cut.
+        ("question", format!("❯ 1. Paris\n{}", cut_above_row_2())),
+    ] {
+        let sid = format!("s-cut-{name}");
+        s.question_transcript(&sid, false);
+        let (log, _) = s.files(&format!("cut-{name}"));
+        let file = s.env.path(&format!("cut-{name}.screen"));
+        std::fs::write(&file, &screen).unwrap();
+        let pid = s.agent(
+            &format!("cut-{name}"),
+            "static",
+            &[&file, &log],
+            &sid,
+            "Enter to select",
+        );
+        let (code, v, err) = s.fleet(&["answer", &pid, "--list", "--json"]);
+        assert_eq!(code, 0, "{err}");
+        assert_eq!(
+            v["prompt"],
+            json!({ "kind": "question", "incomplete": true, "id": null, "questions": null,
+                    "active": null, "untouched": false }),
+            "{name}: {v}"
+        );
+        assert_eq!(v["answerable"], false, "{name}: {v}");
+        assert_eq!(v["detail"], "clipped", "{name}: {v}");
+        assert_eq!(v["pane"], pane, "{name}: {v}");
+        let (code, v, _) = s.fleet(&[
+            "answer",
+            &pid,
+            "--question",
+            "tq1",
+            "--answers",
+            "[{\"options\":[0]}]",
+            "--json",
+        ]);
+        assert_eq!(
+            (code, v["kind"].as_str(), v["detail"].as_str()),
+            (1, Some("prompt_incomplete"), Some("clipped")),
+            "{name}: {v}"
+        );
+        assert_eq!(v["pane"], pane, "{name}: {v}");
+        // The new fields carry no screen or transcript text.
+        let fields = format!("{}{}", v["detail"], v["pane"]);
+        for word in ["Paris", "Rome", "city", "capital"] {
+            assert!(!fields.contains(word), "{name}: {fields}");
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(read(&log), "", "{name}: nothing typed");
+    }
+}
+
+// Options with previews are drawn beside them, a layout fleet does not read: never matched,
+// never answered — `layout_unsupported`, not a misreading.
+#[test]
+fn a_question_with_previews_is_layout_unsupported() {
+    let Some(s) = Server::new() else { return };
+    let input = json!({ "questions": [{ "question": "Which city?", "header": "City",
+        "options": [{ "label": "Paris", "description": "The French capital", "preview": "Seine, Louvre" },
+                    { "label": "Rome", "description": "The Italian capital", "preview": "Tiber, Forum" }] }] });
+    s.question_transcript_of("s-preview", input);
+    let (log, out) = s.files("preview");
+    let pid = s.agent_cmd(
+        "preview",
+        &format!(
+            "'{}' single '{}' '{}' 0",
+            s.env.path("bin/form").display(),
+            log.display(),
+            out.display()
+        ),
+        "s-preview",
+        "Enter to select",
+    );
+    let (code, v, err) = s.fleet(&["answer", &pid, "--list", "--json"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(v["prompt"]["kind"], "question", "{v}");
+    assert_eq!(v["prompt"]["id"], Value::Null, "{v}");
+    assert_eq!(
+        (&v["answerable"], &v["detail"]),
+        (&json!(false), &json!("layout_unsupported"))
+    );
+    let (code, v, _) = s.fleet(&[
+        "answer",
+        &pid,
+        "--question",
+        "tq1",
+        "--answers",
+        "[{\"options\":[1]}]",
+        "--json",
+    ]);
+    assert_eq!(
+        (code, v["kind"].as_str(), v["detail"].as_str()),
+        (1, Some("prompt_incomplete"), Some("layout_unsupported")),
+        "{v}"
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(read(&log), "", "nothing typed");
 }
 
 #[test]
@@ -771,6 +938,11 @@ fn json_usage_errors_are_one_object() {
         (v["ok"].clone(), v["kind"].clone()),
         (json!(false), json!("usage"))
     );
+    // Every answer failure carries `detail` and `pane`: `null` before any screen check.
+    let fields = v.as_object().unwrap();
+    for k in ["detail", "pane"] {
+        assert_eq!(fields.get(k), Some(&Value::Null), "{k}: {v}");
+    }
 }
 
 // --- round 3 -------------------------------------------------------------------

@@ -154,10 +154,10 @@ enum Commands {
     Answer {
         /// generated title, session name, sessionId prefix, or pid
         target: String,
-        /// One JSON object (failures: { ok: false, kind, error })
+        /// One JSON object (failures: { ok: false, kind, error, detail, pane })
         #[arg(long)]
         json: bool,
-        /// Only show the prompt on screen: its answers and id (types nothing)
+        /// Only show the prompt on screen: its answers and id, and whether it can be answered now (types nothing)
         #[arg(long)]
         list: bool,
         /// Pick this numbered answer of the permission / approval prompt on screen
@@ -1111,6 +1111,7 @@ fn refused(e: Error, command: &Commands) -> Error {
     }
     match command {
         Commands::Spawn { .. } => commands::spawn_json_failure(e, &commands::host_label()),
+        Commands::Answer { .. } => commands::json_failure_with(e, answer_cmd::early_failure_fields),
         _ => commands::json_failure(e),
     }
 }
@@ -1950,7 +1951,12 @@ fn parse_failure(e: clap::Error) -> ! {
         let v = if cmd == "spawn" {
             commands::spawn_error_json(&Error::tagged("usage", first), &host)
         } else {
-            serde_json::json!({ "ok": false, "host": host, "kind": "usage", "error": first })
+            let mut v =
+                serde_json::json!({ "ok": false, "host": host, "kind": "usage", "error": first });
+            if cmd == "answer" {
+                answer_cmd::early_failure_fields(&mut v);
+            }
+            v
         };
         println!("{v}");
         eprint!("{rendered}");

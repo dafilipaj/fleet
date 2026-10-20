@@ -3,8 +3,9 @@
 //! prompt or a Codex approval prompt (`--choice`). `--list` says what is on screen.
 //!
 //! Nothing is typed unless the terminal shows that very prompt, untouched (the cursor still
-//! on its first answer, nothing ticked or typed), at the bottom of the screen. And no key is
-//! typed blind:
+//! on its first answer, nothing ticked or typed), at the bottom of the screen. A refusal says
+//! which check failed as a code (`detail`, a [`Detail`]) beside the pane's size: never screen
+//! or transcript text, so a caller can log it. And no key is typed blind:
 //!
 //! - **Exclusive input.** A terminal has no answer bound to a prompt id, so the sources of a
 //!   race are closed instead: no human may be attached to the session's tmux session (unless
@@ -41,7 +42,7 @@ use crate::core::backend;
 use crate::core::discovery::{self, Backend, Session};
 use crate::core::harness::Harness;
 use crate::core::lock::{self, LockError, SessionLock};
-use crate::core::prompt::{self, PromptRead, ScreenPrompt};
+use crate::core::prompt::{self, Detail, PromptRead, ScreenPrompt};
 use crate::core::questions::{self, At, Planned, Question, Step};
 use crate::core::transcript::{self, Kind};
 use crate::error::{Error, Result};
@@ -75,13 +76,53 @@ enum Mode {
     Question { id: String, answers: Value },
 }
 
-type R<T> = std::result::Result<T, Failure>;
+/// A failure: its kind and message, and for a refusal by a screen check, why as a code
+/// (`detail`, from [`Detail`]: never screen or transcript text, so a caller can log it), plus
+/// the session's pane size, filled in once the target is known.
+struct Refusal {
+    kind: &'static str,
+    message: String,
+    detail: Option<Detail>,
+    pane: Option<(u32, u32)>,
+}
+
+impl From<Failure> for Refusal {
+    fn from(f: Failure) -> Self {
+        Refusal {
+            kind: f.kind,
+            message: f.message,
+            detail: None,
+            pane: None,
+        }
+    }
+}
+
+type R<T> = std::result::Result<T, Refusal>;
 
 fn fail<T>(kind: &'static str, message: impl Into<String>) -> R<T> {
     Err(Failure {
         kind,
         message: message.into(),
+    }
+    .into())
+}
+
+/// Refuse for `detail`, under the kind it is reported as ([`Detail::kind`]).
+fn refuse<T>(detail: Detail, message: impl Into<String>) -> R<T> {
+    Err(Refusal {
+        kind: detail.kind(),
+        message: message.into(),
+        detail: Some(detail),
+        pane: None,
     })
+}
+
+/// `{ cols, rows }`, or `null` when the backend does not say.
+fn pane_json(size: Option<(u32, u32)>) -> Value {
+    size.map_or(
+        Value::Null,
+        |(cols, rows)| json!({ "cols": cols, "rows": rows }),
+    )
 }
 
 fn mode(o: &Opts) -> R<Mode> {
@@ -126,10 +167,10 @@ fn mode(o: &Opts) -> R<Mode> {
 }
 
 fn resolve(target: &str) -> R<Session> {
-    discovery::resolve_target(target).map_err(|e| Failure {
+    Ok(discovery::resolve_target(target).map_err(|e| Failure {
         kind: e.kind(),
         message: e.to_string(),
-    })
+    })?)
 }
 
 fn drivable(s: &Session) -> R<()> {
@@ -149,10 +190,12 @@ fn drivable(s: &Session) -> R<()> {
 /// What the session's terminal shows now, with scrollback above it.
 fn screen(s: &Session) -> R<String> {
     drivable(s)?;
-    backend::peek_history(s, HISTORY_LINES).map_err(|e| Failure {
-        kind: "io",
-        message: format!("cannot read the terminal: {e}"),
-    })
+    Ok(
+        backend::peek_history(s, HISTORY_LINES).map_err(|e| Failure {
+            kind: "io",
+            message: format!("cannot read the terminal: {e}"),
+        })?,
+    )
 }
 
 /// The clients attached to the session's tmux session (a human who could be typing).
@@ -200,7 +243,7 @@ fn exclusive(s: &Session, allow_attached: bool) -> R<SessionLock> {
             );
         }
     }
-    lock::try_lock(s).map_err(|e| match e {
+    Ok(lock::try_lock(s).map_err(|e| match e {
         LockError::Busy => Failure {
             kind: "busy",
             message: format!("{e}; nothing typed"),
@@ -209,7 +252,7 @@ fn exclusive(s: &Session, allow_attached: bool) -> R<SessionLock> {
             kind: "io",
             message: e.to_string(),
         },
-    })
+    })?)
 }
 
 /// Read the screen until `ok` holds, for at most `within`.
@@ -238,7 +281,7 @@ fn landed(
     still: impl Fn(&str) -> bool,
     unsure: impl Fn(&str) -> Option<String>,
 ) -> Option<String> {
-    let unread = |f: Failure| Some(format!("{} after the answer", f.message));
+    let unread = |f: Refusal| Some(format!("{} after the answer", f.message));
     match wait_for(s, SETTLE, |screen| !still(screen)) {
         Err(f) => return unread(f),
         Ok(false) => return Some("the prompt is still on screen after the answer".into()),
@@ -255,10 +298,10 @@ fn landed(
 }
 
 /// A screen that cannot be read once keys have gone out: say how many did.
-fn after_keys(done: usize, total: usize) -> impl Fn(Failure) -> Failure {
-    move |f| Failure {
-        kind: f.kind,
+fn after_keys(done: usize, total: usize) -> impl Fn(Refusal) -> Refusal {
+    move |f| Refusal {
         message: format!("{}; stopped after {done} of {total} keys", f.message),
+        ..f
     }
 }
 
@@ -314,6 +357,9 @@ fn outcome(
             "error".into(),
             json!(format!("{why}; look at the terminal")),
         );
+        // Not a refusal by a screen check: no code. Every failure object has both keys.
+        m.insert("detail".into(), Value::Null);
+        m.insert("pane".into(), pane_json(backend::pane_size(s)));
         m.insert("screen".into(), on_screen(s));
     } else {
         m.insert("answered".into(), json!(!dry));
@@ -331,10 +377,9 @@ fn outcome(
 
 /// What `--list` would say about the screen now (best effort: `null` when unreadable).
 fn on_screen(s: &Session) -> Value {
-    list(s)
-        .ok()
-        .and_then(|v| v.get("prompt").cloned())
-        .unwrap_or(Value::Null)
+    screen(s)
+        .and_then(|screen| read_prompt(s, &screen))
+        .map_or(Value::Null, |(prompt, _)| prompt)
 }
 
 fn permission_json(p: &ScreenPrompt) -> Value {
@@ -366,44 +411,110 @@ fn pending_questions(s: &Session) -> R<Vec<transcript::Entry>> {
         .collect())
 }
 
-fn list(s: &Session) -> R<Value> {
-    let screen = screen(s)?;
-    let prompt = match prompt::permission_prompt(&screen, s.harness) {
-        PromptRead::Prompt(p) => permission_json(&p),
-        PromptRead::Incomplete(reason) => {
-            json!({ "kind": "permission", "incomplete": true, "reason": reason })
+/// Does any of the questions have options with previews? Claude Code draws those beside the
+/// options, a layout fleet does not read off the screen: never answered, never matched.
+fn has_previews(qs: &[Question]) -> bool {
+    qs.iter().any(|q| q.options.iter().any(|o| o.preview))
+}
+
+/// `--list`'s question form not all of which is on screen (`clipped`): which question it is
+/// is not told, even when what is visible reads as a pending one — the same object whichever
+/// check found it cut.
+fn clipped_question() -> Value {
+    json!({
+        "kind": "question", "incomplete": true, "id": null, "questions": null,
+        "active": null, "untouched": false,
+    })
+}
+
+/// The prompt `screen` ends in, as `--list` reports it, and why it cannot be answered now
+/// (`None`: it can — shown whole, untouched; the screen checks of `--choice` / `--question`,
+/// not the attached-client, lock or transcript ones).
+fn read_prompt(s: &Session, screen: &str) -> R<(Value, Option<Detail>)> {
+    Ok(match prompt::permission_prompt(screen, s.harness) {
+        PromptRead::Prompt(p) => {
+            let why = (p.selected != 1).then_some(Detail::CursorMoved);
+            (permission_json(&p), why)
         }
-        PromptRead::None => match prompt::parse_form(&screen) {
-            Some(form) => {
+        PromptRead::Incomplete(detail, reason) => (
+            json!({ "kind": "permission", "incomplete": true, "reason": reason }),
+            Some(detail),
+        ),
+        PromptRead::None => match prompt::read_form(screen) {
+            Err(Detail::NoForm) => (Value::Null, Some(Detail::NoForm)),
+            // A form, but not all of it on screen: which question it is cannot be told.
+            Err(detail) => (clipped_question(), Some(detail)),
+            Ok(form) => {
                 // Which question it is comes from the transcript (Claude Code only).
-                let found = if s.harness == Harness::Claude {
-                    pending_questions(s)?.into_iter().find_map(|e| {
-                        let qs = e.questions.clone()?;
-                        let active = form.shows(&qs).ok()?;
-                        Some((e, qs, active))
-                    })
+                let pending = if s.harness == Harness::Claude {
+                    pending_questions(s)?
                 } else {
-                    None
+                    Vec::new()
                 };
-                match found {
-                    Some((e, qs, active)) => json!({
-                        "kind": "question",
-                        "id": e.id,
-                        "questions": qs,
-                        "active": active,
-                        "untouched": active == 0 && form.untouched(&qs[0]),
-                    }),
-                    None => json!({
-                        "kind": "question", "id": null, "questions": null,
-                        "active": null, "untouched": false,
-                    }),
-                }
+                question_on_screen(&form, &pending)
             }
-            None => Value::Null,
         },
+    })
+}
+
+/// The `--list` report of a question form on screen: the pending question (newest first) it
+/// shows, checked whole, and why that one cannot be answered now. With none, why not, against
+/// the newest pending question: the one an answer would be for. A form found cut off
+/// (`clipped`, by any check) is [`clipped_question`], never a question's id.
+fn question_on_screen(
+    form: &prompt::Form,
+    pending: &[transcript::Entry],
+) -> (Value, Option<Detail>) {
+    let found = pending.iter().find_map(|e| {
+        let qs = e.questions.as_ref().filter(|qs| !has_previews(qs))?;
+        let active = form.shows(qs).ok()?;
+        Some((e, qs, active))
+    });
+    if let Some((e, qs, active)) = found {
+        let why = form.ready(qs).err().map(|(detail, _)| detail);
+        if why == Some(Detail::Clipped) {
+            return (clipped_question(), why);
+        }
+        return (
+            json!({
+                "kind": "question",
+                "id": e.id,
+                "questions": qs,
+                "active": active,
+                "untouched": active == 0 && form.untouched(&qs[0]),
+            }),
+            why,
+        );
+    }
+    let why = match pending.first().and_then(|e| e.questions.as_deref()) {
+        None => Detail::DifferentPrompt,
+        Some(qs) if has_previews(qs) => Detail::LayoutUnsupported,
+        Some(qs) => form
+            .check(qs)
+            .err()
+            .map_or(Detail::DifferentPrompt, |(detail, _)| detail),
     };
+    if why == Detail::Clipped {
+        return (clipped_question(), Some(why));
+    }
+    (
+        json!({
+            "kind": "question", "id": null, "questions": null,
+            "active": null, "untouched": false,
+        }),
+        Some(why),
+    )
+}
+
+fn list(s: &Session) -> R<Value> {
+    // The screen is read once; the pane size is one more tmux call, no second capture.
+    let screen = screen(s)?;
+    let (prompt, why) = read_prompt(s, &screen)?;
     let mut m = base(s);
     m.insert("prompt".into(), prompt);
+    m.insert("answerable".into(), json!(why.is_none()));
+    m.insert("detail".into(), json!(why.map(Detail::code)));
+    m.insert("pane".into(), pane_json(backend::pane_size(s)));
     Ok(Value::Object(m))
 }
 
@@ -412,13 +523,13 @@ fn read_permission(s: &Session) -> R<ScreenPrompt> {
     let screen = screen(s)?;
     match prompt::permission_prompt(&screen, s.harness) {
         PromptRead::Prompt(p) => Ok(p),
-        PromptRead::Incomplete(why) => fail("prompt_incomplete", format!("{why}; nothing typed")),
-        PromptRead::None if prompt::is_question_form(&screen) => fail(
-            "prompt_not_on_screen",
+        PromptRead::Incomplete(detail, why) => refuse(detail, format!("{why}; nothing typed")),
+        PromptRead::None if prompt::is_question_form(&screen) => refuse(
+            Detail::DifferentPrompt,
             "the terminal shows a question form — answer it with --question; nothing typed",
         ),
-        PromptRead::None => fail(
-            "prompt_not_on_screen",
+        PromptRead::None => refuse(
+            Detail::NoForm,
             "the terminal is not showing a permission prompt; nothing typed",
         ),
     }
@@ -432,13 +543,24 @@ fn same_answers(a: &ScreenPrompt, b: &ScreenPrompt) -> bool {
             .all(|(x, y)| x.label == y.label)
 }
 
+/// `prompt_changed`: the screen did not reach the state the keys so far lead to; `detail` what
+/// it showed instead, the last time it was read.
+fn changed<T>(detail: Detail, message: String) -> R<T> {
+    Err(Refusal {
+        kind: "prompt_changed",
+        message,
+        detail: Some(detail),
+        pane: None,
+    })
+}
+
 fn choose(s: &Session, n: usize, want: Option<&str>, allow_attached: bool, dry: bool) -> R<Value> {
     // A dry run checks this too: it says whether the answer could be typed now.
     let _lock = exclusive(s, allow_attached)?;
     let p = read_permission(s)?;
     if want.is_some_and(|w| w != p.id) {
-        return fail(
-            "prompt_not_on_screen",
+        return refuse(
+            Detail::DifferentPrompt,
             format!(
                 "the terminal shows a different prompt now ({}: \"{}\"); nothing typed",
                 p.id, p.title
@@ -446,8 +568,8 @@ fn choose(s: &Session, n: usize, want: Option<&str>, allow_attached: bool, dry: 
         );
     }
     if p.selected != 1 {
-        return fail(
-            "prompt_not_on_screen",
+        return refuse(
+            Detail::CursorMoved,
             "someone moved the prompt's cursor (it is not on answer 1) — answer it in the terminal; nothing typed",
         );
     }
@@ -481,14 +603,26 @@ fn choose(s: &Session, n: usize, want: Option<&str>, allow_attached: bool, dry: 
             // The cursor must have moved to exactly answer i+1 of this very prompt; before the
             // Enter, the whole prompt is read again.
             let expect = i + 1;
+            let mut seen = Detail::NoForm;
             let ok = wait_for(s, SETTLE, |screen| {
-                matches!(prompt::permission_prompt(screen, s.harness),
-                    PromptRead::Prompt(now) if now.id == p.id && now.selected == expect)
+                match prompt::permission_prompt(screen, s.harness) {
+                    PromptRead::Prompt(now) if now.id == p.id && now.selected == expect => {
+                        return true;
+                    }
+                    PromptRead::Prompt(now) if now.id == p.id => seen = Detail::CursorMoved,
+                    PromptRead::Prompt(_) => seen = Detail::DifferentPrompt,
+                    PromptRead::Incomplete(detail, _) => seen = detail,
+                    PromptRead::None if prompt::is_question_form(screen) => {
+                        seen = Detail::DifferentPrompt;
+                    }
+                    PromptRead::None => seen = Detail::NoForm,
+                }
+                false
             })
             .map_err(after_keys(i, total))?;
             if !ok {
-                return fail(
-                    "prompt_changed",
+                return changed(
+                    seen,
                     format!(
                         "the prompt changed while answering (expected the cursor on answer {expect}); stopped after {i} of {total} keys"
                     ),
@@ -504,7 +638,7 @@ fn choose(s: &Session, n: usize, want: Option<&str>, allow_attached: bool, dry: 
         // same answers — never "no prompt".
         |screen| match prompt::permission_prompt(screen, s.harness) {
             PromptRead::Prompt(now) if same_answers(&now, &p) => Some(SAME_ANSWERS.into()),
-            PromptRead::Incomplete(why) => Some(format!(
+            PromptRead::Incomplete(_, why) => Some(format!(
                 "a prompt that cannot be read whole is on screen now ({why}) — it may be the one answered, or one the key answered instead"
             )),
             PromptRead::Prompt(_) | PromptRead::None => None,
@@ -513,15 +647,31 @@ fn choose(s: &Session, n: usize, want: Option<&str>, allow_attached: bool, dry: 
     Ok(outcome(s, "permission", &steps, fields, false, uncertain))
 }
 
-/// Does the screen show the form in state `at` of answering `qs`?
-fn form_at(screen: &str, qs: &[Question], at: &At) -> bool {
+/// Does the screen show the form in state `at` of answering `qs`? `Err`: what it shows instead
+/// — no form or not all of it, another form, or this one in another state (the cursor
+/// elsewhere: `CursorMoved`; other boxes, text, answered tabs or answers on the review:
+/// `Touched`).
+fn form_at(screen: &str, qs: &[Question], at: &At) -> std::result::Result<(), Detail> {
     match at {
-        At::Review { expect } => prompt::parse_review(screen).is_some_and(|r| {
-            r.submit_focused
-                && r.items == *expect
-                && (r.tabs.is_empty()
+        At::Review { expect } => {
+            let Some(r) = prompt::parse_review(screen) else {
+                return Err(match prompt::read_form(screen) {
+                    // Still the form (or one): the Enter before the review did not land as planned.
+                    Ok(_) => Detail::Touched,
+                    Err(detail) => detail,
+                });
+            };
+            if r.items != *expect
+                || !(r.tabs.is_empty()
                     || (r.tabs.len() == qs.len() && r.tabs.iter().all(|(_, done)| *done)))
-        }),
+            {
+                return Err(Detail::Touched);
+            }
+            if !r.submit_focused {
+                return Err(Detail::CursorMoved);
+            }
+            Ok(())
+        }
         At::Form {
             question,
             row,
@@ -529,27 +679,31 @@ fn form_at(screen: &str, qs: &[Question], at: &At) -> bool {
             typed,
             done,
         } => {
-            let Some(form) = prompt::parse_form(screen) else {
-                return false;
-            };
-            if form.shows(qs) != Ok(*question) || form.cursor() != Some(*row) {
-                return false;
+            let form = prompt::read_form(screen)?;
+            let active = form.check(qs).map_err(|(detail, _)| detail)?;
+            if active != *question || form.cursor() != Some(*row) {
+                return Err(Detail::CursorMoved);
             }
             if !form.tabs.is_empty() && form.tabs.iter().map(|(_, d)| *d).ne(done.iter().copied()) {
-                return false;
+                return Err(Detail::Touched);
             }
             let q = &qs[*question];
             if q.multi_select {
                 let mut want = ticked.clone();
                 want.sort_unstable();
                 if form.ticked() != want {
-                    return false;
+                    return Err(Detail::Touched);
                 }
             }
             let other = form.rows.get(q.options.len());
-            match typed {
+            let as_planned = match typed {
                 Some(t) => other.is_some_and(|r| r.label == *t),
                 None => other.is_some_and(|r| r.label.starts_with("Type something")),
+            };
+            if as_planned {
+                Ok(())
+            } else {
+                Err(Detail::Touched)
             }
         }
     }
@@ -633,23 +787,43 @@ fn answer_question(
         kind: "answer_invalid",
         message,
     })?;
-    // The live form, whole: this question's tabs, text, options and descriptions, nothing
-    // ticked, typed or answered, the cursor on the first answer.
+    // The live form, whole: this question's tabs, text, options and descriptions, its head up
+    // to the form's top, nothing ticked, typed or answered, the cursor on the first answer.
     let first = screen(s)?;
-    let form = prompt::parse_form(&first);
-    let shown = form
-        .as_ref()
-        .is_some_and(|f| f.shows(&qs) == Ok(0) && f.untouched(&qs[0]));
-    if !shown {
-        let why = match form.as_ref().map(|f| f.shows(&qs)) {
-            None => "the terminal is not showing a question form".to_string(),
-            Some(Err(e)) => e,
-            Some(Ok(_)) => "the form has been touched (moved, ticked, typed or answered)".into(),
-        };
-        return fail(
-            "prompt_not_on_screen",
-            format!("{why} — answer it there; nothing typed"),
+    let form = match prompt::read_form(&first) {
+        Ok(form) => form,
+        Err(Detail::NoForm)
+            if !matches!(
+                prompt::permission_prompt(&first, s.harness),
+                PromptRead::None
+            ) =>
+        {
+            return refuse(
+                Detail::DifferentPrompt,
+                "the terminal shows a permission prompt, not a question form — answer it there; nothing typed",
+            );
+        }
+        Err(Detail::NoForm) => {
+            return refuse(
+                Detail::NoForm,
+                "the terminal is not showing a question form — answer it there; nothing typed",
+            );
+        }
+        Err(detail) => {
+            return refuse(
+                detail,
+                "the question form's answers run off the captured screen (taller than the terminal) — answer it there; nothing typed",
+            );
+        }
+    };
+    if has_previews(&qs) {
+        return refuse(
+            Detail::LayoutUnsupported,
+            "the question's options have previews, drawn beside them — fleet does not read that layout; answer it there; nothing typed",
         );
+    }
+    if let Err((detail, why)) = form.ready(&qs) {
+        return refuse(detail, format!("{why} — answer it there; nothing typed"));
     }
     let plan: Vec<Planned> = questions::answer_plan(&qs, &checked);
     let steps: Vec<Step> = plan.iter().map(|p| p.step.clone()).collect();
@@ -659,16 +833,26 @@ fn answer_question(
     }
     let total = plan.len();
     for (i, planned) in plan.iter().enumerate() {
-        if i > 0
-            && !wait_for(s, SETTLE, |screen| form_at(screen, &qs, &planned.at))
-                .map_err(after_keys(i, total))?
-        {
-            return fail(
-                "prompt_changed",
-                format!(
-                    "the form changed while answering (not in the state the keys so far lead to); stopped after {i} of {total} keys"
-                ),
-            );
+        if i > 0 {
+            let mut seen = Detail::NoForm;
+            let ok = wait_for(s, SETTLE, |screen| {
+                match form_at(screen, &qs, &planned.at) {
+                    Ok(()) => true,
+                    Err(detail) => {
+                        seen = detail;
+                        false
+                    }
+                }
+            })
+            .map_err(after_keys(i, total))?;
+            if !ok {
+                return changed(
+                    seen,
+                    format!(
+                        "the form changed while answering (not in the state the keys so far lead to); stopped after {i} of {total} keys"
+                    ),
+                );
+            }
         }
         press(s, &planned.step, i, total)?;
     }
@@ -682,7 +866,7 @@ fn answer_question(
     Ok(outcome(s, "question", &steps, fields, false, uncertain))
 }
 
-pub fn collect(o: &Opts) -> R<Value> {
+fn collect(o: &Opts) -> R<Value> {
     let mode = mode(o)?;
     let s = resolve(&o.target)?;
     let dry = crate::core::hosts::dry_run();
@@ -691,6 +875,19 @@ pub fn collect(o: &Opts) -> R<Value> {
         Mode::Choice { n, prompt } => choose(&s, n, prompt.as_deref(), o.allow_attached, dry),
         Mode::Question { id, answers } => answer_question(&s, &id, &answers, o.allow_attached, dry),
     }
+    // Every failure once the target is known says how big its pane is.
+    .map_err(|f| Refusal {
+        pane: backend::pane_size(&s),
+        ..f
+    })
+}
+
+/// A failure of `answer --json` reported before its own checks run (a usage error clap
+/// catches, a `FLEET_PATH_ONLY` refusal): the fields every answer failure carries, `null` —
+/// no screen check failed, no pane is known yet.
+pub fn early_failure_fields(v: &mut Value) {
+    v["detail"] = Value::Null;
+    v["pane"] = Value::Null;
 }
 
 pub fn run(o: Opts) -> Result<()> {
@@ -718,7 +915,10 @@ pub fn run(o: Opts) -> Result<()> {
             if o.json {
                 println!(
                     "{}",
-                    json!({ "ok": false, "kind": f.kind, "error": f.message })
+                    json!({
+                        "ok": false, "kind": f.kind, "error": f.message,
+                        "detail": f.detail.map(Detail::code), "pane": pane_json(f.pane),
+                    })
                 );
             }
             Err(Error::exit(1, f.message))
@@ -759,6 +959,8 @@ fn print_text(v: &Value) {
     }
     if p.is_null() {
         println!("{}", "no prompt on screen".dimmed());
+    } else if p["incomplete"] == true && p["kind"] == "question" {
+        println!("a question form, but not all of it is on screen");
     } else if p["incomplete"] == true {
         println!(
             "a permission prompt, but {}",
@@ -787,6 +989,16 @@ fn print_text(v: &Value) {
         println!(
             "{}",
             format!("prompt {}", p["id"].as_str().unwrap_or("")).dimmed()
+        );
+    }
+    if !p.is_null() && v["answerable"] == false {
+        println!(
+            "{}",
+            format!(
+                "not answerable now: {}",
+                v["detail"].as_str().unwrap_or("unknown")
+            )
+            .dimmed()
         );
     }
 }
