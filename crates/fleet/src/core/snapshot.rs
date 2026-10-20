@@ -1816,10 +1816,10 @@ fn rebuild(
             // Splits and later windows inherit the session's environment.
             let mut a = vec![s("new-session"), s("-d"), s("-s"), s(name)];
             a.extend(ex.env_args());
-            // Big enough for every split; an attaching client resizes it anyway.
-            if let Some((x, y)) = layout_size(&w.layout) {
-                a.extend([s("-x"), x.to_string(), s("-y"), y.to_string()]);
-            }
+            // Big enough for every split, and at least the size every session fleet creates
+            // starts at (a window of one pane keeps it; `select-layout` sets a split one to its
+            // recorded size); an attaching client resizes it anyway.
+            a.extend(crate::core::tmux::size_args(layout_size(&w.layout)));
             a
         } else {
             vec![s("new-window"), s("-d"), s("-t"), format!("={name}:")]
@@ -3006,7 +3006,7 @@ garbage";
             .collect();
         assert_eq!(
             log[0],
-            "new-session -d -s api -e DISABLE_AUTO_UPDATE=true -x 120 -y 40 -c /tmp -P -F '#{pane_id}'"
+            "new-session -d -s api -e DISABLE_AUTO_UPDATE=true -x 200 -y 50 -c /tmp -P -F '#{pane_id}'"
         );
         assert!(
             log[1].starts_with("split-window -d -t %1.0 -c /tmp"),
@@ -3363,6 +3363,55 @@ garbage";
                 .is_empty()
         );
         assert!(ex.log.is_empty());
+    }
+
+    // A restored session starts at least at the size every session fleet creates starts at
+    // (200x50, not tmux's 80x24: a tall prompt would not fit), at its recorded layout's where
+    // that is larger. A window reopened in a live session is left at that session's size.
+    #[test]
+    fn a_restored_session_starts_at_least_200_by_50() {
+        let first = |layout: &str| {
+            let mut t = tmux("api", &["s-1"]);
+            t.windows[0].layout = layout.into();
+            let mut ex = Exec::new(true, Vec::new());
+            rebuild(
+                &mut ex,
+                &t,
+                "api",
+                "claude",
+                &HashSet::new(),
+                &mut Vec::new(),
+            )
+            .unwrap();
+            ex.log[0].clone()
+        };
+        for (layout, size) in [
+            ("", " -x 200 -y 50 "),
+            ("b25d,120x40,0,0,1", " -x 200 -y 50 "),
+            ("b25d,300x90,0,0,1", " -x 300 -y 90 "),
+            ("b25d,90x70,0,0,1", " -x 200 -y 70 "),
+        ] {
+            let line = first(layout);
+            assert!(
+                line.contains("new-session -d -s api ") && line.contains(size),
+                "{layout}: {line}"
+            );
+        }
+        let mut ex = Exec::new(true, Vec::new());
+        let c = ClaudeSnap {
+            tmux_session: Some("api".into()),
+            ..claude("s-1")
+        };
+        reopen_in(
+            &mut ex,
+            &c,
+            "api",
+            "claude",
+            &HashSet::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert!(!ex.log[0].contains(" -x "), "{:?}", ex.log);
     }
 
     // Under FLEET_PATH_ONLY a restore's panes start with fleet's PATH and the switch, not the

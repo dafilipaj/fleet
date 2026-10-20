@@ -28,6 +28,37 @@ impl Server {
     }
 }
 
+// A session fleet creates starts at 200x50, not tmux's 80x24 for a detached one: Claude Code's
+// fullscreen TUI keeps no scrollback, so a form taller than the pane is cut off where nothing
+// can read it. Its later windows start at that size too (tmux keeps it as `default-size`).
+#[test]
+fn a_new_session_starts_at_200_by_50() {
+    let Some(s) = Server::new() else { return };
+    let out = s.fleet(&["tmux", "new", "-d", "fleet-test-size", "--", "sleep", "300"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let size = |target: &str| {
+        let out = s.env.tmux(&[
+            "display-message",
+            "-p",
+            "-t",
+            target,
+            "#{pane_width}x#{pane_height}",
+        ]);
+        stdout(&out).trim().to_string()
+    };
+    assert_eq!(size("fleet-test-size"), "200x50");
+    s.env
+        .tmux(&["new-window", "-d", "-t", "=fleet-test-size:", "sleep 300"]);
+    let out = s.env.tmux(&[
+        "list-windows",
+        "-t",
+        "=fleet-test-size",
+        "-F",
+        "#{window_width}x#{window_height}",
+    ]);
+    assert_eq!(stdout(&out).trim(), "200x50\n200x50");
+}
+
 #[test]
 fn sessions_lifecycle() {
     let Some(s) = Server::new() else { return };
