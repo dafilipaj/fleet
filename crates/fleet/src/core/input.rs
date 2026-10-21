@@ -39,6 +39,7 @@ use crate::core::backend;
 use crate::core::discovery::Session;
 use crate::core::harness::Harness;
 use crate::error::Result;
+use unicode_width::UnicodeWidthChar;
 
 /// What the screen says about the session's input box.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -525,12 +526,26 @@ fn ide_pill(line: &[Cell]) -> usize {
 /// ([`backend::peek_styled`]). A screen that cannot be read is an error, never an empty box.
 pub fn of(s: &Session) -> Result<InputRead> {
     let (screen, styled) = backend::peek_styled(s)?;
-    Ok(read(&screen, s.harness, styled))
+    Ok(read_at(&screen, s.harness, styled, backend::cursor(s)))
 }
 
 /// What the input box of a `harness` session shows on `screen`: a capture of its visible
 /// screen, with its escape sequences when `styled` (tmux), as plain text otherwise (iTerm).
 pub fn read(screen: &str, harness: Harness, styled: bool) -> InputRead {
+    read_at(screen, harness, styled, None)
+}
+
+/// [`read`], with where the terminal's cursor is on that screen (`(column, row)`), when it
+/// shows. Claude Code draws nothing for blanks typed into its box: a box holding only spaces
+/// or line breaks looks empty, and text typed after them would go out behind them (` /model
+/// opus`: a prompt, not the command). The cursor tells: in an empty box it sits where the
+/// text starts; past that, blanks are typed.
+pub fn read_at(
+    screen: &str,
+    harness: Harness,
+    styled: bool,
+    cursor: Option<(usize, usize)>,
+) -> InputRead {
     let rows = rows(screen, styled);
     let texts: Vec<String> = rows.iter().map(|r| text_of(r)).collect();
     let plain = texts.join("\n");
@@ -547,14 +562,28 @@ pub fn read(screen: &str, harness: Harness, styled: bool) -> InputRead {
         .iter()
         .map(|&(i, from)| rows[i].get(from..).unwrap_or_default())
         .collect();
+    let mut pill = 0;
     if harness == Harness::Claude
         && !found.bash
         && let Some(first) = cells.first_mut()
     {
         let line: &[Cell] = first;
-        *first = &line[ide_pill(line)..];
+        let chars = ide_pill(line);
+        // The cursor counts terminal cells, a wide character two: measure the pill so.
+        pill = line[..chars]
+            .iter()
+            .map(|c| c.ch.width().unwrap_or(0))
+            .sum();
+        *first = &line[chars..];
     }
     let verdict = judge(&cells, found.bash, styled);
+    if verdict == InputRead::Empty
+        && harness == Harness::Claude
+        && !found.bash
+        && let Some(blanks) = blanks_typed(&found, pill, cursor)
+    {
+        return InputRead::Typed(blanks);
+    }
     if verdict == InputRead::Empty && !found.doubt.is_empty() {
         // Where the box ends cannot be told, and the rows that may be in it show text:
         // unreadable, never empty.
@@ -562,6 +591,21 @@ pub fn read(screen: &str, harness: Harness, styled: bool) -> InputRead {
         return InputRead::Unclear(text(&cells, |_| true));
     }
     verdict
+}
+
+/// The blanks typed into Claude Code's box, `found`, when it shows nothing else: those before
+/// the terminal's `cursor`, when that sits in the box past where its text starts (after the
+/// marker, and an IDE pill `pill` terminal cells wide: its display width, not its characters). `None` when it sits there, outside the box, or
+/// is unknown.
+fn blanks_typed(found: &Found, pill: usize, cursor: Option<(usize, usize)>) -> Option<String> {
+    let (x, y) = cursor?;
+    let &(first, from) = found.lines.first()?;
+    let start = from + pill;
+    if y == first {
+        return (x > start).then(|| " ".repeat(x - start));
+    }
+    let line = found.lines.iter().position(|&(row, _)| row == y)?;
+    Some(format!("{}{}", "\n".repeat(line), " ".repeat(x)))
 }
 
 /// The text on the box's lines `cells` whose cells `keep` keeps, its blank lines at either end
@@ -743,6 +787,50 @@ mod tests {
     }
 
     #[test]
+    fn claude_code_blanks_typed_before_the_cursor_are_text() {
+        use Harness::{Claude, Codex};
+        // The box's first line (`❯`) is the last line that starts with it.
+        let box_row = |s: &str| {
+            rows(s, true)
+                .iter()
+                .rposition(|r| text_of(r).starts_with('❯'))
+                .expect("a box")
+        };
+        for name in ["claude-after-turn", "claude-empty"] {
+            let s = live(name);
+            let row = box_row(&s);
+            let at = |x: usize, y: usize| read_at(&s, Claude, true, Some((x, y)));
+            // Where the text starts: empty.
+            assert_eq!(at(2, row), InputRead::Empty, "{name}");
+            // Past it, on the box's line: as many blanks typed (Claude Code draws none).
+            assert_eq!(at(3, row), typed(" "), "{name}");
+            assert_eq!(at(5, row), typed("   "), "{name}");
+            assert!(at(3, row).holds(false), "{name}");
+            // Outside the box, or unknown: what the screen shows, as before.
+            assert_eq!(at(0, 0), InputRead::Empty, "{name}");
+            assert_eq!(at(0, row + 1), InputRead::Empty, "{name}");
+            assert_eq!(read_at(&s, Claude, true, None), InputRead::Empty, "{name}");
+        }
+        // Text in the box is read as it shows, wherever the cursor is.
+        let s = live("claude-typed");
+        assert_eq!(
+            read_at(&s, Claude, true, Some((40, box_row(&s)))),
+            typed("draft text typed but not sent")
+        );
+        let s = live("claude-multiline");
+        let row = box_row(&s);
+        assert_eq!(
+            read_at(&s, Claude, true, Some((3, row))),
+            typed("first line of a draft\nsecond line\nthird line")
+        );
+        // Codex draws its own: its composer is read by what shows.
+        assert_eq!(
+            read_at(&live("codex-empty"), Codex, true, Some((30, 0))),
+            InputRead::Empty
+        );
+    }
+
+    #[test]
     fn claude_code_a_restored_prompt_is_text() {
         let s = live("claude-restored");
         let r = read(&s, Harness::Claude, true);
@@ -766,6 +854,28 @@ mod tests {
             read(&screen("claude-multiline"), Harness::Claude, true),
             typed("fix the flaky login test, then:\n1. run the full suite\n2. open a PR")
         );
+    }
+
+    #[test]
+    fn claude_code_blanks_after_an_ide_pill_are_counted_in_cells() {
+        // The cursor counts terminal cells: a CJK character in the pill takes two.
+        let ascii = screen("claude-ide-pill");
+        let wide = ascii.replace("[⧉ 12 lines selected]", "[⧉ In 中文.ts]");
+        assert_ne!(wide, ascii);
+        let row = |s: &str| {
+            rows(s, true)
+                .iter()
+                .rposition(|r| text_of(r).starts_with('❯'))
+                .expect("a box")
+        };
+        // (screen, column where the text starts: the marker, the pill and the space after it)
+        for (s, start) in [(&ascii, 24), (&wide, 17)] {
+            let at = |x: usize| read_at(s, Harness::Claude, true, Some((x, row(s))));
+            assert_eq!(at(start), InputRead::Empty, "start {start}");
+            assert_eq!(at(start + 1), typed(" "), "start {start}");
+            assert_eq!(at(start + 3), typed("   "), "start {start}");
+            assert_eq!(read_at(s, Harness::Claude, true, None), InputRead::Empty);
+        }
     }
 
     #[test]
