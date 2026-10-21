@@ -3,7 +3,8 @@
 //! Claude Code keeps a live registry (`~/.claude/sessions/<pid>.json`, see
 //! [`crate::core::discovery`]); the others don't. For them this module finds the
 //! interactive processes with `ps`, matches each to the transcript it writes, and
-//! reads the status, first prompt, model and context use from that transcript's tail:
+//! reads the status, first prompt, model, effort and context use from that transcript's
+//! tail:
 //!
 //! - **Codex** — `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<stamp>-<id>.jsonl` (default
 //!   `~/.codex`); the first line is `session_meta` with `id` and `cwd`. A turn runs from
@@ -933,6 +934,9 @@ pub struct State {
     pub name: Option<String>,
     pub waiting_for: Option<String>,
     pub model: Option<String>,
+    /// Codex: `effort` of the last `turn_context`, so a change made mid-session (the `/model`
+    /// picker's effort step) shows from the next turn on. pi: not read.
+    pub effort: Option<String>,
     pub context: Option<ContextUsage>,
     /// Codex: a `busy` turn's last command asked to leave the sandbox
     /// (`sandbox_permissions: "require_escalated"`) and has no output yet — most likely an
@@ -943,41 +947,141 @@ pub struct State {
 
 /// The last `max` bytes of a file, starting at a line boundary.
 fn tail(path: &Path, max: u64) -> Option<String> {
+    tail_at(path, max).map(|(_, text)| text)
+}
+
+/// [`tail`], with the byte offset its text starts at: everything before it is whole lines.
+fn tail_at(path: &Path, max: u64) -> Option<(u64, String)> {
     let mut f = std::fs::File::open(path).ok()?;
     let len = f.metadata().ok()?.len();
     let start = len.saturating_sub(max);
     f.seek(SeekFrom::Start(start)).ok()?;
     let mut buf = Vec::new();
     f.read_to_end(&mut buf).ok()?;
-    let text = String::from_utf8_lossy(&buf).into_owned();
-    Some(if start > 0 {
-        text.split_once('\n')
-            .map(|(_, r)| r.to_string())
-            .unwrap_or_default()
-    } else {
-        text
-    })
+    if start == 0 {
+        return Some((0, String::from_utf8_lossy(&buf).into_owned()));
+    }
+    // The first line is almost certainly cut in half.
+    let cut = buf
+        .iter()
+        .position(|&b| b == b'\n')
+        .map_or(buf.len(), |i| i + 1);
+    Some((
+        start + cut as u64,
+        String::from_utf8_lossy(&buf[cut..]).into_owned(),
+    ))
 }
 
+/// How much of a transcript [`state`] reads: status, approvals and context are all near the end.
+const STATE_TAIL: u64 = 512 * 1024;
+/// How far back from the end a Codex rollout is searched for its last `turn_context` when the
+/// tail holds none (a turn that wrote more than [`STATE_TAIL`] since, e.g. large tool
+/// outputs). The same bound as the widest tail Claude's context read takes.
+const TURN_CONTEXT_LOOKBACK: u64 = 8 * 1024 * 1024;
+
 pub fn state(h: Harness, path: &Path) -> State {
-    let Some(text) = tail(path, 512 * 1024) else {
+    let Some((from, text)) = tail_at(path, STATE_TAIL) else {
         return State {
             status: "idle".into(),
             ..Default::default()
         };
     };
     match h {
-        Harness::Codex => codex_state(&text),
+        Harness::Codex => {
+            // The model and effort live only in `turn_context`, written once per turn: when
+            // the turn has outgrown the tail, take them from the last one before it.
+            let seed = if text.lines().any(|l| turn_context_payload(l).is_some()) {
+                None
+            } else {
+                let len = std::fs::metadata(path).map_or(0, |m| m.len());
+                last_turn_context_before(path, from, len.saturating_sub(TURN_CONTEXT_LOOKBACK))
+            };
+            codex_state_from(seed.as_ref(), &text)
+        }
         Harness::Pi => pi_state(&text),
         Harness::Claude => State::default(),
     }
 }
 
+/// The payload of a Codex `turn_context` line; a cheap substring check first, as most lines in a
+/// rollout are not one.
+fn turn_context_payload(line: &str) -> Option<Value> {
+    if !line.contains("\"turn_context\"") {
+        return None;
+    }
+    let mut v = serde_json::from_str::<Value>(line).ok()?;
+    (v.get("type").and_then(Value::as_str) == Some("turn_context"))
+        .then(|| v.get_mut("payload").map(Value::take))
+        .flatten()
+}
+
+/// The payload of the last `turn_context` line that ends before byte `end` and starts at or after
+/// byte `floor`, reading backwards in chunks and stopping at the first one found: the read
+/// costs only the distance to that line, never more than `end - floor`.
+fn last_turn_context_before(path: &Path, end: u64, floor: u64) -> Option<Value> {
+    const CHUNK: u64 = 256 * 1024;
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut pos = end;
+    // The start of a line whose beginning is in an earlier chunk: carried until it is whole.
+    let mut carry: Vec<u8> = Vec::new();
+    while pos > floor {
+        let start = pos.saturating_sub(CHUNK).max(floor);
+        f.seek(SeekFrom::Start(start)).ok()?;
+        let mut buf = Vec::with_capacity((pos - start) as usize + carry.len());
+        f.by_ref().take(pos - start).read_to_end(&mut buf).ok()?;
+        buf.extend_from_slice(&carry);
+        // Before the first newline is a cut line, unless this chunk starts the file.
+        let whole_from = if start == 0 {
+            0
+        } else {
+            match buf.iter().position(|&b| b == b'\n') {
+                Some(i) => i + 1,
+                None => buf.len(),
+            }
+        };
+        for line in buf[whole_from..].split(|&b| b == b'\n').rev() {
+            if let Some(p) = std::str::from_utf8(line)
+                .ok()
+                .and_then(turn_context_payload)
+            {
+                return Some(p);
+            }
+        }
+        carry = buf[..whole_from].to_vec();
+        pos = start;
+    }
+    None
+}
+
+/// Apply one `turn_context` payload: its model, and its effort (`null`, the model's default,
+/// clears an earlier one — each turn records its own).
+fn apply_turn_context(st: &mut State, p: &Value) {
+    if let Some(m) = p.get("model").and_then(Value::as_str) {
+        st.model = Some(m.to_string());
+    }
+    st.effort = p
+        .get("effort")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .map(str::to_string);
+}
+
+#[cfg(test)]
 fn codex_state(text: &str) -> State {
+    codex_state_from(None, text)
+}
+
+/// A Codex rollout's state from `text` (its tail), starting from `seed`: the last `turn_context`
+/// before the tail, when the tail has none of its own.
+fn codex_state_from(seed: Option<&Value>, text: &str) -> State {
     let mut st = State {
         status: "idle".into(),
         ..Default::default()
     };
+    if let Some(p) = seed {
+        apply_turn_context(&mut st, p);
+    }
     let mut window = None;
     let mut used = None;
     // Tool calls that asked to leave the sandbox and have no output yet.
@@ -1015,8 +1119,8 @@ fn codex_state(text: &str) -> State {
         }
         match (kind, ptype) {
             ("turn_context", _) => {
-                if let Some(m) = p.and_then(|p| p.get("model")).and_then(Value::as_str) {
-                    st.model = Some(m.to_string());
+                if let Some(p) = p {
+                    apply_turn_context(&mut st, p);
                 }
             }
             ("event_msg", "task_started") => {
@@ -1525,6 +1629,89 @@ mod tests {
         let c = st.context.unwrap();
         assert_eq!((c.used, c.window, c.pct), (25840, 258400, 10));
         assert_eq!(st.model.as_deref(), Some("gpt-6"));
+        assert_eq!(st.effort, None, "a turn_context without effort");
+    }
+
+    #[test]
+    fn codex_effort_is_the_last_turn_contexts() {
+        // A live rollout, trimmed: xhigh, then changed to high mid-session.
+        let rollout = include_str!("../../../../testdata/codex/effort-change-rollout.jsonl");
+        let st = codex_state(rollout);
+        assert_eq!(st.effort.as_deref(), Some("high"));
+        assert_eq!(st.model.as_deref(), Some("gpt-6-luna"));
+        // Before the change's turn_context, the earlier turn's effort still holds.
+        let before: Vec<&str> = rollout.lines().take(7).collect();
+        assert_eq!(
+            codex_state(&before.join("\n")).effort.as_deref(),
+            Some("xhigh")
+        );
+        // A later turn without one (the model's default) is no longer known.
+        let unset = r#"{"type":"turn_context","payload":{"model":"gpt-6-luna","effort":null}}"#;
+        assert_eq!(codex_state(&format!("{rollout}{unset}\n")).effort, None);
+    }
+
+    /// The effort-change rollout with `filler` bytes of tool output between the last turn's
+    /// `turn_context` and its end, written as lines of about `line` bytes each.
+    fn rollout_with_filler(filler: usize, line: usize, tail_extra: &str) -> String {
+        let rollout = include_str!("../../../../testdata/codex/effort-change-rollout.jsonl");
+        let lines: Vec<&str> = rollout.lines().collect();
+        // Lines 0..9 end with the last turn's turn_context (high); the rest close the turn.
+        let mut out = lines[..9].join("\n") + "\n";
+        // A tool output that quotes a turn_context line is data, not a turn_context.
+        let decoy = r#"{"type":"turn_context","payload":{"model":"decoy","effort":"low"}}"#;
+        let mut written = 0;
+        let mut i = 0;
+        while written < filler {
+            let output = format!("{decoy} {}", "x".repeat(line));
+            let l = serde_json::json!({"type": "response_item", "payload": {
+                "type": "function_call_output", "call_id": format!("c{i}"), "output": output}})
+            .to_string();
+            written += l.len() + 1;
+            out.push_str(&l);
+            out.push('\n');
+            i += 1;
+        }
+        out.push_str(tail_extra);
+        out + &lines[9..].join("\n") + "\n"
+    }
+
+    fn state_of(text: &str) -> State {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("rollout.jsonl");
+        std::fs::write(&p, text).unwrap();
+        state(Harness::Codex, &p)
+    }
+
+    #[test]
+    fn codex_effort_survives_a_turn_longer_than_the_tail() {
+        // Over 512 KiB of tool output since the turn_context, in lines that straddle the
+        // backwards scan's chunks.
+        let text = rollout_with_filler(700 * 1024, 300 * 1024, "");
+        let st = state_of(&text);
+        assert_eq!(st.effort.as_deref(), Some("high"));
+        assert_eq!(st.model.as_deref(), Some("gpt-6-luna"));
+        assert_eq!(st.status, "idle");
+        let c = st.context.unwrap();
+        assert_eq!(c.used, 51680);
+        assert_eq!(c.model.as_deref(), Some("gpt-6-luna"));
+        // Small lines too.
+        let st = state_of(&rollout_with_filler(600 * 1024, 4 * 1024, ""));
+        assert_eq!(st.effort.as_deref(), Some("high"));
+
+        // A turn_context inside the tail still wins, `null` effort included.
+        let unset = r#"{"type":"turn_context","payload":{"model":"gpt-6-luna","effort":null}}"#;
+        let st = state_of(&rollout_with_filler(
+            700 * 1024,
+            300 * 1024,
+            &format!("{unset}\n"),
+        ));
+        assert_eq!(st.effort, None);
+        assert_eq!(st.model.as_deref(), Some("gpt-6-luna"));
+
+        // Beyond the lookback bound, unknown rather than a whole-file read.
+        let far = rollout_with_filler((TURN_CONTEXT_LOOKBACK + 64 * 1024) as usize, 512 * 1024, "");
+        let st = state_of(&far);
+        assert_eq!((st.effort, st.model), (None, None));
     }
 
     fn exec_asks(js: &str) -> bool {

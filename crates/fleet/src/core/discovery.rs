@@ -82,6 +82,10 @@ pub struct Session {
     /// The model it runs, when known (Codex / pi: from the transcript or the command
     /// line; Claude: the context entry's model).
     pub model: Option<String>,
+    /// The reasoning effort it runs at (`low`, `medium`, `high`, `xhigh`, `max` …), as the
+    /// transcript last recorded it (Claude: the context entry's `effort`; Codex: the last
+    /// `turn_context`'s); `null` when unknown, and always for pi.
+    pub effort: Option<String>,
     /// Absolute path of the session's transcript, when known (Codex / pi only — a
     /// Claude transcript is found from cwd + session id).
     pub transcript: Option<String>,
@@ -117,6 +121,7 @@ impl Default for Session {
             stack: None,
             harness: Harness::Claude,
             model: None,
+            effort: None,
             transcript: None,
             origin: None,
             proc_start: None,
@@ -338,11 +343,13 @@ fn claude_session(
         (true, Some(sid), Some(cwd)) => title_for(cwd, sid),
         _ => None,
     };
-    let context = reg
+    let (context, effort) = reg
         .session_id
         .as_deref()
         .filter(|_| enrich)
-        .and_then(|sid| crate::core::context::for_session(&claude_home(), reg.cwd.as_deref(), sid));
+        .and_then(|sid| crate::core::context::for_session(&claude_home(), reg.cwd.as_deref(), sid))
+        .unzip();
+    let effort = effort.flatten();
     Session {
         pid,
         status: reg.status.unwrap_or_else(|| "unknown".into()),
@@ -362,6 +369,7 @@ fn claude_session(
         display_title: None,
         host: None,
         model: context.as_ref().and_then(|c| c.model.clone()),
+        effort,
         context,
         stack: None,
         harness: Harness::Claude,
@@ -464,6 +472,7 @@ fn harness_session(
         origin: pane.and_then(|p| crate::core::jobs::Origin::parse(&p.job_run)),
         title: t.and_then(|t| harness::first_prompt(p.harness, &t.path)),
         model: state.model.or_else(|| p.model_arg()),
+        effort: state.effort,
         context: state.context,
         harness: p.harness,
         transcript: t.map(|t| t.path.display().to_string()),
