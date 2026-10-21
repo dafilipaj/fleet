@@ -304,7 +304,11 @@ marker, an `[Image #…]` tag. Colours are read as colours, never as attributes:
 
 - Claude Code: between the last two rules drawn from column 0, its first line `❯ …`, every line
   under it indented. Bash mode (`! …`) is never empty: text typed there would run as a shell
-  command.
+  command. Claude Code draws nothing for blanks typed into the box, so a box holding only
+  spaces or line breaks looks empty, and what `send` typed would go out behind them: ` /model
+  opus` is a prompt, not the command. On tmux the terminal's cursor tells: in an empty box it
+  sits where the text starts (after the marker, and the IDE pill); in the box past that, the
+  blanks before it are `text`. A hidden cursor, or one outside the box, says nothing.
 - Codex: the last `› …` line at column 0, and the rows under it drawn on that line's background
   (the composer's own, painted across its width), every one indented, the first row past them
   that shows anything indented too (the footer, or a popup) or none. Where that line has no
@@ -400,7 +404,9 @@ its exit command only when the box holds neither, and kills the session otherwis
 `fleet answer <target>` answers the prompt a session is waiting on, from outside its terminal:
 
 - `--list`: what the screen shows. `prompt` is `null`, a **permission** prompt — Claude Code's
-  "Do you want to proceed?" (Bash, edits, …) or a Codex approval ("Would you like to run the
+  "Do you want to proceed?" (Bash, edits, …), its confirmation of a slash command ("Change effort
+  level?" after `/effort`, "Switch model?" after `/model`, both while the prompt cache is warm: a
+  dialog topped by a `▔` rule, its question the line under it), or a Codex approval ("Would you like to run the
   following command?") — `{ kind: "permission", id, title, detail: [lines], choices: [{ n, label }],
   selected, untouched }` (`{ kind: "permission", incomplete: true, reason }` when it cannot be told
   whole: its top out of reach, its frame ambiguous, a Codex approval without exactly one title — on

@@ -97,6 +97,29 @@ pub fn pane_size(s: &Session) -> Option<(u32, u32)> {
     }
 }
 
+/// Where the terminal's cursor is, `(column, row)` from the screen's top left, where it costs
+/// one tmux call: a tmux pane's, while the cursor shows. `None` for iTerm, a hidden cursor,
+/// under `FLEET_FIXTURE`, or when the pane does not answer.
+pub fn cursor(s: &Session) -> Option<(usize, usize)> {
+    if s.backend != Backend::Tmux || deny_fixture().is_err() {
+        return None;
+    }
+    let at = tmux_query(
+        s.handle.as_deref()?,
+        "#{cursor_flag} #{cursor_x} #{cursor_y}",
+    )
+    .ok()?;
+    parse_cursor(&at)
+}
+
+/// `#{cursor_flag} #{cursor_x} #{cursor_y}` → the cursor's `(column, row)`, when it shows.
+fn parse_cursor(s: &str) -> Option<(usize, usize)> {
+    match s.split_whitespace().collect::<Vec<_>>()[..] {
+        ["1", x, y] => Some((x.parse().ok()?, y.parse().ok()?)),
+        _ => None,
+    }
+}
+
 /// [`peek`] plus up to `history` lines of tmux scrollback above the screen (what scrolled off
 /// the top: the head of a tall prompt). iTerm gives its session's text as it has it.
 pub fn peek_history(s: &Session, history: usize) -> Result<String> {
@@ -2016,6 +2039,15 @@ mod tests {
         assert_eq!(Key::BTab.bytes(), b"\x1b[Z");
         assert_eq!(Key::CtrlC.bytes(), b"\x03");
         assert_eq!(Key::Enter.bytes(), b"\r");
+    }
+
+    #[test]
+    fn the_cursor_is_read_only_while_it_shows() {
+        assert_eq!(parse_cursor("1 3 20"), Some((3, 20)));
+        assert_eq!(parse_cursor("0 3 20"), None);
+        assert_eq!(parse_cursor("1 3"), None);
+        assert_eq!(parse_cursor("1 x 20"), None);
+        assert_eq!(parse_cursor(""), None);
     }
 
     #[test]
