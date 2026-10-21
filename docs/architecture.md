@@ -248,6 +248,10 @@ the words is no request (it is briefly wrong for a command approved earlier for 
 while it runs); pi is `busy` while the last message is the user's, a tool result, or an assistant turn
 that stopped for a tool call. `context` comes from Codex's last `token_count`
 (`last_token_usage.input_tokens` of `model_context_window`); pi records no window, so it is `null`.
+Codex's `effort` (and `model`) is the last `turn_context`'s (`null` effort there, the model's default, is
+`null`). Only the transcript's last 512 KiB is read; when a turn has written more than that since
+its `turn_context`, the last one is searched for backwards from there, up to 8 MiB from the end (beyond
+that, `null`). pi's effort is not read.
 
 Targets (`peek <target>`, `send <target>` …) resolve against title, name, session-id prefix or pid,
 walking exact → prefix → substring → characters-in-order; two matches on the same rung is an error
@@ -338,6 +342,7 @@ by — with no config, `local`):
 | `stack` | object \| null | `{ id, label }` of the [session stack](#session-stacks) the session is a member of; `null` when none (read-only stamp: `list` never syncs or writes stack files) |
 | `harness` | string | `claude` \| `codex` \| `pi` — see [Other harnesses](#other-harnesses) |
 | `model` | string \| null | the model it runs, when known (Claude: the context entry's) |
+| `effort` | string \| null | the reasoning effort it runs at, as its transcript last recorded it (`low`, `medium`, `high`, `xhigh`, `max`, or whatever the harness writes). Claude: the context entry's top-level `effort`; Codex: `effort` of the last `turn_context`. A mid-session change (`/effort`, Codex's `/model` picker) shows from the next reply on. `null` when unknown: no reply yet, a harness version that records none, and always for pi |
 | `transcript` | string \| null | absolute transcript path (Codex / pi only) |
 | `origin` | object \| null | `{ job, run }` of the [job](cli.md#bots) run that started the session (its tmux pane option `@fleet_job_run`); `null` when none |
 | `embed` | string \| null | the app whose [embedded panel](#embed-view) started the session (its tmux pane option `@fleet_embed`); `null` when none |
@@ -367,6 +372,11 @@ back to a scan of the project dirs when the session's cwd changed):
   signals over-reports its percentage.
 - **`pct`** (number): `round(used / window * 100)`; can exceed 100.
 - **`model`** (string \| null): `message.model` of that entry.
+
+That entry's top-level `effort` is the row's `effort` (not part of `context`). Its `perTurnEffort`
+is not read: SDK sessions write it as `null` while `effort` is set. A `/effort` run in the
+terminal is recorded at once only as a local command's output text, so `effort` follows it from
+the next reply, as `model` follows `/model`.
 
 ### Subscription usage
 

@@ -1,0 +1,11 @@
+{"timestamp":"2026-10-21T08:40:48.124Z","type":"session_meta","payload":{"id":"00000000-0000-0000-0000-0000000000d1","timestamp":"2026-10-21T08:40:48.124Z","cwd":"$HOME/Code/project","originator":"codex-tui","cli_version":"0.0.0"}}
+{"timestamp":"2026-10-21T08:40:49.511Z","type":"turn_context","payload":{"turn_id":"t-08:40:49.511","cwd":"$HOME/Code/project","approval_policy":"never","model":"gpt-6-luna","collaboration_mode":{"mode":"default","settings":{"model":"gpt-6-luna","reasoning_effort":"xhigh","developer_instructions":null}},"effort":"xhigh","summary":"none"}}
+{"timestamp":"2026-10-21T08:40:49.511Z","type":"event_msg","payload":{"type":"thread_settings_applied","thread_id":"00000000-0000-0000-0000-0000000000d1","thread_settings":{"model":"gpt-6-luna","model_provider_id":"openai","approval_policy":"never","cwd":"$HOME/Code/project","reasoning_effort":"xhigh"}}}
+{"timestamp":"2026-10-21T08:40:49.600Z","type":"event_msg","payload":{"type":"task_started","model_context_window":258400}}
+{"timestamp":"2026-10-21T08:41:10.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":25840},"model_context_window":258400}}}
+{"timestamp":"2026-10-21T08:41:11.000Z","type":"event_msg","payload":{"type":"task_complete"}}
+{"timestamp":"2026-10-21T09:55:20.553Z","type":"event_msg","payload":{"type":"thread_settings_applied","thread_id":"00000000-0000-0000-0000-0000000000d1","thread_settings":{"model":"gpt-6-luna","model_provider_id":"openai","approval_policy":"never","cwd":"$HOME/Code/project","reasoning_effort":"high"}}}
+{"timestamp":"2026-10-21T09:55:20.612Z","type":"event_msg","payload":{"type":"task_started","model_context_window":258400}}
+{"timestamp":"2026-10-21T09:55:22.343Z","type":"turn_context","payload":{"turn_id":"t-09:55:22.343","cwd":"$HOME/Code/project","approval_policy":"never","model":"gpt-6-luna","collaboration_mode":{"mode":"default","settings":{"model":"gpt-6-luna","reasoning_effort":"high","developer_instructions":null}},"effort":"high","summary":"none"}}
+{"timestamp":"2026-10-21T09:56:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":51680},"model_context_window":258400}}}
+{"timestamp":"2026-10-21T09:56:01.000Z","type":"event_msg","payload":{"type":"task_complete"}}
