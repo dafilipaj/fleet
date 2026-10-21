@@ -22,6 +22,10 @@
 //! 200k otherwise. A 1M session under 200k with none of these signals still
 //! reads against 200k — the one known blind spot.
 //!
+//! **Effort.** The same entry's top-level `effort` (`low` … `max`): the reasoning effort that
+//! turn ran at, which follows a mid-session `/effort` from the next reply on. Its
+//! `perTurnEffort` is not used: SDK sessions write it as `null` while `effort` is set.
+//!
 //! **Cost.** Only the tail is read (256 KiB, widened to 2 MiB and 8 MiB if no
 //! usable entry is found), and results are cached per `(path, size, mtime)`, so a
 //! long-running dashboard re-reads a transcript only when it has grown.
@@ -108,7 +112,15 @@ pub fn locate_transcript(home: &Path, cwd: Option<&str>, session_id: &str) -> Op
 
 type CacheKey = (PathBuf, u64, Option<SystemTime>);
 /// transcript path -> ((path, size, mtime), last usage).
-type Raw = Option<(u64, Option<String>)>;
+type Raw = Option<LastTurn>;
+
+/// What the last usable main-thread assistant entry says.
+#[derive(Debug, Clone, PartialEq)]
+struct LastTurn {
+    used: u64,
+    model: Option<String>,
+    effort: Option<String>,
+}
 static CACHE: LazyLock<Mutex<HashMap<PathBuf, (CacheKey, Raw)>>> = LazyLock::new(Default::default);
 
 /// What says a model runs with a 1M window, besides its own id.
@@ -190,8 +202,13 @@ fn settings_1m_model(home: &Path) -> Option<String> {
     m.strip_suffix("[1m]").map(str::to_string)
 }
 
-/// Context usage for a live session, cached per transcript `(size, mtime)`.
-pub fn for_session(home: &Path, cwd: Option<&str>, session_id: &str) -> Option<ContextUsage> {
+/// Context usage for a live session, and the reasoning effort of the same entry (`None` when
+/// it records none), cached per transcript `(size, mtime)`.
+pub fn for_session(
+    home: &Path,
+    cwd: Option<&str>,
+    session_id: &str,
+) -> Option<(ContextUsage, Option<String>)> {
     let path = locate_transcript(home, cwd, session_id)?;
     let meta = std::fs::metadata(&path).ok()?;
     let key: CacheKey = (path.clone(), meta.len(), meta.modified().ok());
@@ -210,9 +227,13 @@ pub fn for_session(home: &Path, cwd: Option<&str>, session_id: &str) -> Option<C
             raw
         }
     };
-    let (used, model) = raw?;
+    let LastTurn {
+        used,
+        model,
+        effort,
+    } = raw?;
     let window = window_for(model.as_deref(), used, cwd, &HINTS);
-    Some(ContextUsage::new(used, window, model))
+    Some((ContextUsage::new(used, window, model), effort))
 }
 
 /// A model that some session has already pushed past 200k *without* a `[1m]`
@@ -235,12 +256,12 @@ pub fn apply_native_1m<'a>(contexts: impl IntoIterator<Item = &'a mut ContextUsa
 /// Uncached read of one transcript's tail, with the window inferred from the
 /// model id and `hints`.
 pub fn from_transcript(path: &Path, cwd: Option<&str>, hints: &Hints) -> Option<ContextUsage> {
-    let (used, model) = last_usage_in(path)?;
+    let LastTurn { used, model, .. } = last_usage_in(path)?;
     let window = window_for(model.as_deref(), used, cwd, hints);
     Some(ContextUsage::new(used, window, model))
 }
 
-/// (used, model) of the last usable assistant entry, reading only the tail.
+/// The last usable assistant entry, reading only the tail.
 fn last_usage_in(path: &Path) -> Raw {
     let mut file = File::open(path).ok()?;
     let size = file.metadata().ok()?.len();
@@ -268,8 +289,8 @@ fn last_usage_in(path: &Path) -> Raw {
     None
 }
 
-/// The last main-thread assistant entry with real usage in `text`: (used, model).
-fn last_usage(text: &str) -> Option<(u64, Option<String>)> {
+/// The last main-thread assistant entry with real usage in `text`.
+fn last_usage(text: &str) -> Option<LastTurn> {
     for line in text.lines().rev() {
         // Cheap pre-filter before parsing: most lines are tool results.
         if !line.contains("\"usage\"") || !line.contains("\"assistant\"") {
@@ -293,7 +314,16 @@ fn last_usage(text: &str) -> Option<(u64, Option<String>)> {
         if used == 0 {
             continue;
         }
-        return Some((used, model));
+        let effort = v["effort"]
+            .as_str()
+            .map(str::trim)
+            .filter(|e| !e.is_empty())
+            .map(str::to_string);
+        return Some(LastTurn {
+            used,
+            model,
+            effort,
+        });
     }
     None
 }
@@ -514,6 +544,46 @@ mod tests {
             Some(proj.join("-elsewhere/bbb.jsonl"))
         );
         assert_eq!(locate_transcript(home.path(), None, "ccc"), None);
+    }
+
+    fn effort_of(fixture: &str) -> Option<String> {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("s.jsonl");
+        std::fs::write(&p, fixture).unwrap();
+        last_usage_in(&p).unwrap().effort
+    }
+
+    #[test]
+    fn effort_is_the_last_main_thread_turns() {
+        // A live transcript, trimmed: medium, then `/effort high`, then a reply at high; a
+        // subagent turn at low and a synthetic entry follow.
+        let change = include_str!("../../../../testdata/claude/effort-change.jsonl");
+        assert_eq!(effort_of(change).as_deref(), Some("high"));
+        // Right after `/effort high`, before a reply: still the last reply's.
+        let before: Vec<&str> = change.lines().take(5).collect();
+        assert_eq!(effort_of(&before.join("\n")).as_deref(), Some("medium"));
+        // SDK sessions write `perTurnEffort: null`; `effort` still says it.
+        let sdk = include_str!("../../../../testdata/claude/effort-sdk.jsonl");
+        assert_eq!(effort_of(sdk).as_deref(), Some("high"));
+        // A Claude Code that records no effort.
+        let none = include_str!("../../../../testdata/claude/effort-none.jsonl");
+        assert_eq!(effort_of(none), None);
+    }
+
+    #[test]
+    fn for_session_gives_the_context_and_the_effort() {
+        let home = tempfile::tempdir().unwrap();
+        let dir = home.path().join("projects/-work-app");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("ccc.jsonl"),
+            include_str!("../../../../testdata/claude/effort-change.jsonl"),
+        )
+        .unwrap();
+        let (c, effort) = for_session(home.path(), Some("/work/app"), "ccc").unwrap();
+        assert_eq!(c.used, 41_603);
+        assert_eq!(c.model.as_deref(), Some("claude-opus-5-5"));
+        assert_eq!(effort.as_deref(), Some("high"));
     }
 
     #[test]
