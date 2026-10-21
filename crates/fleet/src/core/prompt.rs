@@ -194,6 +194,13 @@ fn is_solid_rule(c: &str) -> bool {
     c.chars().count() >= 8 && c.chars().all(|ch| "─━═".contains(ch))
 }
 
+/// The top of Claude Code's confirmation dialogs (`▔▔▔`): "Switch model?" after `/model`,
+/// "Change effort level?" after `/effort`, both while the prompt cache is warm. Its title is
+/// the dialog's first line, right under it.
+fn is_dialog_top(c: &str) -> bool {
+    c.chars().count() >= 8 && c.chars().all(|ch| ch == '▔')
+}
+
 /// `❯ 1. Yes` → (cursor here, 1, "Yes").
 fn option_line(c: &str) -> Option<(bool, usize, &str)> {
     let (cursor, rest) = match c.strip_prefix(MARKERS) {
@@ -402,9 +409,18 @@ pub fn permission_prompt(screen: &str, harness: Harness) -> PromptRead {
     // in "?" would otherwise cut the real title and everything above it out of the prompt. So
     // a Codex approval with none — not even a line ending in "?" — is not told whole either;
     // a list with no title and without the answer shape is no approval at all.
+    // A rule of the frame: drawn from column 0. A rule-like line inside it is padded content.
+    let frame_rule = |j: usize| is_rule(lines[j]) && !literal[j].starts_with(char::is_whitespace);
+    // Claude Code's confirmation dialog: its `▔` top is the nearest frame rule above the
+    // answers, with a question right under it. That question is the title, whatever the
+    // conversation above the dialog says.
+    let dialog = (floor..top).rev().find(|&j| frame_rule(j)).filter(|&j| {
+        claude && is_dialog_top(lines[j]) && j + 1 < top && lines[j + 1].ends_with('?')
+    });
     let titles: Vec<usize> = (floor..top).filter(|&j| is_title(lines[j])).collect();
     let asks: Vec<usize> = (floor..top).filter(|&j| lines[j].ends_with('?')).collect();
     let t = match (claude, &titles[..], &asks[..]) {
+        _ if dialog.is_some() => dialog.map_or(top, |j| j + 1),
         (true, [.., t], _) | (true, [], [.., t]) | (false, [t], _) => *t,
         (true, [], []) => return PromptRead::None,
         (false, [], _) => {
@@ -420,15 +436,15 @@ pub fn permission_prompt(screen: &str, harness: Harness) -> PromptRead {
             );
         }
     };
-    // A rule of the frame: drawn from column 0. A rule-like line inside it is padded content.
-    let frame_rule = |j: usize| is_rule(lines[j]) && !literal[j].starts_with(char::is_whitespace);
     let detail_range = if claude {
-        // Everything inside the frame, which starts at the solid rule above the title. A
-        // frame out of sight would leave the prompt unidentifiable: refuse it.
-        let Some(rule) = (floor..t)
-            .rev()
-            .find(|&j| frame_rule(j) && is_solid_rule(lines[j]))
-        else {
+        // Everything inside the frame, which starts at the solid rule above the title — or, for
+        // a confirmation dialog, at its `▔` top. A frame out of sight would leave the prompt
+        // unidentifiable: refuse it.
+        let Some(rule) = dialog.or_else(|| {
+            (floor..t)
+                .rev()
+                .find(|&j| frame_rule(j) && is_solid_rule(lines[j]))
+        }) else {
             return PromptRead::Incomplete(
                 Detail::Clipped,
                 "the top of the permission prompt is off the captured screen".into(),
@@ -1007,6 +1023,77 @@ mod tests {
         );
         assert_ne!(p.id, other.id);
         assert!(!is_question_form(CLAUDE_BASH));
+    }
+
+    // The layout of Claude Code 2.1.306's confirmation after `/effort high` while the prompt
+    // cache is warm (captured from a live session; the conversation above it synthetic).
+    const CLAUDE_EFFORT_DIALOG: &str = "\
+❯ Do you want to check the build?
+⏺ ok
+
+✻ Worked for 1s · done 11:06 PM
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+   Change effort level?
+   Your next response will be slower and use more tokens
+
+   This conversation is cached for the current effort level. Switching to high
+   means the full history gets re-read on your next message.
+
+   ❯ 1. Yes, switch to high
+     2. No, go back
+
+";
+
+    #[test]
+    fn claude_confirmation_dialog_is_read_with_its_choices_and_keys() {
+        let p = prompt(CLAUDE_EFFORT_DIALOG, Harness::Claude);
+        assert_eq!(p.title, "Change effort level?");
+        assert_eq!(p.selected, 1);
+        assert_eq!(
+            p.choices
+                .iter()
+                .map(|c| (c.label.as_str(), c.key.as_deref()))
+                .collect::<Vec<_>>(),
+            [
+                ("Yes, switch to high", Some("1")),
+                ("No, go back", Some("2"))
+            ]
+        );
+        assert_eq!(
+            p.detail,
+            [
+                "Your next response will be slower and use more tokens",
+                "This conversation is cached for the current effort level. Switching to high",
+                "means the full history gets re-read on your next message."
+            ]
+        );
+        // `/model`'s, the same dialog with other words, is another prompt.
+        let model = prompt(
+            &CLAUDE_EFFORT_DIALOG
+                .replace("Change effort level?", "Switch model?")
+                .replace(
+                    "effort level. Switching to high",
+                    "model. Switching to Opus 5.5",
+                )
+                .replace("switch to high", "switch to Opus 5.5"),
+            Harness::Claude,
+        );
+        assert_eq!(model.title, "Switch model?");
+        assert_ne!(model.id, p.id);
+        // The dialog quoted in the conversation, the input box under it, is not live.
+        let quoted = format!(
+            "{CLAUDE_EFFORT_DIALOG}────────────────────────────────────────\n❯ \n────────────────────────────────────────\n"
+        );
+        assert_eq!(
+            permission_prompt(&quoted, Harness::Claude),
+            PromptRead::None
+        );
+        // Without its top, it is not told whole.
+        let topless = CLAUDE_EFFORT_DIALOG.replace('▔', "");
+        assert!(matches!(
+            permission_prompt(&topless, Harness::Claude),
+            PromptRead::Incomplete(Detail::Clipped, _)
+        ));
     }
 
     #[test]
