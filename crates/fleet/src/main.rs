@@ -245,6 +245,9 @@ enum Commands {
         /// Rename even a session waiting on a prompt (the keys land in the prompt — be sure)
         #[arg(long)]
         force: bool,
+        /// Hold also when fleet cannot find the input box or read it, not only when it holds text
+        #[arg(long)]
+        require_empty: bool,
         /// Print one JSON object (result renamed/sent/held, tmux sync); held exits 3
         #[arg(long)]
         json: bool,
@@ -1325,8 +1328,9 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
             name,
             no_tmux_sync,
             force,
+            require_empty,
             json,
-        } => commands::rename(&target, &name, no_tmux_sync, force, json)?,
+        } => commands::rename(&target, &name, no_tmux_sync, force, require_empty, json)?,
         Commands::Name {
             target,
             all,

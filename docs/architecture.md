@@ -557,7 +557,7 @@ host, kind: "send_held", reason, error, input? }`, exit 3, `input` the box's tex
 any: sensitive (whatever was typed or pasted there), so it is in that field alone, never in
 `error` or on stderr. `warning`, `reason` and `input` are additions: every other result keeps its
 shape, and every other failure exit 1. A host running an older fleet rejects `--force` and
-`--require-empty` sent through `-H` (exit 2, `usage`). `rename` (`held: "input"` / `"waiting"`)
+`--require-empty` sent through `-H` (exit 2, `usage`). `rename` (`held: "input"` / `"waiting"`, and with `--require-empty` `"no_input_box"` / `"unreadable"`, in its own `result: "held"` report)
 and `close` (no exit command, straight to the kill) read the box the same way.
 
 - The capture is parsed into cells (character, faint, bold, reverse video, foreground and background
