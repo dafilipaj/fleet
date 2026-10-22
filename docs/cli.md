@@ -92,13 +92,14 @@ member (see [Stacks](#stacks)).
 | `fleet keys <target> <key>... [--json]` | press named keys in the session's terminal, in order (80 ms apart), holding the session's lock as `send` and `answer` do: `Escape` (interrupt a turn), `Enter`, `Up`, `Down`, `Left`, `Right`, `Tab`, `BTab` (Shift-Tab), `Space`, `C-c`. Names are tmux's, case-sensitive; any other name is refused (exit 1, kind `invalid_key`) and nothing is pressed. tmux sessions get one `send-keys` per key, iTerm sessions the bytes a terminal sends for the key. **Not atomic:** the first key that fails stops the call — the keys before it stay pressed (nothing can take them back), the rest are not sent, and the error says how many got through (`… — 1 of 3 keys pressed before it`). After `Escape`, wait about a second before a `send`: Claude Code puts the stopped prompt back in its input box only once the turn has stopped, and a `send` that reads the box before then types after it (see [Sending](#sending)). `--json`: `{ ok: true, host, target: { session_id, pid }, keys: [...] }`, or `{ ok: false, host, kind, error }` (exit 1) — kind `invalid_key`, `target_not_found`, `target_ambiguous`, `target_invalid`, `target_changed` (the session's id changed between its lookup and its lock; nothing is pressed), `busy` (another fleet command is typing into the session; nothing is pressed), `backend_unsupported` (no tmux pane or iTerm session to drive), `backend_failed` or `io` (with `typed`, see [Sending](#sending)); a command line clap rejects (an unknown flag, wherever `--json` stands) is the same object with kind `usage`, exit 2 |
 | `fleet close <id:… \| pid:…> [--json] [--timeout <s>] [--expect-pid <n> --expect-start <t>]` | end a session that is alone in its own tmux session (the layout `spawn` creates): its exit command (not when its input box holds text or a prompt), then that tmux session is killed; exact targets only, `-n` touches nothing — see [Closing sessions](#closing-sessions) |
 | `fleet model <id:… \| pid:…> <model-id> [--json] [--expect-pid <n> --expect-start <t>] [--require-empty]` | switch a Claude Code session's model as `/model <id>` in its terminal does (the pick also becomes Claude Code's default for new sessions), answering only Claude Code's confirmation of that switch; typed only into an idle session's empty input box, under its typing lock; done once its transcript says `Set model to …`; exact targets only, `-n` types nothing — see [Switching the model](#switching-the-model) |
+| `fleet effort <id:… \| pid:…> <level> [--json] [--expect-pid <n> --expect-start <t>] [--require-empty]` | switch a Claude Code session's effort level as `/effort <level>` in its terminal does (`low` to `xhigh` also become Claude Code's default for new sessions on its model; `max` is for the session only), answering only Claude Code's confirmation of that switch; `model`'s checks, lock and wait; done once its transcript says `Set effort level to <level>` — see [Switching the effort](#switching-the-effort) |
 | `fleet answer <target> [--json] [--allow-attached] (--list \| --choice <n> [--prompt <id>] \| --question <tool_use_id> --answers <json>)` | answer the prompt the session waits on by typing what a human would — only while the terminal shows that very prompt, untouched; see [Answering prompts](#answering-prompts) |
 | `fleet rename <target> <title> [--no-tmux-sync] [--force] [--require-empty] [--json]` | rename the session's one title: Claude's `/rename` (the source of truth), then its tmux session follows as a slug of it (`Fix Login` → `fix-login`, `-2` on a collision) when the tmux session is that Claude session's own (one window, one pane). A session **waiting on a prompt** is held (exit 1; `--json`: exit 3) — typed keys would be its answer; busy sessions are fine (Claude runs `/rename` mid-turn without disturbing the turn). Codex gets `/rename`, pi `/name`; a busy Codex / pi session is held too (`held: "busy"`) — they would queue the text as a message. `--force` overrides the hold. It types under the session's typing lock (see [Answering prompts](#answering-prompts)): another fleet command typing into the session makes it fail at once (kind `busy`, nothing sent); and, unless forced, the input box is read under the lock, as `send` reads it ([Sending](#sending)) — a prompt that came up since the lookup holds it as waiting, and text in the box (a prompt Escape put back, a draft: `/rename` would go out with it as one prompt) holds it as `held: "input"`; a box fleet cannot find or read (a panel such as `/usage`, a dialog, the transcript view) holds nothing — unless `--require-empty`, which holds it as `send --require-empty` does, with `send`'s reasons: `held: "no_input_box"` or `"unreadable"` (see [Sending](#sending); `--force` skips the read, and so this). `--json` prints `{ ok, result: renamed\|sent\|held, session_id, pid, host, from, title, held, tmux: { renamed, from, to, note }, message }`; a failure before that report (`busy`, a target error, `target_changed` when the session's id changed between its lookup and its lock, `io` with `typed: false`) is `{ ok: false, host, kind, error }` (exit 1) |
 | `fleet name [<target> \| --all [--settled]] [--apply] [--refresh] [--no-tmux-sync]` | suggest a name from what the session is doing; only `--apply` sends it (through the same path as `rename`, tmux included). `--all` = every session with a derived (cwd+hash) name. A derived-name session alone in a tmux session somebody named (`fleet new fix-login`) adopts that name (`(tmux)`, no model call) instead of getting a generated one. `--settled` (with `--all`) skips sessions with one prompt and no brief yet — the model reads the brief's Summary and the first three prompts, and a lone first prompt is often just a link. `--refresh` ignores the cache |
 | `fleet group [-a, --all-hosts] [--json] [--apply] [--refresh] [--consolidate] [--input <file\|->] [--cached]` | sort sessions into work-stream groups (the web Board view) — see [Grouping](#grouping). Reads sessions and asks `claude -p`; never sends anything to a session |
 | `fleet group --rename <group id> --label <l>` / `--move <host/id> (--to <group id> \| --label <l>)` / `--create --label <l>` / `--delete <group id>` | edit the stored groups by hand (the Board's rename / drag'n'drop) — see [Grouping](#grouping) |
 | `fleet spawn [prompt] --dir <path> [--harness claude\|codex\|pi] [--name <n>] [--model <id>] [--backend iterm\|tmux] [--tmux-session <s>] [--window] [--json]` | start a new agent session in a new tab/pane. `--json`: one object saying where it landed, or why it did not — see [Spawning](#spawning) (not with `--slack`). `--harness` picks the coding agent (default `claude`; see [Harnesses](#harnesses)). `--model <id>` runs `<harness> --model '<id>'` (letters, digits and `._[]-/:` only — pi's ids are `provider/model`; blank = the harness's default). `--name` is passed as `-n` to Claude and pi; Codex has no such flag (the tmux session carries the name). The prompt goes after `--` for Claude and Codex, so one that starts with `-` (or reads like a subcommand, `resume`) is still the prompt; pi has no `--`, so a prompt it would take as a flag, a file (`@…`) or one of its commands (`update`) gets a leading space. Pass `--` to `fleet` too for such a prompt: `fleet spawn --dir . -- '--help me'`. A prompt whose launch line would pass 900 bytes is written to `~/.claude/fleet-prompts/` and read back at launch with its trailing newlines intact (`fleet_prompt="$(cat <file>; printf .)" && <launcher> -- "${fleet_prompt%.}"`). Default backend: tmux inside tmux, over ssh or off macOS; else iTerm. With tmux, each spawn gets its own tmux session (one session per job) named from `--name` or the dir's basename, sanitised like `fleet new`; a taken `--name` is an error, a taken basename is uniquified (`app-2`). `--tmux-session <s>` opens a window in `s` instead (created if missing). `--ask-done`: the [instruction](#ask-done) goes below the prompt and the session runs in tmux. `--slack <slack-url \| @person> [--slack-for 2h] [--slack-task <instructions>] [--slack-proactive]`: start [linked to Slack](#slack-links) (tmux, only on `slack.host`; checked before anything opens). The session starts with no prompt and is linked once it has registered (≤ ~45 s); the prompt goes in last in the link's intro, as the owner's request to start on — so it never works on it, or reaches Slack another way, before it knows it is linked. Max 4000 chars. If the link fails, the session stays, idle, and the prompt was not sent |
-| `fleet harness list [--json] [--no-models]` | the [harnesses](#harnesses) on this host: id, label, launch command, `installed`, and the models each offers for a picker. `-H <host>` asks another machine |
+| `fleet harness list [--json] [--no-models]` | the [harnesses](#harnesses) on this host: id, label, launch command, `installed`, and the models each offers for a picker, each with its effort levels (`efforts`, `default_effort`). `-H <host>` asks another machine |
 | `fleet spawn --from <target> [prompt] [--name <n>] [--model <id>] [--backend …] [--json]` | continue a session's work in a new one: same host (with `-H`, the host the session is on) and its cwd (`--dir` overrides), first prompt = its [brief](#briefs)'s continue prompt (summary, origin, PRs, worktree, then a `---` line), then a blank line and `prompt` — the task (default: pick up where it left off). The prompt goes through a file under `~/.claude/fleet-handoffs/`, like a handoff. Errors when the session has no brief yet. `-n` prints the launch command and the prompt and writes nothing |
 | `fleet spawn --resume <session_id> --dir <path> [--harness claude\|codex] [--name <n>] [--model <id>] [--backend …] [--json]` | resume a past session with the harness's own resume, in a new terminal in `--dir` (required: the directory it ran in): `<claude launcher> --resume=<id>` (the launcher as `spawn` builds it, `-n` for `--name`), `codex resume -- <id>` — the id bound so the harness never reads it as a flag. Same path as a plain `spawn` — checks, login shell, env scrub, naming, `--json` object (plus `resumed`). No prompt, and no `--ask-done` or `--slack` (`usage`). The id is ASCII letters, digits and `-`, 1–128 of them, not starting with `-`. One session never gets a second process: refused while it is live in `fleet list` (same harness, `session_live`), and while another resume of it is starting it (`session_starting`): each resume claims `resume-<harness>-<lowercased id>.lock` under `$FLEET_LOCK_DIR` (an `flock` held through the liveness check and the start) and, before typing anything, writes `resume-<harness>-<lowercased id>.stamp` beside it: the start time, then the tmux pane it types the resume into (and that pane's shell pid). Until the session registers, the stamp holds it for 30 s, and past that for as long as the pane exists and its shell still runs what was typed (Claude waiting at its trust prompt has not registered). Once the pane is gone or its shell is back at the prompt, the stamp is stale; an iTerm resume has no pane to check, so only the 30 s hold. A start that never got a terminal removes the stamp; a stamp that cannot be written stops the resume before anything starts. `-n` claims and writes nothing. See [Spawning](#spawning) |
 | `fleet handoff [brief] [--file <f\|->] --dir <path> [--harness <h>] [--name <n>] [--model <id>] [--tmux-session <s>] [--tab] [--no-wait]` | start a new session in another window seeded with a brief (saved under `~/.claude/fleet-handoffs/`); waits until it registers. Same tmux placement as `spawn` |
@@ -428,7 +429,8 @@ its exit command only when the box holds neither, and kills the session otherwis
 - `--list`: what the screen shows. `prompt` is `null`, a **permission** prompt — Claude Code's
   "Do you want to proceed?" (Bash, edits, …), its confirmation of a slash command ("Change effort
   level?" after `/effort`, "Switch model?" after `/model`, both while the prompt cache is warm: a
-  dialog topped by a `▔` rule, its question the line under it), or a Codex approval ("Would you like to run the
+  dialog topped by a `▔` rule — which Claude Code 2.1.308 may end with the hint it draws above
+  the input box, `▔▔▔ ◐ medium · /effort ▔` — its question the line under it), or a Codex approval ("Would you like to run the
   following command?") — `{ kind: "permission", id, title, detail: [lines], choices: [{ n, label }],
   selected, untouched }` (`{ kind: "permission", incomplete: true, reason }` when it cannot be told
   whole: its top out of reach, its frame ambiguous, a Codex approval without exactly one title — on
@@ -786,10 +788,13 @@ reads the outcome off the transcript.
     "Yes, switch to Sonnet 5.5"). The transcript then gets at least 2 s more.
   - Work under way where the box was — a last line of words ending in `…`, a ` (…)` after
     them aside, as Claude Code's "Running PreModelSwitch hooks… (esc to cancel)" while the
-    hooks run — is waited for, however long, within the wait.
+    hooks run — is waited for, however long, within the wait; so is one of Claude Code's tmux
+    hint banners ("tmux detected · …", "tmux focus-events off · …") alone where the box was,
+    caught while the box is redrawn.
   - Anything else in place of the input box for half a second — another dialog, a
     confirmation for another model, one a `PreModelSwitch` hook asks for — is
-    `confirm_unrecognized`: nothing pressed. `fleet peek` shows it.
+    `confirm_unrecognized`: nothing pressed. `fleet peek` shows it. The transcript is read once
+    more first: a switch already written there decides instead.
   - `Model '<model-id>' not found` under the command is `model_not_found`; a `PreModelSwitch`
     hook's refusal (`Model switch to <label> was blocked by a PreModelSwitch hook[: <reason>]`)
     is `switch_refused`. On screen only
@@ -855,6 +860,74 @@ a hint under it is `confirm_unrecognized` until fleet learns it. The `PreModelSw
 wording is checked against the Claude Code 2.1.303 bundle, not a capture. `-H` runs the other host's own
 `model`; a host whose fleet predates it rejects the command (exit 2).
 
+### Switching the effort
+
+`fleet [-n] effort <target> <level> [--json] [--expect-pid <n> --expect-start <t>]
+[--require-empty]` switches a Claude Code session's effort level, as `/effort <level>` typed in
+its terminal does: from its next request on, and — for `low` to `xhigh` — as Claude Code's
+default for new sessions on the session's model too (`/effort` saves it per model, under
+`modelSettings.<model id>.effortLevel` in `settings.json`). `max` is for this session only;
+`auto` clears the model's saved level, so the session and new ones run at the model's default.
+`send "/effort …"` is not enough, for the reason it is not for `/model`: while the prompt cache is
+warm Claude Code asks "Change effort level?" first. `effort` is `model`'s sibling and runs on the
+same code:
+
+- **Exact targets**, `--expect-pid` / `--expect-start`, **Claude Code in a tmux pane only**
+  (Codex 0.163 changes its effort only in the second step of its `/model` picker, pi has none:
+  `harness_unsupported`), and **the four checks under the typing lock**, with the same refusals
+  and the same `send_held` hold (`--require-empty` accepted, changing nothing) — all as in
+  [Switching the model](#switching-the-model).
+- **The level** is checked for shape only — lowercase letters, at most 16 (`usage` otherwise) —
+  and typed as given. Which levels a model has is `fleet harness list --json`'s `efforts`
+  ([Harnesses](#harnesses)); Claude Code says what it makes of a word it does not take.
+- **Then** it types `/effort <level>` and Enter, and reads the screen and the transcript every
+  100 ms for up to 5 s, as `model` does:
+  - Claude Code's confirmation for **that** level — "Change effort level?", "This conversation
+    is cached for the current effort level …", exactly `1. Yes, switch to <level>` and `2. No, go
+    back`, nothing under them, read by `answer`'s reader (Claude Code 2.1.308 may draw its hint
+    `◐ <level> · /effort` over the right end of the dialog's `▔` top) — gets the key `1`, once
+    the agent is checked to own its pane again and a second read still shows it. Nothing else
+    is pressed.
+  - Work under way where the box was, or one of Claude Code's tmux hint banners alone there
+    ("tmux detected · …", "tmux focus-events off · …") while the box is redrawn, is waited for.
+  - Anything else in place of the input box for half a second — another dialog, `/model`'s
+    confirmation, one for another level — is `confirm_unrecognized`, nothing pressed; but the
+    transcript is read once more first, and an answer already written there decides instead.
+    (`model` does the same: the code is shared.)
+- **Success** is the transcript's answer under the command: Claude Code 2.1.308 writes the
+  command as a `type: "user"` entry (`<command-name>/effort</command-name>`,
+  `<command-args><level></command-args>`) and its output as the next `type: "user"` entry, that
+  and nothing else its `message.content`, `<local-command-stdout>…</local-command-stdout>`, its
+  `parentUuid` the command's `uuid` (or the same `promptId`) — a prompt typed as that output is
+  written alike, under no such entry, and is not a switch. Timestamped no earlier than the
+  command began, it says `Set effort level to <level> (saved as your default for new sessions):
+  …`, `Set effort level to max (this session only): …` or, for `auto`, `Effort level set to
+  auto`; its `timestamp` is `switched_at`. It is `outcome_uncertain` instead when it names
+  another level; when it says `Kept effort level as <level>` (declined in the terminal: the level
+  is unchanged); when it says anything else under the command (quoted in the message: a level
+  Claude Code does not take, a newer wording); and when none comes within the wait.
+- `-n` (or `FLEET_DRY_RUN=1`) runs every check, the lock included, and types nothing.
+
+`list`'s `effort` is the level the session's last reply ran at, so it changes only with the next
+reply (`model_at` dates both `model` and `effort`).
+
+`--json` prints one object: `{ ok: true, host, session_id, pid, harness, effort, confirmed, saved,
+switched_at, dry_run }` — `effort` the level asked for, `confirmed` whether Claude Code asked and
+its first choice was picked, `saved` whether Claude Code's default for new sessions on the
+model changed with it (`true` for `(saved as your default for new sessions)` and for `auto`,
+which clears the saved level; `false` for `max`, and for an answer that says neither; `null`
+under `-n`), `switched_at` the answer's `timestamp` as written (`null` under `-n`). Failures are
+`model`'s object, exit 1 (3 for `send_held`), with the same kinds — `usage`, the target kinds,
+`target_changed`, `harness_unsupported`, `backend_unsupported`, `busy`, `host_shared`,
+`not_idle`, `send_held`, `confirm_unrecognized`, `outcome_uncertain`, `io` — and none of
+`model_not_found` or `switch_refused` (Claude Code has no hook on effort changes).
+
+**Limits.** The confirmation and the answers are read off Claude Code 2.1.308's own screens
+(`testdata/screens/live/claude-effort-*`) and transcript entries
+(`testdata/claude/effort-transcript.jsonl`, ids and times made up). What it answers a level it
+does not take was not captured: such an answer is `outcome_uncertain`, quoted. `-H` runs the
+other host's own `effort`; a host whose fleet predates it rejects the command (exit 2).
+
 ### Harnesses
 
 fleet drives three coding agents: **Claude Code** (`claude`, the default), **Codex** (`codex`) and
@@ -875,7 +948,8 @@ Launch commands: Claude's is `FLEET_CMD` / config `claude`; the others' are conf
 
 ```json
 [{ "id": "codex", "label": "Codex", "command": "codex", "installed": true,
-   "models": [{ "id": "", "label": "Default (gpt-6.1-sol)" }, { "id": "gpt-6.1-sol", "label": "GPT-6.1-Sol" }] }]
+   "models": [{ "id": "", "label": "Default (gpt-6.1-sol)", "efforts": ["low", "medium", "high"], "default_effort": "medium" },
+              { "id": "gpt-6.1-sol", "label": "GPT-6.1-Sol", "efforts": ["low", "medium", "high"], "default_effort": "medium" }] }]
 ```
 
 Models: Claude's built-in list; Codex's from its `models_cache.json` (listed ones, its order);
@@ -947,6 +1021,36 @@ each marked with its author's Slack name and id (and `→ mentions you` / `→ t
 addressed to it get an 👀 reaction. When the link ends, delivery stops and, if the session ever spoke there, the thread is
 told it left. The commands talk to this machine's web server, which proxies to `slack.host`. For
 now only sessions on `slack.host` can be linked.
+
+Each model carries its effort levels, `efforts` (lowest first: what [`fleet
+effort`](#switching-the-effort) can be given for it) and `default_effort` (the level a new
+session on it starts at, or `null`); `[]` and `null` where they are not known, and always for
+pi. Claude's are fleet's own table, hand-kept from Claude Code's model docs (as of 2.1.306) like
+the model list: `low`, `medium`, `high`, `xhigh`, `max` on every model, starting at `medium`
+(Fable 5.1 at `high`). Claude Code's user settings (the same `settings.json`; only the keys
+below are read from it) change the start as Claude Code 2.1.308 reads them:
+
+- `modelSettings.<model>.effortLevel` (`low` to `xhigh`: what `/effort` saves; `auto` removes
+  it) is that model's start. `<model>` counts for the listed model it names: its id, an alias
+  (`opus`), or either with a `[1m]` or date suffix. The entry keyed by the id itself wins, else
+  the first in the file. A key fleet cannot resolve to a listed model (a Bedrock or Vertex
+  spelling) is skipped.
+- A top-level `effortLevel`: Claude Code applies it to some models and not to others, by lists
+  of its own, so a model without an `effortLevel` of its own then has `default_effort: null`.
+- `maxEffortLevel` holds the start down to it: the model's own (`modelSettings.<model>`, the
+  lowest of the entries naming it), else the top-level one; `max` is no cap.
+- `CLAUDE_CODE_EFFORT_LEVEL` in `fleet`'s environment overrides every saved level: every
+  `default_effort` is then `null`.
+
+A value of another word counts as unset, as Claude Code drops it. Project, local and managed
+settings, an organization's caps and model default, and Claude Code's own state can change the
+level too; fleet reads none of them. Codex's levels are its `models_cache.json`'s
+(`supported_reasoning_levels`' `effort`s and `default_reasoning_level`), put lowest first by
+Codex's own order — `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra` —
+whatever order the cache lists them in; a level outside that order is dropped (and a
+`default_reasoning_level` outside it is `null`). The `id: ""` entry has the levels of the model
+its default names (an alias resolved through the list), else every level of any listed model,
+lowest first by the same order, and no default.
 
 ### Usage JSON
 
@@ -1710,7 +1814,7 @@ pointing into its world (a shell it provides, or one it trusts; or set `default-
 | 0 | success |
 | 1 | error, bad usage |
 | 2 | tmux, `stack` and `restore` commands: ambiguous match (candidates are printed) |
-| 3 | `send`: held — text in the input box or a prompt in its place (with `--require-empty`, also no box found or read), nothing typed (kind `send_held`, see [Sending](#sending)); `model`: held the same way, any box but an empty one (kind `send_held`, see [Switching the model](#switching-the-model)); `rename --json`: held (text in the box, a prompt, a waiting or busy session; with `--require-empty`, also no box found or read); `brief --set`/`--edit`: the brief changed since it was opened (nothing saved); `brief --regenerate`: hourly cap reached; `stack set`/`edit`: the StackBrief changed since it was opened; `stack`: no stack matches; `restore`: no dormant (with `--closed`: recently closed) session matches; tmux commands: nothing to act on — no sessions, no match, or a confirmation was needed but there is no terminal (use `-f`) |
+| 3 | `send`: held — text in the input box or a prompt in its place (with `--require-empty`, also no box found or read), nothing typed (kind `send_held`, see [Sending](#sending)); `model` and `effort`: held the same way, any box but an empty one (kind `send_held`, see [Switching the model](#switching-the-model)); `rename --json`: held (text in the box, a prompt, a waiting or busy session; with `--require-empty`, also no box found or read); `brief --set`/`--edit`: the brief changed since it was opened (nothing saved); `brief --regenerate`: hourly cap reached; `stack set`/`edit`: the StackBrief changed since it was opened; `stack`: no stack matches; `restore`: no dormant (with `--closed`: recently closed) session matches; tmux commands: nothing to act on — no sessions, no match, or a confirmation was needed but there is no terminal (use `-f`) |
 | 4 | host unreachable |
 | 127 | a required tool (tmux, node) was not found |
 
