@@ -319,8 +319,9 @@ pub enum Hold {
     /// `/usage`, the transcript view): it cannot tell the box is empty.
     #[serde(rename = "no_input_box")]
     NoInputBox,
-    /// `require_empty`, and the box shows text the screen's missing attributes cannot tell
-    /// from a placeholder (iTerm).
+    /// `require_empty`, and the box cannot be read: it shows text the screen's missing
+    /// attributes cannot tell from a placeholder (iTerm), or Claude Code's shows nothing and
+    /// the terminal's cursor, which tells blanks typed there, is hidden or not given.
     #[serde(rename = "unreadable")]
     Unreadable,
 }
@@ -370,7 +371,7 @@ impl Hold {
                 s.headline()
             ),
             Hold::Unreadable => format!(
-                "{}'s input box shows text, and this terminal gives no text attributes to tell a placeholder or suggestion from typed text — nothing sent (--force overrides)",
+                "fleet cannot tell whether {}'s input box is empty: this terminal gives no text attributes to tell a placeholder or suggestion from typed text, or the caret that shows blanks typed there cannot be read (the terminal's cursor not given, or hidden with no caret painted in the box) — nothing sent (--force overrides)",
                 s.headline()
             ),
         }
@@ -433,6 +434,9 @@ pub fn apply_rename(s: &Session, title: &str, o: RenameOpts) -> Result<RenameOut
         };
         Error::tagged(kind, format!("{e}; nothing sent"))
     })?;
+    if lock.is_some() {
+        crate::core::lock::still_named(s, "nothing sent")?;
+    }
     if !o.force
         && lock.is_some()
         && let Some(h) = Hold::from_read(&crate::core::input::of(s)?, o.require_empty)

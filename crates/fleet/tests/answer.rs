@@ -1029,6 +1029,8 @@ fn a_form_gone_after_the_first_key_says_how_many_keys_went_out() {
         "--json",
     ]);
     assert_eq!((code, v["kind"].as_str()), (1, Some("io")), "{v}");
+    // A key went out before the screen could no longer be read.
+    assert_eq!(v["typed"], true, "{v}");
     assert!(
         v["error"]
             .as_str()

@@ -35,7 +35,7 @@
 //! prompt or question on screen is told apart first: the box is not there then. Anything else
 //! is no box at all.
 
-use crate::core::backend;
+use crate::core::backend::{self, TermCursor};
 use crate::core::discovery::Session;
 use crate::core::harness::Harness;
 use crate::error::Result;
@@ -48,8 +48,11 @@ pub enum InputRead {
     Empty,
     /// The box holds this text (its lines, faint text left out).
     Typed(String),
-    /// The box shows this text, but the screen came without text attributes (iTerm), so a
-    /// placeholder or suggestion cannot be told from typed text.
+    /// The box cannot be read: it shows this text, but the screen came without text
+    /// attributes (iTerm), so a placeholder or suggestion cannot be told from typed text — or
+    /// (no text) Claude Code's box shows nothing, and its caret, which alone tells blanks typed
+    /// there from none, cannot be found: the terminal's cursor was not given, or is hidden with
+    /// no caret painted in the box.
     Unclear(String),
     /// A permission prompt or a question waits for its answer where the box was.
     Prompt,
@@ -87,7 +90,8 @@ impl InputRead {
     /// there, so no message carries it: only `send --json`'s `input` does.
     pub fn text(&self) -> Option<&str> {
         match self {
-            InputRead::Typed(t) | InputRead::Unclear(t) => Some(t),
+            InputRead::Typed(t) => Some(t),
+            InputRead::Unclear(t) if !t.is_empty() => Some(t),
             _ => None,
         }
     }
@@ -98,6 +102,9 @@ impl InputRead {
             InputRead::Empty => "the input box is empty",
             InputRead::Typed(_) => {
                 "the input box already holds text — the text would go out with it as one prompt; nothing sent (clear it first, or --force to send anyway)"
+            }
+            InputRead::Unclear(t) if t.is_empty() => {
+                "the input box shows nothing, and its caret, which alone tells blanks typed there from an empty box, cannot be read (the terminal's cursor not given, or hidden with no caret painted in the box); nothing sent (--force to send anyway)"
             }
             InputRead::Unclear(_) => {
                 "the input box shows text, and this terminal gives no text attributes to tell a placeholder or suggestion from typed text; nothing sent (--force to send anyway)"
@@ -115,6 +122,9 @@ impl InputRead {
     /// know, for people: one line.
     pub fn warning(&self) -> Option<&'static str> {
         match self {
+            InputRead::Unclear(t) if t.is_empty() => Some(
+                "typed without knowing the input box was empty: it shows nothing, but its caret, which shows blanks typed there, cannot be read (the terminal's cursor not given, or hidden with no caret painted in the box) (--require-empty holds instead)",
+            ),
             InputRead::Unclear(_) => Some(
                 "typed without knowing the input box was empty: it shows text, and this terminal gives no text attributes to tell a placeholder from typed text (--require-empty holds instead)",
             ),
@@ -531,21 +541,49 @@ pub fn of(s: &Session) -> Result<InputRead> {
 
 /// What the input box of a `harness` session shows on `screen`: a capture of its visible
 /// screen, with its escape sequences when `styled` (tmux), as plain text otherwise (iTerm).
+/// Read by what shows alone, the cursor not looked for: a Claude Code box holding only blanks
+/// reads empty here. Only [`read_at`] (and [`of`]) can tell whether it is before typing.
 pub fn read(screen: &str, harness: Harness, styled: bool) -> InputRead {
-    read_at(screen, harness, styled, None)
+    read_box(screen, harness, styled, Cursor::NotLooked)
 }
 
-/// [`read`], with where the terminal's cursor is on that screen (`(column, row)`), when it
-/// shows. Claude Code draws nothing for blanks typed into its box: a box holding only spaces
-/// or line breaks looks empty, and text typed after them would go out behind them (` /model
-/// opus`: a prompt, not the command). The cursor tells: in an empty box it sits where the
-/// text starts; past that, blanks are typed.
-pub fn read_at(
-    screen: &str,
-    harness: Harness,
-    styled: bool,
-    cursor: Option<(usize, usize)>,
-) -> InputRead {
+/// [`read`], with what the terminal says of its cursor on that screen. Claude Code draws
+/// nothing for blanks typed into its box: a box holding only spaces or line breaks looks
+/// empty, and text typed after them would go out behind them (` /model opus`: a prompt, not
+/// the command). The caret tells: in an empty box it sits where the text starts; past that,
+/// blanks are typed. The caret is the terminal's cursor while it shows
+/// ([`TermCursor::At`]); while it is hidden ([`TermCursor::Hidden`] — Claude Code hides it
+/// unless its native cursor is on) it is the one reverse-video cell Claude Code paints in its
+/// box (on the placeholder's first character, or a blank one). Neither — the cursor hidden and
+/// no such cell (the screen without attributes, too), or the terminal not saying
+/// ([`TermCursor::Unknown`]: a failed query, iTerm) — leaves a Claude Code box that shows
+/// nothing unproven: [`InputRead::Unclear`] with no text (`unreadable`), never empty, so
+/// `--require-empty` holds on it. A caret where the text starts reads empty, though blanks
+/// typed and the caret then moved back before them (Home) look the same: such a box reads
+/// empty too, and what goes out behind them is plain text with leading spaces.
+pub fn read_at(screen: &str, harness: Harness, styled: bool, cursor: TermCursor) -> InputRead {
+    let cursor = match cursor {
+        TermCursor::At(x, y) => Cursor::At(x, y),
+        TermCursor::Hidden => Cursor::Hidden,
+        TermCursor::Unknown => Cursor::Unknown,
+    };
+    read_box(screen, harness, styled, cursor)
+}
+
+/// What a read knows of the terminal's cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Cursor {
+    /// Not looked for ([`read`]): the box is read by what shows.
+    NotLooked,
+    /// Looked for, and not known: the terminal did not say.
+    Unknown,
+    /// Hidden: the caret is the one Claude Code paints ([`painted_caret`]), if any.
+    Hidden,
+    /// `(column, row)` from the screen's top left.
+    At(usize, usize),
+}
+
+fn read_box(screen: &str, harness: Harness, styled: bool, cursor: Cursor) -> InputRead {
     let rows = rows(screen, styled);
     let texts: Vec<String> = rows.iter().map(|r| text_of(r)).collect();
     let plain = texts.join("\n");
@@ -577,12 +615,22 @@ pub fn read_at(
         *first = &line[chars..];
     }
     let verdict = judge(&cells, found.bash, styled);
-    if verdict == InputRead::Empty
-        && harness == Harness::Claude
-        && !found.bash
-        && let Some(blanks) = blanks_typed(&found, pill, cursor)
-    {
-        return InputRead::Typed(blanks);
+    if verdict == InputRead::Empty && harness == Harness::Claude && !found.bash {
+        let caret = match cursor {
+            Cursor::NotLooked | Cursor::Unknown => None,
+            Cursor::At(x, y) => Some((x, y)),
+            Cursor::Hidden => painted_caret(&rows, &found),
+        };
+        match (cursor, caret) {
+            (Cursor::NotLooked, _) => {}
+            // Blanks typed there would show as nothing: an empty box cannot be told from them.
+            (_, None) => return InputRead::Unclear(String::new()),
+            (_, Some(at)) => {
+                if let Some(blanks) = blanks_typed(&found, pill, at) {
+                    return InputRead::Typed(blanks);
+                }
+            }
+        }
     }
     if verdict == InputRead::Empty && !found.doubt.is_empty() {
         // Where the box ends cannot be told, and the rows that may be in it show text:
@@ -594,11 +642,11 @@ pub fn read_at(
 }
 
 /// The blanks typed into Claude Code's box, `found`, when it shows nothing else: those before
-/// the terminal's `cursor`, when that sits in the box past where its text starts (after the
-/// marker, and an IDE pill `pill` terminal cells wide: its display width, not its characters). `None` when it sits there, outside the box, or
-/// is unknown.
-fn blanks_typed(found: &Found, pill: usize, cursor: Option<(usize, usize)>) -> Option<String> {
-    let (x, y) = cursor?;
+/// the caret at `(x, y)` (the terminal's cursor, or the one Claude Code paints), when that sits
+/// in the box past where its text starts (after the marker, and an IDE pill `pill` terminal
+/// cells wide: its display width, not its characters). `None` when it sits there, or outside
+/// the box.
+fn blanks_typed(found: &Found, pill: usize, (x, y): (usize, usize)) -> Option<String> {
     let &(first, from) = found.lines.first()?;
     let start = from + pill;
     if y == first {
@@ -606,6 +654,26 @@ fn blanks_typed(found: &Found, pill: usize, cursor: Option<(usize, usize)>) -> O
     }
     let line = found.lines.iter().position(|&(row, _)| row == y)?;
     Some(format!("{}{}", "\n".repeat(line), " ".repeat(x)))
+}
+
+/// The caret Claude Code paints in its box, `found`, while the terminal's cursor is hidden: the
+/// one reverse-video cell there (on the placeholder's first character, or a blank where the
+/// next character goes), as `(column, row)` in terminal cells, a wide character two. `None`
+/// when the box has no such cell, or more than one.
+fn painted_caret(rows: &[Vec<Cell>], found: &Found) -> Option<(usize, usize)> {
+    let mut carets = found.lines.iter().flat_map(|&(row, from)| {
+        let cells = &rows[row];
+        (from..cells.len())
+            .filter(|&i| cells[i].reverse)
+            .map(move |i| {
+                let x = cells[..i].iter().map(|c| c.ch.width().unwrap_or(0)).sum();
+                (x, row)
+            })
+    });
+    match (carets.next(), carets.next()) {
+        (Some(at), None) => Some(at),
+        _ => None,
+    }
 }
 
 /// The text on the box's lines `cells` whose cells `keep` keeps, its blank lines at either end
@@ -799,34 +867,120 @@ mod tests {
         for name in ["claude-after-turn", "claude-empty"] {
             let s = live(name);
             let row = box_row(&s);
-            let at = |x: usize, y: usize| read_at(&s, Claude, true, Some((x, y)));
+            let at = |x: usize, y: usize| read_at(&s, Claude, true, TermCursor::At(x, y));
             // Where the text starts: empty.
             assert_eq!(at(2, row), InputRead::Empty, "{name}");
             // Past it, on the box's line: as many blanks typed (Claude Code draws none).
             assert_eq!(at(3, row), typed(" "), "{name}");
             assert_eq!(at(5, row), typed("   "), "{name}");
             assert!(at(3, row).holds(false), "{name}");
-            // Outside the box, or unknown: what the screen shows, as before.
+            // Outside the box: what the screen shows, as before.
             assert_eq!(at(0, 0), InputRead::Empty, "{name}");
             assert_eq!(at(0, row + 1), InputRead::Empty, "{name}");
-            assert_eq!(read_at(&s, Claude, true, None), InputRead::Empty, "{name}");
+            // Not looked for (`read`): what the screen shows.
+            assert_eq!(read(&s, Claude, true), InputRead::Empty, "{name}");
         }
         // Text in the box is read as it shows, wherever the cursor is.
         let s = live("claude-typed");
         assert_eq!(
-            read_at(&s, Claude, true, Some((40, box_row(&s)))),
+            read_at(&s, Claude, true, TermCursor::At(40, box_row(&s))),
             typed("draft text typed but not sent")
         );
         let s = live("claude-multiline");
         let row = box_row(&s);
         assert_eq!(
-            read_at(&s, Claude, true, Some((3, row))),
+            read_at(&s, Claude, true, TermCursor::At(3, row)),
             typed("first line of a draft\nsecond line\nthird line")
         );
         // Codex draws its own: its composer is read by what shows.
         assert_eq!(
-            read_at(&live("codex-empty"), Codex, true, Some((30, 0))),
+            read_at(&live("codex-empty"), Codex, true, TermCursor::At(30, 0)),
             InputRead::Empty
+        );
+    }
+
+    // The cursor hidden, or the terminal not saying where it is: blanks typed into Claude
+    // Code's box show as nothing, so a box showing nothing may hold them. Unreadable, never
+    // empty: `--require-empty` holds, a plain send types with a warning. The box's text is
+    // none to show. What shows decides as before when it shows text, a prompt, no box, or in
+    // bash mode; Codex and pi draw what is typed.
+    #[test]
+    fn claude_code_a_box_showing_nothing_is_unreadable_without_the_cursor() {
+        use Harness::{Claude, Codex, Pi};
+        for name in ["claude-after-turn", "claude-empty"] {
+            let r = read_at(&live(name), Claude, true, TermCursor::Unknown);
+            assert_eq!(r, InputRead::Unclear(String::new()), "{name}");
+            assert_eq!(r.reason(), Some("unreadable"), "{name}");
+            assert!(r.holds(true) && !r.holds(false), "{name}");
+            assert_eq!(r.text(), None, "{name}");
+            assert!(r.message().contains("cursor"), "{name}");
+            assert!(r.warning().is_some_and(|w| w.contains("cursor")), "{name}");
+        }
+        for (name, want) in [
+            ("live/claude-typed", typed("draft text typed but not sent")),
+            ("claude-permission", InputRead::Prompt),
+            ("claude-transcript", InputRead::NoBox),
+            ("live/claude-bash-mode-empty", typed("!")),
+        ] {
+            assert_eq!(
+                read_at(&screen(name), Claude, true, TermCursor::Unknown),
+                want,
+                "{name}"
+            );
+        }
+        assert_eq!(
+            read_at(&live("codex-empty"), Codex, true, TermCursor::Unknown),
+            InputRead::Empty
+        );
+        assert_eq!(
+            read_at(&screen("pi-empty"), Pi, true, TermCursor::Unknown),
+            InputRead::Empty
+        );
+    }
+
+    // The terminal's cursor hidden, as Claude Code hides it unless its native cursor is on: the
+    // caret is the reverse-video cell it paints in its box. Where the text starts (on the
+    // placeholder's first character, a blank, or after an IDE pill) the box is empty; further
+    // on, blanks are typed. No such cell (a screen drawn for the terminal's cursor), more than
+    // one, or a screen without attributes: unreadable, as with no cursor at all.
+    #[test]
+    fn claude_code_with_the_cursor_hidden_its_painted_caret_tells() {
+        use Harness::Claude;
+        let hidden = |s: &str| read_at(s, Claude, true, TermCursor::Hidden);
+        let placeholder = screen("claude-placeholder");
+        assert_eq!(hidden(&placeholder), InputRead::Empty);
+        assert_eq!(hidden(&screen("claude-ide-pill")), InputRead::Empty);
+        let shown = "\x1b[7mT\x1b[0;2mry \"write a test for src/parser.rs\"\x1b[0m";
+        assert!(placeholder.contains(shown));
+        let caret = |before: &str, after: &str| {
+            placeholder.replacen(shown, &format!("{before}\x1b[7m \x1b[0m{after}"), 1)
+        };
+        // A blank caret where the text starts: empty, as Claude Code's box is after a turn.
+        // Blanks after it (typed, then Home) look the same and read empty too: an accepted gap.
+        for after in ["", "   ", "  \x1b[2m \x1b[0m"] {
+            let r = hidden(&caret("", after));
+            assert_eq!(r, InputRead::Empty, "{after:?}");
+            assert!(!r.holds(true), "{after:?}");
+        }
+        assert_eq!(hidden(&caret("   ", "")), typed("   "));
+        assert!(hidden(&caret(" ", "")).holds(false));
+        // Two painted cells: which is the caret cannot be told.
+        assert_eq!(
+            hidden(&caret("", " \x1b[7m \x1b[0m")),
+            InputRead::Unclear(String::new())
+        );
+        // None: a box drawn for the terminal's cursor, or no attributes to find one by.
+        for s in [live("claude-empty"), live("claude-after-turn")] {
+            assert_eq!(hidden(&s), InputRead::Unclear(String::new()));
+        }
+        assert_eq!(
+            read_at(&unstyled(&caret("", "")), Claude, false, TermCursor::Hidden),
+            InputRead::Unclear(String::new())
+        );
+        // Text in the box reads as it shows, the caret wherever it is.
+        assert_eq!(
+            hidden(&live("claude-typed")),
+            typed("draft text typed but not sent")
         );
     }
 
@@ -870,11 +1024,11 @@ mod tests {
         };
         // (screen, column where the text starts: the marker, the pill and the space after it)
         for (s, start) in [(&ascii, 24), (&wide, 17)] {
-            let at = |x: usize| read_at(s, Harness::Claude, true, Some((x, row(s))));
+            let at = |x: usize| read_at(s, Harness::Claude, true, TermCursor::At(x, row(s)));
             assert_eq!(at(start), InputRead::Empty, "start {start}");
             assert_eq!(at(start + 1), typed(" "), "start {start}");
             assert_eq!(at(start + 3), typed("   "), "start {start}");
-            assert_eq!(read_at(s, Harness::Claude, true, None), InputRead::Empty);
+            assert_eq!(read(s, Harness::Claude, true), InputRead::Empty);
         }
     }
 
@@ -1000,6 +1154,17 @@ mod tests {
                 false
             ),
             InputRead::Empty
+        );
+        // …by what shows. iTerm gives no cursor either, so before typing (`of`) Claude Code's
+        // blank box cannot be told from blanks typed in it.
+        assert_eq!(
+            read_at(
+                &unstyled(&live("claude-after-turn")),
+                Harness::Claude,
+                false,
+                TermCursor::Unknown
+            ),
+            InputRead::Unclear(String::new())
         );
         // Escape sequences in a screen not read as styled are ignored, not trusted.
         assert!(matches!(
