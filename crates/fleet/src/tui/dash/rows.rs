@@ -115,7 +115,7 @@ fn term_style(label: &str) -> Style {
 fn status_style(status: &str) -> Style {
     match status {
         "busy" => Style::default().fg(Color::Green),
-        "idle" => Style::default().fg(Color::DarkGray),
+        s if crate::core::discovery::is_idle(s) => Style::default().fg(Color::DarkGray),
         "waiting" => Style::default()
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD),
@@ -737,6 +737,14 @@ mod tests {
         (32, 12),
         (24, 10),
     ];
+
+    // Claude Code's `shell` (idle, a background shell running) is drawn as idle is.
+    #[test]
+    fn shell_is_styled_as_idle() {
+        assert_eq!(status_style("shell"), status_style("idle"));
+        assert_ne!(status_style("shell"), status_style("busy"));
+        assert_ne!(status_style("shell"), status_style("unknown"));
+    }
 
     #[test]
     fn rows_never_exceed_the_inner_width() {

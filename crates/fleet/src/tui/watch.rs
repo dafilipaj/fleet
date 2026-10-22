@@ -130,7 +130,7 @@ fn tick(state: &mut State, stuck_secs: i64) -> (Vec<Session>, Vec<Ev>) {
         let label = r.label();
         let known = state.contains_key(&key);
 
-        if prev.status == "busy" && r.status == "idle" {
+        if prev.status == "busy" && r.is_idle() {
             let t = r.title.as_deref().unwrap_or("");
             push(
                 "✅",
@@ -156,11 +156,11 @@ fn tick(state: &mut State, stuck_secs: i64) -> (Vec<Session>, Vec<Ev>) {
 
         // Stuck: idle past the threshold and blocked on a prompt — check once per idle episode.
         let idle_secs = r.updated_at.map(|u| (now_ms() - u) / 1000).unwrap_or(0);
-        let mut stuck_notified = prev.stuck_notified && r.status == "idle";
+        let mut stuck_notified = prev.stuck_notified && r.is_idle();
         // `is_fixture` short-circuits before `peek`: a canned fleet's handles are
         // fabricated, and shelling out to tmux/AppleScript with them is exactly
         // what a demo mode must not do.
-        if r.status == "idle" && idle_secs > stuck_secs && !stuck_notified && !is_fixture() {
+        if r.is_idle() && idle_secs > stuck_secs && !stuck_notified && !is_fixture() {
             let screen = backend::peek(r).unwrap_or_default();
             if awaiting(&screen) {
                 push(

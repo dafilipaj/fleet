@@ -10,6 +10,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::harness::{self, Harness};
 
+/// Claude Code's Status (2.1.308 on) for a session idle at its prompt while a background shell
+/// (a `run_in_background` Bash) still runs: what it writes instead of `idle` then.
+pub const SHELL: &str = "shell";
+
+/// Is a session with this Status idle, ready for a prompt? `idle`, or Claude Code's
+/// [`SHELL`]: the agent waits for the user just the same, a shell running behind it. Checks
+/// that would end that shell (closing a job's tmux session, the operator's `/clear`) ask for
+/// `idle` itself.
+pub fn is_idle(status: &str) -> bool {
+    matches!(status, "idle" | SHELL)
+}
+
 pub fn claude_home() -> PathBuf {
     dirs::home_dir().unwrap_or_default().join(".claude")
 }
@@ -41,6 +53,9 @@ pub struct Session {
     pub session_id: Option<String>,
     pub name: Option<String>,
     pub cwd: Option<String>,
+    /// The registry's Status, as written: `busy` | `idle` | `waiting` | `unknown`, and from
+    /// Claude Code 2.1.308 `shell` — idle, with a background shell still running. Ask
+    /// [`Session::is_idle`], not `== "idle"`, whether it is ready for a prompt.
     pub status: String,
     /// Milliseconds since the epoch of the last status update.
     pub updated_at: Option<i64>,
@@ -175,6 +190,11 @@ impl Session {
     /// Is this session blocked on the user right now?
     pub fn is_waiting(&self) -> bool {
         self.status == "waiting"
+    }
+
+    /// Is this session at its prompt, ready for the next one? See [`is_idle`].
+    pub fn is_idle(&self) -> bool {
+        is_idle(&self.status)
     }
 
     /// What every view puts on a row: the session's one title,
@@ -1769,6 +1789,21 @@ mod tests {
         .unwrap();
         assert!(out.status.success());
         assert_eq!(out.stdout, b"hi\n");
+    }
+
+    // Claude Code 2.1.308 writes `shell` for an idle session with a background shell running.
+    #[test]
+    fn shell_is_idle_and_nothing_else_is() {
+        assert!(is_idle("idle") && is_idle(SHELL));
+        for status in ["busy", "waiting", "unknown", "", "Idle", "shell "] {
+            assert!(!is_idle(status), "{status:?}");
+        }
+        let s = Session {
+            status: SHELL.into(),
+            ..Default::default()
+        };
+        assert!(s.is_idle() && !s.is_waiting());
+        assert!(!Session::default().is_idle());
     }
 
     // Without a screen to read (iTerm, a pane tmux would not capture), a pending escalated

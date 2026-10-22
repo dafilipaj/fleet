@@ -193,8 +193,8 @@ Env overrides for the web server: `FLEET_WEB_PORT` (or `PORT`), `FLEET_WEB_BIND`
 ## Session discovery
 
 Claude Code keeps a live registry: one `~/.claude/sessions/<pid>.json` per running interactive
-session with its session id, cwd, name, status (`busy` / `idle` / `waiting`) and what it waits for.
-That is the source of truth; `fleet` enriches each entry:
+session with its session id, cwd, name, status (`busy` / `idle` / `waiting`, and from Claude Code
+2.1.308 `shell`) and what it waits for. That is the source of truth; `fleet` enriches each entry:
 
 1. **pid → tty** via `ps`.
 2. **tty → terminal**: match against `tmux list-panes -a` (pane id, window name, tmux session) and,
@@ -336,7 +336,7 @@ by — with no config, `local`):
 | `name` | string \| null | Claude session name |
 | `name_source` | string \| null | `"derived"` = Claude's cwd+hash fallback |
 | `cwd` | string \| null | working directory |
-| `status` | string | `busy` \| `idle` \| `waiting` \| `unknown` — `idle` = the main prompt is free, subagents may still run (`background`) |
+| `status` | string | `busy` \| `idle` \| `waiting` \| `unknown` — `idle` = the main prompt is free, subagents may still run (`background`). Claude Code 2.1.308+ writes `shell` for a session idle at its prompt with a background shell (a `run_in_background` Bash) running: it comes out as `idle` (the shell in `background` when the transcript shows it) |
 | `waiting_for` | string \| null | what a `waiting` session is blocked on |
 | `updated_at` | number \| null | last status change, ms since epoch |
 | `background` | object \| null | what runs beside the main thread: `{ agents: [{ id, description, type, model, background, started_at, last_activity_at, activity }], shells }` (`background: false` = a foreground agent; `activity` = its last tool call, like `Bash: run the tests`); `null` = none or unknown |
