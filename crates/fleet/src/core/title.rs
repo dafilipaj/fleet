@@ -278,6 +278,11 @@ pub struct RenameOpts {
     /// *always* busy would otherwise be unrenameable by any path, so the escape
     /// hatch is explicit rather than absent.
     pub force: bool,
+    /// Hold also when the input box cannot be found or read ([`Hold::NoInputBox`],
+    /// [`Hold::Unreadable`]), not only when it holds text or a prompt — as `send
+    /// --require-empty`. By default a box fleet cannot see holds nothing: `/rename` is typed
+    /// as before the box was read. `force` skips the read, and so this.
+    pub require_empty: bool,
 }
 
 /// Why a rename was held.
@@ -294,15 +299,30 @@ pub struct RenameOpts {
 /// Nor is text already in the session's **input box** (a prompt Escape put back, a
 /// draft): `/rename foo` typed after it would go out with it as one prompt — the
 /// stopped prompt run again — so that holds too, read off the screen under the lock.
+///
+/// With `require_empty` a box fleet cannot find or read holds as well, under the reason codes
+/// `send --json` gives it (`no_input_box`, `unreadable`). Text in the box and a prompt in its
+/// place keep the codes `rename` always had (`input`, `waiting`), which `send` calls `text`
+/// and `prompt`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
 pub enum Hold {
     /// On a permission prompt / question: `/rename foo` would be its answer.
+    #[serde(rename = "waiting")]
     Waiting,
     /// Mid-turn in a harness that would queue the text as a message (Codex, pi).
+    #[serde(rename = "busy")]
     Busy,
     /// Text in the input box: `/rename foo` would be glued onto it and submit both.
+    #[serde(rename = "input")]
     Input,
+    /// `require_empty`, and no input box fleet knows is on screen (a menu, a panel such as
+    /// `/usage`, the transcript view): it cannot tell the box is empty.
+    #[serde(rename = "no_input_box")]
+    NoInputBox,
+    /// `require_empty`, and the box shows text the screen's missing attributes cannot tell
+    /// from a placeholder (iTerm).
+    #[serde(rename = "unreadable")]
+    Unreadable,
 }
 
 /// Would typing `/rename` into this session be unsafe right now?
@@ -314,6 +334,23 @@ pub fn hold(s: &Session) -> Option<Hold> {
 }
 
 impl Hold {
+    /// What a read of the input box holds the rename for, if anything: text in the box, or a
+    /// prompt in its place, always; a box not found or not readable only with `require_empty`
+    /// (the same [`InputRead::holds`](crate::core::input::InputRead::holds) `send` asks).
+    pub fn from_read(read: &crate::core::input::InputRead, require_empty: bool) -> Option<Hold> {
+        use crate::core::input::InputRead;
+        if !read.holds(require_empty) {
+            return None;
+        }
+        match read {
+            InputRead::Empty => None,
+            InputRead::Typed(_) => Some(Hold::Input),
+            InputRead::Prompt => Some(Hold::Waiting),
+            InputRead::Unclear(_) => Some(Hold::Unreadable),
+            InputRead::NoBox => Some(Hold::NoInputBox),
+        }
+    }
+
     pub fn message(self, s: &Session) -> String {
         match self {
             Hold::Waiting => format!(
@@ -326,6 +363,14 @@ impl Hold {
             ),
             Hold::Input => format!(
                 "{} has text in its input box — the rename would go out with it as one prompt; nothing sent, rename it once the box is clear (--force overrides)",
+                s.headline()
+            ),
+            Hold::NoInputBox => format!(
+                "fleet cannot find {}'s input box on screen (a menu, the transcript view, or a layout it does not know), so it cannot tell it is empty — nothing sent (--force overrides)",
+                s.headline()
+            ),
+            Hold::Unreadable => format!(
+                "{}'s input box shows text, and this terminal gives no text attributes to tell a placeholder or suggestion from typed text — nothing sent (--force overrides)",
                 s.headline()
             ),
         }
@@ -372,7 +417,9 @@ impl RenameOutcome {
 /// answer. And under the lock, unless forced, its input box is read off the screen
 /// ([`crate::core::input`], as `send` reads it): a prompt that came up since the session was
 /// looked up holds the rename as a waiting session would, and text in the box holds it as
-/// [`Hold::Input`]. A box fleet cannot find or read holds nothing, as for `send` by default.
+/// [`Hold::Input`]. A box fleet cannot find or read holds nothing, as for `send` by default —
+/// unless `require_empty`, which holds it as [`Hold::NoInputBox`] / [`Hold::Unreadable`], as
+/// `send --require-empty` does.
 pub fn apply_rename(s: &Session, title: &str, o: RenameOpts) -> Result<RenameOutcome> {
     if !o.force
         && let Some(h) = hold(s)
@@ -386,16 +433,11 @@ pub fn apply_rename(s: &Session, title: &str, o: RenameOpts) -> Result<RenameOut
         };
         Error::tagged(kind, format!("{e}; nothing sent"))
     })?;
-    if !o.force && lock.is_some() {
-        use crate::core::input::{self, InputRead};
-        let h = match input::of(s)? {
-            InputRead::Prompt => Some(Hold::Waiting),
-            InputRead::Typed(_) => Some(Hold::Input),
-            _ => None,
-        };
-        if let Some(h) = h {
-            return Ok(RenameOutcome::Held(h, h.message(s)));
-        }
+    if !o.force
+        && lock.is_some()
+        && let Some(h) = Hold::from_read(&crate::core::input::of(s)?, o.require_empty)
+    {
+        return Ok(RenameOutcome::Held(h, h.message(s)));
     }
     backend::send(s, &s.harness.rename_command(title))?;
     drop(lock);
@@ -642,6 +684,7 @@ mod tests {
             RenameOpts {
                 sync_tmux: false,
                 force: true,
+                require_empty: false,
             },
         );
         assert!(!matches!(forced, Ok(RenameOutcome::Held(..))));
@@ -658,5 +701,101 @@ mod tests {
         s.backend = Backend::Tmux;
         s.tmux_session = Some("fix-login".into());
         assert_eq!(adoptable_tmux_name(&s), None);
+    }
+
+    /// A capture from testdata/screens, read as `fleet send` would read the session's box.
+    fn read_of(name: &str, styled: bool) -> crate::core::input::InputRead {
+        let path = format!(
+            "{}/../../testdata/screens/{name}.txt",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+        let screen = if styled {
+            raw
+        } else {
+            // What iTerm gives: the text alone.
+            raw.lines()
+                .map(backend::strip_ansi)
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        crate::core::input::read(&screen, crate::core::harness::Harness::Claude, styled)
+    }
+
+    fn from_screen(name: &str, styled: bool, require_empty: bool) -> Option<Hold> {
+        Hold::from_read(&read_of(name, styled), require_empty)
+    }
+
+    #[test]
+    fn an_input_box_fleet_cannot_find_holds_a_rename_only_when_an_empty_box_is_required() {
+        // The transcript view stands for a panel such as `/usage`: no box on screen.
+        assert_eq!(from_screen("claude-transcript", true, false), None);
+        assert_eq!(
+            from_screen("claude-transcript", true, true),
+            Some(Hold::NoInputBox)
+        );
+    }
+
+    #[test]
+    fn an_input_box_fleet_cannot_read_holds_a_rename_only_when_an_empty_box_is_required() {
+        // Without text attributes a placeholder cannot be told from typed text.
+        assert_eq!(from_screen("claude-placeholder", false, false), None);
+        assert_eq!(
+            from_screen("claude-placeholder", false, true),
+            Some(Hold::Unreadable)
+        );
+    }
+
+    #[test]
+    fn text_or_a_prompt_holds_a_rename_with_or_without_the_flag() {
+        for require_empty in [false, true] {
+            assert_eq!(
+                from_screen("live/claude-restored", true, require_empty),
+                Some(Hold::Input)
+            );
+            assert_eq!(
+                from_screen("claude-permission", true, require_empty),
+                Some(Hold::Waiting)
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_box_holds_nothing_even_when_an_empty_box_is_required() {
+        for require_empty in [false, true] {
+            assert_eq!(from_screen("claude-placeholder", true, require_empty), None);
+        }
+    }
+
+    #[test]
+    fn a_hold_is_reported_under_the_reason_send_gives_it() {
+        let reason = |h: Hold| serde_json::to_value(h).unwrap();
+        // The new holds are `send`'s own reason codes (`InputRead::reason`).
+        assert_eq!(reason(Hold::NoInputBox), "no_input_box");
+        assert_eq!(reason(Hold::Unreadable), "unreadable");
+        let sent = [
+            (Hold::NoInputBox, read_of("claude-transcript", true)),
+            (Hold::Unreadable, read_of("claude-placeholder", false)),
+        ];
+        for (h, read) in sent {
+            assert_eq!(reason(h), read.reason().unwrap());
+        }
+        // The codes `rename` always had are unchanged.
+        assert_eq!(reason(Hold::Waiting), "waiting");
+        assert_eq!(reason(Hold::Busy), "busy");
+        assert_eq!(reason(Hold::Input), "input");
+    }
+
+    #[test]
+    fn the_new_holds_say_what_was_not_sent_and_never_what_the_box_holds() {
+        let s = named("fix-login", "user");
+        for h in [Hold::NoInputBox, Hold::Unreadable] {
+            let m = h.message(&s);
+            assert!(m.contains("nothing sent") && m.contains("--force"), "{m}");
+        }
+        let read = read_of("claude-placeholder", false);
+        let text = read.text().unwrap().to_string();
+        let m = Hold::Unreadable.message(&s);
+        assert!(!m.contains(&text), "{m}");
     }
 }

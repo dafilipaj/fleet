@@ -348,6 +348,7 @@ fn commit_rename(
         // The dashboard has no modifier for it; `tb-fleet rename --force` is the
         // deliberate path for a session that is always waiting.
         force: false,
+        require_empty: false,
     };
     Some(match commands::apply_rename(s, name, opts) {
         Ok(outcome @ commands::RenameOutcome::Sent(_)) => match outcome.tmux_note() {

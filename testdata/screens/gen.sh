@@ -163,6 +163,14 @@ codex_empty() {
   row '' 80
   codex_footer '? for shortcuts                                         100% context left'
 }
+# A composer on no background of its own (as in the live captures), its footer drawn plain, as
+# typed text is: fleet cannot tell the footer from words typed in the composer, so the box
+# reads as unreadable, never empty.
+codex_footer_plain() {
+  printf '• The suite passes: 42 tests, 0 failures.\n\n'
+  printf '%b\n' "${BOLD}›${UNBOLD} ${DIM}Ask Codex to do anything${UNDIM}"
+  printf '\n  %s\n' '? for shortcuts                                         100% context left'
+}
 # The stopped prompt's words in the composer after an interrupted turn: text. (Codex 0.163.0
 # does not put a stopped prompt back: live/codex-interrupted-empty.)
 codex_restored() {
@@ -245,6 +253,7 @@ draw claude-ide-pill-restored claude_ide_pill_restored
 draw claude-truecolor claude_truecolor
 draw claude-truecolor-suggestion claude_truecolor_suggestion
 draw codex-empty codex_empty
+draw codex-footer-plain codex_footer_plain
 draw codex-status codex_status
 draw codex-status-restored codex_status_restored
 draw codex-restored codex_restored
