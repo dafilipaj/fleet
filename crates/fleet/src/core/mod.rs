@@ -12,6 +12,7 @@ pub mod hosts;
 pub mod input;
 pub mod jobs;
 pub mod lock;
+pub mod model;
 pub mod naming;
 pub mod prompt;
 pub mod prs;

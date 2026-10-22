@@ -80,9 +80,9 @@ struct Closed {
 
 /// The agent process: its pid and start time (RFC 3339), together what tells it from a
 /// later process with the same pid.
-struct Agent {
-    pid: i64,
-    start: String,
+pub(crate) struct Agent {
+    pub(crate) pid: i64,
+    pub(crate) start: String,
 }
 
 impl Agent {
@@ -109,17 +109,21 @@ impl Agent {
 
 /// `busy` reasons: another fleet command holds the session's lock; a process of the agent's
 /// own (its external editor) is in front of it.
-const LOCKED: &str = "locked";
+pub(crate) const LOCKED: &str = "locked";
 const EDITOR_OPEN: &str = "editor_open";
 /// `host_shared` reasons: its tmux session holds more than its pane (or no longer holds it);
 /// another job is in front of the agent; another job is stopped on its pane's terminal.
 const SHARED_HOST: &str = "shared_host";
 const JOB_IN_FRONT: &str = "job_in_front";
 const OTHER_JOBS: &str = "other_jobs";
+/// `host_shared` reason of a command that only types (`model`): the agent is suspended or in
+/// the background, nothing in front of it but its own stopped group or its shell at the
+/// prompt, which would get what is typed. `close` kills such a session instead.
+pub(crate) const SUSPENDED: &str = "suspended";
 
-/// Where the agent stands with its pane, by [`owns`].
+/// Where the agent stands with its pane, by [`owns`] / [`standing`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Standing {
+pub(crate) enum Standing {
     /// Running in the foreground of the pane's terminal, nothing of its own in front of it:
     /// what is typed there reaches it.
     Owns,
@@ -499,9 +503,37 @@ fn alone(hosting: Hosting, pane: &str, untouched: &str) -> Result<HostSession> {
 /// anywhere but that pane; `busy` when a process of its own is in front of it (an editor);
 /// `host_shared` when another job is, the agent suspended behind it.
 fn owns(agent: &Agent, pane: &str, typed: &str) -> Result<Standing> {
-    let untouched = format!("{typed}, nothing killed");
-    let pane_tty =
-        tmux::pane_tty(pane).map_err(|e| Error::tagged(e.kind(), format!("{e}; {untouched}")))?;
+    standing(agent, pane, &format!("{typed}, nothing killed"), true)
+}
+
+/// [`owns`] for any command about to type into pane `pane`, `untouched` saying what was left
+/// undone in its refusals. `kills`: the command kills the pane after (`close`), so another job
+/// stopped on its terminal would die with it — `host_shared` (`other_jobs`). A command that
+/// only types (`model`) passes `false`: such a job is left out, an agent in front of it owns
+/// its pane, and one behind it is [`Standing::Behind`].
+pub(crate) fn standing(
+    agent: &Agent,
+    pane: &str,
+    untouched: &str,
+    kills: bool,
+) -> Result<Standing> {
+    standing_within(agent, pane, untouched, kills, None)
+}
+
+/// [`standing`], its tmux call given at most `limit` when one is given (`io` past it): for a
+/// caller with a deadline of its own (`fleet model`, waiting for its outcome).
+pub(crate) fn standing_within(
+    agent: &Agent,
+    pane: &str,
+    untouched: &str,
+    kills: bool,
+    limit: Option<Duration>,
+) -> Result<Standing> {
+    let pane_tty = match limit {
+        Some(limit) => tmux::pane_tty_within(pane, limit),
+        None => tmux::pane_tty(pane),
+    }
+    .map_err(|e| Error::tagged(e.kind(), format!("{e}; {untouched}")))?;
     let procs =
         discovery::processes().map_err(|e| Error::tagged("io", format!("ps: {e}; {untouched}")))?;
     let in_front = |p: &Proc, of: &str| {
@@ -548,8 +580,8 @@ fn owns(agent: &Agent, pane: &str, typed: &str) -> Result<Standing> {
                     EDITOR_OPEN,
                     in_front(p, ", reading its terminal (its external editor?)"),
                 )),
-                (None, Some(p)) => others(p),
-                (None, None) => Ok(Standing::Owns),
+                (None, Some(p)) if kills => others(p),
+                (None, _) => Ok(Standing::Owns),
             }
         }
         Look::Covered(p) => Err(Error::tagged_for(
@@ -562,9 +594,14 @@ fn owns(agent: &Agent, pane: &str, typed: &str) -> Result<Standing> {
             JOB_IN_FRONT,
             in_front(
                 p,
-                "; the agent is suspended behind it, and closing would kill that job too",
+                if kills {
+                    "; the agent is suspended behind it, and closing would kill that job too"
+                } else {
+                    "; the agent is suspended behind it, and what is typed would reach that job"
+                },
             ),
         )),
+        Look::Others(_) if !kills => Ok(Standing::Behind),
         Look::Others(p) => others(p),
     }
 }
@@ -597,7 +634,7 @@ fn still_ours(target: &str, agent: &Agent, untouched: &str) -> Result<()> {
 
 /// The start time of session `s`'s process: as its lookup read it, else (a Codex / pi
 /// session, which an exact lookup leaves without one) read now.
-fn start_of(s: &Session) -> Option<String> {
+pub(crate) fn start_of(s: &Session) -> Option<String> {
     s.proc_start
         .clone()
         .or_else(|| discovery::process_start(s.pid))

@@ -86,6 +86,10 @@ pub struct Session {
     /// transcript last recorded it (Claude: the context entry's `effort`; Codex: the last
     /// `turn_context`'s); `null` when unknown, and always for pi.
     pub effort: Option<String>,
+    /// The `timestamp` of the transcript entry `model` was read from (Claude Code: its last
+    /// reply; Codex: its `turn_context`; pi: its last reply or model change), as written;
+    /// `None` without one (no model known, or one from the command line).
+    pub model_at: Option<String>,
     /// Absolute path of the session's transcript, when known (Codex / pi only — a
     /// Claude transcript is found from cwd + session id).
     pub transcript: Option<String>,
@@ -122,6 +126,7 @@ impl Default for Session {
             harness: Harness::Claude,
             model: None,
             effort: None,
+            model_at: None,
             transcript: None,
             origin: None,
             proc_start: None,
@@ -343,13 +348,15 @@ fn claude_session(
         (true, Some(sid), Some(cwd)) => title_for(cwd, sid),
         _ => None,
     };
-    let (context, effort) = reg
+    let last = reg
         .session_id
         .as_deref()
         .filter(|_| enrich)
-        .and_then(|sid| crate::core::context::for_session(&claude_home(), reg.cwd.as_deref(), sid))
-        .unzip();
-    let effort = effort.flatten();
+        .and_then(|sid| crate::core::context::for_session(&claude_home(), reg.cwd.as_deref(), sid));
+    let (context, effort, model_at) = match last {
+        Some(l) => (Some(l.context), l.effort, l.at),
+        None => (None, None, None),
+    };
     Session {
         pid,
         status: reg.status.unwrap_or_else(|| "unknown".into()),
@@ -368,6 +375,7 @@ fn claude_session(
         gen_title: None,
         display_title: None,
         host: None,
+        model_at: model_at.filter(|_| context.as_ref().is_some_and(|c| c.model.is_some())),
         model: context.as_ref().and_then(|c| c.model.clone()),
         effort,
         context,
@@ -471,6 +479,7 @@ fn harness_session(
             .filter(|w| !w.is_empty()),
         origin: pane.and_then(|p| crate::core::jobs::Origin::parse(&p.job_run)),
         title: t.and_then(|t| harness::first_prompt(p.harness, &t.path)),
+        model_at: state.model_at.filter(|_| state.model.is_some()),
         model: state.model.or_else(|| p.model_arg()),
         effort: state.effort,
         context: state.context,

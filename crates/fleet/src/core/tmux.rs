@@ -946,6 +946,18 @@ pub fn pane_tty(pane: &str) -> Result<Option<String>> {
     )
 }
 
+/// [`pane_tty`], the tmux call given at most `limit` (`io` past it).
+pub fn pane_tty_within(pane: &str, limit: std::time::Duration) -> Result<Option<String>> {
+    let args = ["list-panes", "-a", "-F", "#{pane_id}\t#{pane_tty}"];
+    let out = crate::core::backend::tmux_within(&args, limit)?;
+    Ok(answer(&args, out)?.and_then(|l| {
+        l.lines()
+            .filter_map(|r| r.split_once('\t'))
+            .find(|(p, _)| *p == pane)
+            .map(|(_, t)| t.to_string())
+    }))
+}
+
 /// A read-only tmux query's stdout; `None` when no server is running (so nothing it asks
 /// about exists), `Err` (as `io`) for any other failure.
 fn query(args: &[&str]) -> Result<Option<String>> {
@@ -953,6 +965,11 @@ fn query(args: &[&str]) -> Result<Option<String>> {
         .args(args)
         .output()
         .map_err(|e| Error::tagged("io", format!("tmux: {e}")))?;
+    answer(args, out)
+}
+
+/// What a read-only tmux query `args` answered with `out`: as [`query`] reads it.
+fn answer(args: &[&str], out: std::process::Output) -> Result<Option<String>> {
     let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
     if out.status.success() {
         Ok(Some(String::from_utf8_lossy(&out.stdout).to_string()))

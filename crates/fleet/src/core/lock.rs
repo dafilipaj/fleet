@@ -1,7 +1,7 @@
 //! One fleet command at a time types into a session: an exclusive lock per session (an
 //! `flock` on a file named after it), held for a whole read-screen → type → verify sequence,
 //! so two fleet commands cannot interleave their keys. Every path that types into a running
-//! session takes it: `send`, `keys`, `answer`, `close` and every rename (`rename`,
+//! session takes it: `send`, `keys`, `answer`, `close`, `model` and every rename (`rename`,
 //! `name --apply`, `tmux rename`, the dashboard — all through `title::apply_rename`), and the
 //! web server, which types only through those commands (`web/lib/fleet-cli.mjs`). Typed
 //! without it, into a terminal just opened, where no registered session runs yet: `spawn` and
@@ -10,7 +10,7 @@
 //! nothing waits for it. The lock is named after the session's id, which can change under the
 //! same process (`/clear`): `send`, `keys`, `answer`, `close` and the renames look the process
 //! up again once they hold it, and type nothing if its id is no longer the one locked
-//! ([`still_named`]).
+//! ([`still_named`]); `model` checks the same on the read it makes afresh anyway.
 
 use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};

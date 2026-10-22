@@ -11,6 +11,7 @@ pub mod init;
 pub mod jobs;
 pub mod mcp;
 pub mod messages;
+pub mod model;
 pub mod prs;
 pub mod render;
 pub mod repos;

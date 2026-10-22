@@ -5,9 +5,9 @@ use colored::Colorize;
 
 use fleet::cli::{
     answer as answer_cmd, brief as brief_cmd, close as close_cmd, commands, config_cmd, group,
-    hosts as host_cmds, init, jobs as jobs_cmd, mcp, messages as messages_cmd, prs as prs_cmd,
-    repos as repos_cmd, restore, skill, stack as stack_cmds, tmux as tmux_cmds, usage as usage_cmd,
-    web,
+    hosts as host_cmds, init, jobs as jobs_cmd, mcp, messages as messages_cmd, model as model_cmd,
+    prs as prs_cmd, repos as repos_cmd, restore, skill, stack as stack_cmds, tmux as tmux_cmds,
+    usage as usage_cmd, web,
 };
 use fleet::core::config;
 use fleet::core::discovery::Backend;
@@ -234,6 +234,44 @@ enum Commands {
         /// Close only if the session's process started then (with --expect-pid): a list row's `proc_start`
         #[arg(long, value_name = "PROC_START", requires = "expect_pid")]
         expect_start: Option<String>,
+    },
+
+    /// Switch a Claude Code session's model, as /model <id> in its terminal — confirming the switch when Claude Code asks
+    ///
+    /// Exact targets only. Under the session's typing lock, before typing, in this order: the
+    /// agent owns its pane (as `close` checks it), its status (Claude Code's registry, read
+    /// afresh) is idle, the screen shows no working line over the input box, and the box is
+    /// empty (as `send --require-empty` reads it). Then it types `/model <id>` and Enter, and
+    /// reads the screen and the transcript for up to 5 s: Claude Code's confirmation for that
+    /// model (it asks while the prompt cache is warm) gets the key its first choice names, once
+    /// the agent is checked to own its pane again and the screen, read again, still shows it;
+    /// nothing else is pressed. Done once the transcript says "Set model to <that model>": the
+    /// id itself or its label (aliases through `fleet harness list`'s models; `[1m]` and date
+    /// suffixes the same model). The model also becomes Claude Code's default for new
+    /// sessions, as /model makes it.
+    ///
+    /// outcome_uncertain: no "Set model to" within the wait, one naming another model or one
+    /// fleet cannot match to the id ("Default (recommended)"), "Kept model as …" — the switch
+    /// declined in the terminal, the model unchanged — or tmux failing or not answering once
+    /// the command was typed.
+    Model {
+        /// `id:<session_id>` or `pid:<n>` — exact only, never a fragment
+        target: String,
+        /// The model id (`claude-sonnet-5-5`): letters, digits and . _ [ ] - / : only
+        #[arg(value_name = "MODEL_ID")]
+        model: String,
+        /// One JSON object: `{ ok, host, session_id, pid, harness, model, confirmed, switched_at, dry_run }`, or `{ ok: false, host, kind, error }` (`reason`, `status`, `input` for some kinds; held: kind `send_held`, exit 3)
+        #[arg(long)]
+        json: bool,
+        /// Switch only if the session's process is still this pid (with --expect-start): a list row's `pid`
+        #[arg(long, value_name = "PID", requires = "expect_start")]
+        expect_pid: Option<i64>,
+        /// Switch only if the session's process started then (with --expect-pid): a list row's `proc_start`
+        #[arg(long, value_name = "PROC_START", requires = "expect_pid")]
+        expect_start: Option<String>,
+        /// Hold also when fleet cannot find the input box or read it, as `send --require-empty` does (always on for model: accepted so callers can pass it to send, rename and model alike)
+        #[arg(long)]
+        require_empty: bool,
     },
 
     /// Rename a session: Claude's own /rename (the title), then its tmux session follows
@@ -1326,6 +1364,21 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
                 .zip(expect_start)
                 .map(|(pid, start)| close_cmd::Expect { pid, start }),
         })?,
+        Commands::Model {
+            target,
+            model,
+            json,
+            expect_pid,
+            expect_start,
+            require_empty: _,
+        } => model_cmd::run(model_cmd::Opts {
+            target,
+            model,
+            json,
+            expect: expect_pid
+                .zip(expect_start)
+                .map(|(pid, start)| close_cmd::Expect { pid, start }),
+        })?,
         Commands::Rename {
             target,
             name,
@@ -1825,6 +1878,7 @@ const JSON_FAILURE_COMMANDS: &[(&str, i32)] = &[
     ("keys", 2),
     ("spawn", 1),
     ("close", 1),
+    ("model", 1),
 ];
 
 /// The subcommand of [`JSON_FAILURE_COMMANDS`] the command line names with `--json`, read by

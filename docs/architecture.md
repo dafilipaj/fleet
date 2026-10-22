@@ -39,7 +39,18 @@ Pure logic plus thin process wrappers; no printing. Everything a future front-en
 - **input** — reads a session's input box (Claude Code's prompt, Codex's composer, pi's editor)
   off a capture that keeps the text's attributes (tmux `capture-pane -e`): `send`, `rename` and
   `close` never type after text already there or into a prompt, a faint placeholder or
-  suggestion aside ([cli.md](cli.md#sending)).
+  suggestion aside ([cli.md](cli.md#sending)). It also reads Claude Code's working line over
+  its box (`✳ Actualizing…`), which `model` takes as Busy.
+- **model** — Claude Code's `/model <id>` as `fleet model` reads it: its switch confirmation
+  (the warm-cache one, for that model, told from any other screen), `Model '…' not found` and a
+  `PreModelSwitch` hook's refusal on screen, work still under way where the box was ("Running
+  PreModelSwitch hooks…"), the command's output it writes into the transcript (`Set model to
+  <label> …` as a `user` entry in 2.1.306, taken only under the entry naming that `/model
+  <id>` since a prompt typed as that output is written alike; `Kept model as <label>` and the
+  rest as `system` / `local_command` entries; either shape read), and whether a label stands for the
+  id asked for, or for another model (by `harness::claude_models`, aliases resolved through
+  it, else the rule Claude Code names ids by) — for a switch's label and the confirmation's
+  alike ([cli.md](cli.md#switching-the-model)).
 - **naming** — generates short kebab-case titles by asking `claude -p --model haiku` what a
   session is working on (falls back to git branch / first prompt); cached across runs.
 - **tmux** — tmux-*session* management inherited from `ws`: matching, sanitizing, stale detection.
@@ -321,6 +332,7 @@ by — with no config, `local`):
 | `harness` | string | `claude` \| `codex` \| `pi` — see [Other harnesses](#other-harnesses) |
 | `model` | string \| null | the model it runs, when known (Claude: the context entry's) |
 | `effort` | string \| null | the reasoning effort it runs at, as its transcript last recorded it (`low`, `medium`, `high`, `xhigh`, `max`, or whatever the harness writes). Claude: the context entry's top-level `effort`; Codex: `effort` of the last `turn_context`. A mid-session change (`/effort`, Codex's `/model` picker) shows from the next reply on. `null` when unknown: no reply yet, a harness version that records none, and always for pi |
+| `model_at` | string \| null | the `timestamp` of the transcript entry `model` was read from, as written there (RFC 3339): Claude Code's last reply (the context entry), Codex's last `turn_context`, pi's last reply or model change; `null` when there is none (no transcript, or `model` from the command line). It moves with every reply, whatever its model — so a caller holding a `fleet model` switch's `switched_at` knows once a reply came after it |
 | `transcript` | string \| null | absolute transcript path (Codex / pi only) |
 | `origin` | object \| null | `{ job, run }` of the [job](cli.md#jobs) run that started the session (its tmux pane option `@fleet_job_run`); `null` when none |
 | `proc_start` | string \| null | the agent process's start time in RFC 3339 UTC (`2026-10-17T13:19:29Z`), read as the identity check reads it (`ps -o lstart`, what Claude records as `procStart`); with `pid`, what tells this process from a later one (`close --expect-pid/--expect-start`). `null` when it cannot be read |
@@ -545,6 +557,28 @@ answered tabs; for the final Enter the whole review). `core::lock` is the per-se
   carries its code beside its reason, `Form::check` / `Form::ready` theirs beside their words.
 - A capture tmux reports as failed (pane or server gone) is an error, never an empty screen.
 
+### `fleet model --json`
+
+See [cli.md](cli.md#switching-the-model). `{ ok: true, host, session_id, pid, harness, model,
+confirmed, switched_at, dry_run }`, or `{ ok: false, host, kind, error }`: exit 1, `send_held`
+exit 3 (`reason`, `input?`, as `send`'s), `busy` / `host_shared` with `close`'s `reason` (plus
+`host_shared`'s new `suspended`), `not_idle` with `status`. Under one typing lock: `close`'s
+foreground check (`cli::close::standing`, without `other_jobs`: nothing is killed), the
+registry's Status (read again under the lock, by the agent's pid; its session id must still
+be the locked one, else `target_changed`), one styled capture for the working line
+(`core::input::claude_working`) and the box (`core::input::of_screen`: `send`'s reader, the
+caret included, holding as `--require-empty` always), then `/model <id>` + Enter, then the screen (`core::model::shown`,
+which reads the dialog with `core::prompt::permission_prompt`, `answer`'s reader) and the transcript's new lines (`core::model::Tail`, entries no earlier
+than the command's start) every 100 ms for 5 s — at least 2 s past the confirmation's key, the
+foreground check run again and the screen read again before it (no key unless that very
+confirmation is still there), each tmux call in that wait bounded by what is left of it
+(`backend::peek_styled_within`, `press_within`, `tmux::pane_tty_within`). `switched_at` is the
+transcript's own `timestamp` string, on the same clock as `list`'s `model_at`; success needs a
+`Set model to` label that is positively the model asked for (`core::model::same_model`: the id
+itself, or one model's label, aliases through fleet's Claude model list, `[1m]` and date
+suffixes the same model). Any other label, `Kept model as`, silence, and a read or key failing
+after the command are `outcome_uncertain`. An `io` failure carries `typed` (as `send`'s).
+
 ### `fleet send --json`
 
 See [cli.md](cli.md#sending). Under the session's typing lock, `core::input` reads the visible
@@ -556,7 +590,7 @@ showing nothing is `unreadable`), and the text is typed under that same lock. Ho
 lock, the process is looked up again by its pid (`lock::still_named`): the lock is named after
 the session id, which `/clear` changes, so a new id there is `target_changed`, nothing typed
 (`keys`, `answer`, `close` and the renames check the same). An `io` failure of `send`, `keys`,
-`rename`, `answer` or `close` carries `typed` (`commands::typed_field`): whether a key
+`rename`, `answer`, `model` or `close` carries `typed` (`commands::typed_field`): whether a key
 reached the pane before it — an addition a caller retries by instead of parsing `error`.
 Text in the box (`reason: "text"`) or
 a prompt in its place (`"prompt"`) holds the send; no box found (`"no_input_box"`) or none

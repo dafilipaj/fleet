@@ -937,6 +937,8 @@ pub struct State {
     /// Codex: `effort` of the last `turn_context`, so a change made mid-session (the `/model`
     /// picker's effort step) shows from the next turn on. pi: not read.
     pub effort: Option<String>,
+    /// The `timestamp` of the entry `model` was read from, as written.
+    pub model_at: Option<String>,
     pub context: Option<ContextUsage>,
     /// Codex: a `busy` turn's last command asked to leave the sandbox
     /// (`sandbox_permissions: "require_escalated"`) and has no output yet — most likely an
@@ -990,7 +992,7 @@ pub fn state(h: Harness, path: &Path) -> State {
         Harness::Codex => {
             // The model and effort live only in `turn_context`, written once per turn: when
             // the turn has outgrown the tail, take them from the last one before it.
-            let seed = if text.lines().any(|l| turn_context_payload(l).is_some()) {
+            let seed = if text.lines().any(|l| turn_context(l).is_some()) {
                 None
             } else {
                 let len = std::fs::metadata(path).map_or(0, |m| m.len());
@@ -1003,19 +1005,18 @@ pub fn state(h: Harness, path: &Path) -> State {
     }
 }
 
-/// The payload of a Codex `turn_context` line; a cheap substring check first, as most lines in a
-/// rollout are not one.
-fn turn_context_payload(line: &str) -> Option<Value> {
+/// A Codex `turn_context` entry (its `payload` and `timestamp`); a cheap substring check first,
+/// as most lines in a rollout are not one.
+fn turn_context(line: &str) -> Option<Value> {
     if !line.contains("\"turn_context\"") {
         return None;
     }
-    let mut v = serde_json::from_str::<Value>(line).ok()?;
-    (v.get("type").and_then(Value::as_str) == Some("turn_context"))
-        .then(|| v.get_mut("payload").map(Value::take))
-        .flatten()
+    let v = serde_json::from_str::<Value>(line).ok()?;
+    (v.get("type").and_then(Value::as_str) == Some("turn_context") && v.get("payload").is_some())
+        .then_some(v)
 }
 
-/// The payload of the last `turn_context` line that ends before byte `end` and starts at or after
+/// The last `turn_context` entry that ends before byte `end` and starts at or after
 /// byte `floor`, reading backwards in chunks and stopping at the first one found: the read
 /// costs only the distance to that line, never more than `end - floor`.
 fn last_turn_context_before(path: &Path, end: u64, floor: u64) -> Option<Value> {
@@ -1040,10 +1041,7 @@ fn last_turn_context_before(path: &Path, end: u64, floor: u64) -> Option<Value> 
             }
         };
         for line in buf[whole_from..].split(|&b| b == b'\n').rev() {
-            if let Some(p) = std::str::from_utf8(line)
-                .ok()
-                .and_then(turn_context_payload)
-            {
+            if let Some(p) = std::str::from_utf8(line).ok().and_then(turn_context) {
                 return Some(p);
             }
         }
@@ -1053,11 +1051,16 @@ fn last_turn_context_before(path: &Path, end: u64, floor: u64) -> Option<Value> 
     None
 }
 
-/// Apply one `turn_context` payload: its model, and its effort (`null`, the model's default,
-/// clears an earlier one — each turn records its own).
-fn apply_turn_context(st: &mut State, p: &Value) {
+/// Apply one `turn_context` entry: its payload's model, with the entry's `timestamp`
+/// (`model_at`), and its effort (`null`, the model's default, clears an earlier one — each
+/// turn records its own).
+fn apply_turn_context(st: &mut State, v: &Value) {
+    let Some(p) = v.get("payload") else {
+        return;
+    };
     if let Some(m) = p.get("model").and_then(Value::as_str) {
         st.model = Some(m.to_string());
+        st.model_at = stamp(v);
     }
     st.effort = p
         .get("effort")
@@ -1079,8 +1082,8 @@ fn codex_state_from(seed: Option<&Value>, text: &str) -> State {
         status: "idle".into(),
         ..Default::default()
     };
-    if let Some(p) = seed {
-        apply_turn_context(&mut st, p);
+    if let Some(v) = seed {
+        apply_turn_context(&mut st, v);
     }
     let mut window = None;
     let mut used = None;
@@ -1118,11 +1121,7 @@ fn codex_state_from(seed: Option<&Value>, text: &str) -> State {
             _ => {}
         }
         match (kind, ptype) {
-            ("turn_context", _) => {
-                if let Some(p) = p {
-                    apply_turn_context(&mut st, p);
-                }
-            }
+            ("turn_context", _) => apply_turn_context(&mut st, &v),
             ("event_msg", "task_started") => {
                 st.status = "busy".into();
                 st.waiting_for = None;
@@ -1345,6 +1344,13 @@ fn is_answer_line(line: &str) -> bool {
             .is_some_and(|rest| rest.starts_with("Yes,") || rest.starts_with("No,"))
 }
 
+/// A transcript entry's `timestamp`, as written.
+fn stamp(v: &Value) -> Option<String> {
+    v.get("timestamp")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
 fn pi_state(text: &str) -> State {
     let mut st = State {
         status: "idle".into(),
@@ -1365,6 +1371,7 @@ fn pi_state(text: &str) -> State {
             }
             Some("model_change") => {
                 st.model = v.get("modelId").and_then(Value::as_str).map(str::to_string);
+                st.model_at = stamp(&v);
             }
             Some("message") => {
                 let Some(m) = v.get("message") else { continue };
@@ -1374,6 +1381,7 @@ fn pi_state(text: &str) -> State {
                     "assistant" => {
                         if let Some(model) = m.get("model").and_then(Value::as_str) {
                             st.model = Some(model.to_string());
+                            st.model_at = stamp(&v);
                         }
                         if let Some(u) = m.get("usage") {
                             let n = |k: &str| u.get(k).and_then(Value::as_u64).unwrap_or(0);
@@ -1630,6 +1638,7 @@ mod tests {
         assert_eq!((c.used, c.window, c.pct), (25840, 258400, 10));
         assert_eq!(st.model.as_deref(), Some("gpt-6"));
         assert_eq!(st.effort, None, "a turn_context without effort");
+        assert_eq!(st.model_at, None, "a turn_context without a timestamp");
     }
 
     #[test]
@@ -1712,6 +1721,34 @@ mod tests {
         let far = rollout_with_filler((TURN_CONTEXT_LOOKBACK + 64 * 1024) as usize, 512 * 1024, "");
         let st = state_of(&far);
         assert_eq!((st.effort, st.model), (None, None));
+    }
+
+    // `model_at`: the timestamp of the entry the model was read from — Codex's last
+    // `turn_context`, pi's last reply or model change.
+    #[test]
+    fn the_model_comes_with_the_time_of_its_entry() {
+        let ctx = |at: &str, m: &str| {
+            format!(r#"{{"timestamp":"{at}","type":"turn_context","payload":{{"model":"{m}"}}}}"#)
+        };
+        let later = r#"{"timestamp":"2026-01-02T03:09:00.000Z","type":"event_msg","payload":{"type":"task_complete"}}"#;
+        let st = codex_state(
+            &[
+                ctx("2026-01-02T03:04:05.000Z", "gpt-6"),
+                ctx("2026-01-02T03:08:00.000Z", "gpt-6.1"),
+                later.to_string(),
+            ]
+            .join("\n"),
+        );
+        assert_eq!(st.model.as_deref(), Some("gpt-6.1"));
+        assert_eq!(st.model_at.as_deref(), Some("2026-01-02T03:08:00.000Z"));
+        let pi = [
+            r#"{"type":"model_change","timestamp":"2026-01-02T03:04:05.000Z","modelId":"a/b"}"#,
+            r#"{"type":"message","timestamp":"2026-01-02T03:05:00.000Z","message":{"role":"assistant","stopReason":"stop","model":"a/c"}}"#,
+            r#"{"type":"message","timestamp":"2026-01-02T03:06:00.000Z","message":{"role":"user"}}"#,
+        ];
+        let st = pi_state(&pi.join("\n"));
+        assert_eq!(st.model.as_deref(), Some("a/c"));
+        assert_eq!(st.model_at.as_deref(), Some("2026-01-02T03:05:00.000Z"));
     }
 
     fn exec_asks(js: &str) -> bool {
