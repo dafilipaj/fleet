@@ -1,0 +1,12 @@
+{"type":"user","timestamp":"2026-01-01T00:01:00Z","origin":{"kind":"human"},"message":{"content":"Synthetic prompt"}}
+{"type":"user","timestamp":"2026-01-01T00:01:20Z","origin":{"kind":"task-notification"},"message":{"content":"<task-notification><summary>Synthetic task finished</summary></task-notification>"}}
+{"type":"attachment","timestamp":"2026-01-01T00:01:21Z","attachment":{"type":"queued_command","commandMode":"task-notification","origin":{"kind":"task-notification"},"prompt":"<task-notification><summary>Synthetic task finished</summary></task-notification>"}}
+{"type":"user","timestamp":"2026-01-01T00:01:22Z","message":{"content":"<command-name>/effort</command-name><command-args>high</command-args>"}}
+{"type":"user","timestamp":"2026-01-01T00:01:23Z","message":{"content":"<local-command-stdout>Set effort level to high</local-command-stdout>"}}
+{"type":"user","timestamp":"2026-01-01T00:01:24Z","isMeta":true,"origin":{"kind":"peer"},"message":{"content":"Synthetic peer message"}}
+{"type":"user","timestamp":"2026-01-01T00:01:25Z","origin":{"kind":"human"},"toolUseResult":{},"message":{"content":[{"type":"tool_result","tool_use_id":"tool-a","content":"Synthetic result"}]}}
+{"type":"user","timestamp":"2026-01-01T00:01:26Z","isCompactSummary":true,"origin":{"kind":"human"},"message":{"content":"Synthetic summary"}}
+{"type":"user","timestamp":"2026-01-01T00:01:27Z","message":{"content":"[Request interrupted by user]"}}
+{"type":"last-prompt","lastPrompt":"Synthetic bookkeeping"}
+{"type":"user","timestamp":"2026-01-01T00:01:28Z","origin":{"kind":"human"},"isSidechain":true,"message":{"content":"Synthetic nested prompt"}}
+{"type":"assistant","timestamp":"2026-01-01T00:02:00Z","effort":"high","message":{"model":"claude-sonnet-4-5","usage":{"input_tokens":10}}}

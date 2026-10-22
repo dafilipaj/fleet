@@ -107,6 +107,9 @@ pub struct Session {
     /// transcript last recorded it (Claude: the context entry's `effort`; Codex: the last
     /// `turn_context`'s); `null` when unknown, and always for pi.
     pub effort: Option<String>,
+    /// Claude Code 2.1.301+: tasks running now and tasks started and finished in
+    /// the current Turn. `None` when unknown, and always for Codex and pi.
+    pub subagents: Option<crate::core::subagents::Counts>,
     /// The `timestamp` of the transcript entry `model` was read from (Claude Code: its last
     /// reply; Codex: its `turn_context`; pi: its last reply or model change), as written;
     /// `None` without one (no model known, or one from the command line).
@@ -160,6 +163,7 @@ impl Default for Session {
             harness: Harness::Claude,
             model: None,
             effort: None,
+            subagents: None,
             model_at: None,
             transcript: None,
             origin: None,
@@ -255,6 +259,11 @@ fn is_headless(entrypoint: &str) -> bool {
 
 #[derive(serde::Deserialize)]
 struct Reg {
+    version: Option<serde_json::Value>,
+    /// When this process started (ms): what it launched before is not running. Kept as
+    /// written: an unknown shape must not hide an otherwise usable session.
+    #[serde(rename = "startedAt")]
+    started_at: Option<serde_json::Value>,
     pid: Option<i64>,
     #[serde(rename = "sessionId")]
     session_id: Option<String>,
@@ -266,9 +275,6 @@ struct Reg {
     updated_at: Option<i64>,
     #[serde(rename = "statusUpdatedAt")]
     status_updated_at: Option<i64>,
-    /// When this process started (ms): what it launched before is not running.
-    #[serde(rename = "startedAt")]
-    started_at: Option<i64>,
     #[serde(rename = "nameSource")]
     name_source: Option<String>,
     #[serde(rename = "waitingFor")]
@@ -398,11 +404,11 @@ fn claude_session(
         (true, Some(sid), Some(cwd)) => title_for(cwd, sid),
         _ => None,
     };
-    let last = reg
-        .session_id
-        .as_deref()
-        .filter(|_| enrich)
-        .and_then(|sid| crate::core::context::for_session(&claude_home(), reg.cwd.as_deref(), sid));
+    let (last, subagents) = if enrich {
+        claude_details(&claude_home(), &reg)
+    } else {
+        (None, None)
+    };
     let (context, effort, model_at) = match last {
         Some(l) => (Some(l.context), l.effort, l.at),
         None => (None, None, None),
@@ -425,7 +431,7 @@ fn claude_session(
                 &claude_home(),
                 reg.cwd.as_deref(),
                 sid,
-                reg.started_at,
+                reg.started_at.as_ref().and_then(serde_json::Value::as_i64),
             )
         }) {
             if let Some(ended) = m.ended_at
@@ -464,6 +470,7 @@ fn claude_session(
         model_at: model_at.filter(|_| context.as_ref().is_some_and(|c| c.model.is_some())),
         model: context.as_ref().and_then(|c| c.model.clone()),
         effort,
+        subagents,
         context,
         stack: None,
         harness: Harness::Claude,
@@ -477,6 +484,35 @@ fn claude_session(
         done: None,
         proc_start: None,
     }
+}
+
+/// Sidecars decide whether the shared transcript-tail read needs a Turn start.
+fn claude_details(
+    home: &std::path::Path,
+    reg: &Reg,
+) -> (
+    Option<crate::core::context::LastReply>,
+    Option<crate::core::subagents::Counts>,
+) {
+    let Some(path) = reg
+        .session_id
+        .as_deref()
+        .and_then(|sid| crate::core::context::locate_transcript(home, reg.cwd.as_deref(), sid))
+    else {
+        return (None, None);
+    };
+    let scan = crate::core::subagents::scan(
+        &path,
+        reg.version.as_ref().and_then(serde_json::Value::as_str),
+        reg.started_at.as_ref().and_then(serde_json::Value::as_i64),
+    );
+    let awaited = scan
+        .as_ref()
+        .filter(|s| s.needs_turn())
+        .map(|s| s.awaited());
+    let (last, turn, lifecycle) =
+        crate::core::context::for_transcript(&path, reg.cwd.as_deref(), awaited.as_deref());
+    (last, scan.map(|s| s.counts(turn.as_deref(), &lifecycle)))
 }
 
 /// Live Codex and pi sessions (see [`crate::core::harness`]): found with `ps`, matched
@@ -1647,6 +1683,95 @@ fn claude_prompts(cwd: &str, session_id: &str, n: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registry_versions_gate_subagents_and_the_shared_tail_defines_the_turn() {
+        let home = tempfile::tempdir().unwrap();
+        let project = home.path().join("projects/-work-project");
+        let agents = project.join("session/subagents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(
+            agents.join("agent-finished.meta.json"),
+            r#"{"finished":true}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            agents.join("agent-finished.jsonl"),
+            "{\"timestamp\":\"2026-01-01T00:01:02Z\"}\n",
+        )
+        .unwrap();
+        let transcript = project.join("session.jsonl");
+        let fixtures =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/subagents");
+        for version in ["2.1.300", "2.1.301"] {
+            let reg: Reg = serde_json::from_str(
+                &std::fs::read_to_string(fixtures.join(format!("registry-{version}.json")))
+                    .unwrap(),
+            )
+            .unwrap();
+            for (file, expected) in [
+                ("typed.jsonl", Some(1)),
+                ("mid-turn.jsonl", Some(0)),
+                ("followed-by-noise.jsonl", Some(1)),
+                ("no-prompt.jsonl", None),
+            ] {
+                std::fs::copy(fixtures.join(file), &transcript).unwrap();
+                let (last, count) = claude_details(home.path(), &reg);
+                assert_eq!(last.unwrap().context.used, 10);
+                if version == "2.1.300" {
+                    assert!(count.is_none());
+                } else {
+                    assert_eq!(count.unwrap().finished, expected, "{file}");
+                }
+            }
+        }
+        // Unknown registry field shapes must not hide an otherwise usable Session.
+        let reg: Reg = serde_json::from_value(serde_json::json!({
+            "sessionId": "session", "cwd": "/work/project", "version": 123, "startedAt": "unknown"
+        }))
+        .unwrap();
+        assert!(claude_details(home.path(), &reg).1.is_none());
+    }
+
+    #[test]
+    fn list_rows_carry_null_for_unknown_and_unsupported_harnesses() {
+        assert_eq!(
+            serde_json::to_value(Session::default()).unwrap()["subagents"],
+            serde_json::Value::Null
+        );
+        let root =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/subagents/codex");
+        for agent in [Harness::Codex, Harness::Pi] {
+            let proc = harness::Proc {
+                pid: 42,
+                tty: "ttys001".into(),
+                harness: agent,
+                start_ms: 0,
+                argv: vec![agent.id().into()],
+                cwd: Some("/work/project".into()),
+            };
+            // Even child rollouts in different states remain outside the count's scope.
+            for name in [
+                None,
+                Some("parent"),
+                Some("running"),
+                Some("finished"),
+                Some("prior"),
+            ] {
+                let transcript = name.map(|name| harness::TranscriptRef {
+                    path: root.join(format!("{name}.jsonl")),
+                    session_id: name.into(),
+                    cwd: "/work/project".into(),
+                    created_ms: 0,
+                    mtime_ms: 0,
+                });
+                let s = harness_session(&proc, transcript.as_ref(), &HashMap::new());
+                let row = serde_json::to_value(&s).unwrap();
+                assert!(row.as_object().unwrap().contains_key("subagents"));
+                assert!(row["subagents"].is_null());
+            }
+        }
+    }
 
     #[test]
     fn lstart_becomes_rfc3339_utc() {
