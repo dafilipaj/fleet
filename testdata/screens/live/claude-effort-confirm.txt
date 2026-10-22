@@ -1,0 +1,50 @@
+
+[38;5;174m ▐[48;5;16m▛███▛█[39m[49m   [1mClaude Code[0m [38;5;246mv2.1.308[39m
+[38;5;174m▝▜[48;5;16m█████[49m█▀[39m  [38;5;246mOpus 5.5 with medium effort[39m
+[38;5;174m ▝▝   ▝▝ [39m  [38;5;246m/private/tmp/example-capture[39m
+
+
+[38;5;246m[48;5;237m❯[39m [38;5;231m/effort medium[39m
+[38;5;246m[49m  ⎿  [39mSet effort level to medium (saved as your default for new sessions): Balanced approach with standard implementation and testing
+
+[38;5;246m[48;5;237m❯ [38;5;231mReply with just the word ok.[39m
+[38;5;32m[49m⏺[39m ok
+
+[38;5;246m✻[39m [38;5;246mBaked for 3s · done 4:13 PM[39m
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[38;5;153m▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔[39m [38;5;246m◐ medium · /effort[38;5;153m ▔
+[39m   [1m[38;5;220mChange effort level?[0m
+   [38;5;246mYour next response will be slower and use more tokens[39m
+
+   This conversation is cached for the current effort level. Switching to [1mxhigh[0m means the full history gets re-read on your next message.
+
+   [38;5;153m❯[39m [38;5;246m1. [38;5;153mYes, switch to xhigh[39m
+     [38;5;246m2. [39mNo, go back
+
