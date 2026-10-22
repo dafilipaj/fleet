@@ -314,32 +314,160 @@ fn text_in_the_input_box_holds_a_rename() {
     assert_eq!(a.received(), "", "nothing typed");
 }
 
-// An empty box (its placeholder showing) holds no rename: `/rename` goes out.
-#[test]
-fn an_empty_input_box_takes_a_rename() {
-    let a = agent("claude-placeholder");
-    // Play Claude Code's part: once `/rename probe` and its Enter arrive, take the name.
+/// Play Claude Code's part: once `/rename <name>` and its Enter arrive, take the name.
+fn take_rename(a: &Agent, name: &'static str) -> std::thread::JoinHandle<()> {
     let reg =
         a.f.env
             .path(&format!("home/.claude/sessions/{}.json", a.pid));
     let log = a.log.clone();
-    let renamer = std::thread::spawn(move || {
+    std::thread::spawn(move || {
         for _ in 0..200 {
-            if std::fs::read_to_string(&log).is_ok_and(|r| r.ends_with("/rename probe\r")) {
+            if std::fs::read_to_string(&log)
+                .is_ok_and(|r| r.ends_with(&format!("/rename {name}\r")))
+            {
                 let mut v: Value =
                     serde_json::from_str(&std::fs::read_to_string(&reg).unwrap()).unwrap();
-                v["name"] = "probe".into();
+                v["name"] = name.into();
                 std::fs::write(&reg, v.to_string()).unwrap();
                 return;
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-    });
+    })
+}
+
+// An empty box (its placeholder showing) holds no rename: `/rename` goes out — with
+// --require-empty or without.
+#[test]
+fn an_empty_input_box_takes_a_rename() {
+    for flags in [&[][..], &["--require-empty"]] {
+        let a = agent("claude-placeholder");
+        let renamer = take_rename(&a, "probe");
+        let mut args = vec!["rename", &a.target, "probe", "--no-tmux-sync", "--json"];
+        args.extend(flags);
+        let out = a.fleet(&args);
+        renamer.join().unwrap();
+        assert!(out.status.success(), "{}", stderr(&out));
+        assert_eq!(json(&out)["result"], "renamed");
+        assert_eq!(a.received(), "/rename probe\r");
+    }
+}
+
+/// `{ ok: false, result: "held", held: <reason>, message, … }`, exit 3, nothing typed.
+fn rename_held(out: &std::process::Output, reason: &str) {
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(out));
+    let v = json(out);
+    assert_eq!(v["ok"], false, "{v}");
+    assert_eq!(v["result"], "held", "{v}");
+    assert_eq!(v["held"], reason, "{v}");
+    assert!(
+        v["message"].as_str().unwrap().contains("nothing sent"),
+        "{v}"
+    );
+}
+
+// A screen with no input box fleet can find (here the transcript view, as an open `/usage`
+// panel would be): `rename --require-empty` holds with `send`'s reason; a plain rename types
+// as it always did.
+#[test]
+fn no_input_box_holds_a_rename_only_when_an_empty_box_is_required() {
+    let a = agent("claude-transcript");
+    rename_held(
+        &a.fleet(&[
+            "rename",
+            &a.target,
+            "probe",
+            "--no-tmux-sync",
+            "--json",
+            "--require-empty",
+        ]),
+        "no_input_box",
+    );
+    assert_eq!(a.received(), "", "nothing typed");
+
+    let renamer = take_rename(&a, "probe");
     let out = a.fleet(&["rename", &a.target, "probe", "--no-tmux-sync", "--json"]);
     renamer.join().unwrap();
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(json(&out)["result"], "renamed");
     assert_eq!(a.received(), "/rename probe\r");
+}
+
+// Text in the box holds a rename with --require-empty as without.
+#[test]
+fn text_in_the_input_box_holds_a_rename_with_require_empty_too() {
+    let a = agent("live/claude-restored");
+    rename_held(
+        &a.fleet(&[
+            "rename",
+            &a.target,
+            "probe",
+            "--no-tmux-sync",
+            "--json",
+            "--require-empty",
+        ]),
+        "input",
+    );
+    assert_eq!(a.received(), "", "nothing typed");
+}
+
+// A box fleet cannot read, through the real rename: Codex's footer drawn plain is
+// indistinguishable from words typed in the composer. `--require-empty` holds the rename with
+// `send`'s reason (the whole JSON report, exit 3; plain, one error line, exit 1), and
+// nothing is typed.
+#[test]
+fn an_unreadable_input_box_holds_a_rename_that_requires_an_empty_box() {
+    let a = agent_of("codex", "codex-footer-plain");
+    let out = a.fleet(&[
+        "rename",
+        &a.target,
+        "probe",
+        "--no-tmux-sync",
+        "--json",
+        "--require-empty",
+    ]);
+    rename_held(&out, "unreadable");
+    let v = json(&out);
+    let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "from",
+            "held",
+            "host",
+            "message",
+            "ok",
+            "pid",
+            "result",
+            "session_id",
+            "title",
+            "tmux"
+        ],
+        "{v}"
+    );
+    assert_eq!(v["pid"], a.pid, "{v}");
+    assert_eq!(v["title"], "probe", "{v}");
+    assert!(v["from"].as_str().is_some_and(|f| !f.is_empty()), "{v}");
+    assert!(v["host"].as_str().is_some_and(|h| !h.is_empty()), "{v}");
+    assert_eq!(v["tmux"], Value::Null, "{v}");
+    assert_eq!(a.received(), "", "nothing typed");
+
+    let out = a.fleet(&[
+        "rename",
+        &a.target,
+        "probe",
+        "--no-tmux-sync",
+        "--require-empty",
+    ]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "", "plain output holds no report");
+    let err = stderr(&out);
+    assert!(
+        err.contains("no text attributes") && err.contains("nothing sent"),
+        "{err}"
+    );
+    assert_eq!(a.received(), "", "nothing typed");
 }
 
 /// `fleet` with a tmux that, on every call, first tries the session's typing lock and logs
@@ -467,6 +595,27 @@ fn a_held_send_reads_under_the_lock_and_types_nothing() {
     let a = agent("live/claude-restored");
     let (out, calls) = under_probe(&a.f, &["send", &a.target, "hello"]);
     assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    let reads = styled_reads(&calls);
+    assert!(!reads.is_empty(), "no styled capture: {calls:?}");
+    assert!(
+        reads.iter().all(|&i| calls[i].0),
+        "read without the lock: {calls:?}"
+    );
+    assert_eq!(typing(&calls), Vec::<usize>::new(), "{calls:?}");
+    assert_eq!(a.received(), "");
+}
+
+// A rename's read of the box is under the lock too, not only a send's: text that lands in the
+// box before the lock is taken must still be seen. Held, nothing is typed after the read.
+#[test]
+fn a_held_rename_reads_under_the_lock_and_types_nothing() {
+    let a = agent("live/claude-restored");
+    let (out, calls) = under_probe(
+        &a.f,
+        &["rename", &a.target, "probe", "--no-tmux-sync", "--json"],
+    );
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    assert_eq!(json(&out)["held"], "input");
     let reads = styled_reads(&calls);
     assert!(!reads.is_empty(), "no styled capture: {calls:?}");
     assert!(

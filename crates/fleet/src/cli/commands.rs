@@ -528,7 +528,8 @@ pub struct RenameReport {
     pub from: String,
     /// The title asked for (trimmed and capped).
     pub title: String,
-    /// `busy` / `waiting` when held.
+    /// Why it was held: `waiting`, `busy`, `input`, and with `--require-empty` also
+    /// `no_input_box` and `unreadable` (the reasons `send --json` gives).
     pub held: Option<Hold>,
     /// The tmux side; `null` when sync was off or nothing was sent.
     pub tmux: Option<TmuxReport>,
@@ -567,10 +568,18 @@ impl From<&backend::TmuxSync> for TmuxReport {
 /// tmux session name derived from it — one call. The registry (and so every
 /// fleet view) picks the new title up on its next status write.
 ///
-/// Held (busy / waiting) is an error: exit 3 with `--json` (the report is on
+/// Held (busy / waiting / text in the input box, and with `require_empty` an input box that
+/// cannot be found or read) is an error: exit 3 with `--json` (the report is on
 /// stdout), exit 1 otherwise. Nothing is queued — the caller retries when the
 /// session is idle, or passes `--force`.
-pub fn rename(target: &str, name: &str, no_tmux_sync: bool, force: bool, json: bool) -> Result<()> {
+pub fn rename(
+    target: &str,
+    name: &str,
+    no_tmux_sync: bool,
+    force: bool,
+    require_empty: bool,
+    json: bool,
+) -> Result<()> {
     let s = match discovery::resolve_target(target) {
         Ok(s) => s,
         Err(e) if json => return Err(json_failure(e.into())),
@@ -584,6 +593,7 @@ pub fn rename(target: &str, name: &str, no_tmux_sync: bool, force: bool, json: b
     let opts = RenameOpts {
         sync_tmux: !no_tmux_sync && naming_config().sync_tmux(),
         force,
+        require_empty,
     };
     let mut report = RenameReport {
         ok: false,
@@ -715,6 +725,7 @@ pub fn name(target: Option<String>, o: NameOpts) -> Result<()> {
     let rename_opts = RenameOpts {
         sync_tmux: !o.no_tmux_sync && cfg.sync_tmux(),
         force: false,
+        require_empty: false,
     };
     // Off in config, or a canned fleet: the heuristic answers and no child is
     // ever spawned — `how.allow_llm` is what carries that all the way to

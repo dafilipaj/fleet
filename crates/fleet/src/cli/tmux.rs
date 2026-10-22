@@ -784,6 +784,7 @@ pub fn rename(q: &str, new: &str) -> Result<()> {
         let opts = title::RenameOpts {
             sync_tmux: true,
             force: false,
+            require_empty: false,
         };
         match title::apply_rename(&s, &t, opts) {
             Ok(outcome @ title::RenameOutcome::Sent(_)) => {
