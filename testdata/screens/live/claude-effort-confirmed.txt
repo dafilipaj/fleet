@@ -1,0 +1,50 @@
+
+[38;5;174m ▐[48;5;16m▛███▛█[39m[49m   [1mClaude Code[0m [38;5;246mv2.1.308[39m
+[38;5;174m▝▜[48;5;16m█████[49m█▀[39m  [38;5;246mOpus 5.5 with xhigh effort[39m
+[38;5;174m ▝▝   ▝▝ [39m  [38;5;246m/private/tmp/example-capture[39m
+
+
+[38;5;246m[48;5;237m❯[39m [38;5;231m/effort medium[39m
+[38;5;246m[49m  ⎿  [39mSet effort level to medium (saved as your default for new sessions): Balanced approach with standard implementation and testing
+
+[38;5;246m[48;5;237m❯ [38;5;231mReply with just the word ok.[39m
+[38;5;32m[49m⏺[39m ok
+
+[38;5;246m✻[39m [38;5;246mBaked for 3s · done 4:13 PM[39m
+
+[38;5;246m[48;5;237m❯[39m [38;5;231m/effort xhigh[39m
+[38;5;246m[49m  ⎿  [39mKept effort level as medium
+
+[38;5;246m[48;5;237m❯[39m [38;5;231m/effort xhigh[39m
+[38;5;246m[49m  ⎿  [39mSet effort level to xhigh (saved as your default for new sessions): Deeper reasoning than high, just below maximum (on supported models)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[38;5;244m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m❯ 
+[38;5;244m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m  [1m[38;5;135m✔[0m[38;5;246m [2m?[0m[38;5;246m ? [2m│[0m[38;5;246m [32m6%[38;5;246m ctx [2m│[0m[38;5;246m [32m68%[38;5;246m left[2m (3h25m)[0m[38;5;246m [2m│[0m[38;5;246m 0m [2m│[0m[38;5;246m opus-5.5 1M[2m·[0m[38;5;246mxhigh[39m
+  [38;5;220m⏵⏵ auto mode on[38;5;246m (shift+tab to cycle) · ← 1 agent[39m

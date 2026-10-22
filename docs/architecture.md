@@ -40,7 +40,19 @@ Pure logic plus thin process wrappers; no printing. Everything a future front-en
   off a capture that keeps the text's attributes (tmux `capture-pane -e`): `send`, `rename` and
   `close` never type after text already there or into a prompt, a faint placeholder or
   suggestion aside ([cli.md](cli.md#sending)). It also reads Claude Code's working line over
-  its box (`✳ Actualizing…`), which `model` takes as Busy.
+  its box (`✳ Actualizing…`), which `model` and `effort` take as Busy.
+- **slash** — what `fleet model` and `fleet effort` share of Claude Code's switching slash
+  commands: the warm-cache confirmation read by `answer`'s reader and checked to be that
+  command's for that value, work under way or a passing tmux hint banner where the box was
+  (waited for, not taken for another screen), the command's output read off the transcript's
+  new lines (`<local-command-stdout>` in a `user` entry only under the entry naming that very
+  command, chained by `parentUuid` / `promptId`, or in a `system` / `local_command` entry). The
+  CLI side (`cli::switch`) holds the checks before typing, the lock and the wait both commands
+  run, and reads the transcript once more before calling a screen `confirm_unrecognized`.
+- **effort** — Claude Code's `/effort <level>` as `fleet effort` reads it: "Change effort
+  level?" for that level, and the answers 2.1.308 writes as `user` entries (`Set effort level
+  to <level> (saved as your default for new sessions)` / `(this session only)`, `Effort level
+  set to auto`, `Kept effort level as <level>`) ([cli.md](cli.md#switching-the-effort)).
 - **model** — Claude Code's `/model <id>` as `fleet model` reads it: its switch confirmation
   (the warm-cache one, for that model, told from any other screen), `Model '…' not found` and a
   `PreModelSwitch` hook's refusal on screen, work still under way where the box was ("Running

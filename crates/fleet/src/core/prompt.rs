@@ -196,9 +196,24 @@ fn is_solid_rule(c: &str) -> bool {
 
 /// The top of Claude Code's confirmation dialogs (`▔▔▔`): "Switch model?" after `/model`,
 /// "Change effort level?" after `/effort`, both while the prompt cache is warm. Its title is
-/// the dialog's first line, right under it.
+/// the dialog's first line, right under it. Claude Code 2.1.308 may draw the hint it shows
+/// above the input box over its right end (`▔▔▔ ◐ medium · /effort ▔`): a run of at least 8
+/// `▔`, then that hint between blanks, then `▔` to the end.
 fn is_dialog_top(c: &str) -> bool {
-    c.chars().count() >= 8 && c.chars().all(|ch| ch == '▔')
+    let run = c.chars().take_while(|&ch| ch == '▔').count();
+    if run < 8 {
+        return false;
+    }
+    let rest = &c[run * '▔'.len_utf8()..];
+    if rest.is_empty() {
+        return true;
+    }
+    let hint = rest.trim_end_matches('▔');
+    hint.len() < rest.len()
+        && hint.starts_with(' ')
+        && hint.ends_with(' ')
+        && !hint.trim().is_empty()
+        && !hint.contains('▔')
 }
 
 /// `❯ 1. Yes` → (cursor here, 1, "Yes").
@@ -410,7 +425,10 @@ pub fn permission_prompt(screen: &str, harness: Harness) -> PromptRead {
     // a Codex approval with none — not even a line ending in "?" — is not told whole either;
     // a list with no title and without the answer shape is no approval at all.
     // A rule of the frame: drawn from column 0. A rule-like line inside it is padded content.
-    let frame_rule = |j: usize| is_rule(lines[j]) && !literal[j].starts_with(char::is_whitespace);
+    let frame_rule = |j: usize| {
+        (is_rule(lines[j]) || (claude && is_dialog_top(lines[j])))
+            && !literal[j].starts_with(char::is_whitespace)
+    };
     // Claude Code's confirmation dialog: its `▔` top is the nearest frame rule above the
     // answers, with a question right under it. That question is the title, whatever the
     // conversation above the dialog says.
@@ -1088,6 +1106,23 @@ mod tests {
             permission_prompt(&quoted, Harness::Claude),
             PromptRead::None
         );
+        // Claude Code 2.1.308 draws the hint above the box over the top's right end: the same
+        // prompt. A top broken any other way is no top.
+        let rule = "▔".repeat(64);
+        let short = "▔".repeat(40);
+        let hinted = CLAUDE_EFFORT_DIALOG.replace(&rule, &format!("{short} ◐ medium · /effort ▔"));
+        assert_ne!(hinted, CLAUDE_EFFORT_DIALOG);
+        assert_eq!(prompt(&hinted, Harness::Claude).id, p.id);
+        for broken in [
+            format!("{short} ◐ medium · /effort"),
+            format!("{short}◐ medium · /effort ▔"),
+            format!("{short} ◐ med ▔ ium ▔"),
+            format!("{short}  ▔"),
+            format!("▔▔▔ ◐ medium · /effort {short}"),
+        ] {
+            assert!(!is_dialog_top(&broken), "{broken}");
+        }
+        assert!(is_dialog_top(&rule) && is_dialog_top(&format!("{rule} hint ▔")));
         // Without its top, it is not told whole.
         let topless = CLAUDE_EFFORT_DIALOG.replace('▔', "");
         assert!(matches!(

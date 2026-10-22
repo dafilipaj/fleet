@@ -1420,3 +1420,99 @@ fn harness_list_labels_claude_default_with_the_configured_model() {
         "Default (claude-haiku-5-5)"
     );
 }
+
+// `harness list --json` gives each model its levels and the one a new session starts at, from
+// the harness's own files under the (fake) home: Claude Code's `~/.claude/settings.json`,
+// Codex's `~/.codex/models_cache.json` (levels lowest first, whatever order it lists them in).
+#[test]
+fn harness_list_gives_each_model_its_effort_levels() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = common::Env::new();
+    let claude = env.path("bin/claude");
+    let codex = env.path("home/.local/bin/codex");
+    for bin in [&claude, &codex] {
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::write(bin, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let home_claude = env.path("home/.claude");
+    std::fs::create_dir_all(&home_claude).unwrap();
+    std::fs::write(
+        home_claude.join("settings.json"),
+        r#"{"model":"opus","modelSettings":{"claude-opus-5-5[1m]":{"effortLevel":"xhigh"},
+            "claude-haiku-5-5":{"maxEffortLevel":"low"}}}"#,
+    )
+    .unwrap();
+    let home_codex = env.path("home/.codex");
+    std::fs::create_dir_all(&home_codex).unwrap();
+    std::fs::write(home_codex.join("config.toml"), "model = \"gpt-6-luna\"\n").unwrap();
+    std::fs::write(
+        home_codex.join("models_cache.json"),
+        r#"{"models":[{"slug":"gpt-6-luna","display_name":"GPT-6-Luna","visibility":"list",
+            "priority":1,"default_reasoning_level":"medium",
+            "supported_reasoning_levels":[{"effort":"high"},{"effort":"low"},{"effort":"medium"}]}]}"#,
+    )
+    .unwrap();
+
+    type Row = (String, serde_json::Value, serde_json::Value);
+    let models = |effort_env: Option<&str>| {
+        let mut c = env.cmd();
+        c.args(["harness", "list", "--json"])
+            .env("FLEET_CMD", &claude);
+        if let Some(l) = effort_env {
+            c.env("CLAUDE_CODE_EFFORT_LEVEL", l);
+        }
+        let out = c.output().unwrap();
+        assert!(out.status.success(), "{}", common::stderr(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        let of = |id: &str| -> Vec<Row> {
+            let h = v
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|h| h["id"] == id)
+                .unwrap_or_else(|| panic!("{id}: {v}"));
+            h["models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|m| {
+                    (
+                        m["id"].as_str().unwrap().to_string(),
+                        m["efforts"].clone(),
+                        m["default_effort"].clone(),
+                    )
+                })
+                .collect()
+        };
+        (of("claude"), of("codex"))
+    };
+    let all = serde_json::json!(["low", "medium", "high", "xhigh", "max"]);
+    let row = |id: &str, efforts: &serde_json::Value, starts: &str| -> Row {
+        (id.to_string(), efforts.clone(), starts.into())
+    };
+    let (claude_models, codex_models) = models(None);
+    assert_eq!(
+        claude_models,
+        [
+            row("", &all, "xhigh"),
+            row("claude-fable-5-1", &all, "high"),
+            row("claude-opus-5-5", &all, "xhigh"),
+            row("claude-sonnet-5-5", &all, "medium"),
+            row("claude-haiku-5-5", &all, "low"),
+        ]
+    );
+    let luna = serde_json::json!(["low", "medium", "high"]);
+    assert_eq!(
+        codex_models,
+        [row("", &luna, "medium"), row("gpt-6-luna", &luna, "medium")]
+    );
+    // `CLAUDE_CODE_EFFORT_LEVEL` overrides what is saved: no default is certain.
+    let (claude_models, _) = models(Some("high"));
+    assert!(
+        claude_models
+            .iter()
+            .all(|(_, e, d)| *e == all && d.is_null()),
+        "{claude_models:?}"
+    );
+}

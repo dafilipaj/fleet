@@ -3,6 +3,7 @@
 #![allow(dead_code, deprecated)]
 
 pub mod fake;
+pub mod switch;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -21,6 +22,7 @@ pub const UNSET: &[&str] = &[
     "PI_CODING_AGENT_DIR",
     "CLAUDE_CONFIG_DIR",
     "ANTHROPIC_MODEL",
+    "CLAUDE_CODE_EFFORT_LEVEL",
     "FLEET_HOST",
     "FLEET_DRY_RUN",
     "FLEET_AS_HOST",
