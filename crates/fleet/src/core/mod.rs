@@ -22,6 +22,7 @@ pub mod repos;
 pub mod slash;
 pub mod snapshot;
 pub mod stack;
+pub mod subagents;
 pub mod title;
 pub mod tmux;
 pub mod tools;
