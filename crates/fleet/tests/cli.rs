@@ -190,6 +190,15 @@ fn rename_help_documents_the_force_escape_hatch() {
     assert!(text.contains("--no-tmux-sync"), "{text}");
 }
 
+// A UI that always passes `--require-empty` to `send` passes it to `rename` too.
+#[test]
+fn rename_help_documents_require_empty() {
+    let out = fleet().args(["rename", "--help"]).output().unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("--require-empty"), "{text}");
+}
+
 // A target that matches nothing must fail loudly rather than renaming whatever
 // happens to be first.
 #[test]
