@@ -897,6 +897,29 @@ fn a_session_not_idle_gets_nothing_typed() {
     assert_eq!(a.received(), "");
 }
 
+// Claude Code 2.1.308 writes `shell` for a session idle at its prompt with a background shell
+// still running: `list --json` reports it `idle` (the main prompt is free), and it switches.
+#[test]
+fn a_session_idle_with_a_background_shell_switches() {
+    let a = agent("cold", "live/claude-empty");
+    a.status("shell");
+    assert_eq!(a.listed()["status"], "idle");
+    let (code, v, err) = a.model(SONNET, &[]);
+    assert_eq!(code, 0, "{v} {err}");
+    assert_eq!(v["ok"], true, "{v}");
+    assert_eq!(v["model"], SONNET, "{v}");
+    assert_eq!(v["switched_at"], a.switched_at().as_str(), "{v}");
+    assert_eq!(a.received(), format!("/model {SONNET}\r"));
+
+    // `-n` too: every check passes, nothing typed.
+    let a = agent("cold", "live/claude-empty");
+    a.status("shell");
+    let (code, v, err) = a.fleet(&["-n", "model", "--json", &a.target(), SONNET]);
+    assert_eq!(code, 0, "{v} {err}");
+    assert_eq!(v["dry_run"], true, "{v}");
+    assert_eq!(a.received(), "");
+}
+
 // The box read as `send --require-empty` reads it: text in it, a prompt in its place, or no
 // box found hold the switch — `send_held`, exit 3, `send`'s reason; the box's text only in
 // `input`.

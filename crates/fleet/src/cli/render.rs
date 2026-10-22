@@ -124,10 +124,12 @@ pub fn terminal_label(s: &Session) -> String {
 
 /// Glyph + word for a registry status. `waiting` is the one that matters: the
 /// session is blocked on the user and nothing else will move until they look.
+/// `shell` (Claude Code: idle, a background shell running) keeps idle's glyph and its own word.
 pub fn status_words(status: &str) -> (&'static str, &str) {
     match status {
         "busy" => ("●", "working"),
         "idle" => ("○", "idle"),
+        crate::core::discovery::SHELL => ("○", "shell"),
         "waiting" => ("⏸", "needs you"),
         other => ("·", other),
     }
@@ -191,7 +193,7 @@ pub fn plain_table_titled(rows: &[Session], host: Option<&str>) -> String {
         let (dot, state) = match r.status.as_str() {
             _ if done => ("✓".cyan(), state.cyan()),
             "busy" => (dot.green(), state.green()),
-            "idle" => (dot.dimmed(), state.dimmed()),
+            _ if r.is_idle() => (dot.dimmed(), state.dimmed()),
             "waiting" => (dot.yellow(), state.yellow().bold()),
             _ => (dot.normal(), state.normal()),
         };
@@ -279,6 +281,21 @@ mod tests {
             90_000, 200_000, None,
         ));
         assert!(plain_table(std::slice::from_ref(&s)).contains("ctx 45%"));
+    }
+
+    // Claude Code's `shell`: idle's glyph, the raw word, so a background shell shows.
+    #[test]
+    fn shell_reads_as_idle_with_its_own_word() {
+        assert_eq!(status_words("idle"), ("○", "idle"));
+        assert_eq!(status_words("shell"), ("○", "shell"));
+        assert_eq!(status_words("busy"), ("●", "working"));
+        assert_eq!(status_words("something-new"), ("·", "something-new"));
+        let s = Session {
+            pid: 7,
+            status: "shell".into(),
+            ..Default::default()
+        };
+        assert!(plain_table(std::slice::from_ref(&s)).contains("○"));
     }
 
     #[test]

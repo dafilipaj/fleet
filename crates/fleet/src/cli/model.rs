@@ -273,9 +273,10 @@ fn switch(o: &Opts, dry_run: bool, extra: &mut Extra) -> Result<Switched> {
 
     // 1. The agent owns its pane.
     owned(&agent, &pane, NOTHING)?;
-    // 2. Its Status, read afresh, is idle — and it is still the session locked.
+    // 2. Its Status, read afresh, is idle (`shell`, a background shell running behind its
+    //    prompt, included) — and it is still the session locked.
     let s = afresh(&o.target, &agent, &pane, &s)?;
-    if s.status != "idle" {
+    if !s.is_idle() {
         extra.status = Some(s.status.clone());
         return Err(Error::tagged(
             "not_idle",
