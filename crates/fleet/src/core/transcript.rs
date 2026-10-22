@@ -766,7 +766,7 @@ impl LineParser for Claude {
             return;
         }
         if ty == "attachment" {
-            // A prompt typed while Claude worked and absorbed mid-turn.
+            // A queued prompt or task notification absorbed while Claude worked.
             let Some(a) = entry.get("attachment") else {
                 return;
             };
@@ -774,16 +774,18 @@ impl LineParser for Claude {
                 Some(o) if truthy(o) => str_at(o, "kind") == Some("human"),
                 _ => true,
             };
+            let notification = str_at(a, "commandMode") == Some("task-notification");
             if str_at(a, "type") != Some("queued_command")
-                || str_at(a, "commandMode") != Some("prompt")
-                || !human
+                || (!notification && (str_at(a, "commandMode") != Some("prompt") || !human))
             {
                 return;
             }
             let Some(c) = classify_user_text(&text_of(a.get("prompt"), "text")) else {
                 return;
             };
-            if c.text.trim().is_empty() {
+            // Match the same <task-notification> payload as the user form; this
+            // mode alone must not turn arbitrary attachment text into a message.
+            if c.text.trim().is_empty() || (notification && c.kind != Kind::System) {
                 return;
             }
             out.push(Entry::user_side(c, ts));
@@ -1964,6 +1966,44 @@ mod tests {
             es.last().unwrap().ts.as_deref(),
             Some("2026-01-01T00:00:00.000Z")
         );
+    }
+
+    #[test]
+    fn claude_task_notifications_taken_mid_turn_match_user_form() {
+        let notification = "<task-notification><task-id>task-a</task-id><summary>Synthetic task finished</summary></task-notification>";
+        let attachment = |prompt: Value, mode: &str, origin: Value| {
+            json!({ "type": "attachment", "timestamp": "2026-01-01T00:00:01Z",
+                "attachment": { "type": "queued_command", "prompt": prompt,
+                    "commandMode": mode, "origin": origin } })
+        };
+        let user_entries = claude(&jl(&[user(json!(notification))]));
+        let entries = claude(&jl(&[
+            attachment(
+                json!(notification),
+                "task-notification",
+                json!({"kind":"task-notification"}),
+            ),
+            attachment(
+                json!([{"type":"text", "text":notification}]),
+                "task-notification",
+                Value::Null,
+            ),
+            // An unrelated attachment or arbitrary text in this mode is still hidden.
+            attachment(json!("note"), "task-notification", Value::Null),
+            attachment(
+                json!("Synthetic peer message"),
+                "prompt",
+                json!({"kind":"peer"}),
+            ),
+            attachment(json!(notification), "other", Value::Null),
+        ]));
+        assert_eq!(entries.len(), 2);
+        for e in entries {
+            assert_eq!(e.kind, Kind::System);
+            assert_eq!(e.text, user_entries[0].text);
+            assert_eq!(e.ts.as_deref(), Some("2026-01-01T00:00:01.000Z"));
+            assert!(!e.queued);
+        }
     }
 
     #[test]
