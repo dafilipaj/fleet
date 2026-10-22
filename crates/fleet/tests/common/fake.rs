@@ -7,6 +7,36 @@ use std::time::{Duration, Instant};
 
 use super::Env;
 
+/// A shell with job control, as far as `close` and `model` can tell: it starts the agent
+/// (`$agent`, by `/bin/sh`) in a process group of its own and gives it the terminal; once `$flag` exists it
+/// gives the terminal to a new job (`sleep`, its pid in `$flag.job`) or, for `shell`, takes
+/// it back itself (and writes `$flag.job` empty). For `stopped` it starts a job that stops at
+/// once (as `vim`, Ctrl-Z, `fg %1` leaves it), the agent still in front.
+pub const JOB_SHELL: &str = r#"
+use strict; use Time::HiRes qw(sleep); use POSIX ();
+my ($agent, $flag, $front) = @ARGV;
+$SIG{TTOU} = "IGNORE";
+my $a = fork();
+if ($a == 0) { POSIX::setpgid(0, 0); exec("/bin/sh", "-c", "exec $agent") or die; }
+POSIX::setpgid($a, $a); POSIX::tcsetpgrp(0, $a);
+sleep 0.05 until -e $flag;
+my $j = "";
+if ($front eq "stopped") {
+  $j = fork();
+  if ($j == 0) { POSIX::setpgid(0, 0); kill("STOP", $$); exec("sleep", "300") or die; }
+  POSIX::setpgid($j, $j);
+  sleep 0.02 until waitpid($j, POSIX::WNOHANG | POSIX::WUNTRACED) == $j;
+} elsif ($front eq "job") {
+  $j = fork();
+  if ($j == 0) { POSIX::setpgid(0, 0); exec("sleep", "300") or die; }
+  POSIX::setpgid($j, $j); POSIX::tcsetpgrp(0, $j);
+} else {
+  POSIX::tcsetpgrp(0, POSIX::getpgrp());
+}
+open(my $p, ">", "$flag.job.tmp") or die; print $p $j; close $p; rename("$flag.job.tmp", "$flag.job");
+sleep 300;
+"#;
+
 pub struct FakeFleet {
     pub env: Env,
 }
