@@ -1539,6 +1539,9 @@ pub fn health() -> Vec<crate::cli::hosts::BotHealth> {
 /// in its tmux session, done marks stamped; none = the agent exited and left a shell behind.
 /// Past `keep` (seconds since the run started): every agent idle and quiet for an hour. Past
 /// `close_done` (seconds since `fleet done`): every agent idle with a mark that still stands.
+/// Idle is plain `idle` with no background shell running, not [`Session::is_idle`]: Claude
+/// Code's `shell` (which discovery reports as `idle`, the shell counted in `background`) has a
+/// background shell running, and killing the tmux session would end it.
 fn close_reason(
     agents: &[&Session],
     started_at: i64,
@@ -1546,7 +1549,9 @@ fn close_reason(
     close_done: Option<i64>,
     now_ms: i64,
 ) -> Option<&'static str> {
-    let idle = agents.iter().all(|x| x.status == "idle");
+    let idle = agents
+        .iter()
+        .all(|x| x.status == "idle" && x.background.as_ref().is_none_or(|b| b.shells == 0));
     if !idle {
         return None;
     }
@@ -1874,6 +1879,44 @@ mod tests {
             close_reason(&[], now - 26 * H, day, day, now),
             Some("past keep")
         );
+    }
+
+    #[test]
+    fn only_a_plain_idle_session_is_closable() {
+        let now = 10 * QUIET_BEFORE_CLOSE_MS;
+        let at = |status: &str, updated_at: Option<i64>| Session {
+            status: status.into(),
+            updated_at,
+            ..Default::default()
+        };
+        let old = Some(now - QUIET_BEFORE_CLOSE_MS - 1);
+        // A run long past its `keep`: only its agents decide.
+        let past_keep = |agents: &[&Session]| close_reason(agents, 0, Some(1), None, now);
+        assert_eq!(
+            past_keep(&[&at("idle", old)]),
+            Some("past keep"),
+            "control: idle and quiet"
+        );
+        // `shell`: idle with a background Bash running; closing would end it. Discovery reports
+        // it as `idle` with the shell in `background`.
+        assert_eq!(past_keep(&[&at("shell", old)]), None);
+        assert_eq!(past_keep(&[&at("idle", old), &at("shell", old)]), None);
+        let shell = Session {
+            background: Some(crate::core::background::Background {
+                shells: 1,
+                ..Default::default()
+            }),
+            ..at("idle", old)
+        };
+        assert_eq!(past_keep(&[&shell]), None);
+        assert_eq!(past_keep(&[&at("idle", old), &shell]), None);
+        assert_eq!(past_keep(&[&at("idle", Some(now))]), None, "not quiet yet");
+        // A done mark does not close it either while the shell runs.
+        let done = Session {
+            done: Some(crate::core::done::DoneRef { at: 0, note: None }),
+            ..shell
+        };
+        assert_eq!(close_reason(&[&done], 0, None, Some(1), now), None);
     }
 
     #[test]
