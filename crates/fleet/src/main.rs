@@ -184,7 +184,10 @@ enum Commands {
     /// Text in the box (Claude Code puts an interrupted prompt back there; typed text would go
     /// out with it as one prompt) or a prompt waiting for its answer holds the send: exit 3,
     /// nothing typed. No input box fleet can find, or one it cannot read (iTerm gives no text
-    /// attributes), types as before, with a warning; --require-empty holds then too. --force
+    /// attributes; Claude Code's box shows nothing and its caret, which tells blanks typed
+    /// there, cannot be found: the terminal's cursor not given, or hidden with no caret Claude
+    /// Code painted in the box), types as before, with a warning; --require-empty holds then
+    /// too. A failure of kind io says with --json whether anything was typed (`typed`). --force
     /// types without reading the box. After `keys Escape`, wait about a second before sending:
     /// Claude Code puts the stopped prompt back only once the turn has stopped.
     Send {

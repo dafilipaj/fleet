@@ -84,6 +84,8 @@ struct Refusal {
     message: String,
     detail: Option<Detail>,
     pane: Option<(u32, u32)>,
+    /// A key reached the pane before it (`--json`'s `typed`, on an `io` failure).
+    typed: bool,
 }
 
 impl From<Failure> for Refusal {
@@ -93,6 +95,7 @@ impl From<Failure> for Refusal {
             message: f.message,
             detail: None,
             pane: None,
+            typed: false,
         }
     }
 }
@@ -114,6 +117,7 @@ fn refuse<T>(detail: Detail, message: impl Into<String>) -> R<T> {
         message: message.into(),
         detail: Some(detail),
         pane: None,
+        typed: false,
     })
 }
 
@@ -243,7 +247,7 @@ fn exclusive(s: &Session, allow_attached: bool) -> R<SessionLock> {
             );
         }
     }
-    Ok(lock::try_lock(s).map_err(|e| match e {
+    let held = lock::try_lock(s).map_err(|e| match e {
         LockError::Busy => Failure {
             kind: "busy",
             message: format!("{e}; nothing typed"),
@@ -252,7 +256,12 @@ fn exclusive(s: &Session, allow_attached: bool) -> R<SessionLock> {
             kind: "io",
             message: e.to_string(),
         },
-    })?)
+    })?;
+    lock::still_named(s, "nothing typed").map_err(|e| Failure {
+        kind: e.kind(),
+        message: e.to_string(),
+    })?;
+    Ok(held)
 }
 
 /// Read the screen until `ok` holds, for at most `within`.
@@ -301,6 +310,7 @@ fn landed(
 fn after_keys(done: usize, total: usize) -> impl Fn(Refusal) -> Refusal {
     move |f| Refusal {
         message: format!("{}; stopped after {done} of {total} keys", f.message),
+        typed: f.typed || done > 0,
         ..f
     }
 }
@@ -551,6 +561,7 @@ fn changed<T>(detail: Detail, message: String) -> R<T> {
         message,
         detail: Some(detail),
         pane: None,
+        typed: false,
     })
 }
 
@@ -913,13 +924,12 @@ pub fn run(o: Opts) -> Result<()> {
         }
         Err(f) => {
             if o.json {
-                println!(
-                    "{}",
-                    json!({
-                        "ok": false, "kind": f.kind, "error": f.message,
-                        "detail": f.detail.map(Detail::code), "pane": pane_json(f.pane),
-                    })
-                );
+                let mut v = json!({
+                    "ok": false, "kind": f.kind, "error": f.message,
+                    "detail": f.detail.map(Detail::code), "pane": pane_json(f.pane),
+                });
+                crate::cli::commands::typed_field(&mut v, f.kind, f.typed);
+                println!("{v}");
             }
             Err(Error::exit(1, f.message))
         }
