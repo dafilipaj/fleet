@@ -428,6 +428,10 @@ fn failure_shape(v: &Value, kind: &str) {
     if matches!(kind, "busy" | "host_shared") {
         assert!(v["reason"].as_str().is_some_and(|r| !r.is_empty()), "{v}");
         assert_eq!(keys_of(v), ["error", "host", "kind", "ok", "reason"], "{v}");
+    } else if kind == "io" {
+        // Whether a key (Escape, the exit command) reached the pane before it.
+        assert!(v["typed"].is_boolean(), "{v}");
+        assert_eq!(keys_of(v), ["error", "host", "kind", "ok", "typed"], "{v}");
     } else {
         assert_eq!(keys_of(v), ["error", "host", "kind", "ok"], "{v}");
     }
@@ -636,6 +640,31 @@ fn a_busy_agent_gets_escape_first() {
     assert!(!a.tmux_session_exists());
 }
 
+// Escape reaches the pane, then its tmux call fails: `io` with `typed: true` — it may have
+// stopped the turn, so a retry is not safe — and nothing more typed or killed.
+#[test]
+fn escape_that_reaches_the_pane_but_fails_says_it_may_be_typed() {
+    let Some(a) = Agent::start("cl-esc-io", "ignores") else {
+        return;
+    };
+    a.busy();
+    let tmux = a.wrapper(
+        "escfail",
+        "for a in \"$@\"; do if [ \"$a\" = Escape ]; then \"$T\" \"$@\"; echo 'tmux: lost connection' >&2; exit 1; fi; done\nexec \"$T\" \"$@\"",
+    );
+    let (code, v, err) = a.close_with(&[("FLEET_TMUX", &tmux)], &["close", &a.target(), "--json"]);
+    assert_eq!(code, 1, "{v} {err}");
+    failure_shape(&v, "io");
+    assert_eq!(v["typed"], true, "Escape went out before the failure: {v}");
+    let e = v["error"].as_str().unwrap();
+    assert!(
+        e.contains("Escape may have been typed, nothing killed"),
+        "{v}"
+    );
+    a.f.wait_for("Escape to reach the agent", || a.received() == b"\x1b");
+    assert!(a.tmux_session_exists() && a.alive(), "nothing was killed");
+}
+
 // Escape stopped the turn and put its prompt back in the input box: `/exit` typed after it
 // would go out with it as one prompt, and that prompt would run. Straight to the kill.
 #[test]
@@ -793,6 +822,7 @@ fn a_failed_tmux_query_is_io_never_success() {
     );
     assert_eq!(code, 1, "{v} {err}");
     failure_shape(&v, "io");
+    assert_eq!(v["typed"], true, "the exit command went out first: {v}");
     assert!(a.tmux_session_exists() && a.alive(), "nothing was killed");
     // The kill runs, but the check that it took cannot be made.
     let tmux = a.wrapper_at_kill(
@@ -805,6 +835,7 @@ fn a_failed_tmux_query_is_io_never_success() {
     );
     assert_eq!(code, 1, "{v} {err}");
     failure_shape(&v, "io");
+    assert_eq!(v["typed"], true, "{v}");
 }
 
 #[test]
@@ -1268,6 +1299,7 @@ fn an_lsof_that_fails_hangs_or_is_missing_refuses_untouched() {
         assert!(t0.elapsed() < std::time::Duration::from_secs(10), "{tag}");
         assert_eq!(code, 1, "{tag}: {v} {err}");
         failure_shape(&v, "io");
+        assert_eq!(v["typed"], false, "{tag}: {v}");
         let e = v["error"].as_str().unwrap();
         assert!(e.contains("nothing typed, nothing killed"), "{tag}: {v}");
         a.untouched(&log);
@@ -1280,6 +1312,7 @@ fn an_lsof_that_fails_hangs_or_is_missing_refuses_untouched() {
     );
     assert_eq!(code, 1, "{v} {err}");
     failure_shape(&v, "io");
+    assert_eq!(v["typed"], false, "{v}");
     a.untouched(&log);
     assert!(a.received().is_empty(), "nothing was typed");
     // The real one: the child reads `/dev/null`, not the terminal — no false `busy`.
@@ -1321,6 +1354,7 @@ fn a_ps_failure_after_typing_says_what_was_typed() {
     );
     assert_eq!(code, 1, "{v} {err}");
     failure_shape(&v, "io");
+    assert_eq!(v["typed"], true, "{v}");
     let e = v["error"].as_str().unwrap();
     assert!(e.contains("exit command was typed, nothing killed"), "{v}");
     assert_eq!(a.received(), b"/exit\r");

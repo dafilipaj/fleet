@@ -44,6 +44,15 @@ fn agent(name: &str) -> Agent {
 /// reads. Claude is found by its registry entry; Codex and pi, as fleet finds them, by their
 /// command name (and their state dir under the temp `$HOME`). Panics without tmux or perl.
 fn agent_of(harness: &str, name: &str) -> Agent {
+    agent_as(harness, name, ":")
+}
+
+/// A fake Claude session that draws `name`, runs `after` (sh), then logs what it reads.
+fn agent_after(name: &str, after: &str) -> Agent {
+    agent_as("claude", name, after)
+}
+
+fn agent_as(harness: &str, name: &str, after: &str) -> Agent {
     assert!(
         fleet::core::tools::find_binary("perl").is_some(),
         "these tests need perl"
@@ -65,7 +74,10 @@ fn agent_of(harness: &str, name: &str) -> Agent {
             format!("exec /bin/bash -c \"exec -a {h} {run}\"")
         }
     };
-    let script = format!("cat '{}'; stty raw -echo; {run}", screen(name).display());
+    let script = format!(
+        "cat '{}'; {after}; stty raw -echo; {run}",
+        screen(name).display()
+    );
     // A live capture is of a 110x34 pane: narrower, its rules would wrap.
     let (cols, rows) = if name.starts_with("live/") {
         (110, 34)
@@ -467,6 +479,199 @@ fn an_unreadable_input_box_holds_a_rename_that_requires_an_empty_box() {
         err.contains("no text attributes") && err.contains("nothing sent"),
         "{err}"
     );
+    assert_eq!(a.received(), "", "nothing typed");
+}
+
+/// A fake Claude Code drawing its empty box (`live/claude-empty`), the terminal's cursor then
+/// put `blanks` cells past where the box's text starts — as blanks typed there leave it, which
+/// Claude Code draws as nothing — and hidden if `hidden`.
+fn claude_with_cursor(blanks: usize, hidden: bool) -> Agent {
+    let name = "live/claude-empty";
+    let text = std::fs::read_to_string(screen(name)).unwrap();
+    // The box's line on screen: the capture's last newline scrolled the 34-row pane a row up.
+    let lines: Vec<&str> = text.split('\n').collect();
+    let scroll = text.matches('\n').count().saturating_sub(33);
+    let line = lines.iter().rposition(|l| l.contains('❯')).unwrap();
+    let after = format!(
+        "printf '\\033[{};{}H{}'",
+        line - scroll + 1,
+        3 + blanks,
+        if hidden { "\\033[?25l" } else { "" }
+    );
+    agent_after(name, &after)
+}
+
+/// `fleet` with a tmux that fails every query for the cursor (`#{cursor_flag}`).
+fn without_cursor(a: &Agent, args: &[&str]) -> std::process::Output {
+    let wrapper = a.f.env.path("no-cursor-tmux.sh");
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\n\
+             case \"$*\" in *cursor_flag*) echo 'no cursor here' >&2; exit 1;; esac\n\
+             exec '{}' \"$@\"\n",
+            a.f.env.tmux_wrapper().display()
+        ),
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    a.f.env
+        .cmd()
+        .env("SHELL", "/bin/sh")
+        .env("FLEET_TMUX", &wrapper)
+        .timeout(Duration::from_secs(20))
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+// Blanks typed into Claude Code's box show as nothing; only the terminal's cursor tells them
+// from an empty box. With it hidden, or its query failing, the box cannot be told empty:
+// `--require-empty` holds (`unreadable`, no `input`), blanks or none, and a plain send types
+// with a warning. With the cursor, as before: blanks are text, an empty box takes the send.
+#[test]
+fn without_the_cursor_a_box_showing_nothing_is_unreadable() {
+    let required = |a: &Agent| {
+        vec![
+            "send".to_string(),
+            "--json".into(),
+            "--require-empty".into(),
+            a.target.clone(),
+            "hello".into(),
+        ]
+    };
+    let run = |a: &Agent, failing: bool| {
+        let args = required(a);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        if failing {
+            without_cursor(a, &args)
+        } else {
+            a.fleet(&args)
+        }
+    };
+    for blanks in [0, 3] {
+        // Hidden.
+        let a = claude_with_cursor(blanks, true);
+        held(&run(&a, false), "unreadable", None);
+        assert_eq!(a.received(), "", "{blanks} blanks, hidden: nothing typed");
+        // The query failing.
+        let a = claude_with_cursor(blanks, false);
+        held(&run(&a, true), "unreadable", None);
+        assert_eq!(
+            a.received(),
+            "",
+            "{blanks} blanks, no answer: nothing typed"
+        );
+    }
+    // Shown: blanks are text, none is empty.
+    let a = claude_with_cursor(3, false);
+    held(&run(&a, false), "text", Some("   "));
+    let a = claude_with_cursor(0, false);
+    let out = run(&a, false);
+    assert!(out.status.success(), "{}", stderr(&out));
+    a.wait_for_enter();
+    assert_eq!(a.received(), "hello\r");
+    // Without --require-empty, typed with the warning.
+    let a = claude_with_cursor(0, true);
+    let out = a.fleet(&["send", "--json", &a.target, "hello"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(json(&out)["warning"], "unreadable");
+    assert!(stderr(&out).contains("cursor"), "{}", stderr(&out));
+    a.wait_for_enter();
+    assert_eq!(a.received(), "hello\r");
+}
+
+/// A fake Claude Code drawing `claude-placeholder` (80x24) with the terminal's cursor hidden, as
+/// Claude Code hides it unless its native cursor is on, and paints its own caret in reverse
+/// video: on the placeholder's first character as drawn, or — `blanks` given as `(before,
+/// after)` — that line cleared to `before` blanks, a painted blank, then `after` blanks.
+fn claude_painted_caret(blanks: Option<(usize, usize)>) -> Agent {
+    let name = "claude-placeholder";
+    let text = std::fs::read_to_string(screen(name)).unwrap();
+    let lines: Vec<&str> = text.split('\n').collect();
+    let scroll = text.matches('\n').count().saturating_sub(23);
+    let line = lines.iter().rposition(|l| l.contains('❯')).unwrap();
+    let caret = match blanks {
+        Some((before, after)) => format!(
+            "\\033[{};3H\\033[K{}\\033[7m \\033[0m{}",
+            line - scroll + 1,
+            " ".repeat(before),
+            " ".repeat(after)
+        ),
+        None => String::new(),
+    };
+    agent_after(name, &format!("printf '{caret}\\033[?25l'"))
+}
+
+// Claude Code's default: the terminal's cursor hidden (`#{cursor_flag}` 0), its caret painted
+// in reverse video in the box. On the placeholder's first character it says the box is empty:
+// `--require-empty` takes the send, no warning. So it does on a painted blank where the text
+// starts, as Claude Code's box is after a turn — blanks after it or none: three blanks typed,
+// then Home, look just so (an accepted gap). Painted past blanks typed there: `text`, held.
+#[test]
+fn with_the_cursor_hidden_the_caret_claude_code_paints_tells() {
+    let a = claude_painted_caret(None);
+    let out = a.fleet(&["send", "--json", "--require-empty", &a.target, "hello"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let v = json(&out);
+    assert_eq!(v["ok"], true, "{v}");
+    assert_eq!(v["warning"], Value::Null, "{v}");
+    a.wait_for_enter();
+    assert_eq!(a.received(), "hello\r");
+
+    for after in [0, 3] {
+        let a = claude_painted_caret(Some((0, after)));
+        let out = a.fleet(&["send", "--json", "--require-empty", &a.target, "hello"]);
+        assert!(out.status.success(), "{after}: {}", stderr(&out));
+        assert_eq!(json(&out)["warning"], Value::Null, "{after}");
+        a.wait_for_enter();
+        assert_eq!(a.received(), "hello\r", "{after} blanks after the caret");
+    }
+
+    let a = claude_painted_caret(Some((3, 0)));
+    held(
+        &a.fleet(&["send", "--json", "--require-empty", &a.target, "hello"]),
+        "text",
+        Some("   "),
+    );
+    assert_eq!(a.received(), "", "nothing typed");
+}
+
+// The typing lock cannot be taken (its directory cannot be made): `io`, with `typed: false` —
+// nothing reached the pane, so a caller may try again. `send`, `keys`, `rename` and `answer`
+// alike.
+#[test]
+fn an_io_failure_before_typing_says_nothing_was_typed() {
+    let a = agent("live/claude-empty");
+    let blocker = a.f.env.path("not-a-dir");
+    std::fs::write(&blocker, "").unwrap();
+    let t = a.target.as_str();
+    for args in [
+        vec!["send", "--json", t, "hello"],
+        vec!["keys", "--json", t, "Escape"],
+        vec!["rename", t, "probe", "--no-tmux-sync", "--json"],
+        vec!["answer", t, "--choice", "1", "--json"],
+    ] {
+        let out =
+            a.f.env
+                .cmd()
+                .env("SHELL", "/bin/sh")
+                .env("FLEET_LOCK_DIR", blocker.join("locks"))
+                .timeout(Duration::from_secs(20))
+                .args(&args)
+                .output()
+                .unwrap();
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {}", stderr(&out));
+        let v = json(&out);
+        assert_eq!(
+            (v["ok"].as_bool(), v["kind"].as_str(), v["typed"].as_bool()),
+            (Some(false), Some("io"), Some(false)),
+            "{args:?}: {v}"
+        );
+    }
     assert_eq!(a.received(), "", "nothing typed");
 }
 
