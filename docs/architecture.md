@@ -186,8 +186,8 @@ Env overrides for the web server: `FLEET_WEB_PORT` (or `PORT`), `FLEET_WEB_BIND`
 ## Session discovery
 
 Claude Code keeps a live registry: one `~/.claude/sessions/<pid>.json` per running interactive
-session with its session id, cwd, name, status (`busy` / `idle` / `waiting`) and what it waits for.
-That is the source of truth; `fleet` enriches each entry:
+session with its session id, cwd, name, status (`busy` / `idle` / `waiting`, and from Claude Code
+2.1.308 `shell`) and what it waits for. That is the source of truth; `fleet` enriches each entry:
 
 1. **pid → tty** via `ps`.
 2. **tty → terminal**: match against `tmux list-panes -a` (pane id, window name, tmux session) and,
@@ -316,7 +316,7 @@ by — with no config, `local`):
 | `name` | string \| null | Claude session name |
 | `name_source` | string \| null | `"derived"` = Claude's cwd+hash fallback |
 | `cwd` | string \| null | working directory |
-| `status` | string | `busy` \| `idle` \| `waiting` \| `unknown` |
+| `status` | string | `busy` \| `idle` \| `shell` \| `waiting` \| `unknown` — as the registry writes it. `shell` (Claude Code 2.1.308+): idle at its prompt with a background shell (a `run_in_background` Bash) still running. Every check for an idle session (`model`, the dashboard's finished and stuck alerts, briefs, the web app's Idle filter) takes `shell` as `idle`; the two that would end that shell — a job's auto-close and the operator's auto-clear — take `idle` only |
 | `waiting_for` | string \| null | what a `waiting` session is blocked on |
 | `updated_at` | number \| null | last status change, ms since epoch |
 | `tty` | string \| null | |
@@ -733,7 +733,7 @@ keeps it out of session lists (the CLI still shows it). `web.operator.hosts` pic
 for every device: each server sends `/api/operator` to the first host of the list that answers.
 
 **Auto-clear**: every 5 minutes the server checks its operator; idle for `clearIdleMinutes`, it
-gets `/clear`. Claude Code then starts a new session (a new session id, an empty transcript), so
+gets `/clear` (`idle` only: `shell`, a background shell still running, is left alone). Claude Code then starts a new session (a new session id, an empty transcript), so
 the next conversation starts fresh and the app shows no history. A cleared session has no context
 until it is used, which keeps it from being cleared again.
 
@@ -902,7 +902,8 @@ an edited body.
 
 **Budget** — model calls are what costs, so every automatic one has to pass all of:
 
-- the session is `idle` or `waiting`, and has been for `idleMs` (registry `updated_at`);
+- the session is `idle` (or `shell`: idle, a background shell running) or `waiting`, and has been for
+  `idleMs` (registry `updated_at`);
 - its transcript grew past `generatedThrough` by ≥ `minNewTurns` user prompts or ≥
   `minNewChars` characters of conversation;
 - ≥ `minIntervalMs` since that session's last call (a gated update stays pending and runs when the

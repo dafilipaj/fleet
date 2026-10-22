@@ -394,7 +394,8 @@ export function createBriefs({
 
   function isIdle(session, t) {
     const m = memFor(session.session_id);
-    if (session.status !== 'idle' && session.status !== 'waiting') {
+    // `shell` is Claude Code's idle with a background shell running (2.1.308+): idle too.
+    if (session.status !== 'idle' && session.status !== 'shell' && session.status !== 'waiting') {
       m.idleSeenAt = null;
       return false;
     }

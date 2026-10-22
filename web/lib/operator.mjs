@@ -60,7 +60,8 @@ misheard names; match them to real sessions), and **your final reply is read alo
 ## Seeing the fleet
 
 - \`fleet list --all-hosts --json\` — every session: \`host\`, \`session_id\`, \`display_title\`, \`cwd\`,
-  \`status\` (busy | idle | waiting | unknown), \`waiting_for\` (what a waiting session needs),
+  \`status\` (busy | idle | shell | waiting | unknown;
+  \`shell\` is idle with a background Bash still running — never auto-cleared, that would end the shell), \`waiting_for\` (what a waiting session needs),
   \`updated_at\` (ms), \`tmux_session\`, \`context\`. Pipe through \`jq\` to keep it small.
 - \`./api GET '/hosts/<host>/sessions/<id>/messages?limit=12'\` — a session's recent conversation
   (no tool calls). A pending AskUserQuestion is a message with \`kind: "question"\` and \`id\`.
@@ -169,6 +170,7 @@ export function createOperator({ config, fleet, spawner, cli = null, now = Date.
     const idleMs = config.operator.clearIdleMinutes * 60 * 1000;
     if (!cli || !idleMs) return null;
     const s = await find({ force: true });
+    // Plain `idle` only: Claude Code's `shell` has a background shell running, left alone.
     if (!s || s.status !== 'idle' || !s.updated_at || !s.context?.used) return null;
     if (now() - s.updated_at < idleMs) return null;
     // Through the CLI, like every web path that types: it holds the session's typing lock.

@@ -15,9 +15,14 @@ const STATUS_META: Record<StatusKey, StatusMeta> = {
   unknown: { key: 'unknown', label: 'unknown' },
 }
 
+/** Claude Code's `shell` (2.1.308+): idle at its prompt with a background shell running — idle, said so. */
+const IDLE_ALIASES: Record<string, StatusMeta> = {
+  shell: { key: 'idle', label: 'idle · shell' },
+}
+
 export function statusMeta(status: string | null | undefined): StatusMeta {
-  const k = String(status || '').toLowerCase() as StatusKey
-  return STATUS_META[k] ?? STATUS_META.unknown
+  const k = String(status || '').toLowerCase()
+  return STATUS_META[k as StatusKey] ?? IDLE_ALIASES[k] ?? STATUS_META.unknown
 }
 
 /** "needs you · permission" for a waiting session with a reason, else the plain label. */

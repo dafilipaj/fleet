@@ -80,7 +80,7 @@ member (see [Stacks](#stacks)).
 | command | does |
 | --- | --- |
 | `fleet` | `watch` on a terminal; a one-shot `list` when stdout is piped |
-| `fleet list [--json] [-a, --all-hosts]` (alias `ls`) | live sessions: title, status, age, context usage (`ctx 62%`), terminal, cwd. `--json` is an array whose rows all carry `host`; `-a` queries every configured host in parallel. The text view ends with `N dormant (fleet restore)` when a reboot left [dormant sessions](#session-recovery). Every local `list` also records the [snapshot](#session-recovery) |
+| `fleet list [--json] [-a, --all-hosts]` (alias `ls`) | live sessions: title, status (`working`, `idle`, `needs you`, or `shell`: Claude Code 2.1.308+ idle with a background shell running, kept as written in `--json`), age, context usage (`ctx 62%`), terminal, cwd. `--json` is an array whose rows all carry `host`; `-a` queries every configured host in parallel. The text view ends with `N dormant (fleet restore)` when a reboot left [dormant sessions](#session-recovery). Every local `list` also records the [snapshot](#session-recovery) |
 | `fleet peek <target> [--lines N]` | what the session's terminal shows now (default 40 lines): a `▼ <title> (<backend>, <status>) — <dir>` header, then each line cut to this terminal's width. A pane tmux cannot capture (just closed, or its server gone) is an error (exit 1, tmux's message), never an empty box |
 | `fleet peek <target> --json [--lines N] [--ansi]` | the screen whole, for programs: `{ ok: true, host, target: { session_id, pid }, backend, status, cols, rows, lines: [...], truncated }` — no header, no clipping, the last N lines that have content (trailing blank lines and trailing spaces dropped). tmux: lines it wrapped are joined (`capture-pane -J`), and N counts those logical lines — the capture reaches back into the scrollback until each of the N is whole (up to what tmux still holds), but never more than 2,000 rows: a line longer than that comes back with its start cut and `truncated: true` (otherwise `false`; always `false` for iTerm); `cols`/`rows` are the pane's. iTerm: its visible screen as shown, `cols`/`rows` the session's. Escape sequences are stripped unless `--ansi` (tmux `-e`; iTerm gives none). On failure `{ ok: false, host, kind, error }`, exit 1 — kind `target_not_found`, `target_ambiguous`, `target_invalid`, `backend_unsupported` or `backend_failed`; a command line clap rejects (an unknown flag, wherever `--json` stands) is the same object with kind `usage`, exit 2 |
 | `fleet messages <target> [--json] [--after <cursor> \| --before <cursor>] [--limit N]` | the session's conversation from its transcript: prompts, replies, tool calls (never their output) and questions, oldest first — see [Messages](#messages). Without a cursor the newest `--limit` (default 100, max 500); `--after` everything newer (cheap enough to poll every second); `--before` the `--limit` entries before ("show earlier") |
@@ -748,7 +748,8 @@ reads the outcome off the transcript.
      elsewhere on the terminal does not matter here (nothing is killed): `close`'s
      `other_jobs` does not apply;
   2. its Status, read afresh as `list` reads it (Claude Code's session registry, not the
-     screen), is `idle` — else `not_idle`, its `status` given. That read, by the agent's pid
+     screen), is `idle` — or `shell`, Claude Code's idle with a background shell running —
+     else `not_idle`, its `status` given. That read, by the agent's pid
      whatever the target, must still be the session the lock was taken for: the same process
      in the same pane, and the same session id — the lock is named after it, and `/clear`
      gives the same process a new one, whose lock another fleet command could take — else
@@ -1367,7 +1368,7 @@ the same **run**. Config: `jobs` in [the config](architecture.md#config).
 | `command` | launcher for the job's sessions **and everything they spawn** (it travels as `FLEET_CMD`); default config `claude` |
 | `harness`, `model` | as for `fleet spawn` |
 | `enabled` | `false` pauses the job (`fleet jobs disable`). `fleet config set jobs.<name> null` removes it |
-| `keep` | default `24h`, or `"never"`: once a run is older than this, its sessions that are idle and quiet for an hour are closed (their tmux session is killed). A session waiting for input is never closed |
+| `keep` | default `24h`, or `"never"`: once a run is older than this, its sessions that are idle and quiet for an hour are closed (their tmux session is killed). A session waiting for input is never closed, nor one idle with a background shell running (`shell`) |
 
 A job never fires on the tick that first sees it (a job added at 08:00 with a 07:00 schedule first
 runs tomorrow). A slot more than 6 hours old when a tick sees it (the machine was off) is recorded

@@ -76,6 +76,8 @@ test('statusRank orders waiting > busy > idle > unknown', () => {
   );
   assert.equal(statusRank('bogus'), 3);
   assert.equal(statusRank(undefined), 3);
+  // Claude Code's `shell`: idle, a background shell running.
+  assert.equal(statusRank('shell'), statusRank('idle'));
 });
 
 test('sortSessions: waiting, busy, idle, unknown, then updated_at desc', () => {

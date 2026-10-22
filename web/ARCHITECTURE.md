@@ -108,7 +108,7 @@ because service managers (launchd) do not provide the user's PATH.
 Local discovery is `fleet list --json` (timeout 8s), an array of:
 
 ```
-pid, session_id (uuid), name, cwd, status ("busy"|"idle"|"waiting"|"unknown"), updated_at (ms),
+pid, session_id (uuid), name, cwd, status ("busy"|"idle"|"shell"|"waiting"|"unknown"; "shell" = idle, a background shell running), updated_at (ms),
 tty, backend ("iterm"|"tmux"|"unknown"), handle (iTerm session id | tmux pane id like "%87"),
 tab, tmux_session (string|null), name_source, waiting_for (string|null),
 title (first prompt, may be long), gen_title (string|null),

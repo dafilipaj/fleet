@@ -504,6 +504,17 @@ pub fn tick(quiet: bool) -> Result<()> {
     Ok(())
 }
 
+/// Whether every agent in a job's tmux session is plain `idle` and quiet, so the session can be
+/// killed. Not [`Session::is_idle`]: Claude Code's `shell` has a background shell running, and
+/// killing the tmux session would end it.
+fn closable(agents: &[&Session], now_ms: i64) -> bool {
+    agents.iter().all(|x| {
+        x.status == "idle"
+            && x.updated_at
+                .is_none_or(|u| now_ms - u > QUIET_BEFORE_CLOSE_MS)
+    })
+}
+
 /// Close the sessions of `j`'s runs that are past `keep`, idle and quiet; mark the ones that
 /// are already gone.
 fn cleanup(
@@ -540,13 +551,10 @@ fn cleanup(
                 .iter()
                 .filter(|x| x.tmux_session.as_deref() == Some(s.tmux_session.as_str()))
                 .collect();
-            // Idle and quiet, or the agent already exited and left a shell behind.
-            let closable = agents.iter().all(|x| {
-                x.status == "idle"
-                    && x.updated_at
-                        .is_none_or(|u| now_ms - u > QUIET_BEFORE_CLOSE_MS)
-            });
-            if !closable {
+            // Idle and quiet, or the agent already exited and left a shell behind. Plain `idle`
+            // only: Claude Code's `shell` has a background shell running, and killing the tmux
+            // session would end it.
+            if !closable(&agents, now_ms) {
                 continue;
             }
             match crate::core::tmux::kill_session(&s.tmux_session) {
@@ -669,6 +677,25 @@ mod tests {
         );
         assert_eq!(strip_frontmatter("Do it.\n---\nmore"), "Do it.\n---\nmore");
         assert_eq!(strip_frontmatter("---\nunterminated"), "---\nunterminated");
+    }
+
+    #[test]
+    fn only_a_plain_idle_session_is_closable() {
+        let now = 10 * QUIET_BEFORE_CLOSE_MS;
+        let at = |status: &str, updated_at: Option<i64>| Session {
+            status: status.into(),
+            updated_at,
+            ..Default::default()
+        };
+        let old = Some(now - QUIET_BEFORE_CLOSE_MS - 1);
+        assert!(
+            closable(&[&at("idle", old)], now),
+            "control: idle and quiet"
+        );
+        // `shell`: idle with a background Bash running; closing would end it.
+        assert!(!closable(&[&at("shell", old)], now));
+        assert!(!closable(&[&at("idle", old), &at("shell", old)], now));
+        assert!(!closable(&[&at("idle", Some(now))], now), "not quiet yet");
     }
 
     #[test]

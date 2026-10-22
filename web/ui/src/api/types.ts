@@ -12,7 +12,8 @@ export interface Session {
   pid?: number
   name?: string | null
   cwd?: string | null
-  /** Unknown strings are possible from newer CLIs — treat as `unknown`. */
+  /** Unknown strings are possible from newer CLIs — treat as `unknown`. Claude Code's `shell`
+   *  (idle, a background shell running) is idle: `statusMeta` reads it so. */
   status?: SessionStatus | string | null
   /** Last activity, epoch ms. */
   updated_at?: number | null

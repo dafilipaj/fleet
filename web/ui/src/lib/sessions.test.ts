@@ -49,6 +49,14 @@ test('statusMeta / statusLabel', () => {
   expect(statusLabel({ status: 'busy', waiting_for: 'x' })).toBe('working')
 })
 
+test('statusMeta: `shell` (idle, a background shell running) is idle, labelled as such', () => {
+  expect(statusMeta('shell')).toEqual({ key: 'idle', label: 'idle · shell' })
+  expect(statusLabel({ status: 'shell', waiting_for: null })).toBe('idle · shell')
+  const f: FleetResponse = { self: 'laptop', hosts: [{ name: 'laptop', ok: true, sessions: [s({ session_id: 'x', status: 'shell' })] }] }
+  expect(listView(f, { status: 'idle' }).sessions.map((x) => x.session_id)).toEqual(['x'])
+  expect(statusSummary(f)).toEqual({ waiting: 0, busy: 0, idle: 1 })
+})
+
 test('listView: flat, sorted by last activity, counts per status', () => {
   const v = listView(fleet, {})
   expect(v.sessions.map((x) => x.session_id)).toEqual(['b', 'c', 'a'])

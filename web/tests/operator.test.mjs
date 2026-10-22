@@ -174,6 +174,26 @@ test('operator: stamp marks its row; tick clears an operator idle for an hour, o
   assert.equal(sent.length, 1);
 });
 
+test('operator: tick never clears a `shell` operator (a background Bash is running), only plain idle', async (t) => {
+  const config = tmpConfig(t, { clearIdleMinutes: 60 });
+  const t0 = 10 * 3600 * 1000;
+  const op = { session_id: 'op-0000-1111', cwd: config.operator.dir, harness: 'claude', status: 'shell', updated_at: t0 - 2 * 3600 * 1000, context: { used: 5000 } };
+  const sent = [];
+  const operator = createOperator({
+    config,
+    fleet: { localHost: async () => ({ ok: true, sessions: [op] }) },
+    spawner: {},
+    cli: { send: async ({ target, text }) => void sent.push([target, text]) },
+    now: () => t0,
+  });
+  await operator.prepare();
+  assert.equal(await operator.tick(), null, 'shell is left alone');
+  assert.deepEqual(sent, []);
+  op.status = 'idle';
+  assert.equal(await operator.tick(), 'op-0000-1111', 'control: the same session, plain idle');
+  assert.deepEqual(sent, [['id:op-0000-1111', '/clear']]);
+});
+
 test('/api/operator: the first answering host of web.operator.hosts', async (t) => {
   const state = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-operator-'));
   t.after(() => fs.rmSync(state, { recursive: true, force: true }));

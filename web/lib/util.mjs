@@ -1,7 +1,7 @@
 // Pure helpers — no I/O, easy to unit test.
 
-/** Status ordering: things that need you first. */
-export const STATUS_RANK = { waiting: 0, busy: 1, idle: 2, unknown: 3 };
+/** Status ordering: things that need you first. `shell` is Claude Code's idle with a background shell running. */
+export const STATUS_RANK = { waiting: 0, busy: 1, idle: 2, shell: 2, unknown: 3 };
 
 export function statusRank(status) {
   const r = STATUS_RANK[String(status ?? '').toLowerCase()];

@@ -329,6 +329,13 @@ test('briefs: an idle session gets resources, its todos and one model summary', 
   assert.equal(s.read(), before);
 });
 
+test('briefs: `shell` (idle, a background shell running) is idle', async (t) => {
+  const s = setup(t);
+  s.state.sessions[0].status = 'shell';
+  await s.svc.tick();
+  assert.equal(s.asks.length, 1);
+});
+
 test('briefs: gates — busy / not idle long enough, too little new, min interval, hourly cap', async (t) => {
   const s = setup(t, { settings: { maxCallsPerHour: 2 } });
   s.state.sessions[0].status = 'busy';
