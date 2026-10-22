@@ -1,0 +1,2 @@
+{"type":"user","timestamp":"2026-01-01T00:01:00Z","origin":{"kind":"human"},"message":{"content":"Synthetic prompt"}}
+{"type":"assistant","timestamp":"2026-01-01T00:02:00Z","effort":"high","message":{"model":"claude-sonnet-4-5","usage":{"input_tokens":10}}}

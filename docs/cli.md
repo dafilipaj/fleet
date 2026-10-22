@@ -127,6 +127,27 @@ A machine whose config has `"spawn": false` (an always-on server that runs no ag
 (config spawn: false)`, also when reached with `-H <host>` (the remote CLI reads its own config).
 tmux-only commands (`new`, `tmux …`) still work.
 
+### List JSON: subagents
+
+Every `fleet list --json` row carries `subagents`: `{ "running": n, "finished": m }`, or
+`null` when unknown. Both counts are nonnegative whole numbers; `finished` alone may be
+`null` when the Turn start is unknown: no prompt in the last 8 MiB of the Transcript, or
+its latest prompt has no usable timestamp.
+`running` includes tasks started in earlier Turns; `finished` includes only tasks that
+started and ended since the last main-thread prompt. Notifications and local commands such
+as `/effort` do not start a Turn. These counts do not change the Session's Status.
+
+Supported for Claude Code 2.1.301+ with a registry start time and a located Transcript,
+from its Subagent sidecars. No sidecar directory means zero; malformed sidecars are skipped,
+and sidecars older than the Session's start are ignored. A sidecar marked finished still
+counts as running while its latest task notification says the task waits on background work
+of its own or resumes on new input, until a later notification or a successful `TaskStop`
+settles it. Nested, stopped and forked tasks
+count; background shell commands do not. Codex and pi always return `null` for now:
+Codex counting waits on a known pairing bug: Fleet's Codex pairing can pick a child agent's
+rollout, rather than the parent's, as an interactive Session's Transcript.
+See [architecture](architecture.md#subagent-counts) for the read strategy and known limits.
+
 ### Spawning
 
 Before anything opens, `spawn` checks that the directory exists, the name, model and effort are valid,
