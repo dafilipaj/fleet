@@ -102,26 +102,44 @@ pub fn pane_size(s: &Session) -> Option<(u32, u32)> {
     }
 }
 
-/// Where the terminal's cursor is, `(column, row)` from the screen's top left, where it costs
-/// one tmux call: a tmux pane's, while the cursor shows. `None` for iTerm, a hidden cursor,
-/// under `FLEET_FIXTURE`, or when the pane does not answer.
-pub fn cursor(s: &Session) -> Option<(usize, usize)> {
-    if s.backend != Backend::Tmux || deny_fixture().is_err() {
-        return None;
-    }
-    let at = tmux_query(
-        s.handle.as_deref()?,
-        "#{cursor_flag} #{cursor_x} #{cursor_y}",
-    )
-    .ok()?;
-    parse_cursor(&at)
+/// What the terminal says of its cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TermCursor {
+    /// It shows, at `(column, row)` from the screen's top left.
+    At(usize, usize),
+    /// The program running there hid it (`\e[?25l`: tmux's `cursor_flag` 0). Claude Code does,
+    /// unless its native cursor is on, and paints a caret of its own in its input box instead.
+    Hidden,
+    /// Not known: iTerm (which gives none), `FLEET_FIXTURE`, or the query failing.
+    Unknown,
 }
 
-/// `#{cursor_flag} #{cursor_x} #{cursor_y}` → the cursor's `(column, row)`, when it shows.
-fn parse_cursor(s: &str) -> Option<(usize, usize)> {
+/// What the terminal's cursor is, where it costs one tmux call: a tmux pane's. See
+/// [`TermCursor`].
+pub fn cursor(s: &Session) -> TermCursor {
+    if s.backend != Backend::Tmux || deny_fixture().is_err() {
+        return TermCursor::Unknown;
+    }
+    let Some(pane) = s.handle.as_deref() else {
+        return TermCursor::Unknown;
+    };
+    match tmux_query(pane, "#{cursor_flag} #{cursor_x} #{cursor_y}") {
+        Ok(at) => parse_cursor(&at),
+        Err(_) => TermCursor::Unknown,
+    }
+}
+
+/// `#{cursor_flag} #{cursor_x} #{cursor_y}` → the cursor's `(column, row)` while it shows,
+/// [`TermCursor::Hidden`] while it does not, [`TermCursor::Unknown`] for anything else.
+fn parse_cursor(s: &str) -> TermCursor {
+    let num = |n: &str| n.parse::<usize>().ok();
     match s.split_whitespace().collect::<Vec<_>>()[..] {
-        ["1", x, y] => Some((x.parse().ok()?, y.parse().ok()?)),
-        _ => None,
+        ["1", x, y] => match (num(x), num(y)) {
+            (Some(x), Some(y)) => TermCursor::At(x, y),
+            _ => TermCursor::Unknown,
+        },
+        ["0", x, y] if num(x).is_some() && num(y).is_some() => TermCursor::Hidden,
+        _ => TermCursor::Unknown,
     }
 }
 
@@ -2124,11 +2142,12 @@ mod tests {
 
     #[test]
     fn the_cursor_is_read_only_while_it_shows() {
-        assert_eq!(parse_cursor("1 3 20"), Some((3, 20)));
-        assert_eq!(parse_cursor("0 3 20"), None);
-        assert_eq!(parse_cursor("1 3"), None);
-        assert_eq!(parse_cursor("1 x 20"), None);
-        assert_eq!(parse_cursor(""), None);
+        assert_eq!(parse_cursor("1 3 20"), TermCursor::At(3, 20));
+        assert_eq!(parse_cursor("0 3 20"), TermCursor::Hidden);
+        assert_eq!(parse_cursor("1 3"), TermCursor::Unknown);
+        assert_eq!(parse_cursor("1 x 20"), TermCursor::Unknown);
+        assert_eq!(parse_cursor("0 x 20"), TermCursor::Unknown);
+        assert_eq!(parse_cursor(""), TermCursor::Unknown);
     }
 
     #[test]

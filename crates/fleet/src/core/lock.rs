@@ -7,7 +7,10 @@
 //! without it, into a terminal just opened, where no registered session runs yet: `spawn` and
 //! `restore` (the launch line), and the web spawn's answer to the agent's first-run trust
 //! dialog (no session id to lock until it is past it). A lock already held fails fast —
-//! nothing waits for it.
+//! nothing waits for it. The lock is named after the session's id, which can change under the
+//! same process (`/clear`): `send`, `keys`, `answer`, `close` and the renames look the process
+//! up again once they hold it, and type nothing if its id is no longer the one locked
+//! ([`still_named`]).
 
 use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
@@ -95,6 +98,45 @@ pub fn for_typing(s: &Session) -> Result<Option<SessionLock>, LockError> {
         return Ok(None);
     }
     try_lock(s).map(Some)
+}
+
+/// With `s`'s lock held: does its process still run the session that lock is named after? The
+/// lock is keyed by session id, and a session's id can change under the same process (Claude
+/// Code's `/clear` starts a new one). `s` was looked up before the lock was taken; if its id
+/// changed in between, another fleet command looking the session up now takes the new id's
+/// lock, and the two would type into the same terminal at once. So, under the lock, the
+/// process is looked up again by its pid (`pid:` as the exact target reads it): another lock
+/// path is `target_changed`, the process gone `target_not_found` — and `untouched` (what was
+/// not done) closes the message. Nothing to check where nothing is locked (a canned fleet).
+pub fn still_named(s: &Session, untouched: &str) -> crate::error::Result<()> {
+    use crate::core::discovery::{self, TargetError};
+    use crate::error::Error;
+    if discovery::is_fixture() {
+        return Ok(());
+    }
+    let now = discovery::resolve_target(&format!("pid:{}", s.pid)).map_err(|e| match e {
+        TargetError::NotFound(m) => Error::tagged("target_not_found", format!("{m}; {untouched}")),
+        e => Error::tagged(
+            "target_changed",
+            format!(
+                "pid {} no longer resolves to one session: {e}; {untouched}",
+                s.pid
+            ),
+        ),
+    })?;
+    if lock_path(&now) != lock_path(s) {
+        let id = |s: &Session| s.session_id.clone().unwrap_or_else(|| "none".into());
+        return Err(Error::tagged(
+            "target_changed",
+            format!(
+                "pid {} now runs session {}, not {} (its id changed, as `/clear` changes it, since it was looked up); {untouched}",
+                s.pid,
+                id(&now),
+                id(s)
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// How long a `spawn --resume` holds a session it started whose host is unknown or idle: the

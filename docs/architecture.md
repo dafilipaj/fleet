@@ -573,7 +573,16 @@ answered tabs; for the final Enter the whole review). `core::lock` is the per-se
 
 See [cli.md](cli.md#sending). Under the session's typing lock, `core::input` reads the visible
 screen once with its text attributes (`backend::peek_styled`: tmux `capture-pane -p -e`; iTerm's
-text has none) and the text is typed under that same lock. Text in the box (`reason: "text"`) or
+text has none) and, for Claude Code, its caret (`backend::cursor`: the terminal's cursor, its
+position while it shows, `Hidden` while it does not — then the one reverse-video cell Claude Code
+paints in its box; blanks typed in the box show only by the caret, and without one a box
+showing nothing is `unreadable`), and the text is typed under that same lock. Holding the
+lock, the process is looked up again by its pid (`lock::still_named`): the lock is named after
+the session id, which `/clear` changes, so a new id there is `target_changed`, nothing typed
+(`keys`, `answer`, `close` and the renames check the same). An `io` failure of `send`, `keys`,
+`rename`, `answer` or `close` carries `typed` (`commands::typed_field`): whether a key
+reached the pane before it — an addition a caller retries by instead of parsing `error`.
+Text in the box (`reason: "text"`) or
 a prompt in its place (`"prompt"`) holds the send; no box found (`"no_input_box"`) or none
 readable (`"unreadable"`) types, adding `warning: <reason>` to `{ ok: true, host, target }` and
 one line on stderr — unless `--require-empty`, which holds on those too. Held is `{ ok: false,
@@ -595,7 +604,8 @@ and `close` (no exit command, straight to the kill) read the box the same way.
   out.
 - **Assumption:** the harnesses draw what an empty box shows faint, and typed text never.
   Claude Code 2.1's rendering was read from its code (placeholder `chalk.dim`, its drawn cursor
-  `\e[7m` on the placeholder's first character, none with the terminal's cursor, the IDE pill
+  `\e[7m` on the placeholder's first character — the terminal's cursor hidden then, unless its
+  native cursor is on, when it draws none —, the IDE pill
   `[${…}] ` in the theme's `ide` colour); the fixtures in `testdata/screens` are tmux captures of
   synthetic screens in each layout (`gen.sh` there makes them), not of live sessions.
 

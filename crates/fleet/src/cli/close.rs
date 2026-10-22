@@ -38,7 +38,7 @@ use std::time::{Duration, Instant};
 use colored::Colorize;
 use serde_json::json;
 
-use crate::cli::commands::{host_label, json_failure};
+use crate::cli::commands::{host_label, json_failure_with, typed_field};
 use crate::core::backend::{self, Key};
 use crate::core::discovery::{self, Backend, Proc, Session, TargetError};
 use crate::core::hosts;
@@ -238,9 +238,13 @@ fn look<'a>(procs: &'a [Proc], agent: &Agent, pane_tty: Option<&str>) -> Look<'a
 
 pub fn run(o: Opts) -> Result<()> {
     let dry_run = hosts::dry_run();
-    let c = match close(&o, dry_run) {
+    let mut keyed = false;
+    let c = match close(&o, dry_run, &mut keyed) {
         Ok(c) => c,
-        Err(e) if o.json => return Err(json_failure(e)),
+        Err(e) if o.json => {
+            let kind = e.kind();
+            return Err(json_failure_with(e, |v| typed_field(v, kind, keyed)));
+        }
         Err(e) => return Err(e),
     };
     let s = &c.session;
@@ -273,7 +277,9 @@ pub fn run(o: Opts) -> Result<()> {
     Ok(())
 }
 
-fn close(o: &Opts, dry_run: bool) -> Result<Closed> {
+/// `keyed` is set once a key reached (or may have reached) the agent's pane: Escape, or its
+/// exit command being typed.
+fn close(o: &Opts, dry_run: bool, keyed: &mut bool) -> Result<Closed> {
     match discovery::exact_target(&o.target) {
         None => {
             return Err(Error::tagged(
@@ -347,6 +353,9 @@ fn close(o: &Opts, dry_run: bool) -> Result<Closed> {
             LockError::Io(_) => Error::tagged("io", msg),
         }
     })?;
+    // The lock is named after the session id the lookup read; a `/clear` since then leaves
+    // another fleet command free to take the new id's and type alongside.
+    lock::still_named(&s, "nothing typed or killed")?;
     let exit = s.harness.exit_command();
     // Nothing is typed unless the agent owns its pane: one suspended or in the background
     // would leave Escape and its exit command to the shell in front of it, and one that
@@ -365,8 +374,14 @@ fn close(o: &Opts, dry_run: bool) -> Result<Closed> {
     }
 
     if standing == Standing::Owns && matches!(s.status.as_str(), "busy" | "waiting") {
-        backend::keys(&s, &[Key::Escape])
-            .map_err(|e| Error::tagged("io", format!("{e}; nothing typed or killed")))?;
+        // Set before the attempt: Escape can reach the pane and its invocation still fail.
+        *keyed = true;
+        backend::keys(&s, &[Key::Escape]).map_err(|e| {
+            Error::tagged(
+                "io",
+                format!("{e}; Escape may have been typed, nothing killed"),
+            )
+        })?;
         typed = "Escape was typed";
         settle(&o.target);
         standing = owns(&agent, &pane, typed)?;
@@ -374,6 +389,7 @@ fn close(o: &Opts, dry_run: bool) -> Result<Closed> {
     let mut exited = match (standing, exit) {
         (Standing::Owns, Some(_)) if !box_clear(&s) => false,
         (Standing::Owns, Some(cmd)) => {
+            *keyed = true;
             backend::send(&s, cmd).map_err(|e| e.tag("io"))?;
             typed = "its exit command was typed";
             wait_exit(&agent, Duration::from_secs(o.timeout))

@@ -233,6 +233,16 @@ pub fn json_failure_with(e: Error, extend: impl FnOnce(&mut serde_json::Value)) 
     e
 }
 
+/// `typed` on the `--json` failure object of a command that types into a session (`send`,
+/// `keys`, `rename`, `answer`, `close`), when its `kind` is `io`: whether any key
+/// reached the pane before the failure — `true` once typing began (a key that may or may not
+/// have gone out counts), `false` when nothing did. A caller retries only on `false`.
+pub fn typed_field(v: &mut serde_json::Value, kind: &str, typed: bool) {
+    if kind == "io" {
+        v["typed"] = typed.into();
+    }
+}
+
 pub fn list(json: bool) -> Result<()> {
     let rows = list_rows();
     if json {
@@ -317,12 +327,16 @@ pub const SEND_HELD_EXIT: i32 = 3;
 pub fn send(target: &str, text: &str, json: bool, force: bool, require_empty: bool) -> Result<()> {
     let mut shown: Option<String> = None;
     let mut warned: Option<(&'static str, &'static str)> = None;
+    let mut typing = false;
     let mut run = || -> Result<Session> {
         let s = discovery::resolve_target(target)?;
         // Never interleave with another fleet command typing into the same session — and read
         // the input box under that same lock, so no fleet command types between the read and
         // the text. (No lock: nothing can be typed there at all, and `backend::send` says so.)
         let lock = typing_lock(&s, "nothing sent")?;
+        if lock.is_some() {
+            crate::core::lock::still_named(&s, "nothing sent")?;
+        }
         if !force && lock.is_some() {
             let read = crate::core::input::of(&s).map_err(|e| {
                 let e = e.tag("backend_failed");
@@ -344,6 +358,7 @@ pub fn send(target: &str, text: &str, json: bool, force: bool, require_empty: bo
                 warned = read.warning().map(|w| (reason, w));
             }
         }
+        typing = true;
         backend::send(&s, text)?;
         drop(lock);
         Ok(s)
@@ -356,6 +371,7 @@ pub fn send(target: &str, text: &str, json: bool, force: bool, require_empty: bo
             if let Some(text) = shown {
                 v["input"] = text.into();
             }
+            typed_field(&mut v, e.kind(), typing);
             println!(
                 "{}",
                 serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string())
@@ -457,17 +473,26 @@ pub fn sleep(target: &str, json: bool) -> Result<()> {
 /// interrupt a turn, arrows and Enter to answer a menu. `--json`: `{ ok, host, target:
 /// { session_id, pid }, keys }`, or `{ ok: false, host, kind, error }` (exit 1).
 pub fn keys(target: &str, names: &[String], json: bool) -> Result<()> {
-    let run = || -> Result<(Session, Vec<backend::Key>)> {
+    let mut typing = false;
+    let mut run = || -> Result<(Session, Vec<backend::Key>)> {
         let keys = parse_keys(names)?;
         let s = discovery::resolve_target(target)?;
         // The same per-session lock as `send` and `answer`: their keys never interleave.
-        let _lock = typing_lock(&s, "nothing pressed")?;
+        let lock = typing_lock(&s, "nothing pressed")?;
+        if lock.is_some() {
+            crate::core::lock::still_named(&s, "nothing pressed")?;
+        }
+        typing = true;
         backend::keys(&s, &keys)?;
+        drop(lock);
         Ok((s, keys))
     };
     let (s, keys) = match run() {
         Ok(done) => done,
-        Err(e) if json => return Err(json_failure(e)),
+        Err(e) if json => {
+            let kind = e.kind();
+            return Err(json_failure_with(e, |v| typed_field(v, kind, typing)));
+        }
         Err(e) => return Err(e),
     };
     let names: Vec<&str> = keys.iter().map(|k| k.name()).collect();
@@ -610,7 +635,12 @@ pub fn rename(
     let outcome = match apply_rename(&s, &name, opts) {
         Ok(o) => o,
         // `busy` (another command typing into it) and the rest: one JSON object, as documented.
-        Err(e) if json => return Err(json_failure(e)),
+        // Its `io` failures all come before `/rename` is typed (the lock, the box's read): a
+        // failure typing it is `backend_failed`, and nothing fails once it is typed.
+        Err(e) if json => {
+            let kind = e.kind();
+            return Err(json_failure_with(e, |v| typed_field(v, kind, false)));
+        }
         Err(e) => return Err(e),
     };
     let tmux_note = outcome.tmux_note();
