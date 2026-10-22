@@ -234,7 +234,7 @@ pub fn json_failure_with(e: Error, extend: impl FnOnce(&mut serde_json::Value)) 
 }
 
 /// `typed` on the `--json` failure object of a command that types into a session (`send`,
-/// `keys`, `rename`, `answer`, `close`), when its `kind` is `io`: whether any key
+/// `keys`, `rename`, `answer`, `model`, `close`), when its `kind` is `io`: whether any key
 /// reached the pane before the failure — `true` once typing began (a key that may or may not
 /// have gone out counts), `false` when nothing did. A caller retries only on `false`.
 pub fn typed_field(v: &mut serde_json::Value, kind: &str, typed: bool) {

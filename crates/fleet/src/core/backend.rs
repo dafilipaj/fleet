@@ -198,6 +198,100 @@ pub fn peek_styled(s: &Session) -> Result<(String, bool)> {
     }
 }
 
+/// [`peek_styled`] of a tmux pane, its `capture-pane` given at most `limit`: past it the call
+/// is killed and the read is an error, so a tmux server that stopped answering cannot stall a
+/// caller with a deadline of its own (`fleet model`'s wait for its outcome). Anything but a
+/// tmux pane is [`peek_styled`] itself.
+pub fn peek_styled_within(s: &Session, limit: std::time::Duration) -> Result<(String, bool)> {
+    deny_fixture()?;
+    let handle = require_handle(s)?;
+    if s.backend != Backend::Tmux {
+        return peek_styled(s);
+    }
+    let out = tmux_within(&["capture-pane", "-t", handle, "-p", "-e"], limit)?;
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    tmux_ok(out, &format!("tmux capture-pane -t {handle}"))?;
+    Ok((text, true))
+}
+
+/// [`press`] into a tmux pane, its `send-keys` given at most `limit` (killed past it: the key
+/// may or may not have gone out). Anything but a tmux pane is [`press`] itself.
+pub fn press_within(s: &Session, key: &str, limit: std::time::Duration) -> Result<()> {
+    deny_fixture()?;
+    let handle = require_handle(s)?;
+    if s.backend != Backend::Tmux {
+        return press(s, key);
+    }
+    let args = match Key::parse(key) {
+        Some(k) => vec!["send-keys", "-t", handle, k.name()],
+        None if key.chars().count() == 1 && key.chars().all(|c| c.is_ascii_alphanumeric()) => {
+            vec!["send-keys", "-t", handle, "-l", "--", key]
+        }
+        None => return Err(Error::Other(format!("no such key: {key}"))),
+    };
+    let out = tmux_within(&args, limit)?;
+    tmux_ok(out, &format!("tmux send-keys -t {handle}"))
+}
+
+/// `tmux <args>`, given at most `limit` (at least a millisecond): its output, or — once it has
+/// run that long — the call killed and reaped, and an `io` error saying so.
+pub fn tmux_within(args: &[&str], limit: std::time::Duration) -> Result<std::process::Output> {
+    use std::io::Read;
+    use std::process::Stdio;
+    let limit = limit.max(std::time::Duration::from_millis(1));
+    let mut child = crate::core::tools::tmux_cmd()
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut p) = pipe {
+                let _ = p.read_to_end(&mut buf);
+            }
+            buf
+        })
+    };
+    let out = drain(
+        child
+            .stdout
+            .take()
+            .map(|p| Box::new(p) as Box<dyn Read + Send>),
+    );
+    let err = drain(
+        child
+            .stderr
+            .take()
+            .map(|p| Box::new(p) as Box<dyn Read + Send>),
+    );
+    let end = std::time::Instant::now() + limit;
+    let status = loop {
+        if let Some(st) = child.try_wait()? {
+            break st;
+        }
+        if std::time::Instant::now() >= end {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(Error::tagged(
+                "io",
+                format!(
+                    "tmux {} gave no answer within {} ms",
+                    args.first().unwrap_or(&""),
+                    limit.as_millis()
+                ),
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    Ok(std::process::Output {
+        status,
+        stdout: out.join().unwrap_or_default(),
+        stderr: err.join().unwrap_or_default(),
+    })
+}
+
 /// One `capture-pane -p` of `handle`, with `args`. A capture tmux says failed (the pane or the
 /// server gone) is an error, never an empty screen: `answer` would read that as its prompt
 /// having gone, i.e. answered — and `send` as an empty input box.

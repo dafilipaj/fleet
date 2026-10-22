@@ -66,7 +66,7 @@ or its id.
   only the named one is inspected and read. Either way no context usage is read.
 
 Every verb that takes a session `<target>` accepts them (`peek`, `send`, `keys`, `rename`, `name`,
-`brief`, `spawn --from`, `stack …`; `close` takes nothing else). A **gone** session's brief is found by `id:<id>` too, but only
+`brief`, `spawn --from`, `stack …`; `close` and `model` take nothing else). A **gone** session's brief is found by `id:<id>` too, but only
 when no live session matches — an ambiguous or malformed target stays an error.
 
 With `--json`, a target that does not resolve prints `{ ok: false, host, kind, error }` on stdout:
@@ -91,6 +91,7 @@ member (see [Stacks](#stacks)).
 | `fleet ask-done <target>` | ask a tmux session to report itself done once finished: types the [instruction](#ask-done) into it. A session waiting on a prompt is refused |
 | `fleet keys <target> <key>... [--json]` | press named keys in the session's terminal, in order (80 ms apart), holding the session's lock as `send` and `answer` do: `Escape` (interrupt a turn), `Enter`, `Up`, `Down`, `Left`, `Right`, `Tab`, `BTab` (Shift-Tab), `Space`, `C-c`. Names are tmux's, case-sensitive; any other name is refused (exit 1, kind `invalid_key`) and nothing is pressed. tmux sessions get one `send-keys` per key, iTerm sessions the bytes a terminal sends for the key. **Not atomic:** the first key that fails stops the call — the keys before it stay pressed (nothing can take them back), the rest are not sent, and the error says how many got through (`… — 1 of 3 keys pressed before it`). After `Escape`, wait about a second before a `send`: Claude Code puts the stopped prompt back in its input box only once the turn has stopped, and a `send` that reads the box before then types after it (see [Sending](#sending)). `--json`: `{ ok: true, host, target: { session_id, pid }, keys: [...] }`, or `{ ok: false, host, kind, error }` (exit 1) — kind `invalid_key`, `target_not_found`, `target_ambiguous`, `target_invalid`, `target_changed` (the session's id changed between its lookup and its lock; nothing is pressed), `busy` (another fleet command is typing into the session; nothing is pressed), `backend_unsupported` (no tmux pane or iTerm session to drive), `backend_failed` or `io` (with `typed`, see [Sending](#sending)); a command line clap rejects (an unknown flag, wherever `--json` stands) is the same object with kind `usage`, exit 2 |
 | `fleet close <id:… \| pid:…> [--json] [--timeout <s>] [--expect-pid <n> --expect-start <t>]` | end a session that is alone in its own tmux session (the layout `spawn` creates): its exit command (not when its input box holds text or a prompt), then that tmux session is killed; exact targets only, `-n` touches nothing — see [Closing sessions](#closing-sessions) |
+| `fleet model <id:… \| pid:…> <model-id> [--json] [--expect-pid <n> --expect-start <t>] [--require-empty]` | switch a Claude Code session's model as `/model <id>` in its terminal does (the pick also becomes Claude Code's default for new sessions), answering only Claude Code's confirmation of that switch; typed only into an idle session's empty input box, under its typing lock; done once its transcript says `Set model to …`; exact targets only, `-n` types nothing — see [Switching the model](#switching-the-model) |
 | `fleet answer <target> [--json] [--allow-attached] (--list \| --choice <n> [--prompt <id>] \| --question <tool_use_id> --answers <json>)` | answer the prompt the session waits on by typing what a human would — only while the terminal shows that very prompt, untouched; see [Answering prompts](#answering-prompts) |
 | `fleet rename <target> <title> [--no-tmux-sync] [--force] [--require-empty] [--json]` | rename the session's one title: Claude's `/rename` (the source of truth), then its tmux session follows as a slug of it (`Fix Login` → `fix-login`, `-2` on a collision) when the tmux session is that Claude session's own (one window, one pane). A session **waiting on a prompt** is held (exit 1; `--json`: exit 3) — typed keys would be its answer; busy sessions are fine (Claude runs `/rename` mid-turn without disturbing the turn). Codex gets `/rename`, pi `/name`; a busy Codex / pi session is held too (`held: "busy"`) — they would queue the text as a message. `--force` overrides the hold. It types under the session's typing lock (see [Answering prompts](#answering-prompts)): another fleet command typing into the session makes it fail at once (kind `busy`, nothing sent); and, unless forced, the input box is read under the lock, as `send` reads it ([Sending](#sending)) — a prompt that came up since the lookup holds it as waiting, and text in the box (a prompt Escape put back, a draft: `/rename` would go out with it as one prompt) holds it as `held: "input"`; a box fleet cannot find or read (a panel such as `/usage`, a dialog, the transcript view) holds nothing — unless `--require-empty`, which holds it as `send --require-empty` does, with `send`'s reasons: `held: "no_input_box"` or `"unreadable"` (see [Sending](#sending); `--force` skips the read, and so this). `--json` prints `{ ok, result: renamed\|sent\|held, session_id, pid, host, from, title, held, tmux: { renamed, from, to, note }, message }`; a failure before that report (`busy`, a target error, `target_changed` when the session's id changed between its lookup and its lock, `io` with `typed: false`) is `{ ok: false, host, kind, error }` (exit 1) |
 | `fleet name [<target> \| --all [--settled]] [--apply] [--refresh] [--no-tmux-sync]` | suggest a name from what the session is doing; only `--apply` sends it (through the same path as `rename`, tmux included). `--all` = every session with a derived (cwd+hash) name. A derived-name session alone in a tmux session somebody named (`fleet new fix-login`) adopts that name (`(tmux)`, no model call) instead of getting a generated one. `--settled` (with `--all`) skips sessions with one prompt and no brief yet — the model reads the brief's Summary and the first three prompts, and a lone first prompt is often just a link. `--refresh` ignores the cache |
@@ -109,7 +110,7 @@ member (see [Stacks](#stacks)).
 | `fleet usage [--json] [--refresh]` | usage limits on this host, as bars with reset times. **Claude**: the subscription of this host's login — current session (5h), weekly all models, weekly per model (e.g. Fable), extra usage; the numbers Claude Code's `/usage` shows. Cached 60s (`--refresh` skips it); a failed read serves the last one marked stale and backs off 2 minutes. **Codex**: the 5h and weekly windows (plus any scoped ones), plan and credits from the newest rate-limit snapshots in Codex's transcripts (no network call, no cache), as of the last Codex turn on this host; skipped when Codex isn't installed. `--json`: Claude's fields at the top level as before, plus `providers[]` — see [Usage JSON](#usage-json). `-H <host>` reads another machine's |
 | `fleet skill install [--force]\|show` | install / print the Claude Code skill (`~/.claude/skills/fleet/SKILL.md`; `--force` overwrites a different one) |
 
-`send`, `rename --force`, `name --apply` and `spawn` change a live agent's state — scripts and agents
+`send`, `model`, `rename --force`, `name --apply` and `spawn` change a live agent's state — scripts and agents
 should confirm before running them.
 
 ### Spawning
@@ -371,7 +372,7 @@ choose — passes `--require-empty`, which holds on all four.
   `--require-empty` or not. `fleet peek` shows what the screen holds.
 
 **`io`: whether anything was typed.** A failure of kind `io` from `send`, `keys`, `rename`,
-`answer` or `close` with `--json` carries `typed`: `true` when any key reached the
+`answer`, `model` or `close` with `--json` carries `typed`: `true` when any key reached the
 pane before it, or may have (one that failed going out counts), `false` when nothing did — the
 typing lock could not be taken, the screen or a process could not be read before typing. Only
 `typed: false` is safe to retry as is; a caller goes by it, never by the `error` text. Other
@@ -713,6 +714,145 @@ kind has none; a caller that does not know a reason goes by `kind` alone):
 | `host_shared` | `shared_host` | its tmux session holds more than its one pane (another window or pane, a linked window), or no longer holds that pane, at the start or at the kill |
 | `host_shared` | `job_in_front` | the agent is suspended or in the background, and another job of the pane's shell is in front of it |
 | `host_shared` | `other_jobs` | another job is stopped on the pane's terminal (in front of the agent or behind it) |
+
+### Switching the model
+
+`fleet [-n] model <target> <model-id> [--json] [--expect-pid <n> --expect-start <t>]
+[--require-empty]` switches a Claude Code session to another model, as `/model <model-id>` typed
+in its terminal does: from its next reply on, and as Claude Code's default for new sessions too
+(`/model` saves it there). A plain `send "/model …"` is not enough: while the prompt cache is warm
+(on a subscription, for an hour after the last reply) Claude Code asks to confirm the switch, and
+`send` returns before Claude Code acts, so the caller would need a second command to confirm it
+(`answer`, which reads that dialog as a permission prompt) and still could not tell whether the
+switch happened. `model` confirms only that very switch, under the one lock it typed under, and
+reads the outcome off the transcript.
+
+- **Exact targets only:** `id:<session_id>` or `pid:<n>`; anything else is `usage`.
+  `--expect-pid` and `--expect-start` (both or neither) name the process the caller saw, a
+  `list --json` row's `pid` and `proc_start`, as for `close`: another process now is
+  `target_changed`.
+- **The model id** is checked as `spawn --model`'s (letters, digits and `._[]-/:`, at most 100;
+  blank is `usage`) and typed as given. Claude Code says whether it knows it.
+- **Claude Code only.** Codex (0.163 opens a picker on `/model`) and pi are
+  `harness_unsupported`; an iTerm tab is `backend_unsupported` (the box is read with its text
+  attributes, which only tmux gives).
+- **Checks, under the session's typing lock**, right before typing, in this order — nothing is
+  typed unless all four hold:
+  1. the agent owns its pane, by `close`'s foreground check: that very process, in the
+     foreground of its pane's terminal, nothing of its own reading the terminal in front of it.
+     Its editor open is `busy` (`editor_open`); suspended behind another job `host_shared`
+     (`job_in_front`); suspended (Ctrl-Z) or in the background with only its shell in front,
+     `host_shared` with the new reason `suspended` — the shell's prompt would get the text
+     (`close` kills such a session instead); exited, `target_not_found`. A job stopped
+     elsewhere on the terminal does not matter here (nothing is killed): `close`'s
+     `other_jobs` does not apply;
+  2. its Status, read afresh as `list` reads it (Claude Code's session registry, not the
+     screen), is `idle` — else `not_idle`, its `status` given. That read, by the agent's pid
+     whatever the target, must still be the session the lock was taken for: the same process
+     in the same pane, and the same session id — the lock is named after it, and `/clear`
+     gives the same process a new one, whose lock another fleet command could take — else
+     `target_changed` (an `id:` target naming the id a `/clear` replaced too);
+  3. the screen shows no working line over the input box — Claude Code's spinner and its verb,
+     `✳ Actualizing…`, `✽ Symbioting… (4s · …)` — else `not_idle` with `status: "busy"`: the
+     registry can lag a prompt typed straight into the terminal, and the box alone reads empty
+     while a turn runs;
+  4. the input box reads empty, as `send --require-empty` reads it ([Sending](#sending)): the
+     same reader, the caret included (the terminal's cursor, or while that is hidden the one
+     Claude Code paints), so blanks left in Claude Code's box (which it draws as nothing) are
+     text, and a box showing nothing whose caret cannot be found is `unreadable` — else
+     `send_held` with `send`'s `reason` (`text`,
+     `prompt`, `no_input_box`, `unreadable`) and `input`, exit 3. `model` always holds this
+     way: `--require-empty` is accepted, so a caller can pass `send`'s and `rename`'s guard
+     to all three, and changes nothing.
+  The lock is held from these checks to the end, so no fleet command types in between; a
+  prompt typed into the terminal itself still can, and these checks narrow that race, not
+  close it.
+- **Then** it types `/model <model-id>` and Enter, and reads the screen and the transcript, every
+  100 ms for up to 5 s. Each tmux call in that wait gets only what is left of it: a tmux
+  server that stops answering ends the wait at its end (`outcome_uncertain`) instead of
+  holding the lock. Once the command is typed, a read or a key that fails or gets no answer is
+  `outcome_uncertain` too, never `io`:
+  - Claude Code's switch confirmation for **that** model — read by the reader `answer` uses
+    (it is the permission prompt `answer --list` shows), then checked to be "Switch model?",
+    "This conversation is cached for the current model …", exactly `1. Yes, switch to <its
+    label>` and `2. No, go back`, nothing under them — gets the key its first choice names (`1`), once
+    the agent is checked to own its pane again (else that check's refusal, nothing pressed)
+    and a second read of the screen still shows that very confirmation, the lock held
+    throughout. One answered in the terminal in between gets nothing, and the transcript
+    decides. Nothing else is ever pressed. The label must stand for the model asked for as a
+    switch's does (below): the one Claude Code gives the id (`claude-sonnet-5-5` → `Sonnet
+    5.5`, a ` (…)` after it allowed), or for an alias the model it resolves to (`sonnet`:
+    "Yes, switch to Sonnet 5.5"). The transcript then gets at least 2 s more.
+  - Work under way where the box was — a last line of words ending in `…`, a ` (…)` after
+    them aside, as Claude Code's "Running PreModelSwitch hooks… (esc to cancel)" while the
+    hooks run — is waited for, however long, within the wait.
+  - Anything else in place of the input box for half a second — another dialog, a
+    confirmation for another model, one a `PreModelSwitch` hook asks for — is
+    `confirm_unrecognized`: nothing pressed. `fleet peek` shows it.
+  - `Model '<model-id>' not found` under the command is `model_not_found`; a `PreModelSwitch`
+    hook's refusal (`Model switch to <label> was blocked by a PreModelSwitch hook[: <reason>]`)
+    is `switch_refused`. On screen only
+    a line that was not there before the command counts; the transcript says the same.
+- **Success** is the transcript's entry holding `<local-command-stdout>Set model to <label>
+  …</local-command-stdout>` — Claude Code 2.1.306 writes it as a `type: "user"` entry (not
+  `isMeta`), that and nothing else its `message.content`, under the entry naming the command
+  (`<command-name>/model</command-name>`, `<command-args><model-id></command-args>`): its
+  `parentUuid` that entry's `uuid`, or its `promptId` that entry's. A prompt typed as exactly
+  that output is written the same way, under no such entry, and is not a switch. A `type:
+  "system"`, `subtype: "local_command"` entry with it as its `content` (the shape `Kept model as …` and `Model '…'
+  not found` come in) counts the same — timestamped no earlier than the command began, whose
+  `<label>` is positively the model asked for; its
+  `timestamp` is `switched_at`. `<label>` matches `<model-id>` when it is the id itself (a
+  ` (…)` after it aside: Claude Code names a model it has no label for by its id), or when both
+  name one model: fleet pairs the id with its label by its Claude model list (`fleet harness
+  list`: `claude-haiku-5-5` is `Haiku 5.5`), else by the rule Claude Code names Claude ids by,
+  as for the confirmation; an alias (`sonnet`, `opus[1m]`) is the one model of that family on
+  that list; the label is read as a Claude model's (`Sonnet 5.5`, a ` (1M context)` after it
+  aside) or as a Claude model id. A `[1m]` or date suffix (`-20251001`) on either side is the
+  same model. It is `outcome_uncertain` instead when:
+  - `<label>` is not that match: another model's (the message names both, and that fleet's
+    model list may be out of date), or one fleet cannot resolve — `Default (recommended)`, a label in other words, an id of another shape,
+    an alias the list does not have, or no label at all;
+  - the entry says `Kept model as <label>` instead: the switch was declined in the terminal,
+    and the model is unchanged — declined, nothing switched, reported as `outcome_uncertain`;
+  - no such entry comes within the wait: it was typed, and whether it switched is for
+    `fleet peek` to tell.
+- `-n` (or `FLEET_DRY_RUN=1`) runs every check, the lock included, and types nothing.
+
+`list`'s `model` changes only with the session's next reply; `model_at` is that reply's time, so
+a caller that shows the new model until then compares it with `switched_at`.
+
+`--json` prints one object: `{ ok: true, host, session_id, pid, harness, model, confirmed,
+switched_at, dry_run }` — `confirmed` whether Claude Code asked and its first choice was
+picked, `switched_at` the `Set model to` entry's `timestamp` as written (`null` under `-n`).
+Failures are `{ ok: false, host, kind, error }`, exit 1 — exit 3 for `send_held` — with
+`reason` for `busy` and `host_shared` (as `close` gives them), `status` for `not_idle`,
+`reason` plus `input` for `send_held` (`input` the box's text: sensitive, as `send`'s), and
+`typed` for `io`:
+
+| kind | when |
+| --- | --- |
+| `usage` | not an exact target, no or a bad model id, `--expect-*` alone or not a time; clap's own too, wherever `--json` stands (exit 1) |
+| `target_not_found`, `target_ambiguous`, `target_invalid` | the target, as for every verb; `target_not_found` also for an agent that has exited |
+| `target_changed` | another process than `--expect-pid`/`--expect-start`, or than the one looked up, by the time of the checks; or the same process under another session id (a `/clear` since the lookup) |
+| `harness_unsupported` | a Codex or pi session |
+| `backend_unsupported` | not a tmux pane (an iTerm tab), or a `FLEET_FIXTURE` fleet |
+| `busy` | `reason`: `locked` (another fleet command holds the session's lock — retry) or `editor_open` |
+| `host_shared` | `reason`: `job_in_front` or `suspended` (see above) |
+| `not_idle` | `status`: the registry's (`busy`, `waiting`, `unknown`), or `busy` for a working line on screen |
+| `send_held` | the input box is not empty: `reason` `text`, `prompt`, `no_input_box` or `unreadable` (exit 3) |
+| `model_not_found` | Claude Code: `Model '<id>' not found` |
+| `switch_refused` | a `PreModelSwitch` hook refused it |
+| `confirm_unrecognized` | something other than that confirmation or the input box came up; nothing pressed |
+| `outcome_uncertain` | typed, but no `Set model to` within the wait; `Set model to` a label that is not positively the model asked for (another model's, or one fleet cannot match); `Kept model as` (declined in the terminal: nothing switched, the model unchanged); or a read or key that failed or got no answer once the command was typed |
+| `io` | the lock, `ps`, `lsof`, tmux or the typing failed, before or while the command was typed; `typed` says which (`false`: nothing typed, see [Sending](#sending)) |
+
+**Limits.** The confirmation and the answers are read off Claude Code 2.1.303's own screens
+(`testdata/screens/live/claude-model-*`); the transcript's entries are in the shapes Claude Code
+2.1.306 writes (`testdata/claude/model-transcript.jsonl`, made-up values). A confirmation drawn in other words, a third choice or
+a hint under it is `confirm_unrecognized` until fleet learns it. The `PreModelSwitch` refusal's
+wording is checked against the Claude Code 2.1.303 bundle, not a capture. `-H` runs the other host's own
+`model`; a host whose fleet predates it rejects the command (exit 2).
 
 ### Harnesses
 
@@ -1569,7 +1709,7 @@ pointing into its world (a shell it provides, or one it trusts; or set `default-
 | 0 | success |
 | 1 | error, bad usage |
 | 2 | tmux, `stack` and `restore` commands: ambiguous match (candidates are printed) |
-| 3 | `send`: held — text in the input box or a prompt in its place (with `--require-empty`, also no box found or read), nothing typed (kind `send_held`, see [Sending](#sending)); `rename --json`: held (text in the box, a prompt, a waiting or busy session; with `--require-empty`, also no box found or read); `brief --set`/`--edit`: the brief changed since it was opened (nothing saved); `brief --regenerate`: hourly cap reached; `stack set`/`edit`: the StackBrief changed since it was opened; `stack`: no stack matches; `restore`: no dormant (with `--closed`: recently closed) session matches; tmux commands: nothing to act on — no sessions, no match, or a confirmation was needed but there is no terminal (use `-f`) |
+| 3 | `send`: held — text in the input box or a prompt in its place (with `--require-empty`, also no box found or read), nothing typed (kind `send_held`, see [Sending](#sending)); `model`: held the same way, any box but an empty one (kind `send_held`, see [Switching the model](#switching-the-model)); `rename --json`: held (text in the box, a prompt, a waiting or busy session; with `--require-empty`, also no box found or read); `brief --set`/`--edit`: the brief changed since it was opened (nothing saved); `brief --regenerate`: hourly cap reached; `stack set`/`edit`: the StackBrief changed since it was opened; `stack`: no stack matches; `restore`: no dormant (with `--closed`: recently closed) session matches; tmux commands: nothing to act on — no sessions, no match, or a confirmation was needed but there is no terminal (use `-f`) |
 | 4 | host unreachable |
 | 127 | a required tool (tmux, node) was not found |
 

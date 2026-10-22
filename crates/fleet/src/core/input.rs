@@ -536,7 +536,13 @@ fn ide_pill(line: &[Cell]) -> usize {
 /// ([`backend::peek_styled`]). A screen that cannot be read is an error, never an empty box.
 pub fn of(s: &Session) -> Result<InputRead> {
     let (screen, styled) = backend::peek_styled(s)?;
-    Ok(read_at(&screen, s.harness, styled, backend::cursor(s)))
+    Ok(of_screen(s, &screen, styled))
+}
+
+/// [`of`] on a `screen` just captured from `s` ([`backend::peek_styled`]), for a caller that
+/// reads more off the same capture (`fleet model`'s working line): the cursor is read now.
+pub fn of_screen(s: &Session, screen: &str, styled: bool) -> InputRead {
+    read_at(screen, s.harness, styled, backend::cursor(s))
 }
 
 /// What the input box of a `harness` session shows on `screen`: a capture of its visible
@@ -676,6 +682,39 @@ fn painted_caret(rows: &[Vec<Cell>], found: &Found) -> Option<(usize, usize)> {
     }
 }
 
+/// Claude Code's working line over its input box, when `screen` shows one: `✳ Actualizing…`,
+/// `✽ Symbioting… (4s · thinking with xhigh effort)` — its spinner (`·✢✳✶✻✽*`), a space, then
+/// words ending in `…` before any ` (`. It is the last line drawn from column 0 above the box's
+/// top rule, with nothing between them but indented or blank rows (a tip, a todo list, a
+/// hint). What a finished turn leaves there (`✻ Cooked for 3s · done 12:20 PM`) has no `…`.
+/// `None` too when the screen shows no box (Claude Code's: between the last two rules from
+/// column 0). The registry's Status can lag a prompt typed in the terminal; this line does not.
+pub fn claude_working(screen: &str) -> Option<String> {
+    let texts: Vec<String> = rows(screen, false).iter().map(|r| text_of(r)).collect();
+    let rules: Vec<usize> = (0..texts.len())
+        .filter(|&i| is_box_rule(&texts[i]))
+        .collect();
+    let [.., top, _] = rules[..] else {
+        return None;
+    };
+    let line = texts[..top].iter().rev().find(|l| !inside(l))?;
+    working_line(line).then(|| line.trim().to_string())
+}
+
+/// `✳ Actualizing…` / `✽ Symbioting… (4s · …)`: a spinner frame, a space, words ending in `…`.
+fn working_line(line: &str) -> bool {
+    let mut cs = line.chars();
+    if !matches!(cs.next(), Some('·' | '✢' | '✳' | '✶' | '✻' | '✽' | '*')) || cs.next() != Some(' ')
+    {
+        return false;
+    }
+    let rest = cs.as_str();
+    let words = rest.split(" (").next().unwrap_or(rest).trim_end();
+    words
+        .strip_suffix('…')
+        .is_some_and(|w| !w.trim().is_empty())
+}
+
 /// The text on the box's lines `cells` whose cells `keep` keeps, its blank lines at either end
 /// left out.
 fn text(cells: &[&[Cell]], keep: impl Fn(&Cell) -> bool) -> String {
@@ -805,6 +844,17 @@ mod tests {
             // Bash mode is text, empty or not: a send there would run as a shell command.
             ("claude-bash-mode-empty", Claude, typed("!")),
             ("claude-bash-mode-text", Claude, typed("! ls")),
+            // `/model <id>` typed, not sent; answered above the box (not found, a switch
+            // declined); and its switch confirmation in place of the box, a prompt waiting
+            // for its answer (`fleet model` reads it: core::model).
+            (
+                "claude-model-typed",
+                Claude,
+                typed("/model claude-sonnet-5-5"),
+            ),
+            ("claude-model-not-found", Claude, InputRead::Empty),
+            ("claude-model-cancelled", Claude, InputRead::Empty),
+            ("claude-model-confirm", Claude, InputRead::Prompt),
             // No background behind the composer here: it is bounded by its footer.
             ("codex-empty", Codex, InputRead::Empty),
             ("codex-typed", Codex, typed("draft text typed but not sent")),
@@ -1423,6 +1473,59 @@ mod tests {
             read(&screen("pi-selector"), Harness::Pi, true),
             InputRead::NoBox
         );
+    }
+
+    // Claude Code's working line over its box (live captures): a turn running, a draft in the
+    // box or not. The box alone reads empty while it runs, so this is what tells.
+    #[test]
+    fn claude_code_its_working_line_over_the_box_is_read() {
+        assert_eq!(
+            claude_working(&live("claude-busy")).as_deref(),
+            Some("✳ Actualizing…")
+        );
+        assert_eq!(
+            claude_working(&live("claude-busy-with-draft")).as_deref(),
+            Some("✽ Symbioting… (4s · thinking with xhigh effort)")
+        );
+        // Plain text too: the line is read by its characters alone.
+        assert!(claude_working(&unstyled(&live("claude-busy"))).is_some());
+    }
+
+    #[test]
+    fn claude_code_a_finished_turn_or_no_box_is_no_working_line() {
+        for name in [
+            // `✻ Cooked for 3s · done 12:20 PM` over the box: the line a finished turn leaves.
+            "live/claude-after-turn",
+            "live/claude-empty",
+            "live/claude-typed",
+            "live/claude-restored",
+            "live/claude-interrupted-with-draft",
+            "live/claude-model-typed",
+            "live/claude-model-not-found",
+            "live/claude-model-cancelled",
+            // No box: the switch confirmation, a permission prompt, the transcript view.
+            "live/claude-model-confirm",
+            "claude-permission",
+            "claude-transcript",
+        ] {
+            assert_eq!(claude_working(&screen(name)), None, "{name}");
+        }
+        // A spinner frame without the `…`, or nothing after it, is not one.
+        for line in [
+            "✻ Crunched for 1s · done 1:08 PM",
+            "✳ …",
+            "✳Actualizing…",
+            "⏺ Working…",
+        ] {
+            assert!(!working_line(line), "{line}");
+        }
+        for line in [
+            "· Thinking…",
+            "* Brewing… (12s · esc to interrupt)",
+            "✶ Two words…",
+        ] {
+            assert!(working_line(line), "{line}");
+        }
     }
 
     #[test]
