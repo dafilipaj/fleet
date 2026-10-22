@@ -37,6 +37,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use common::fake::{FakeFleet, JOB_SHELL, proc_start};
+use common::switch::{self, failed, keys_of};
 use common::{stderr, stdout};
 use serde_json::Value;
 
@@ -160,13 +161,7 @@ struct Agent {
 
 /// The transcript a Claude session registered in `f` (cwd: the test dir) is looked up at.
 fn transcript_of(f: &FakeFleet) -> PathBuf {
-    let cwd = f.env.dir.path().display().to_string();
-    let encoded: String = cwd
-        .chars()
-        .map(|c| if c == '/' || c == '.' { '-' } else { c })
-        .collect();
-    f.env
-        .path(&format!("home/.claude/projects/{encoded}/{SID}.jsonl"))
+    switch::transcript_of(f, SID)
 }
 
 /// The reply its transcript starts with: `model` came from it, at this time.
@@ -235,32 +230,7 @@ fn agent_env(mode: &str, start: &str, env: &str) -> Agent {
 /// `fleet <args>` with a tmux that first runs `before` (sh, `$*` its arguments) on every call:
 /// (exit code, the one JSON object on stdout, stderr, how long it ran).
 fn under_tmux(a: &Agent, before: &str, args: &[&str]) -> (i32, Value, String, Duration) {
-    let wrapper = a.f.env.path("before-tmux.sh");
-    std::fs::write(
-        &wrapper,
-        format!(
-            "#!/bin/sh\n{before}\nexec '{}' \"$@\"\n",
-            a.f.env.tmux_wrapper().display()
-        ),
-    )
-    .unwrap();
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    let began = std::time::Instant::now();
-    let out =
-        a.f.env
-            .cmd()
-            .env("SHELL", "/bin/sh")
-            .env("FLEET_TMUX", &wrapper)
-            .timeout(Duration::from_secs(20))
-            .args(args)
-            .output()
-            .unwrap();
-    let took = began.elapsed();
-    let v = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| Value::String(stdout(&out)));
-    (out.status.code().unwrap_or(-1), v, stderr(&out), took)
+    switch::under_tmux(&a.f, before, args)
 }
 
 /// sh for [`under_tmux`]: the first time the panes' terminals are listed — the lookup's last
@@ -375,31 +345,6 @@ impl Agent {
         let v: Value = serde_json::from_str(line).unwrap();
         v["timestamp"].as_str().unwrap().to_string()
     }
-}
-
-fn keys_of(v: &Value) -> Vec<String> {
-    let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
-    k.sort();
-    k
-}
-
-/// `{ ok: false, host, kind, error }`, exit 1 — with `reason` for `busy` and `host_shared`,
-/// `status` for `not_idle`, `typed` for `io`.
-fn failed(code: i32, v: &Value, kind: &str) {
-    assert_eq!(code, 1, "{v}");
-    assert_eq!(v["ok"], false, "{v}");
-    assert_eq!(v["kind"], kind, "{v}");
-    assert!(v["error"].as_str().is_some_and(|e| !e.is_empty()), "{v}");
-    assert!(v["host"].as_str().is_some_and(|h| !h.is_empty()), "{v}");
-    let mut want = vec!["error", "host", "kind", "ok"];
-    match kind {
-        "busy" | "host_shared" => want.push("reason"),
-        "not_idle" => want.push("status"),
-        "io" => want.push("typed"),
-        _ => {}
-    }
-    want.sort();
-    assert_eq!(keys_of(v), want, "{v}");
 }
 
 #[test]
@@ -1025,6 +970,8 @@ fn an_unrecognized_screen_stops_it_with_nothing_pressed() {
     let a = agent("other", "live/claude-empty");
     let (code, v, _) = a.model(SONNET, &[]);
     failed(code, &v, "confirm_unrecognized");
+    let said = format!("Claude Code's switch confirmation for {SONNET} or its input box");
+    assert!(v["error"].as_str().unwrap().contains(&said), "{v}");
     assert_eq!(
         a.received(),
         format!("/model {SONNET}\r"),

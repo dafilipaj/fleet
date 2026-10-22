@@ -152,25 +152,158 @@ impl std::fmt::Display for Harness {
 pub struct ModelOption {
     pub id: String,
     pub label: String,
+    /// The effort levels it runs at, lowest first: what `fleet effort` (Claude Code) can be
+    /// given for it. `[]` where the harness has none (pi) or fleet does not know them.
+    #[serde(default)]
+    pub efforts: Vec<String>,
+    /// The level a new session on it starts at, when known.
+    #[serde(default)]
+    pub default_effort: Option<String>,
 }
 
 fn opt(id: &str, label: &str) -> ModelOption {
     ModelOption {
         id: id.into(),
         label: label.into(),
+        efforts: Vec::new(),
+        default_effort: None,
     }
 }
 
+/// The effort levels of every model on Claude's picker, lowest first (Claude Code's model docs
+/// as of 2.1.306: a level a model lacks runs as the highest it has). Claude Code 2.1.308 ranks
+/// its levels in this order too. `auto`, which clears the saved level, is no level a model
+/// runs at.
+const CLAUDE_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+/// The levels Claude Code 2.1.308 saves in its settings (`effortLevel`, top-level or per
+/// model); a value outside them is dropped as unset when it reads them.
+const CLAUDE_SAVED_EFFORTS: [&str; 4] = ["low", "medium", "high", "xhigh"];
+
+/// Codex's reasoning levels, lowest first: its reasoning-effort enum, in declared order.
+const CODEX_EFFORTS: [&str; 8] = [
+    "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+];
+
+/// Claude's listed models: id, label, and the level a new session on it starts at by Claude
+/// Code's docs.
+const CLAUDE_LISTED: [(&str, &str, &str); 4] = [
+    ("claude-fable-5-1", "Fable 5.1", "high"),
+    ("claude-opus-5-5", "Opus 5.5", "medium"),
+    ("claude-sonnet-5-5", "Sonnet 5.5", "medium"),
+    ("claude-haiku-5-5", "Haiku 5.5", "medium"),
+];
+
+/// `levels`, lowest first by `order`, each once; a level `order` does not name is dropped.
+fn ranked<'a>(levels: impl IntoIterator<Item = &'a String>, order: &[&str]) -> Vec<String> {
+    let levels: HashSet<&str> = levels.into_iter().map(String::as_str).collect();
+    order
+        .iter()
+        .filter(|o| levels.contains(*o))
+        .map(|o| o.to_string())
+        .collect()
+}
+
+/// The rank of `level` in `order` (`None` if it is not there).
+fn rank(level: &str, order: &[&str]) -> Option<usize> {
+    order.iter().position(|o| *o == level)
+}
+
 /// Claude's picker (the web's `web.models` overrides it there), its default labelled
-/// with the model Claude Code would start with — see [`claude_default_model`].
+/// with the model Claude Code would start with — see [`claude_default_model`]. Each model
+/// with its effort levels and the level it starts at by Claude Code's docs, hand-kept like the
+/// list itself; [`claude_models_saved`] applies what Claude Code's settings say.
 pub fn claude_models(default: Option<&str>) -> Vec<ModelOption> {
-    vec![
-        opt("", &default_label(default)),
-        opt("claude-fable-5-1", "Fable 5.1"),
-        opt("claude-opus-5-5", "Opus 5.5"),
-        opt("claude-sonnet-5-5", "Sonnet 5.5"),
-        opt("claude-haiku-5-5", "Haiku 5.5"),
-    ]
+    claude_models_saved(default, &SavedEfforts::default())
+}
+
+/// [`claude_models`], each model's `default_effort` the level `saved` says a new session on it
+/// starts at ([`SavedEfforts::starts`]), `null` where that is not certain. The default entry
+/// takes the levels of the model `default` names (an alias resolved through this list), else
+/// every level any model has, and no default level.
+pub fn claude_models_saved(default: Option<&str>, saved: &SavedEfforts) -> Vec<ModelOption> {
+    let listed: Vec<ModelOption> = CLAUDE_LISTED
+        .iter()
+        .map(|(id, label, starts)| ModelOption {
+            efforts: CLAUDE_EFFORTS.iter().map(|e| e.to_string()).collect(),
+            default_effort: saved.starts(id, starts),
+            ..opt(id, label)
+        })
+        .collect();
+    let named = default
+        .filter(|d| !d.trim().is_empty())
+        .and_then(crate::core::model::wanted)
+        .and_then(|label| listed.iter().find(|m| m.label == label));
+    let mut out = vec![default_entry(default, named, &listed, &CLAUDE_EFFORTS)];
+    out.extend(listed);
+    out
+}
+
+/// The `id: ""` entry, labelled after `default` ([`default_label`]): the levels of `named`, the
+/// listed model it names, else every level of any `listed` model (lowest first by `order`,
+/// one `order` does not name dropped) and no default level.
+fn default_entry(
+    default: Option<&str>,
+    named: Option<&ModelOption>,
+    listed: &[ModelOption],
+    order: &[&str],
+) -> ModelOption {
+    let (efforts, default_effort) = match named {
+        Some(m) => (m.efforts.clone(), m.default_effort.clone()),
+        None => (ranked(listed.iter().flat_map(|m| &m.efforts), order), None),
+    };
+    ModelOption {
+        efforts,
+        default_effort,
+        ..opt("", &default_label(default))
+    }
+}
+
+/// What decides the level a new Claude Code session on each listed model starts at, as far as
+/// fleet reads it ([`claude_saved_efforts`]): the user `settings.json` and fleet's own
+/// environment. Claude Code 2.1.308 also reads project, local and managed settings, an
+/// organization's caps and its own state; none of those is read here.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SavedEfforts {
+    /// `modelSettings.<key>.effortLevel` by the listed model id `<key>` names: the entry keyed
+    /// by that very id, else the first naming it otherwise (an alias, `[1m]`, a date), as
+    /// Claude Code takes it.
+    levels: HashMap<String, String>,
+    /// A top-level `effortLevel` is saved. Claude Code applies it to some models and not to
+    /// others, by lists of its own: where it might apply, the level is not certain.
+    top_level: bool,
+    /// `modelSettings.<key>.maxEffortLevel` by the listed model id `<key>` names, the lowest
+    /// of those naming it.
+    model_caps: HashMap<String, String>,
+    /// The top-level `maxEffortLevel`.
+    cap: Option<String>,
+    /// `CLAUDE_CODE_EFFORT_LEVEL` is set: it overrides every saved level.
+    env: bool,
+}
+
+impl SavedEfforts {
+    /// The level a new session on listed model `id` starts at, its table level `table` aside:
+    /// its saved level, else `table` — `None` when `CLAUDE_CODE_EFFORT_LEVEL` is set, or when
+    /// nothing is saved for it but a top-level `effortLevel` is. Then held to its cap: its own
+    /// `maxEffortLevel`, else the top-level one; `max` is no cap.
+    pub fn starts(&self, id: &str, table: &str) -> Option<String> {
+        if self.env {
+            return None;
+        }
+        let level = match self.levels.get(id) {
+            Some(l) => l.as_str(),
+            None if self.top_level => return None,
+            None => table,
+        };
+        let cap = self.model_caps.get(id).or(self.cap.as_ref());
+        let capped = match cap {
+            Some(c) if c != "max" && rank(level, &CLAUDE_EFFORTS) > rank(c, &CLAUDE_EFFORTS) => {
+                c.as_str()
+            }
+            _ => level,
+        };
+        Some(capped.to_string())
+    }
 }
 
 /// Claude Code's user config dir: `$CLAUDE_CONFIG_DIR`, else `~/.claude`.
@@ -199,6 +332,72 @@ pub fn claude_default_model(env_model: Option<&str>, config_dir: &Path) -> Optio
     if let Some(m) = env_model.map(str::trim).filter(|m| !m.is_empty()) {
         return Some(m.to_string());
     }
+    claude_settings(config_dir)?
+        .get("model")?
+        .as_str()
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .map(str::to_string)
+}
+
+/// What Claude Code's user settings and `env_level` (`CLAUDE_CODE_EFFORT_LEVEL`) say about the
+/// level each listed model starts at ([`SavedEfforts`]), read as Claude Code 2.1.308 reads
+/// them: from `<config_dir>/settings.json`, `effortLevel` (`low` to `xhigh`, what `/effort`
+/// saves; `auto` removes it) and `maxEffortLevel` (`low` to `max`), top-level and in each
+/// `modelSettings.<model>`. A key there counts for the listed model it names, as an id, an
+/// alias or with a `[1m]` or date suffix; one fleet cannot resolve (another provider's
+/// spelling) is skipped. A value of another word is unset, as Claude Code drops it. Only these
+/// values are taken from the file, as for [`claude_default_model`]; a missing, oversized or
+/// invalid file is none saved.
+pub fn claude_saved_efforts(config_dir: &Path, env_level: Option<&str>) -> SavedEfforts {
+    let mut saved = SavedEfforts {
+        env: env_level.is_some_and(|l| !l.trim().is_empty()),
+        ..SavedEfforts::default()
+    };
+    let Some(settings) = claude_settings(config_dir) else {
+        return saved;
+    };
+    let level = |v: Option<&Value>, of: &[&str]| {
+        v.and_then(Value::as_str)
+            .filter(|l| of.contains(l))
+            .map(str::to_string)
+    };
+    saved.top_level = level(settings.get("effortLevel"), &CLAUDE_SAVED_EFFORTS).is_some();
+    saved.cap = level(settings.get("maxEffortLevel"), &CLAUDE_EFFORTS);
+    let listed = |key: &str| {
+        let label = crate::core::model::wanted(key)?;
+        CLAUDE_LISTED
+            .iter()
+            .find(|(_, l, _)| *l == label)
+            .map(|(id, _, _)| id.to_string())
+    };
+    let entries = settings.get("modelSettings").and_then(Value::as_object);
+    for (key, m) in entries.into_iter().flatten() {
+        let Some(id) = listed(key) else {
+            continue;
+        };
+        if let Some(l) = level(m.get("effortLevel"), &CLAUDE_SAVED_EFFORTS)
+            && (*key == id || !saved.levels.contains_key(&id))
+        {
+            saved.levels.insert(id.clone(), l);
+        }
+        if let Some(c) = level(m.get("maxEffortLevel"), &CLAUDE_EFFORTS) {
+            let lower = saved
+                .model_caps
+                .get(&id)
+                .is_none_or(|was| rank(&c, &CLAUDE_EFFORTS) < rank(was, &CLAUDE_EFFORTS));
+            if lower {
+                saved.model_caps.insert(id, c);
+            }
+        }
+    }
+    saved
+}
+
+/// `<config_dir>/settings.json`, parsed; `None` when missing, larger than
+/// [`MAX_SETTINGS_BYTES`] or invalid. Callers take only the keys they name from it: it can
+/// hold secrets.
+fn claude_settings(config_dir: &Path) -> Option<Value> {
     let file = std::fs::File::open(config_dir.join("settings.json")).ok()?;
     let mut text = String::new();
     file.take(MAX_SETTINGS_BYTES + 1)
@@ -207,13 +406,7 @@ pub fn claude_default_model(env_model: Option<&str>, config_dir: &Path) -> Optio
     if text.len() as u64 > MAX_SETTINGS_BYTES {
         return None;
     }
-    let settings: Value = serde_json::from_str(&text).ok()?;
-    settings
-        .get("model")?
-        .as_str()
-        .map(str::trim)
-        .filter(|m| !m.is_empty())
-        .map(str::to_string)
+    serde_json::from_str(&text).ok()
 }
 
 pub fn codex_home() -> PathBuf {
@@ -231,7 +424,11 @@ pub fn pi_home() -> PathBuf {
 }
 
 /// Codex's picker: the listed models of its own cache (`models_cache.json`, in its
-/// priority order), after the default — labelled with `model` from `config.toml`.
+/// priority order), after the default — labelled with `model` from `config.toml`. Each with its
+/// reasoning levels from the same cache (`supported_reasoning_levels`' `effort`s, lowest first
+/// by Codex's own order, [`CODEX_EFFORTS`], a level it does not name dropped;
+/// `default_reasoning_level`, if it names one); the default entry those of the model it names,
+/// else every level and none for its default.
 pub fn codex_models(home: &Path) -> Vec<ModelOption> {
     let default = std::fs::read_to_string(home.join("config.toml"))
         .ok()
@@ -241,7 +438,6 @@ pub fn codex_models(home: &Path) -> Vec<ModelOption> {
                 (k.trim() == "model").then(|| v.trim().trim_matches('"').to_string())
             })
         });
-    let mut out = vec![opt("", &default_label(default.as_deref()))];
     let cache: Value = std::fs::read_to_string(home.join("models_cache.json"))
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
@@ -259,11 +455,41 @@ pub fn codex_models(home: &Path) -> Vec<ModelOption> {
                 .get("priority")
                 .and_then(Value::as_i64)
                 .unwrap_or(i64::MAX);
-            Some((prio, opt(id, label)))
+            let listed: Vec<String> = m
+                .get("supported_reasoning_levels")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|l| Some(l.get("effort")?.as_str()?.to_string()))
+                .collect();
+            let efforts = ranked(&listed, &CODEX_EFFORTS);
+            let default_effort = m
+                .get("default_reasoning_level")
+                .and_then(Value::as_str)
+                .filter(|l| CODEX_EFFORTS.contains(l))
+                .map(str::to_string);
+            Some((
+                prio,
+                ModelOption {
+                    efforts,
+                    default_effort,
+                    ..opt(id, label)
+                },
+            ))
         })
         .collect();
     models.sort_by_key(|(p, _)| *p);
-    out.extend(models.into_iter().map(|(_, m)| m));
+    let listed: Vec<ModelOption> = models.into_iter().map(|(_, m)| m).collect();
+    let named = default
+        .as_deref()
+        .and_then(|d| listed.iter().find(|m| m.id == d));
+    let mut out = vec![default_entry(
+        default.as_deref(),
+        named,
+        &listed,
+        &CODEX_EFFORTS,
+    )];
+    out.extend(listed);
     out
 }
 
@@ -373,8 +599,11 @@ pub fn info(h: Harness, with_models: bool) -> HarnessInfo {
         (false, _) => Vec::new(),
         (true, Harness::Claude) => {
             let env_model = std::env::var("ANTHROPIC_MODEL").ok();
-            let default = claude_default_model(env_model.as_deref(), &claude_config_dir());
-            claude_models(default.as_deref())
+            let env_level = std::env::var("CLAUDE_CODE_EFFORT_LEVEL").ok();
+            let dir = claude_config_dir();
+            let default = claude_default_model(env_model.as_deref(), &dir);
+            let saved = claude_saved_efforts(&dir, env_level.as_deref());
+            claude_models_saved(default.as_deref(), &saved)
         }
         (true, Harness::Codex) => codex_models(&codex_home()),
         (true, Harness::Pi) => pi_models(&pi_home(), &command),
@@ -1915,6 +2144,261 @@ mod tests {
         assert_eq!(
             claude_default_model(Some(" "), dir.path()).as_deref(),
             Some("opus[1m]")
+        );
+    }
+
+    /// (id, efforts, default_effort) of each entry.
+    fn efforts_of(models: &[ModelOption]) -> Vec<(String, Vec<String>, Option<String>)> {
+        models
+            .iter()
+            .map(|m| (m.id.clone(), m.efforts.clone(), m.default_effort.clone()))
+            .collect()
+    }
+
+    fn words(w: &[&str]) -> Vec<String> {
+        w.iter().map(|s| s.to_string()).collect()
+    }
+
+    // Claude's levels are fleet's table: every model low to max, starting at medium (Fable at
+    // high); the default entry takes the levels of the model it names, an alias resolved.
+    #[test]
+    fn claude_models_carry_their_effort_levels() {
+        let all = words(&["low", "medium", "high", "xhigh", "max"]);
+        let level = |l: &str| Some(l.to_string());
+        assert_eq!(
+            efforts_of(&claude_models(None)),
+            [
+                ("".into(), all.clone(), None),
+                ("claude-fable-5-1".into(), all.clone(), level("high")),
+                ("claude-opus-5-5".into(), all.clone(), level("medium")),
+                ("claude-sonnet-5-5".into(), all.clone(), level("medium")),
+                ("claude-haiku-5-5".into(), all.clone(), level("medium")),
+            ]
+        );
+        for (default, starts) in [
+            ("opus[1m]", level("medium")),
+            ("fable", level("high")),
+            ("claude-fable-5-1", level("high")),
+            ("claude-sonnet-5-5[1m]", level("medium")),
+            ("gpt-6", None),
+            ("claude-opus-4-1", None),
+        ] {
+            let d = &claude_models(Some(default))[0];
+            assert_eq!(
+                (d.efforts.clone(), d.default_effort.clone()),
+                (all.clone(), starts),
+                "{default}"
+            );
+        }
+        // In `harness list --json`: always there, `[]` and null where none is known.
+        let v = serde_json::to_value(&claude_models(None)[1]).unwrap();
+        assert_eq!(v["efforts"][4], "max", "{v}");
+        assert_eq!(v["default_effort"], "high", "{v}");
+        let v = serde_json::to_value(opt("x", "X")).unwrap();
+        assert_eq!(
+            (v["efforts"].clone(), v["default_effort"].clone()),
+            (serde_json::json!([]), Value::Null),
+            "{v}"
+        );
+    }
+
+    /// Each listed Claude model's `default_effort` under `settings` (a `settings.json`) and
+    /// `env_level`, by id, the default entry (`default: opus`) first.
+    fn claude_starts(settings: &str, env_level: Option<&str>) -> Vec<(String, Option<String>)> {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("settings.json"), settings).unwrap();
+        let saved = claude_saved_efforts(dir.path(), env_level);
+        claude_models_saved(Some("opus"), &saved)
+            .into_iter()
+            .map(|m| (m.id, m.default_effort))
+            .collect()
+    }
+
+    fn starts(levels: [Option<&str>; 5]) -> Vec<(String, Option<String>)> {
+        [
+            "",
+            "claude-fable-5-1",
+            "claude-opus-5-5",
+            "claude-sonnet-5-5",
+            "claude-haiku-5-5",
+        ]
+        .iter()
+        .zip(levels)
+        .map(|(id, l)| (id.to_string(), l.map(str::to_string)))
+        .collect()
+    }
+
+    // `/effort` saves a level per model in Claude Code's settings: that is where a new session
+    // on it starts. Only `low` to `xhigh` are saved levels; another word is no level saved.
+    #[test]
+    fn a_saved_effort_level_is_the_models_default() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            claude_saved_efforts(dir.path(), None),
+            SavedEfforts::default()
+        );
+        assert_eq!(
+            claude_starts(
+                r#"{"env":{"ANTHROPIC_API_KEY":"sk-not-read"},"model":"opus",
+                    "modelSettings":{"claude-opus-5-5":{"effortLevel":"xhigh"},
+                      "claude-haiku-5-5":{"effortLevel":"turbo"},"claude-sonnet-5-5":{"other":1},
+                      "claude-fable-5-1":{"effortLevel":"max"}}}"#,
+                None
+            ),
+            starts([
+                Some("xhigh"),
+                Some("high"),
+                Some("xhigh"),
+                Some("medium"),
+                Some("medium")
+            ])
+        );
+        for text in ["not json", r#"{"modelSettings":[1]}"#] {
+            assert_eq!(
+                claude_starts(text, None),
+                starts([
+                    Some("medium"),
+                    Some("high"),
+                    Some("medium"),
+                    Some("medium"),
+                    Some("medium")
+                ]),
+                "{text}"
+            );
+        }
+    }
+
+    // Claude Code keys a saved level by any spelling of the model — an alias, `[1m]`, a date —
+    // and takes the entry keyed by the model's own id over the others, else the first. A key
+    // fleet cannot resolve to a listed model is skipped.
+    #[test]
+    fn a_saved_level_counts_for_the_model_its_key_names() {
+        assert_eq!(
+            claude_starts(
+                r#"{"modelSettings":{
+                    "opus[1m]":{"effortLevel":"low"},"claude-opus-5-5":{"effortLevel":"high"},
+                    "claude-sonnet-5-5[1m]":{"effortLevel":"low"},"sonnet":{"effortLevel":"xhigh"},
+                    "claude-haiku-5-5-20261001":{"effortLevel":"turbo"},
+                    "haiku":{"effortLevel":"high"},
+                    "us.anthropic.claude-fable-5-1-v1:0":{"effortLevel":"low"}}}"#,
+                None
+            ),
+            starts([
+                Some("high"),
+                Some("high"),
+                Some("high"),
+                Some("low"),
+                Some("high")
+            ])
+        );
+    }
+
+    // A top-level `effortLevel` Claude Code applies to some models and not others, by lists of
+    // its own: a model without a level of its own then has no certain default. One of another
+    // word is no level saved.
+    #[test]
+    fn a_top_level_effort_level_makes_the_default_uncertain() {
+        assert_eq!(
+            claude_starts(
+                r#"{"effortLevel":"low","modelSettings":{"claude-opus-5-5":{"effortLevel":"xhigh"}}}"#,
+                None
+            ),
+            starts([Some("xhigh"), None, Some("xhigh"), None, None])
+        );
+        assert_eq!(
+            claude_starts(r#"{"effortLevel":"max"}"#, None),
+            starts([
+                Some("medium"),
+                Some("high"),
+                Some("medium"),
+                Some("medium"),
+                Some("medium")
+            ])
+        );
+    }
+
+    // `maxEffortLevel` holds the level down: a model's own (the lowest of its entries) over the
+    // top-level one, `max` no cap at all.
+    #[test]
+    fn the_saved_cap_holds_the_default_down() {
+        assert_eq!(
+            claude_starts(
+                r#"{"maxEffortLevel":"low","modelSettings":{
+                    "claude-opus-5-5":{"effortLevel":"xhigh","maxEffortLevel":"xhigh"},
+                    "opus":{"maxEffortLevel":"high"},
+                    "claude-fable-5-1":{"maxEffortLevel":"max"},
+                    "claude-sonnet-5-5":{"maxEffortLevel":"turbo"}}}"#,
+                None
+            ),
+            starts([
+                Some("high"),
+                Some("high"),
+                Some("high"),
+                Some("low"),
+                Some("low")
+            ])
+        );
+    }
+
+    // `CLAUDE_CODE_EFFORT_LEVEL` overrides every saved level: no default is certain.
+    #[test]
+    fn the_effort_level_variable_makes_every_default_uncertain() {
+        let saved = r#"{"modelSettings":{"claude-opus-5-5":{"effortLevel":"xhigh"}}}"#;
+        assert_eq!(claude_starts(saved, Some("high")), starts([None; 5]));
+        assert_eq!(
+            claude_starts(saved, Some(" ")),
+            starts([
+                Some("xhigh"),
+                Some("high"),
+                Some("xhigh"),
+                Some("medium"),
+                Some("medium")
+            ])
+        );
+    }
+
+    // Codex's levels come from its own cache, per model, lowest first by Codex's own order
+    // whatever order the cache lists them in, a level it does not name dropped; its default
+    // entry takes the configured model's, else every level, lowest first.
+    #[test]
+    fn codex_models_carry_their_reasoning_levels() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("models_cache.json"),
+            r#"{"models":[
+              {"slug":"gpt-6-luna","display_name":"GPT-6-Luna","visibility":"list","priority":2,
+               "default_reasoning_level":"medium",
+               "supported_reasoning_levels":[{"effort":"ultra","description":"a"},{"effort":"low"},{"effort":"turbo"},{"effort":"medium"}]},
+              {"slug":"gpt-6-sol","display_name":"GPT-6-Sol","visibility":"list","priority":1,
+               "default_reasoning_level":"turbo","supported_reasoning_levels":[{"effort":"max"},{"effort":"minimal"}]},
+              {"slug":"gpt-6-old","visibility":"list","priority":3}
+            ]}"#,
+        )
+        .unwrap();
+        let level = |l: &str| Some(l.to_string());
+        assert_eq!(
+            efforts_of(&codex_models(dir.path())),
+            [
+                (
+                    "".into(),
+                    words(&["minimal", "low", "medium", "max", "ultra"]),
+                    None
+                ),
+                ("gpt-6-sol".into(), words(&["minimal", "max"]), None),
+                (
+                    "gpt-6-luna".into(),
+                    words(&["low", "medium", "ultra"]),
+                    level("medium")
+                ),
+                ("gpt-6-old".into(), vec![], None),
+            ]
+        );
+        std::fs::write(dir.path().join("config.toml"), "model = \"gpt-6-luna\"\n").unwrap();
+        let d = &codex_models(dir.path())[0];
+        assert_eq!(d.label, "Default (gpt-6-luna)");
+        assert_eq!(
+            (d.efforts.clone(), d.default_effort.clone()),
+            (words(&["low", "medium", "ultra"]), level("medium"))
         );
     }
 

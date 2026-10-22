@@ -4,10 +4,10 @@ use clap::{CommandFactory, Parser, Subcommand};
 use colored::Colorize;
 
 use fleet::cli::{
-    answer as answer_cmd, brief as brief_cmd, close as close_cmd, commands, config_cmd, group,
-    hosts as host_cmds, init, jobs as jobs_cmd, mcp, messages as messages_cmd, model as model_cmd,
-    prs as prs_cmd, repos as repos_cmd, restore, skill, stack as stack_cmds, tmux as tmux_cmds,
-    usage as usage_cmd, web,
+    answer as answer_cmd, brief as brief_cmd, close as close_cmd, commands, config_cmd,
+    effort as effort_cmd, group, hosts as host_cmds, init, jobs as jobs_cmd, mcp,
+    messages as messages_cmd, model as model_cmd, prs as prs_cmd, repos as repos_cmd, restore,
+    skill, stack as stack_cmds, tmux as tmux_cmds, usage as usage_cmd, web,
 };
 use fleet::core::config;
 use fleet::core::discovery::Backend;
@@ -270,6 +270,42 @@ enum Commands {
         #[arg(long, value_name = "PROC_START", requires = "expect_pid")]
         expect_start: Option<String>,
         /// Hold also when fleet cannot find the input box or read it, as `send --require-empty` does (always on for model: accepted so callers can pass it to send, rename and model alike)
+        #[arg(long)]
+        require_empty: bool,
+    },
+
+    /// Switch a Claude Code session's effort level, as /effort <level> in its terminal — confirming the switch when Claude Code asks
+    ///
+    /// Exact targets only, with `model`'s checks under the session's typing lock (the agent
+    /// owns its pane, its status is idle, no working line, an empty input box). Then it types
+    /// `/effort <level>` and Enter, and reads the screen and the transcript for up to 5 s:
+    /// Claude Code's "Change effort level?" confirmation for that level (it asks while the
+    /// prompt cache is warm) gets the key its first choice names, once the agent is checked to
+    /// own its pane again and the screen, read again, still shows it; nothing else is pressed.
+    /// Done once the transcript says "Set effort level to <level>" (`Effort level set to auto`
+    /// for `auto`). `saved`: the level also became Claude Code's default for new sessions on
+    /// the session's model (`low` to `xhigh`; `auto` clears the saved level), not `max`, which
+    /// is for this session only.
+    ///
+    /// outcome_uncertain: no answer within the wait, one setting another level, "Kept effort
+    /// level as …" — declined in the terminal, the level unchanged — an answer fleet does not
+    /// read as a switch (quoted), or tmux failing or not answering once the command was typed.
+    Effort {
+        /// `id:<session_id>` or `pid:<n>` — exact only, never a fragment
+        target: String,
+        /// The level (`low`, `medium`, `high`, `xhigh`, `max`, `auto`): lowercase letters only, at most 16; `fleet harness list --json` lists each model's `efforts`
+        #[arg(value_name = "LEVEL")]
+        level: String,
+        /// One JSON object: `{ ok, host, session_id, pid, harness, effort, confirmed, saved, switched_at, dry_run }`, or `{ ok: false, host, kind, error }` (`reason`, `status`, `input` for some kinds; held: kind `send_held`, exit 3)
+        #[arg(long)]
+        json: bool,
+        /// Switch only if the session's process is still this pid (with --expect-start): a list row's `pid`
+        #[arg(long, value_name = "PID", requires = "expect_start")]
+        expect_pid: Option<i64>,
+        /// Switch only if the session's process started then (with --expect-pid): a list row's `proc_start`
+        #[arg(long, value_name = "PROC_START", requires = "expect_pid")]
+        expect_start: Option<String>,
+        /// Hold also when fleet cannot find the input box or read it, as `send --require-empty` does (always on for effort: accepted so callers can pass it to send, rename, model and effort alike)
         #[arg(long)]
         require_empty: bool,
     },
@@ -1379,6 +1415,21 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
                 .zip(expect_start)
                 .map(|(pid, start)| close_cmd::Expect { pid, start }),
         })?,
+        Commands::Effort {
+            target,
+            level,
+            json,
+            expect_pid,
+            expect_start,
+            require_empty: _,
+        } => effort_cmd::run(effort_cmd::Opts {
+            target,
+            level,
+            json,
+            expect: expect_pid
+                .zip(expect_start)
+                .map(|(pid, start)| close_cmd::Expect { pid, start }),
+        })?,
         Commands::Rename {
             target,
             name,
@@ -1879,6 +1930,7 @@ const JSON_FAILURE_COMMANDS: &[(&str, i32)] = &[
     ("spawn", 1),
     ("close", 1),
     ("model", 1),
+    ("effort", 1),
 ];
 
 /// The subcommand of [`JSON_FAILURE_COMMANDS`] the command line names with `--json`, read by

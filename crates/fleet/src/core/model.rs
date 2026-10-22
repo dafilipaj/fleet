@@ -17,136 +17,40 @@
 //! ```
 //!
 //! [`shown`] tells that confirmation — exactly that one, for that model — from the input box
-//! and from anything else. It reads the dialog with [`prompt::permission_prompt`], the reader
-//! `fleet answer` uses (which reads it as an answerable prompt), and only adds what makes it
-//! this one: its title and choices, the warm-cache reason, nothing drawn under it. An unknown id is answered under the command, the box back
-//! (`⎿  Model '<id>' not found`), and so is a `PreModelSwitch` hook's refusal (`Model switch to
-//! <label> was blocked by a PreModelSwitch hook[: <reason>]`, as Claude Code 2.1.303's bundle
-//! words it): [`not_found`] and [`refused`] count those lines.
+//! and from anything else, by [`slash::shown`], the reader `fleet effort` uses for its own. An
+//! unknown id is answered under the command, the box back (`⎿  Model '<id>' not found`), and so
+//! is a `PreModelSwitch` hook's refusal (`Model switch to <label> was blocked by a
+//! PreModelSwitch hook[: <reason>]`, as Claude Code 2.1.303's bundle words it): [`not_found`]
+//! and [`refused`] count those lines.
 //!
 //! **The transcript.** Claude Code writes the command's output wrapped in
 //! `<local-command-stdout>…</local-command-stdout>`: `Set model to <label> …` once it switched,
 //! `Kept model as <label>` when the confirmation was declined, `Model '<id>' not found`, a
 //! hook's refusal. 2.1.306 writes a switch as a `type: "user"` entry (its `message.content`),
 //! the rest as `type: "system", subtype: "local_command"` entries (their `content`).
-//! [`Replies`] reads the new lines for them, either shape, and the label the first two name —
-//! a `user` entry only as the output of the `/model <id>` entry before it, since a prompt
-//! typed as exactly that output is written the same; [`same_model`]
+//! [`Replies`] reads the new lines for them, either shape ([`slash::Answers`]), and the label
+//! the first two name — a `user` entry only as the output of the `/model <id>` entry before
+//! it, since a prompt typed as exactly that output is written the same; [`same_model`]
 //! tells a label that stands for the model asked for, [`names_other`] one that stands for
 //! another.
 
-use std::io::{Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+use crate::core::harness;
+use crate::core::slash::{self, Answers, Dialog};
 
-use crate::core::backend::strip_ansi;
-use crate::core::harness::{self, Harness};
-use crate::core::input::{self, InputRead};
-use crate::core::prompt::{self, PromptRead};
+pub use crate::core::slash::{Shown, Tail, at_or_after};
 
-/// What the screen shows after `/model <id>` and Enter, where the input box was.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Shown {
-    /// The input box: the command not taken yet, or taken and answered above it.
-    Box,
-    /// Claude Code's warm-cache switch confirmation for that very model; `key` is what its
-    /// first ("yes") choice is picked with (its number, `1`).
-    Confirm { key: String },
-    /// Work still under way where the box was: its last line words ending in `…` (before any
-    /// ` (…)`), as Claude Code's "Running PreModelSwitch hooks… (esc to cancel)" while the
-    /// hooks run. What comes once it is done decides.
-    Pending,
-    /// Anything else: another dialog or menu, a confirmation for another model or in other
-    /// words (a `PreModelSwitch` hook asking), a layout fleet does not know.
-    Other,
-}
+/// `/model`'s confirmation.
+const DIALOG: Dialog = Dialog {
+    title: "Switch model?",
+    cached_for: "cached for the current model",
+};
 
 /// What `screen` (a capture of a Claude Code session, with its escape sequences when `styled`)
 /// shows after `/model <id>` was typed. See [`Shown`]. The confirmation's label is matched to
 /// `id` as a switch's is ([`same_model`]): Claude Code names the model an alias resolves to
 /// (`sonnet`: "Yes, switch to Sonnet 5.5").
 pub fn shown(screen: &str, id: &str, styled: bool) -> Shown {
-    if matches!(
-        input::read(screen, Harness::Claude, styled),
-        InputRead::Empty | InputRead::Typed(_) | InputRead::Unclear(_)
-    ) {
-        return Shown::Box;
-    }
-    match confirmation(screen) {
-        Some(c) if c.warm && same_model(&c.label, id) => Shown::Confirm { key: c.key },
-        Some(_) => Shown::Other,
-        None if pending(screen) => Shown::Pending,
-        None => Shown::Other,
-    }
-}
-
-/// Does `screen` end in a line of work under way — words ending in `…`, a ` (…)` after them
-/// aside ("Running PreModelSwitch hooks… (esc to cancel)")?
-fn pending(screen: &str) -> bool {
-    let lines = lines(screen);
-    let Some(last) = lines.iter().rev().map(|l| l.trim()).find(|l| !l.is_empty()) else {
-        return false;
-    };
-    let words = last.split(" (").next().unwrap_or(last).trim_end();
-    words
-        .strip_suffix('…')
-        .is_some_and(|w| !w.trim().is_empty())
-}
-
-/// The screen's lines as plain text, trailing blanks cut.
-fn lines(screen: &str) -> Vec<String> {
-    screen
-        .lines()
-        .map(|l| strip_ansi(l).trim_end().to_string())
-        .collect()
-}
-
-/// Claude Code's "Switch model?" dialog, read off the bottom of the screen.
-struct Confirmation {
-    /// Its first choice's number: the key that picks it.
-    key: String,
-    /// The model its first choice names (`Yes, switch to <label>`).
-    label: String,
-    /// It asks because the prompt cache is warm ("This conversation is cached for the current
-    /// model"), not for a `PreModelSwitch` hook.
-    warm: bool,
-}
-
-/// The "Switch model?" dialog when it is what the screen ends with, as `fleet answer` reads it
-/// ([`prompt::permission_prompt`]): titled so, exactly two choices — `1. Yes, switch to
-/// <label>` and `2. No, go back` — and nothing drawn under them. `None` for anything else,
-/// another of Claude Code's dialogs ("Change effort level?") included.
-fn confirmation(screen: &str) -> Option<Confirmation> {
-    let plain = lines(screen).join("\n");
-    let PromptRead::Prompt(p) = prompt::permission_prompt(&plain, Harness::Claude) else {
-        return None;
-    };
-    if p.title != "Switch model?" {
-        return None;
-    }
-    let [yes, no] = &p.choices[..] else {
-        return None;
-    };
-    let label = yes
-        .label
-        .strip_prefix("Yes, switch to ")?
-        .trim()
-        .to_string();
-    if no.label != "No, go back" || label.is_empty() {
-        return None;
-    }
-    // The reader allows a short footer under the answers (a permission prompt's "Esc to
-    // cancel"); this dialog has none, so one there means another dialog.
-    let last = plain.lines().rev().map(str::trim).find(|l| !l.is_empty())?;
-    let last = last.trim_start_matches(['❯', '›', '>']).trim_start();
-    if last != format!("{}. {}", no.n, no.label) {
-        return None;
-    }
-    let text = p.detail.join(" ");
-    Some(Confirmation {
-        key: yes.key.clone()?,
-        label,
-        warm: text.contains("cached for the current model") && !text.contains("PreModelSwitch"),
-    })
+    slash::shown(screen, styled, DIALOG, |label| same_model(label, id))
 }
 
 /// Does the label a confirmation names (`Sonnet 5.5`, `Opus 5.5 (1M context)`) stand for
@@ -280,7 +184,7 @@ pub fn label_of(id: &str) -> Option<String> {
 /// under the `/model <id>` it answers.
 pub fn not_found(screen: &str, id: &str) -> usize {
     let said = format!("Model '{}' not found", id.trim());
-    lines(screen)
+    slash::lines(screen)
         .iter()
         .filter(|l| l.trim().trim_start_matches('⎿').trim() == said)
         .count()
@@ -289,7 +193,7 @@ pub fn not_found(screen: &str, id: &str) -> usize {
 /// How many lines of `screen` say a `PreModelSwitch` hook blocked a switch (`Model switch to
 /// <label> was blocked by a PreModelSwitch hook[: <reason>]`).
 pub fn refused(screen: &str) -> usize {
-    lines(screen).iter().filter(|l| blocked(l)).count()
+    slash::lines(screen).iter().filter(|l| blocked(l)).count()
 }
 
 fn blocked(text: &str) -> bool {
@@ -311,135 +215,52 @@ pub enum Reply {
 }
 
 /// The replies to one `/model <id>` that a transcript's new lines hold, read in the order they
-/// were written: [`reply`]'s, except that a `user` entry counts only as the output of that very
-/// command. A prompt typed as exactly `<local-command-stdout>Set model to …</local-command-stdout>`
-/// is written as such an entry too, so one counts only when it answers an entry naming
-/// `/model <id>` (`<command-name>/model</command-name>`, `<command-args><id></command-args>`,
-/// either shape, not meta, not a sidechain's) read before it: its `parentUuid` that entry's
-/// `uuid`, or its `promptId` that entry's — 2.1.306 writes a meta caveat, the command, then
-/// its output, under one `promptId`, each the parent of the next. A `system` entry, which no
-/// prompt is written as, is read as [`reply`] reads it.
-pub struct Replies {
-    id: String,
-    /// The `uuid` and `promptId` of each entry naming `/model <id>` read so far.
-    commands: Vec<(Option<String>, Option<String>)>,
-}
+/// were written: [`slash::Answers`]' outputs, read as [`said`] reads them. A `user` entry
+/// counts only as the output of that very command: a prompt typed as exactly
+/// `<local-command-stdout>Set model to …</local-command-stdout>` is written as such an entry
+/// too, so one counts only when it answers an entry naming `/model <id>` read before it —
+/// 2.1.306 writes a meta caveat, the command, then its output, under one `promptId`, each the
+/// parent of the next. A `system` entry, which no prompt is written as, counts as it is.
+pub struct Replies(Answers);
 
 impl Replies {
     /// For the command `/model <id>`.
     pub fn to(id: &str) -> Self {
-        Replies {
-            id: id.trim().to_string(),
-            commands: Vec::new(),
-        }
+        Replies(Answers::to("model", id))
     }
 
     /// The reply transcript line `line`, the next one written, records (see [`Replies`]).
     pub fn read(&mut self, line: &str) -> Option<(Reply, String)> {
-        if line.contains("<command-name>/model</command-name>") {
-            if let Some(ids) = command_entry(line, &self.id) {
-                self.commands.push(ids);
-            }
-            return None;
-        }
-        let r = reply(line)?;
-        let v: serde_json::Value = serde_json::from_str(line).ok()?;
-        if v["type"] != "user" {
-            return Some(r);
-        }
-        let (parent, prompt) = (v["parentUuid"].as_str(), v["promptId"].as_str());
-        self.commands
-            .iter()
-            .any(|(uuid, pid)| {
-                (parent.is_some() && uuid.as_deref() == parent)
-                    || (prompt.is_some() && pid.as_deref() == prompt)
-            })
-            .then_some(r)
+        let a = self.0.read(line)?;
+        Some((said(&a.text)?, a.at))
     }
 }
 
-/// The `uuid` and `promptId` of transcript line `line` when it is an entry naming the command
-/// `/model <id>`: `<command-name>/model</command-name>`, its `<command-args>` the id — a
-/// `type: "user"` entry's `message.content` (not meta, not a sidechain's) or a `type:
-/// "system"`, `subtype: "local_command"` entry's `content`.
-fn command_entry(line: &str, id: &str) -> Option<(Option<String>, Option<String>)> {
-    let v: serde_json::Value = serde_json::from_str(line).ok()?;
-    let content = match v["type"].as_str()? {
-        "system" if v["subtype"] == "local_command" => v["content"].as_str()?,
-        "user" if v["isMeta"] != true && v["isSidechain"] != true => {
-            v["message"]["content"].as_str()?
-        }
-        _ => return None,
-    };
-    let content = content.trim();
-    if !content.starts_with("<command-name>/model</command-name>") {
-        return None;
-    }
-    let open = "<command-args>";
-    let start = content.find(open)? + open.len();
-    let end = content[start..].find("</command-args>")? + start;
-    if content[start..end].trim() != id {
-        return None;
-    }
-    let field = |k: &str| v[k].as_str().map(str::to_string);
-    Some((field("uuid"), field("promptId")))
-}
-
-/// The `/model` reply transcript line `line` records, with its `timestamp` (as written): the
-/// command's output wrapped in `<local-command-stdout>` (or `-stderr`), escape sequences
-/// dropped, in either of the two entries Claude Code writes it as —
-///
-/// - `type: "system"`, `subtype: "local_command"`, the output its `content` (`Kept model as
-///   …`, `Model '…' not found`; read the same should any other reply come so);
-/// - `type: "user"`, not `isMeta` and not a sidechain's, the output its `message.content`, a
-///   string that is that output and nothing else (2.1.306's `Set model to …`, after a meta
-///   `<local-command-caveat>` entry and the one naming the command). A prompt typed as exactly
-///   that is written so too: [`Replies`] takes one only as its command's answer.
-///
-/// `None` for any other line — the entry naming the command itself
-/// (`<command-name>/model</command-name>…`), a prompt that only quotes such output, a tool's
-/// result — included.
+/// The `/model` reply transcript line `line` records, with its `timestamp` (as written), read
+/// alone: the command's output ([`slash::output`]) — `Set model to …` (2.1.306's, a `user`
+/// entry after a meta `<local-command-caveat>` entry and the one naming the command), `Kept
+/// model as …`, `Model '…' not found`, a hook's refusal (`system` entries; read the same should
+/// any other reply come so). `None` for any other line — the entry naming the command itself,
+/// a prompt that only quotes such output, a tool's result — included.
+#[cfg(test)]
 fn reply(line: &str) -> Option<(Reply, String)> {
-    if !line.contains("local-command-std") {
-        return None;
-    }
-    let v: serde_json::Value = serde_json::from_str(line).ok()?;
-    let content = match v["type"].as_str()? {
-        "system" if v["subtype"] == "local_command" => v["content"].as_str()?,
-        "user" if v["isMeta"] != true && v["isSidechain"] != true => {
-            let c = v["message"]["content"].as_str()?.trim();
-            let whole = ["stdout", "stderr"].iter().any(|s| {
-                c.starts_with(&format!("<local-command-{s}>"))
-                    && c.ends_with(&format!("</local-command-{s}>"))
-            });
-            if !whole {
-                return None;
-            }
-            c
-        }
-        _ => return None,
-    };
-    let at = v["timestamp"].as_str()?.to_string();
-    let content = strip_ansi(content);
-    let out = ["stdout", "stderr"].iter().find_map(|s| {
-        let open = format!("<local-command-{s}>");
-        let close = format!("</local-command-{s}>");
-        let start = content.find(&open)? + open.len();
-        let end = content[start..].find(&close)? + start;
-        Some(content[start..end].trim().to_string())
-    })?;
-    let r = if let Some(rest) = out.strip_prefix("Set model to ") {
+    let (out, at, _) = slash::output(line)?;
+    Some((said(&out)?, at))
+}
+
+/// What the output of a `/model` says.
+fn said(out: &str) -> Option<Reply> {
+    Some(if let Some(rest) = out.strip_prefix("Set model to ") {
         Reply::Switched(named(rest))
     } else if let Some(rest) = out.strip_prefix("Kept model as ") {
         Reply::Kept(named(rest))
     } else if out.starts_with("Model '") && out.contains("' not found") {
         Reply::NotFound
-    } else if blocked(&out) {
+    } else if blocked(out) {
         Reply::Refused
     } else {
         return None;
-    };
-    Some((r, at))
+    })
 }
 
 /// The model label at the start of `rest`, what follows `Set model to ` or `Kept model as `:
@@ -463,76 +284,14 @@ fn named(rest: &str) -> Option<String> {
     (!label.is_empty()).then(|| label.to_string())
 }
 
-/// Is transcript time `at` (RFC 3339) no earlier than `since`, to the millisecond (a
-/// transcript's precision)? An unreadable time is not.
-pub fn at_or_after(at: &str, since: chrono::DateTime<chrono::Utc>) -> bool {
-    let Ok(t) = chrono::DateTime::parse_from_rfc3339(at.trim()) else {
-        return false;
-    };
-    t.timestamp_millis() >= since.timestamp_millis()
-}
-
-/// What a session's transcript gains from now on: the complete lines appended after the point
-/// it was at when made. The file is found again on every read (a session's first entries can
-/// create it); one that shrank is read again from its start.
-pub struct Tail {
-    find: Box<dyn Fn() -> Option<PathBuf>>,
-    path: Option<PathBuf>,
-    pos: u64,
-}
-
-impl Tail {
-    /// Its end now, `find` saying where the transcript is.
-    pub fn from_end(find: impl Fn() -> Option<PathBuf> + 'static) -> Self {
-        let path = find();
-        let pos = path.as_deref().map_or(0, len);
-        Tail {
-            find: Box::new(find),
-            path,
-            pos,
-        }
-    }
-
-    /// The complete lines written since the last read.
-    pub fn read(&mut self) -> Vec<String> {
-        if let Some(p) = (self.find)()
-            && self.path.as_deref() != Some(p.as_path())
-        {
-            self.path = Some(p);
-            self.pos = 0;
-        }
-        let Some(path) = &self.path else {
-            return Vec::new();
-        };
-        if len(path) < self.pos {
-            self.pos = 0;
-        }
-        let Ok(mut f) = std::fs::File::open(path) else {
-            return Vec::new();
-        };
-        let mut buf = Vec::new();
-        if f.seek(SeekFrom::Start(self.pos)).is_err() || f.read_to_end(&mut buf).is_err() {
-            return Vec::new();
-        }
-        // A line still being written waits for its newline.
-        let Some(end) = buf.iter().rposition(|&b| b == b'\n') else {
-            return Vec::new();
-        };
-        self.pos += end as u64 + 1;
-        String::from_utf8_lossy(&buf[..end])
-            .lines()
-            .map(str::to_string)
-            .collect()
-    }
-}
-
-fn len(path: &Path) -> u64 {
-    std::fs::metadata(path).map_or(0, |m| m.len())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::backend::strip_ansi;
+    use crate::core::harness::Harness;
+    use crate::core::input::{self, InputRead};
+    use crate::core::prompt::{self, PromptRead};
+    use crate::core::slash::lines;
 
     /// A live capture (testdata/screens/live, see `core::input`'s tests): Claude Code 2.1.303
     /// in a 110x34 tmux pane, `capture-pane -p -e`.
@@ -620,11 +379,19 @@ mod tests {
     #[test]
     fn a_confirmation_in_other_words_is_not_the_one_confirmed() {
         let confirm = live("claude-model-confirm");
-        let edits: [(&str, &str); 6] = [
-            // A PreModelSwitch hook asking, not the warm cache.
+        let edits: [(&str, &str); 8] = [
+            // A PreModelSwitch hook asking, not the warm cache: in whichever words name it.
             (
                 "Your next response will be slower",
                 "A PreModelSwitch hook asked you to confirm. Your next response will be slower",
+            ),
+            (
+                "Your next response will be slower",
+                "Confirmation requested by PreModelSwitch. Your next response will be slower",
+            ),
+            (
+                "Your next response will be slower",
+                "PreModelSwitch Hook: confirm. Your next response will be slower",
             ),
             (
                 "cached for the current model",
@@ -986,45 +753,5 @@ mod tests {
                 "{parent} {prompt}"
             );
         }
-    }
-
-    #[test]
-    fn only_a_reply_written_after_the_command_began_counts() {
-        let began = chrono::DateTime::parse_from_rfc3339("2026-01-02T03:07:03.300Z")
-            .unwrap()
-            .with_timezone(&chrono::Utc);
-        assert!(at_or_after("2026-01-02T03:07:03.300Z", began));
-        assert!(at_or_after("2026-01-02T04:07:03.300+01:00", began));
-        assert!(!at_or_after("2026-01-02T03:07:03.299Z", began));
-        assert!(!at_or_after("soon", began));
-        // Sub-millisecond: the transcript cannot be later than the millisecond it began in.
-        let mid = began + chrono::Duration::microseconds(600);
-        assert!(at_or_after("2026-01-02T03:07:03.300Z", mid));
-    }
-
-    #[test]
-    fn the_tail_reads_only_whole_lines_appended_since() {
-        let d = tempfile::tempdir().unwrap();
-        let p = d.path().join("t.jsonl");
-        std::fs::write(&p, "old\n").unwrap();
-        let at = p.clone();
-        let mut t = Tail::from_end(move || at.is_file().then(|| at.clone()));
-        assert!(t.read().is_empty());
-        use std::io::Write;
-        let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
-        f.write_all(b"one\ntw").unwrap();
-        assert_eq!(t.read(), ["one"]);
-        f.write_all(b"o\n").unwrap();
-        assert_eq!(t.read(), ["two"]);
-        // Rewritten shorter: read again from its start.
-        std::fs::write(&p, "new\n").unwrap();
-        assert_eq!(t.read(), ["new"]);
-        // Not there at first: read whole once it appears.
-        let q = d.path().join("later.jsonl");
-        let at = q.clone();
-        let mut t = Tail::from_end(move || at.is_file().then(|| at.clone()));
-        assert!(t.read().is_empty());
-        std::fs::write(&q, "first\n").unwrap();
-        assert_eq!(t.read(), ["first"]);
     }
 }
