@@ -120,6 +120,19 @@ struct LastTurn {
     used: u64,
     model: Option<String>,
     effort: Option<String>,
+    /// Its `timestamp`, as written.
+    at: Option<String>,
+}
+
+/// What a live session's last reply says ([`for_session`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LastReply {
+    pub context: ContextUsage,
+    /// The reasoning effort it ran at; `None` when it records none.
+    pub effort: Option<String>,
+    /// Its `timestamp`, as written: when the reply `context.model` came from was written
+    /// (`list`'s `model_at`).
+    pub at: Option<String>,
 }
 static CACHE: LazyLock<Mutex<HashMap<PathBuf, (CacheKey, Raw)>>> = LazyLock::new(Default::default);
 
@@ -202,13 +215,9 @@ fn settings_1m_model(home: &Path) -> Option<String> {
     m.strip_suffix("[1m]").map(str::to_string)
 }
 
-/// Context usage for a live session, and the reasoning effort of the same entry (`None` when
-/// it records none), cached per transcript `(size, mtime)`.
-pub fn for_session(
-    home: &Path,
-    cwd: Option<&str>,
-    session_id: &str,
-) -> Option<(ContextUsage, Option<String>)> {
+/// Context usage for a live session, with the reasoning effort and the `timestamp` of the same
+/// entry, cached per transcript `(size, mtime)`.
+pub fn for_session(home: &Path, cwd: Option<&str>, session_id: &str) -> Option<LastReply> {
     let path = locate_transcript(home, cwd, session_id)?;
     let meta = std::fs::metadata(&path).ok()?;
     let key: CacheKey = (path.clone(), meta.len(), meta.modified().ok());
@@ -231,9 +240,14 @@ pub fn for_session(
         used,
         model,
         effort,
+        at,
     } = raw?;
     let window = window_for(model.as_deref(), used, cwd, &HINTS);
-    Some((ContextUsage::new(used, window, model), effort))
+    Some(LastReply {
+        context: ContextUsage::new(used, window, model),
+        effort,
+        at,
+    })
 }
 
 /// A model that some session has already pushed past 200k *without* a `[1m]`
@@ -319,10 +333,12 @@ fn last_usage(text: &str) -> Option<LastTurn> {
             .map(str::trim)
             .filter(|e| !e.is_empty())
             .map(str::to_string);
+        let at = v["timestamp"].as_str().map(str::to_string);
         return Some(LastTurn {
             used,
             model,
             effort,
+            at,
         });
     }
     None
@@ -422,6 +438,21 @@ mod tests {
         assert_eq!(c.window, WINDOW_200K);
         assert_eq!(c.pct, 60);
         assert_eq!(c.model.as_deref(), Some("claude-sonnet-4-5"));
+    }
+
+    // `model_at`: the timestamp of the reply `model` was read from (testdata's synthetic
+    // transcript: a reply, then `/model` entries, which are no reply).
+    #[test]
+    fn the_model_comes_with_the_time_of_its_reply() {
+        let p = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../testdata/claude/model-transcript.jsonl");
+        let last = last_usage_in(&p).unwrap();
+        assert_eq!(last.model.as_deref(), Some("claude-opus-5-5"));
+        assert_eq!(last.at.as_deref(), Some("2026-01-02T03:04:30.000Z"));
+        // An entry without one: no time.
+        let d = tempfile::tempdir().unwrap();
+        let p = write(d.path(), &[assistant(1, 10, 0, "claude-opus-5-5", false)]);
+        assert_eq!(last_usage_in(&p).unwrap().at, None);
     }
 
     #[test]
@@ -580,7 +611,9 @@ mod tests {
             include_str!("../../../../testdata/claude/effort-change.jsonl"),
         )
         .unwrap();
-        let (c, effort) = for_session(home.path(), Some("/work/app"), "ccc").unwrap();
+        let LastReply {
+            context: c, effort, ..
+        } = for_session(home.path(), Some("/work/app"), "ccc").unwrap();
         assert_eq!(c.used, 41_603);
         assert_eq!(c.model.as_deref(), Some("claude-opus-5-5"));
         assert_eq!(effort.as_deref(), Some("high"));

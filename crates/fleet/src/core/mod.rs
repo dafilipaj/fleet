@@ -19,6 +19,7 @@ pub mod input;
 pub mod jobs;
 pub mod load;
 pub mod lock;
+pub mod model;
 pub mod naming;
 pub mod prompt;
 pub mod prompted;

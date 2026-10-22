@@ -11,6 +11,7 @@ pub mod hosts;
 pub mod init;
 pub mod jobs;
 pub mod messages;
+pub mod model;
 pub mod productive;
 pub mod prs;
 pub mod render;
