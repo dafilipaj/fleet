@@ -27,8 +27,13 @@
 //! `perTurnEffort` is not used: SDK sessions write it as `null` while `effort` is set.
 //!
 //! **Cost.** Only the tail is read (256 KiB, widened to 2 MiB and 8 MiB if no
-//! usable entry is found), and results are cached per `(path, size, mtime)`, so a
-//! long-running dashboard re-reads a transcript only when it has grown.
+//! usable entry is found, or until both it and the Turn's prompt are found when
+//! finished subagents need it), and results are cached per `(path, size, mtime)`, so a
+//! long-running dashboard re-reads a transcript only when it has grown. When finished
+//! subagents need the Turn, the same pass also collects their task notifications and
+//! `TaskStop` results ([`super::subagents::Lifecycle`]) from the whole buffer it read,
+//! and the read keeps widening while a finished depth-1 subagent has no evidence in the
+//! buffer and ended before its oldest entry ([`super::subagents::Scan::awaited`]).
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -38,6 +43,8 @@ use std::sync::{LazyLock, Mutex};
 use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
+
+use super::subagents::Awaited;
 
 pub const WINDOW_200K: u64 = 200_000;
 pub const WINDOW_1M: u64 = 1_000_000;
@@ -111,8 +118,36 @@ pub fn locate_transcript(home: &Path, cwd: Option<&str>, session_id: &str) -> Op
 }
 
 type CacheKey = (PathBuf, u64, Option<SystemTime>);
-/// transcript path -> ((path, size, mtime), last usage).
-type Raw = Option<LastTurn>;
+/// Facts from one tail: reply plus the optional current Turn prompt.
+#[derive(Debug, Default, Clone)]
+struct Raw {
+    reply: Option<LastTurn>,
+    turn_start: Option<String>,
+    // The latest prompt can have an unusable timestamp. It still ends the search.
+    prompt_found: bool,
+    /// Subagent lifecycle evidence, collected only with the Turn search.
+    lifecycle: super::subagents::Lifecycle,
+    /// The first `timestamp` in the buffer, found only with the Turn search.
+    oldest: Option<SystemTime>,
+    /// The buffer starts at the file's start or is the widest tail: no wider read exists.
+    exhausted: bool,
+}
+
+impl Raw {
+    /// A finished depth-1 subagent without evidence here ended before the buffer's oldest
+    /// entry, so its notification, written at or after that end, may lie further back. A
+    /// buffer without a timestamp widens too.
+    fn wants_wider(&self, awaited: Option<&Awaited>) -> bool {
+        !self.exhausted
+            && awaited.is_some_and(|awaited| {
+                awaited.iter().any(|(id, end)| {
+                    !self.lifecycle.decides(id) && self.oldest.is_none_or(|oldest| oldest > *end)
+                })
+            })
+    }
+}
+
+type CachedTail = (CacheKey, bool, Raw);
 
 /// What the last usable main-thread assistant entry says.
 #[derive(Debug, Clone, PartialEq)]
@@ -134,7 +169,7 @@ pub struct LastReply {
     /// (`list`'s `model_at`).
     pub at: Option<String>,
 }
-static CACHE: LazyLock<Mutex<HashMap<PathBuf, (CacheKey, Raw)>>> = LazyLock::new(Default::default);
+static CACHE: LazyLock<Mutex<HashMap<PathBuf, CachedTail>>> = LazyLock::new(Default::default);
 
 /// What says a model runs with a 1M window, besides its own id.
 #[derive(Debug, Default, Clone)]
@@ -219,35 +254,56 @@ fn settings_1m_model(home: &Path) -> Option<String> {
 /// entry, cached per transcript `(size, mtime)`.
 pub fn for_session(home: &Path, cwd: Option<&str>, session_id: &str) -> Option<LastReply> {
     let path = locate_transcript(home, cwd, session_id)?;
-    let meta = std::fs::metadata(&path).ok()?;
-    let key: CacheKey = (path.clone(), meta.len(), meta.modified().ok());
-    let cached = CACHE.lock().ok().and_then(|c| {
-        c.get(&path)
-            .filter(|(k, _)| *k == key)
-            .map(|(_, v)| v.clone())
-    });
-    let raw = match cached {
-        Some(raw) => raw,
-        None => {
-            let raw = last_usage_in(&path);
-            if let Ok(mut c) = CACHE.lock() {
-                c.insert(path, (key, raw.clone()));
-            }
-            raw
-        }
+    for_transcript(&path, cwd, None).0
+}
+
+/// One cached tail supplies both the last reply and, when finished sidecars need it
+/// (`awaited` is `Some`), the current Turn's prompt and the subagents' lifecycle evidence.
+/// Exact-target lookups do not call this enrichment.
+pub(crate) fn for_transcript(
+    path: &Path,
+    cwd: Option<&str>,
+    awaited: Option<&Awaited>,
+) -> (
+    Option<LastReply>,
+    Option<String>,
+    super::subagents::Lifecycle,
+) {
+    let Some(meta) = std::fs::metadata(path).ok() else {
+        return (None, None, Default::default());
     };
+    let key: CacheKey = (path.to_path_buf(), meta.len(), meta.modified().ok());
+    let cached = CACHE.lock().ok().and_then(|c| {
+        c.get(path)
+            .filter(|(k, searched, raw)| {
+                *k == key && (awaited.is_none() || *searched) && !raw.wants_wider(awaited)
+            })
+            .map(|(_, _, v)| v.clone())
+    });
+    let raw = cached.unwrap_or_else(|| {
+        let raw = last_tail_in(path, awaited);
+        if let Ok(mut c) = CACHE.lock() {
+            c.insert(path.to_path_buf(), (key, awaited.is_some(), raw.clone()));
+        }
+        raw
+    });
+    let reply = raw.reply.map(|last| reply_with_window(last, cwd));
+    (reply, raw.turn_start, raw.lifecycle)
+}
+
+fn reply_with_window(last: LastTurn, cwd: Option<&str>) -> LastReply {
     let LastTurn {
         used,
         model,
         effort,
         at,
-    } = raw?;
+    } = last;
     let window = window_for(model.as_deref(), used, cwd, &HINTS);
-    Some(LastReply {
+    LastReply {
         context: ContextUsage::new(used, window, model),
         effort,
         at,
-    })
+    }
 }
 
 /// A model that some session has already pushed past 200k *without* a `[1m]`
@@ -276,9 +332,19 @@ pub fn from_transcript(path: &Path, cwd: Option<&str>, hints: &Hints) -> Option<
 }
 
 /// The last usable assistant entry, reading only the tail.
-fn last_usage_in(path: &Path) -> Raw {
+fn last_usage_in(path: &Path) -> Option<LastTurn> {
+    last_tail_in(path, None).reply
+}
+
+fn last_tail_in(path: &Path, awaited: Option<&Awaited>) -> Raw {
+    read_tail(path, awaited).unwrap_or_default()
+}
+
+fn read_tail(path: &Path, awaited: Option<&Awaited>) -> Option<Raw> {
+    let need_turn = awaited.is_some();
     let mut file = File::open(path).ok()?;
     let size = file.metadata().ok()?.len();
+    let mut found = Raw::default();
     for tail in TAILS {
         let start = size.saturating_sub(tail);
         file.seek(SeekFrom::Start(start)).ok()?;
@@ -287,61 +353,156 @@ fn last_usage_in(path: &Path) -> Raw {
             .take(size - start)
             .read_to_end(&mut buf)
             .ok()?;
-        let mut text = String::from_utf8_lossy(&buf);
-        if start > 0 {
+        let text = String::from_utf8_lossy(&buf);
+        let text = if start > 0 {
             // The first line is almost certainly cut in half.
-            let cut = text.find('\n').map_or(text.len(), |i| i + 1);
-            text = text[cut..].to_string().into();
+            &text[text.find('\n').map_or(text.len(), |i| i + 1)..]
+        } else {
+            &text
+        };
+        found = scan_tail(text, need_turn);
+        found.exhausted = start == 0 || tail == TAILS[TAILS.len() - 1];
+        if need_turn {
+            found.oldest = oldest_timestamp(text);
         }
-        if let Some(found) = last_usage(&text) {
-            return Some(found);
-        }
-        if start == 0 {
+        #[cfg(test)]
+        tests::TAIL_READ.with(|read| read.set(size - start));
+        if found.exhausted
+            || (found.reply.is_some()
+                && (!need_turn || found.prompt_found)
+                && !found.wants_wider(awaited))
+        {
             break;
         }
     }
-    None
+    Some(found)
 }
 
-/// The last main-thread assistant entry with real usage in `text`.
-fn last_usage(text: &str) -> Option<LastTurn> {
+/// One reverse pass over the same buffer for every fact, parsing each candidate once.
+/// With `need_turn` it runs to the buffer's start: a subagent's latest notification can
+/// predate the Turn's prompt.
+fn scan_tail(text: &str, need_turn: bool) -> Raw {
+    let mut found = Raw::default();
     for line in text.lines().rev() {
-        // Cheap pre-filter before parsing: most lines are tool results.
-        if !line.contains("\"usage\"") || !line.contains("\"assistant\"") {
+        let reply =
+            found.reply.is_none() && line.contains("\"usage\"") && line.contains("\"assistant\"");
+        let prompt = need_turn
+            && !found.prompt_found
+            && (line.contains("\"user\"") || line.contains("\"attachment\""));
+        let lifecycle = need_turn && super::subagents::Lifecycle::candidate(line);
+        if !reply && !prompt && !lifecycle {
             continue;
         }
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
-        if v["type"] != "assistant" || v["isSidechain"] == true || v["isApiErrorMessage"] == true {
-            continue;
+        if prompt && is_turn_prompt(&v) {
+            found.prompt_found = true;
+            found.turn_start = v["timestamp"]
+                .as_str()
+                .filter(|at| chrono::DateTime::parse_from_rfc3339(at).is_ok())
+                .map(str::to_owned);
         }
-        let msg = &v["message"];
-        let model = msg["model"].as_str().map(str::to_string);
-        if model.as_deref() == Some("<synthetic>") {
-            continue;
+        if reply {
+            found.reply = usage_entry(&v);
         }
-        let u = &msg["usage"];
-        let n = |k: &str| u[k].as_u64().unwrap_or(0);
-        let used =
-            n("input_tokens") + n("cache_read_input_tokens") + n("cache_creation_input_tokens");
-        if used == 0 {
-            continue;
+        if lifecycle {
+            found.lifecycle.observe(&v);
         }
-        let effort = v["effort"]
-            .as_str()
-            .map(str::trim)
-            .filter(|e| !e.is_empty())
-            .map(str::to_string);
-        let at = v["timestamp"].as_str().map(str::to_string);
-        return Some(LastTurn {
-            used,
-            model,
-            effort,
-            at,
-        });
+        if found.reply.is_some() && !need_turn {
+            break;
+        }
     }
-    None
+    found
+}
+
+/// The first entry's `timestamp` in a buffer of whole lines.
+fn oldest_timestamp(text: &str) -> Option<SystemTime> {
+    text.lines()
+        .filter(|line| line.contains("\"timestamp\""))
+        .find_map(|line| {
+            let v: serde_json::Value = serde_json::from_str(line).ok()?;
+            let at = chrono::DateTime::parse_from_rfc3339(v["timestamp"].as_str()?).ok()?;
+            Some(SystemTime::from(at))
+        })
+}
+
+fn is_turn_prompt(v: &serde_json::Value) -> bool {
+    if v["isSidechain"] == true || v["isMeta"] == true || v["isCompactSummary"] == true {
+        return false;
+    }
+    let (origin, content) = if v["type"] == "attachment" {
+        let a = &v["attachment"];
+        if a["type"] != "queued_command" || a["commandMode"] != "prompt" {
+            return false;
+        }
+        (&a["origin"], &a["prompt"])
+    } else if v["type"] == "user" {
+        if v.get("toolUseResult").is_some() {
+            return false;
+        }
+        (&v["origin"], &v["message"]["content"])
+    } else {
+        return false;
+    };
+    let human = origin["kind"] == "human";
+    let sdk = v["type"] == "user" && origin.is_null() && v["turnOrigin"] == "sdk";
+    if !human && !sdk {
+        return false;
+    }
+    if let Some(blocks) = content.as_array()
+        && blocks.iter().any(|b| b["type"] == "tool_result")
+    {
+        return false;
+    }
+    // Even a human-tagged interrupt or notification is not a new prompt.
+    let is_noise = |text: &str| {
+        let text = text.trim_start();
+        text.starts_with("[Request interrupted by user")
+            || text.starts_with("<task-notification>")
+            || text.starts_with("<local-command-")
+    };
+    if content.as_str().is_some_and(is_noise) {
+        return false;
+    }
+    if let Some(blocks) = content.as_array()
+        && blocks
+            .iter()
+            .filter_map(|b| b["text"].as_str())
+            .any(is_noise)
+    {
+        return false;
+    }
+    true
+}
+
+fn usage_entry(v: &serde_json::Value) -> Option<LastTurn> {
+    if v["type"] != "assistant" || v["isSidechain"] == true || v["isApiErrorMessage"] == true {
+        return None;
+    }
+    let msg = &v["message"];
+    let model = msg["model"].as_str().map(str::to_string);
+    if model.as_deref() == Some("<synthetic>") {
+        return None;
+    }
+    let u = &msg["usage"];
+    let n = |k: &str| u[k].as_u64().unwrap_or(0);
+    let used = n("input_tokens") + n("cache_read_input_tokens") + n("cache_creation_input_tokens");
+    if used == 0 {
+        return None;
+    }
+    let effort = v["effort"]
+        .as_str()
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .map(str::to_string);
+    let at = v["timestamp"].as_str().map(str::to_string);
+    Some(LastTurn {
+        used,
+        model,
+        effort,
+        at,
+    })
 }
 
 fn window_for(model: Option<&str>, used: u64, cwd: Option<&str>, hints: &Hints) -> u64 {
@@ -384,6 +545,11 @@ fn native_1m(model: &str) -> bool {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    thread_local! {
+        /// Bytes of the last tail [`read_tail`] read, to prove how far it widened.
+        pub(crate) static TAIL_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
 
     fn assistant(used_in: u64, cache_read: u64, cache_new: u64, model: &str, side: bool) -> String {
         serde_json::json!({
@@ -625,5 +791,267 @@ mod tests {
         assert_eq!(level(60), Level::Warn);
         assert_eq!(level(85), Level::Warn);
         assert_eq!(level(86), Level::Hot);
+    }
+    #[test]
+    fn current_turn_fixtures_distinguish_prompts_from_bookkeeping() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/subagents");
+        for (file, expected) in [
+            ("typed.jsonl", Some("2026-01-01T00:01:00Z")),
+            ("mid-turn.jsonl", Some("2026-01-01T00:01:05Z")),
+            ("followed-by-noise.jsonl", Some("2026-01-01T00:01:00Z")),
+            ("sdk.jsonl", Some("2026-01-01T00:01:00Z")),
+            ("skill.jsonl", Some("2026-01-01T00:01:00Z")),
+            ("no-prompt.jsonl", None),
+        ] {
+            let text = std::fs::read_to_string(root.join(file)).unwrap();
+            assert_eq!(
+                scan_tail(&text, true).turn_start.as_deref(),
+                expected,
+                "{file}"
+            );
+        }
+    }
+
+    #[test]
+    fn turn_search_widens_even_with_a_recent_reply_and_stops_at_eight_mib() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wide.jsonl");
+        let prompt = include_str!("../../../../testdata/subagents/typed.jsonl")
+            .lines()
+            .next()
+            .unwrap();
+        let reply = assistant(10, 0, 0, "claude-sonnet-4-5", false);
+        // Same widening steps as usage; the final case leaves the prompt beyond the cap.
+        for padding in [300_000, 3_000_000, 8 * 1024 * 1024 + 10] {
+            let mut file = File::create(&path).unwrap();
+            writeln!(file, "{prompt}").unwrap();
+            file.write_all(&vec![b' '; padding]).unwrap();
+            writeln!(file, "\n{reply}").unwrap();
+            let found = last_tail_in(&path, Some(&[]));
+            assert_eq!(found.reply.unwrap().used, 10);
+            assert_eq!(found.turn_start.is_some(), padding < 8 * 1024 * 1024);
+        }
+    }
+
+    #[test]
+    fn tail_cache_adds_the_turn_search_on_demand_and_tracks_new_prompts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cached.jsonl");
+        std::fs::write(
+            &path,
+            include_str!("../../../../testdata/subagents/typed.jsonl"),
+        )
+        .unwrap();
+        assert!(for_transcript(&path, None, None).1.is_none());
+        assert_eq!(
+            for_transcript(&path, None, Some(&[])).1.as_deref(),
+            Some("2026-01-01T00:01:00Z")
+        );
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({"type":"user", "timestamp":"2026-01-01T00:03:00Z",
+            "origin":{"kind":"human"}, "message":{"content":"Synthetic next prompt"}})
+        )
+        .unwrap();
+        let (last, turn, _) = for_transcript(&path, None, Some(&[]));
+        assert_eq!(turn.as_deref(), Some("2026-01-01T00:03:00Z"));
+        assert_eq!(last.unwrap().effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn an_undated_latest_prompt_never_reuses_an_earlier_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("undated.jsonl");
+        let agents = dir.path().join("undated/subagents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(
+            agents.join("agent-finished.meta.json"),
+            r#"{"finished":true}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            agents.join("agent-finished.jsonl"),
+            "{\"timestamp\":\"2026-01-01T00:02:00Z\"}\n",
+        )
+        .unwrap();
+        let old = include_str!("../../../../testdata/subagents/typed.jsonl")
+            .lines()
+            .next()
+            .unwrap();
+        for timestamp in [
+            None,
+            Some(serde_json::json!(123)),
+            Some(serde_json::json!("invalid")),
+        ] {
+            for attachment in [false, true] {
+                // A recent undated prompt, or one only reached after widening. The reply
+                // may itself require widening, so an earlier timestamp must never win.
+                for (before, after, reply_last) in [
+                    (0, 0, true),
+                    (300_000, 300_000, true),
+                    (3_000_000, 3_000_000, true),
+                    (300_000, 0, false),
+                ] {
+                    let mut prompt = if attachment {
+                        serde_json::json!({"type":"attachment", "attachment":{"type":"queued_command",
+                            "commandMode":"prompt", "origin":{"kind":"human"}, "prompt":"Synthetic next prompt"}})
+                    } else {
+                        serde_json::json!({"type":"user", "origin":{"kind":"human"},
+                            "message":{"content":"Synthetic next prompt"}})
+                    };
+                    if let Some(ts) = &timestamp {
+                        prompt["timestamp"] = ts.clone();
+                    }
+                    let reply = assistant(10, 0, 0, "claude-sonnet-4-5", false);
+                    let mut file = File::create(&path).unwrap();
+                    writeln!(file, "{old}").unwrap();
+                    if !reply_last {
+                        writeln!(file, "{reply}").unwrap();
+                    }
+                    file.write_all(&vec![b' '; before]).unwrap();
+                    writeln!(file, "\n{prompt}").unwrap();
+                    file.write_all(&vec![b' '; after]).unwrap();
+                    if reply_last {
+                        writeln!(file, "\n{reply}").unwrap();
+                    }
+                    let found = last_tail_in(&path, Some(&[]));
+                    assert_eq!(found.reply.unwrap().used, 10);
+                    assert!(found.prompt_found);
+                    assert!(
+                        found.turn_start.is_none(),
+                        "timestamp={timestamp:?}, attachment={attachment}, before={before}, after={after}"
+                    );
+                    let counts = crate::core::subagents::scan(
+                        &path,
+                        Some("2.1.301"),
+                        Some(1_767_225_600_000),
+                    )
+                    .unwrap()
+                    .counts(found.turn_start.as_deref(), &found.lifecycle);
+                    assert_eq!(counts.finished, None);
+                }
+            }
+        }
+    }
+
+    /// A synthetic Session: a parked subagent's interim note, `padding` bytes of later
+    /// entries, an optional notice within the last 256 KiB, then the Turn's prompt and reply.
+    /// `metas` are `(id, owner, end in seconds after 00:00)`.
+    fn parked_session(
+        padding: usize,
+        recent: Option<&str>,
+        metas: &[(&str, Option<&str>, u64)],
+    ) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let notice = |at: &str, id: &str, note: &str| {
+            serde_json::json!({"type": "user", "timestamp": at,
+                "origin": {"kind": "task-notification"},
+                "message": {"content": format!("<task-notification>\n<task-id>{id}</task-id>\n\
+                    <status>completed</status>\n<summary>Synthetic</summary>\n\
+                    <note>Synthetic: {note}.</note>\n<result>Synthetic</result>\n\
+                    </task-notification>")}})
+        };
+        let mut file = File::create(&path).unwrap();
+        let interim = "background work of its own still running";
+        writeln!(
+            file,
+            "{}",
+            notice("2026-01-01T00:01:20Z", "parked", interim)
+        )
+        .unwrap();
+        let line = serde_json::json!({"type": "progress", "timestamp": "2026-01-01T00:01:30Z",
+            "data": "x".repeat(1000)})
+        .to_string();
+        for _ in 0..padding.div_ceil(line.len() + 1) {
+            writeln!(file, "{line}").unwrap();
+        }
+        if let Some(note) = recent {
+            writeln!(file, "{}", notice("2026-01-01T00:01:38Z", "parked", note)).unwrap();
+        }
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({"type": "user", "timestamp": "2026-01-01T00:01:40Z",
+                "origin": {"kind": "human"}, "message": {"content": "Synthetic prompt"}})
+        )
+        .unwrap();
+        writeln!(file, "{}", assistant(10, 0, 0, "claude-sonnet-4-5", false)).unwrap();
+        let agents = dir.path().join("session/subagents");
+        std::fs::create_dir_all(&agents).unwrap();
+        for (id, owner, end) in metas {
+            let meta = agents.join(format!("agent-{id}.meta.json"));
+            let mut v = serde_json::json!({"finished": true});
+            if let Some(owner) = owner {
+                v["parentAgentId"] = serde_json::json!(owner);
+            }
+            std::fs::write(&meta, v.to_string()).unwrap();
+            let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_767_225_600 + end);
+            File::options()
+                .write(true)
+                .open(&meta)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(at))
+                .unwrap();
+        }
+        (dir, path)
+    }
+
+    /// `list`'s path for one Session: the running count and how many bytes the tail read
+    /// (0 when the cached tail served it).
+    fn poll_parked(path: &Path) -> (u64, u64) {
+        let s =
+            crate::core::subagents::scan(path, Some("2.1.308"), Some(1_767_225_600_000)).unwrap();
+        let awaited = s.needs_turn().then(|| s.awaited());
+        TAIL_READ.with(|read| read.set(0));
+        let (_, turn, lifecycle) = for_transcript(path, None, awaited.as_deref());
+        let counts = s.counts(turn.as_deref(), &lifecycle);
+        (counts.running, TAIL_READ.with(|read| read.get()))
+    }
+
+    #[test]
+    fn an_interim_note_beyond_the_first_tail_widens_only_while_evidence_is_missing() {
+        const FIRST: u64 = 256 * 1024;
+        let size = |path: &Path| std::fs::metadata(path).unwrap().len();
+        // The parked subagent ended at 00:01:20, before the 256 KiB tail's oldest entry,
+        // with no evidence in it: widen until its interim note is in the buffer.
+        let (_dir, path) = parked_session(300_000, None, &[("parked", None, 80)]);
+        assert_eq!(poll_parked(&path), (1, size(&path)));
+        // The widened tail is cached for the same sidecars.
+        assert_eq!(poll_parked(&path), (1, 0));
+        // Evidence in the first tail (a later settled note): no extra widening.
+        let settled = "stops with no live background children";
+        let (_dir, path) = parked_session(300_000, Some(settled), &[("parked", None, 80)]);
+        assert_eq!(poll_parked(&path), (0, FIRST));
+        // A sidecar that ended within the first tail has no notice yet: no widening.
+        let (_dir, path) = parked_session(300_000, None, &[("unnoticed", None, 105)]);
+        assert_eq!(poll_parked(&path), (0, FIRST));
+        // Once the parked subagent's sidecar appears, the cached 256 KiB tail no longer
+        // suffices and the next poll widens.
+        let agents = path.with_extension("").join("subagents");
+        std::fs::write(
+            agents.join("agent-parked.meta.json"),
+            r#"{"finished":true}"#,
+        )
+        .unwrap();
+        let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_767_225_600 + 80);
+        File::options()
+            .write(true)
+            .open(agents.join("agent-parked.meta.json"))
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(at))
+            .unwrap();
+        assert_eq!(poll_parked(&path), (1, size(&path)));
+        // A nested sidecar's notices go to its owner: the parent's tail never widens for it.
+        let (_dir, path) = parked_session(300_000, None, &[("parked", Some("owner"), 80)]);
+        assert_eq!(poll_parked(&path), (0, FIRST));
+        // Beyond 8 MiB, no notice means finished, as before.
+        let (_dir, path) = parked_session(9 * 1024 * 1024, None, &[("parked", None, 80)]);
+        assert_eq!(poll_parked(&path), (0, 8 * 1024 * 1024));
     }
 }

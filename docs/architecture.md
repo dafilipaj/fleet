@@ -366,6 +366,7 @@ by — with no config, `local`):
 | `harness` | string | `claude` \| `codex` \| `pi` — see [Other harnesses](#other-harnesses) |
 | `model` | string \| null | the model it runs, when known (Claude: the context entry's) |
 | `effort` | string \| null | the reasoning effort it runs at, as its transcript last recorded it (`low`, `medium`, `high`, `xhigh`, `max`, or whatever the harness writes). Claude: the context entry's top-level `effort`; Codex: `effort` of the last `turn_context`. A mid-session change (`/effort`, Codex's `/model` picker) shows from the next reply on. `null` when unknown: no reply yet, a harness version that records none, and always for pi |
+| `subagents` | object \| null | `{ running, finished }`: tasks running now, across all Turns, and tasks that started and ended in the current Turn. `finished` alone is nullable. Claude Code 2.1.301+ only; always `null` for Codex and pi. See below |
 | `model_at` | string \| null | the `timestamp` of the transcript entry `model` was read from, as written there (RFC 3339): Claude Code's last reply (the context entry), Codex's last `turn_context`, pi's last reply or model change; `null` when there is none (no transcript, or `model` from the command line). It moves with every reply, whatever its model — so a caller holding a `fleet model` switch's `switched_at` knows once a reply came after it |
 | `transcript` | string \| null | absolute transcript path (Codex / pi only) |
 | `origin` | object \| null | `{ job, run }` of the [job](cli.md#bots) run that started the session (its tmux pane option `@fleet_job_run`); `null` when none |
@@ -401,6 +402,101 @@ That entry's top-level `effort` is the row's `effort` (not part of `context`). I
 is not read: SDK sessions write it as `null` while `effort` is set. A `/effort` run in the
 terminal is recorded at once only as a local command's output text, so `effort` follows it from
 the next reply, as `model` follows `/model`.
+
+#### Subagent counts
+
+`core::subagents` reads `<sessionId>/subagents/agent-*.meta.json` beside the Claude Code
+Transcript. A sidecar without `finished: true` counts as running; a finished, failed or stopped
+task with it counts as finished only when its first transcript line's `timestamp` is at or
+after the current Turn's start, unless its task notifications say it still runs (below). Nested tasks share this flat directory and each counts once;
+foreground, background and forked tasks count alike. Background shell commands do not count.
+
+The registry's `version` must be at least 2.1.301, and sidecars older than its `startedAt`
+(epoch milliseconds) are ignored, including abandoned tasks left by a crashed process before
+a resume. Missing or invalid version/start time, a missing Transcript, or an unreadable
+sidecar directory gives `null`. A missing sidecar directory gives `{ running: 0, finished: 0 }`.
+Every poll is a fresh `fleet list` process: there is no subagent cache, persistent or
+in-process. Each call reads the directory and stats each matching meta before opening it;
+nonregular, stale or oversized metas are skipped without being opened. Eligible regular
+metas are read and parsed once each, capped at 1 MiB (including a growth check during the
+read); malformed metas are skipped without affecting other candidates.
+Both meta and log opens use `O_NONBLOCK`, then check the opened descriptor's metadata
+(`fstat`) for a regular file before reading. Replacing a pathname with a FIFO after its
+initial stat therefore cannot block the poll. FIFO regressions run in child processes
+with a timeout and forced termination, without writers or thread joins.
+
+A running task's transcript is never opened. For finished tasks, only sidecars with mtime
+at or after the Turn start are candidates for a log read. Each candidate log is statted and
+must be regular before opening; only its first line is read, bounded to 1 MiB. A missing or
+malformed first timestamp skips that candidate until a later poll can read it. The 210-meta
+I/O regression asserts the exact meta/log opens on each call; the ignored
+`tests/subagents.rs` benchmark measures fresh CLI processes, comparing an absent sidecar
+directory with 210 synthetic metas using alternating trials and a release build.
+
+`core::context` finds the Turn start in the same reverse pass and buffer as context, model and
+effort: the last main-thread human `user` prompt or human `queued_command` attachment with
+`commandMode: "prompt"`; an SDK `user` prompt without origin counts too. Notifications, tool
+results, meta/peer messages, compaction summaries, interrupt markers, local commands and
+`last-prompt` bookkeeping do not reset it. The shared read widens from 256 KiB through 2 MiB
+to 8 MiB until both reply and prompt are found, and further while a finished task's
+notification may still lie beyond the buffer (below). Finding a prompt ends the prompt search
+even if its timestamp is missing, not a string or invalid: `finished` is then `null`, and
+widening for a reply cannot reuse an older Turn. No prompt within that cap also gives
+`finished: null`; with no eligible finished sidecars, the prompt search is skipped and
+`finished` is 0. Running counts never depend on finding a prompt.
+
+`finished: true` marks the end of a run, not of the task: one waiting on background work of
+its own gets it, sends an interim task notification, and runs again under the same id. So a
+current sidecar with `finished: true` still counts as running when the latest task
+notification naming its id (the `<task-notification>` element's `<task-id>`) is `completed`
+with a `<note>` containing `background work of its own still running`, or has a `<note>`
+containing `arrived after this run` (new input resumes it at once). Notifications are `user`
+entries with `origin.kind: "task-notification"` and `queued_command` attachments with
+`commandMode: "task-notification"`, their content a string or text blocks. One string or
+block can hold several elements: a parked owner that resumes gets all its queued notices in
+one prompt, joined by a blank line, so after the element that opens the text, each
+`</task-notification>`, blank line, `<task-notification>` starts another. Every element is
+read, and within one entry a later element for an id beats an earlier one. Only each
+element's direct children `<task-id>`, `<status>` and `<note>` are read: `<summary>` is
+skipped over and the walk stops at `<result>`, since both can quote anything; the search for
+the next element passes over the `<result>`, so one that quotes that exact joiner would be
+read as a further element. A notification without a `<status>` (routing) is skipped. A later successful `TaskStop` result for the id
+(a `tool_result` that isn't an error, whose `toolUseResult` has `task_type: "local_agent"` and
+that `task_id`) settles it; so does any other latest notification. No notification for the id
+in the tail counts it finished, as before. The evidence comes from the same reverse pass and
+buffer as the Turn start, which then runs to the buffer's start. While a finished depth-1
+sidecar has no evidence in that buffer and its mtime (the run's end) is older than the
+buffer's first `timestamp` (or the buffer has none), the read keeps widening along the same
+256 KiB → 2 MiB → 8 MiB steps: the notification is written at or after the end, so it may lie
+further back, as an interim note does when the parent has written more than the tail since a
+task parked on background work of its own. Beyond 8 MiB, no notification still means
+finished. When every such sidecar has evidence, or ended inside the buffer, nothing more is
+read. A nested task's (`parentAgentId`) notifications go to its owner, so the last 256 KiB of the
+owner's `agent-<parentAgentId>.jsonl` is read too, once per owner per call, under the same
+regular-file open rules; the later of the two files' latest entries (by `timestamp`) wins.
+An owner's tail is not widened, and a nested sidecar never widens the parent's read. With no
+current sidecar carrying `finished: true`, no notification is parsed and no owner transcript
+is read.
+
+Per-poll cost of the lifecycle evidence: nothing survives between polls, since each
+`fleet list` is a fresh process (the in-process tail cache helps only a long-running caller
+such as `watch`). So every poll re-reads the parent's tail as far as it widens, and the last
+256 KiB of the owner transcript of every finished nested sidecar of the current process,
+once per owner, for as long as that process runs. In a long Session that ran a background
+Subagent, the steady state is a 2 MiB or 8 MiB parent read on every poll, not the 256 KiB one,
+since an old Subagent's notification soon lies beyond the first step. Measured on a machine
+with five live Sessions, the longest with several hundred Subagents: `fleet list --json`
+took 105–113 ms against 95–109 ms before (warm cache).
+
+Known limits: a task that dies without its sidecar being finalized counts until the Session
+ends. Notifications are written when Claude Code delivers them, which can lag a run's end:
+a task whose interim notification isn't written yet, or that new input resumed before the
+notification saying so, reads as finished until it is written. Revival semantics
+(`finished`/`revivedAt`) are unverified, and the first timestamp still dates the original run. A delayed first entry can place a task launched just before a prompt
+in the next Turn. Live foreground, stop, crash and revive checks remain outstanding.
+Codex counting is deferred: Fleet's Codex pairing can pick a child agent's rollout, rather
+than the parent's, as an interactive Session's Transcript; Codex and pi always report `null`
+for now.
 
 ### Subscription usage
 

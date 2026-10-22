@@ -29,6 +29,7 @@ pub mod slash;
 pub mod sleep;
 pub mod snapshot;
 pub mod stack;
+pub mod subagents;
 pub mod tasks;
 pub mod title;
 pub mod tmux;
