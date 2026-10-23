@@ -175,6 +175,18 @@ impl Harness {
         self.with(launcher, model, self.default_model(), self.default_effort())
     }
 
+    /// [`Self::with_defaults`] for a spawn that may pick its own effort (`spawn --effort`): a
+    /// picked effort is added later, in place of the default, never beside it.
+    pub fn with_defaults_unless_effort(
+        self,
+        launcher: &str,
+        model: Option<&str>,
+        effort_picked: bool,
+    ) -> String {
+        let def_effort = self.default_effort().filter(|_| !effort_picked);
+        self.with(launcher, model, self.default_model(), def_effort)
+    }
+
     fn with(
         self,
         launcher: &str,
