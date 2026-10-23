@@ -29,11 +29,14 @@
 //! **Cost.** Only the tail is read (256 KiB, widened to 2 MiB and 8 MiB if no
 //! usable entry is found, or until both it and the Turn's prompt are found when
 //! finished subagents need it), and results are cached per `(path, size, mtime)`, so a
-//! long-running dashboard re-reads a transcript only when it has grown. When finished
+//! long-running dashboard re-reads a transcript only when it has grown. When current
 //! subagents need the Turn, the same pass also collects their task notifications and
 //! `TaskStop` results ([`super::subagents::Lifecycle`]) from the whole buffer it read,
-//! and the read keeps widening while a finished depth-1 subagent has no evidence in the
-//! buffer and ended before its oldest entry ([`super::subagents::Scan::awaited`]).
+//! and the read keeps widening while a depth-1 subagent has no evidence in the buffer and
+//! ended (finished) or last wrote its log (unfinished) before its oldest entry
+//! ([`super::subagents::Search`]). That pass doesn't stop at the reply: it parses every
+//! lifecycle candidate in the buffer, and every `user` or `attachment` line until the
+//! Turn's prompt, even when only unfinished subagents asked for it.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -44,7 +47,7 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
-use super::subagents::Awaited;
+use super::subagents::Search;
 
 pub const WINDOW_200K: u64 = 200_000;
 pub const WINDOW_1M: u64 = 1_000_000;
@@ -134,15 +137,23 @@ struct Raw {
 }
 
 impl Raw {
-    /// A finished depth-1 subagent without evidence here ended before the buffer's oldest
-    /// entry, so its notification, written at or after that end, may lie further back. A
-    /// buffer without a timestamp widens too.
-    fn wants_wider(&self, awaited: Option<&Awaited>) -> bool {
+    /// A search that wants the Turn's prompt widens until it is found. A finished depth-1
+    /// subagent without evidence here ended before the buffer's oldest entry, so its
+    /// notification, written at or after that end, may lie further back. So may the stop of
+    /// an unfinished depth-1 subagent without evidence here whose log was last written
+    /// before that entry. A buffer without a timestamp widens too.
+    fn wants_wider(&self, search: Option<&Search>) -> bool {
+        let before_buffer = |id: &str, at: SystemTime| {
+            !self.lifecycle.decides(id) && self.oldest.is_none_or(|oldest| oldest > at)
+        };
         !self.exhausted
-            && awaited.is_some_and(|awaited| {
-                awaited.iter().any(|(id, end)| {
-                    !self.lifecycle.decides(id) && self.oldest.is_none_or(|oldest| oldest > *end)
-                })
+            && search.is_some_and(|search| {
+                (search.turn && !self.prompt_found)
+                    || search
+                        .awaited
+                        .iter()
+                        .chain(&search.quiet)
+                        .any(|(id, at)| before_buffer(id, *at))
             })
     }
 }
@@ -257,13 +268,13 @@ pub fn for_session(home: &Path, cwd: Option<&str>, session_id: &str) -> Option<L
     for_transcript(&path, cwd, None).0
 }
 
-/// One cached tail supplies both the last reply and, when finished sidecars need it
-/// (`awaited` is `Some`), the current Turn's prompt and the subagents' lifecycle evidence.
+/// One cached tail supplies both the last reply and, when current sidecars need it
+/// (`search` is `Some`), the current Turn's prompt and the subagents' lifecycle evidence.
 /// Exact-target lookups do not call this enrichment.
 pub(crate) fn for_transcript(
     path: &Path,
     cwd: Option<&str>,
-    awaited: Option<&Awaited>,
+    search: Option<&Search>,
 ) -> (
     Option<LastReply>,
     Option<String>,
@@ -276,14 +287,14 @@ pub(crate) fn for_transcript(
     let cached = CACHE.lock().ok().and_then(|c| {
         c.get(path)
             .filter(|(k, searched, raw)| {
-                *k == key && (awaited.is_none() || *searched) && !raw.wants_wider(awaited)
+                *k == key && (search.is_none() || *searched) && !raw.wants_wider(search)
             })
             .map(|(_, _, v)| v.clone())
     });
     let raw = cached.unwrap_or_else(|| {
-        let raw = last_tail_in(path, awaited);
+        let raw = last_tail_in(path, search);
         if let Ok(mut c) = CACHE.lock() {
-            c.insert(path.to_path_buf(), (key, awaited.is_some(), raw.clone()));
+            c.insert(path.to_path_buf(), (key, search.is_some(), raw.clone()));
         }
         raw
     });
@@ -336,12 +347,12 @@ fn last_usage_in(path: &Path) -> Option<LastTurn> {
     last_tail_in(path, None).reply
 }
 
-fn last_tail_in(path: &Path, awaited: Option<&Awaited>) -> Raw {
-    read_tail(path, awaited).unwrap_or_default()
+fn last_tail_in(path: &Path, search: Option<&Search>) -> Raw {
+    read_tail(path, search).unwrap_or_default()
 }
 
-fn read_tail(path: &Path, awaited: Option<&Awaited>) -> Option<Raw> {
-    let need_turn = awaited.is_some();
+fn read_tail(path: &Path, search: Option<&Search>) -> Option<Raw> {
+    let need_turn = search.is_some();
     let mut file = File::open(path).ok()?;
     let size = file.metadata().ok()?.len();
     let mut found = Raw::default();
@@ -367,11 +378,7 @@ fn read_tail(path: &Path, awaited: Option<&Awaited>) -> Option<Raw> {
         }
         #[cfg(test)]
         tests::TAIL_READ.with(|read| read.set(size - start));
-        if found.exhausted
-            || (found.reply.is_some()
-                && (!need_turn || found.prompt_found)
-                && !found.wants_wider(awaited))
-        {
+        if found.exhausted || (found.reply.is_some() && !found.wants_wider(search)) {
             break;
         }
     }
@@ -549,6 +556,15 @@ mod tests {
     thread_local! {
         /// Bytes of the last tail [`read_tail`] read, to prove how far it widened.
         pub(crate) static TAIL_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+
+    /// A search for the Turn's prompt, as a finished sidecar asks for.
+    fn turn() -> Search {
+        Search {
+            awaited: Vec::new(),
+            quiet: Vec::new(),
+            turn: true,
+        }
     }
 
     fn assistant(used_in: u64, cache_read: u64, cache_new: u64, model: &str, side: bool) -> String {
@@ -827,7 +843,7 @@ mod tests {
             writeln!(file, "{prompt}").unwrap();
             file.write_all(&vec![b' '; padding]).unwrap();
             writeln!(file, "\n{reply}").unwrap();
-            let found = last_tail_in(&path, Some(&[]));
+            let found = last_tail_in(&path, Some(&turn()));
             assert_eq!(found.reply.unwrap().used, 10);
             assert_eq!(found.turn_start.is_some(), padding < 8 * 1024 * 1024);
         }
@@ -844,7 +860,7 @@ mod tests {
         .unwrap();
         assert!(for_transcript(&path, None, None).1.is_none());
         assert_eq!(
-            for_transcript(&path, None, Some(&[])).1.as_deref(),
+            for_transcript(&path, None, Some(&turn())).1.as_deref(),
             Some("2026-01-01T00:01:00Z")
         );
         let mut file = std::fs::OpenOptions::new()
@@ -858,7 +874,7 @@ mod tests {
             "origin":{"kind":"human"}, "message":{"content":"Synthetic next prompt"}})
         )
         .unwrap();
-        let (last, turn, _) = for_transcript(&path, None, Some(&[]));
+        let (last, turn, _) = for_transcript(&path, None, Some(&turn()));
         assert_eq!(turn.as_deref(), Some("2026-01-01T00:03:00Z"));
         assert_eq!(last.unwrap().effort.as_deref(), Some("high"));
     }
@@ -919,7 +935,7 @@ mod tests {
                     if reply_last {
                         writeln!(file, "\n{reply}").unwrap();
                     }
-                    let found = last_tail_in(&path, Some(&[]));
+                    let found = last_tail_in(&path, Some(&turn()));
                     assert_eq!(found.reply.unwrap().used, 10);
                     assert!(found.prompt_found);
                     assert!(
@@ -1007,9 +1023,9 @@ mod tests {
     fn poll_parked(path: &Path) -> (u64, u64) {
         let s =
             crate::core::subagents::scan(path, Some("2.1.308"), Some(1_767_225_600_000)).unwrap();
-        let awaited = s.needs_turn().then(|| s.awaited());
+        let search = s.search();
         TAIL_READ.with(|read| read.set(0));
-        let (_, turn, lifecycle) = for_transcript(path, None, awaited.as_deref());
+        let (_, turn, lifecycle) = for_transcript(path, None, search.as_ref());
         let counts = s.counts(turn.as_deref(), &lifecycle);
         (counts.running, TAIL_READ.with(|read| read.get()))
     }
@@ -1053,5 +1069,166 @@ mod tests {
         // Beyond 8 MiB, no notice means finished, as before.
         let (_dir, path) = parked_session(9 * 1024 * 1024, None, &[("parked", None, 80)]);
         assert_eq!(poll_parked(&path), (0, 8 * 1024 * 1024));
+    }
+
+    /// A synthetic Session: a successful `TaskStop` of `stopped` at 00:01:20, `padding` bytes
+    /// of later entries from 00:01:30, then the Turn's prompt and reply. `stopped`'s meta
+    /// lacks `finished` and was written at its launch, 00:01:10; its log was last written
+    /// `log` seconds after 00:00, or is absent. `owner` makes it a nested one.
+    fn stopped_session(
+        padding: usize,
+        log: Option<u64>,
+        owner: Option<&str>,
+    ) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let mut file = File::create(&path).unwrap();
+        let result = r#"{"message":"Successfully stopped task: stopped (Synthetic task)","task_id":"stopped","task_type":"local_agent","command":"Synthetic task"}"#;
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({"type": "user", "timestamp": "2026-01-01T00:01:20Z",
+                "message": {"content": [{"type": "tool_result", "content": result}]}})
+        )
+        .unwrap();
+        let line = serde_json::json!({"type": "progress", "timestamp": "2026-01-01T00:01:30Z",
+            "data": "x".repeat(1000)})
+        .to_string();
+        for _ in 0..padding.div_ceil(line.len() + 1) {
+            writeln!(file, "{line}").unwrap();
+        }
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({"type": "user", "timestamp": "2026-01-01T00:01:40Z",
+                "origin": {"kind": "human"}, "message": {"content": "Synthetic prompt"}})
+        )
+        .unwrap();
+        writeln!(file, "{}", assistant(10, 0, 0, "claude-sonnet-4-5", false)).unwrap();
+        let agents = dir.path().join("session/subagents");
+        std::fs::create_dir_all(&agents).unwrap();
+        let at = |seconds: u64| {
+            std::fs::FileTimes::new().set_modified(
+                std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_767_225_600 + seconds),
+            )
+        };
+        let meta = agents.join("agent-stopped.meta.json");
+        let v = match owner {
+            Some(owner) => serde_json::json!({"parentAgentId": owner}),
+            None => serde_json::json!({}),
+        };
+        std::fs::write(&meta, v.to_string()).unwrap();
+        File::options()
+            .write(true)
+            .open(&meta)
+            .unwrap()
+            .set_times(at(70))
+            .unwrap();
+        if let Some(seconds) = log {
+            let log = agents.join("agent-stopped.jsonl");
+            std::fs::write(&log, "{\"timestamp\":\"2026-01-01T00:01:10Z\"}\n").unwrap();
+            File::options()
+                .write(true)
+                .open(&log)
+                .unwrap()
+                .set_times(at(seconds))
+                .unwrap();
+        }
+        (dir, path)
+    }
+
+    #[test]
+    fn a_stop_beyond_the_first_tail_widens_while_its_subagent_is_quiet() {
+        const FIRST: u64 = 256 * 1024;
+        let size = |path: &Path| std::fs::metadata(path).unwrap().len();
+        // Its log was last written at 00:01:15, before the 256 KiB tail's oldest entry
+        // (00:01:30), and the tail holds no evidence: widen until the stop is in the buffer.
+        let (_dir, path) = stopped_session(300_000, Some(75), None);
+        assert_eq!(poll_parked(&path), (0, size(&path)));
+        // The widened tail is cached for the same sidecars.
+        assert_eq!(poll_parked(&path), (0, 0));
+        // A log written to since the tail's oldest entry: any stop is inside the tail.
+        let (_dir, path) = stopped_session(300_000, Some(95), None);
+        assert_eq!(poll_parked(&path), (1, FIRST));
+        // No log to stat: no widening.
+        let (_dir, path) = stopped_session(300_000, None, None);
+        assert_eq!(poll_parked(&path), (1, FIRST));
+        // A nested one's stop goes to its owner: the parent's tail never widens for it.
+        let (_dir, path) = stopped_session(300_000, Some(75), Some("owner"));
+        assert_eq!(poll_parked(&path), (1, FIRST));
+        // Beyond 8 MiB it counts as running, as before.
+        let (_dir, path) = stopped_session(9 * 1024 * 1024, Some(75), None);
+        assert_eq!(poll_parked(&path), (1, 8 * 1024 * 1024));
+    }
+
+    #[test]
+    fn unfinished_sidecars_search_only_the_tail_read_anyway() {
+        const FIRST: u64 = 256 * 1024;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let mut file = File::create(&path).unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({"type": "user", "timestamp": "2026-01-01T00:01:00Z",
+                "origin": {"kind": "human"}, "message": {"content": "Synthetic prompt"}})
+        )
+        .unwrap();
+        let line = serde_json::json!({"type": "progress", "timestamp": "2026-01-01T00:01:30Z",
+            "data": "x".repeat(1000)})
+        .to_string();
+        for _ in 0..300 {
+            writeln!(file, "{line}").unwrap();
+        }
+        // A successful TaskStop near the end, its result only a JSON string.
+        let result = r#"{"message":"Successfully stopped task: stopped (Synthetic task)","task_id":"stopped","task_type":"local_agent","command":"Synthetic task"}"#;
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({"type": "user", "timestamp": "2026-01-01T00:01:38Z",
+                "message": {"content": [{"type": "tool_result", "content": result}]}})
+        )
+        .unwrap();
+        writeln!(file, "{}", assistant(10, 0, 0, "claude-sonnet-4-5", false)).unwrap();
+        let agents = dir.path().join("session/subagents");
+        std::fs::create_dir_all(&agents).unwrap();
+        let sidecar = |id: &str, meta: &str, end: u64| {
+            let path = agents.join(format!("agent-{id}.meta.json"));
+            std::fs::write(&path, meta).unwrap();
+            let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_767_225_600 + end);
+            File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(at))
+                .unwrap();
+            std::fs::write(
+                agents.join(format!("agent-{id}.jsonl")),
+                "{\"timestamp\":\"2026-01-01T00:01:10Z\"}\n",
+            )
+            .unwrap();
+        };
+        sidecar("stopped", "{}", 70);
+        sidecar("running", "{}", 70);
+        let poll = || {
+            let s = crate::core::subagents::scan(&path, Some("2.1.308"), Some(1_767_225_600_000))
+                .unwrap();
+            let search = s.search();
+            TAIL_READ.with(|read| read.set(0));
+            let (_, turn, lifecycle) = for_transcript(&path, None, search.as_ref());
+            let counts = s.counts(turn.as_deref(), &lifecycle);
+            (
+                counts.running,
+                counts.finished,
+                TAIL_READ.with(|read| read.get()),
+            )
+        };
+        // The stop in the first tail settles its sidecar; the prompt beyond it is not
+        // searched for, so the Turn, and whether it ended in it, stays unknown.
+        assert_eq!(poll(), (1, None, FIRST));
+        // A finished sidecar that ended inside that tail widens it only for the prompt.
+        sidecar("done", r#"{"finished":true}"#, 99);
+        let size = std::fs::metadata(&path).unwrap().len();
+        assert_eq!(poll(), (1, Some(2), size));
     }
 }

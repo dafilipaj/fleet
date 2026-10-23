@@ -506,12 +506,9 @@ fn claude_details(
         reg.version.as_ref().and_then(serde_json::Value::as_str),
         reg.started_at.as_ref().and_then(serde_json::Value::as_i64),
     );
-    let awaited = scan
-        .as_ref()
-        .filter(|s| s.needs_turn())
-        .map(|s| s.awaited());
+    let search = scan.as_ref().and_then(|s| s.search());
     let (last, turn, lifecycle) =
-        crate::core::context::for_transcript(&path, reg.cwd.as_deref(), awaited.as_deref());
+        crate::core::context::for_transcript(&path, reg.cwd.as_deref(), search.as_ref());
     (last, scan.map(|s| s.counts(turn.as_deref(), &lifecycle)))
 }
 
