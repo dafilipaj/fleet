@@ -16,18 +16,25 @@ pub struct Counts {
 }
 
 pub(crate) struct Scan {
-    running: u64,
-    finished: Vec<Finished>,
+    sidecars: Vec<Sidecar>,
 }
 
-/// A current-process sidecar with `finished: true`: the end of a run, which may not be
-/// the end of the subagent ([`Lifecycle`]).
-struct Finished {
+/// A current-process sidecar. `finished: true` marks the end of a run, which may not be
+/// the end of the subagent; a sidecar without it may have ended all the same, stopped
+/// before its run could finish ([`Lifecycle`]).
+struct Sidecar {
     id: String,
+    finished: bool,
     /// `parentAgentId`: the owner whose own transcript receives its notifications.
     owner: Option<String>,
     log: PathBuf,
-    end: SystemTime,
+    /// The meta's mtime: the end of the run when `finished`. Otherwise it decides nothing
+    /// about a stop, since worktree cleanup and a user stop rewrite the meta afterwards.
+    mtime: SystemTime,
+    /// `revivedAt`: when `SendMessage` last started a new run of an ended subagent.
+    revived: Option<SystemTime>,
+    /// `stoppedByUser`: Claude Code never revives such a subagent, so it has ended.
+    stopped_by_user: bool,
 }
 
 #[derive(Deserialize)]
@@ -35,6 +42,11 @@ struct Meta {
     finished: Option<bool>,
     #[serde(rename = "parentAgentId")]
     parent_agent_id: Option<serde_json::Value>,
+    /// Epoch milliseconds.
+    #[serde(rename = "revivedAt")]
+    revived_at: Option<serde_json::Value>,
+    #[serde(rename = "stoppedByUser")]
+    stopped_by_user: Option<serde_json::Value>,
 }
 
 const MAX_META_BYTES: u64 = 1024 * 1024;
@@ -45,6 +57,8 @@ const OWNER_TAIL: u64 = 256 * 1024;
 const INTERIM_NOTE: &str = "background work of its own still running";
 /// Appended to a notification's note when new input resumes the subagent at once.
 const PENDING_INPUT_NOTE: &str = "arrived after this run";
+/// Notification statuses that end a subagent unless their note says it runs on.
+const TERMINAL: [&str; 4] = ["completed", "failed", "killed", "stopped"];
 
 /// Undocumented sidecars gained `finished` in 2.1.301. Without the registry's start
 /// time we cannot distinguish a running task from a crash left by an older process.
@@ -67,15 +81,13 @@ pub(crate) fn scan(
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Some(Scan {
-                running: 0,
-                finished: Vec::new(),
+                sidecars: Vec::new(),
             });
         }
         Err(_) => return None,
     };
     let mut scan = Scan {
-        running: 0,
-        finished: Vec::new(),
+        sidecars: Vec::new(),
     };
     for entry in entries {
         let entry = entry.ok()?;
@@ -97,21 +109,24 @@ pub(crate) fn scan(
         let Some(meta) = read_meta(&path) else {
             continue;
         };
-        if meta.finished == Some(true) {
-            scan.finished.push(Finished {
-                id: id.to_owned(),
-                owner: meta
-                    .parent_agent_id
-                    .as_ref()
-                    .and_then(serde_json::Value::as_str)
-                    .filter(|owner| is_agent_id(owner))
-                    .map(str::to_owned),
-                log: path.with_file_name(format!("agent-{id}.jsonl")),
-                end: mtime,
-            });
-        } else {
-            scan.running += 1;
-        }
+        scan.sidecars.push(Sidecar {
+            id: id.to_owned(),
+            finished: meta.finished == Some(true),
+            owner: meta
+                .parent_agent_id
+                .as_ref()
+                .and_then(serde_json::Value::as_str)
+                .filter(|owner| is_agent_id(owner))
+                .map(str::to_owned),
+            log: path.with_file_name(format!("agent-{id}.jsonl")),
+            mtime,
+            revived: meta
+                .revived_at
+                .as_ref()
+                .and_then(serde_json::Value::as_u64)
+                .map(|ms| UNIX_EPOCH + Duration::from_millis(ms)),
+            stopped_by_user: meta.stopped_by_user == Some(serde_json::Value::Bool(true)),
+        });
     }
     Some(scan)
 }
@@ -124,45 +139,84 @@ fn is_agent_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-/// `(agent id, meta mtime)` of the finished depth-1 sidecars whose notifications the
-/// parent Transcript's tail should hold ([`Scan::awaited`]).
-pub(crate) type Awaited = [(String, SystemTime)];
+/// What a Session's current sidecars ask of the parent Transcript's tail: its Turn's
+/// prompt and the subagents' [`Lifecycle`] evidence ([`Scan::search`]).
+#[derive(Debug, Default, Clone)]
+pub(crate) struct Search {
+    /// `(agent id, meta mtime)` of the finished depth-1 sidecars: the tail widens while one
+    /// has no evidence in it and ended before the tail's oldest entry. A nested one's
+    /// notifications go to its owner, so they never widen the parent's read.
+    pub(crate) awaited: Vec<(String, SystemTime)>,
+    /// `(agent id, log mtime)` of the unfinished depth-1 sidecars whose `agent-<id>.jsonl`
+    /// is a regular file: the tail widens while one has no evidence in it and its log was
+    /// last written before the tail's oldest entry. One quiet since then may have been
+    /// stopped further back; one written to since ended, if at all, inside the tail.
+    pub(crate) quiet: Vec<(String, SystemTime)>,
+    /// Widen until the Turn's prompt is in the tail, as a finished sidecar needs. Unfinished
+    /// ones don't need it: they count as running without it.
+    pub(crate) turn: bool,
+}
 
 impl Scan {
-    /// Finished sidecars need both the Turn's start and the Transcript's [`Lifecycle`]
-    /// evidence; without them neither is searched.
-    pub(crate) fn needs_turn(&self) -> bool {
-        !self.finished.is_empty()
-    }
-
-    /// The finished depth-1 sidecars, with the end of their run: the parent's tail widens
-    /// while one has no evidence in it and ended before the tail's oldest entry. A nested
-    /// one's notifications go to its owner, so they never widen the parent's read.
-    pub(crate) fn awaited(&self) -> Vec<(String, SystemTime)> {
-        self.finished
-            .iter()
-            .filter(|f| f.owner.is_none())
-            .map(|f| (f.id.clone(), f.end))
-            .collect()
+    /// Current sidecars need the Turn's start and the Transcript's [`Lifecycle`] evidence;
+    /// without any, neither is searched.
+    pub(crate) fn search(&self) -> Option<Search> {
+        if self.sidecars.is_empty() {
+            return None;
+        }
+        let finished = || self.sidecars.iter().filter(|s| s.finished);
+        Some(Search {
+            awaited: finished()
+                .filter(|s| s.owner.is_none())
+                .map(|s| (s.id.clone(), s.mtime))
+                .collect(),
+            // One stat per running depth-1 sidecar's log; the log itself is never opened.
+            quiet: self
+                .sidecars
+                .iter()
+                .filter(|s| !s.finished && s.owner.is_none())
+                .filter_map(|s| {
+                    let log = fs::metadata(&s.log).ok().filter(|m| m.is_file())?;
+                    Some((s.id.clone(), log.modified().ok()?))
+                })
+                .collect(),
+            turn: finished().next().is_some(),
+        })
     }
 
     /// `lifecycle` is the parent Transcript's evidence from the same tail as `turn_start`.
     /// A nested subagent's owner transcript is searched too, once per owner per call.
     pub(crate) fn counts(self, turn_start: Option<&str>, lifecycle: &Lifecycle) -> Counts {
         let mut owners: HashMap<String, Lifecycle> = HashMap::new();
-        let mut running = self.running;
+        let mut running = 0;
+        // `(end, log)` of each sidecar that ended.
         let mut settled = Vec::new();
-        for f in self.finished {
-            let owner = f.owner.as_ref().map(|owner| {
+        for s in self.sidecars {
+            let owner = s.owner.as_ref().map(|owner| {
                 &*owners.entry(owner.clone()).or_insert_with(|| {
-                    owner_tail(&f.log.with_file_name(format!("agent-{owner}.jsonl")))
+                    owner_tail(&s.log.with_file_name(format!("agent-{owner}.jsonl")))
                 })
             });
-            if Lifecycle::latest(lifecycle, owner, &f.id).is_some_and(|l| l.running) {
+            // A revive (`SendMessage`) clears `finished` and records `revivedAt`: evidence
+            // older than the revive, or undated, belongs to an earlier run and decides
+            // nothing about this one.
+            let latest = Lifecycle::latest(lifecycle, owner, &s.id).filter(|l| {
+                s.finished
+                    || s.revived
+                        .is_none_or(|revived| l.at.is_some_and(|at| at >= revived))
+            });
+            // Claude Code never revives a subagent the user stopped.
+            if !s.stopped_by_user && latest.and_then(|l| l.running).unwrap_or(!s.finished) {
                 running += 1;
-            } else {
-                settled.push(f);
+                continue;
             }
+            // A finished run ended at its meta's last write. An unfinished one ended with
+            // the evidence that settled it.
+            let end = match latest.and_then(|l| l.at) {
+                Some(at) if !s.finished => at,
+                _ => s.mtime,
+            };
+            settled.push((end, s.log));
         }
         let finished = if settled.is_empty() {
             Some(0)
@@ -170,8 +224,8 @@ impl Scan {
             turn_start.and_then(timestamp).map(|turn| {
                 settled
                     .iter()
-                    .filter(|f| {
-                        f.end >= turn && first_timestamp(&f.log).is_some_and(|start| start >= turn)
+                    .filter(|(end, log)| {
+                        *end >= turn && first_timestamp(log).is_some_and(|start| start >= turn)
                     })
                     .count() as u64
             })
@@ -189,14 +243,17 @@ pub(crate) struct Lifecycle(HashMap<String, Latest>);
 #[derive(Debug, Clone, Copy)]
 struct Latest {
     at: Option<SystemTime>,
-    /// The run ended but the subagent did not: an interim or pending-input note.
-    running: bool,
+    /// `Some(true)`: the run ended but the subagent did not (an interim or pending-input
+    /// note). `Some(false)`: it ended (a terminal status or a successful `TaskStop`).
+    /// `None`: a status Fleet doesn't know, which leaves it to the sidecar's `finished`.
+    running: Option<bool>,
 }
 
 impl Lifecycle {
     /// Cheap prefilter for a reverse pass: only these lines are parsed for evidence.
     pub(crate) fn candidate(line: &str) -> bool {
-        line.contains("task-notification") || line.contains("\"local_agent\"")
+        // Unquoted: a `TaskStop` result may carry it only inside an escaped JSON string.
+        line.contains("task-notification") || line.contains("local_agent")
     }
 
     /// Record `entry` unless a later one (seen earlier in the reverse pass) decided its id.
@@ -226,10 +283,10 @@ impl Lifecycle {
     }
 }
 
-/// `(agent id, still running)`, in entry order, for each task notification with a
-/// `<status>` in `v`, or for a successful `TaskStop` of a subagent. Anything else, routing
-/// notices included, decides nothing.
-fn evidence(v: &serde_json::Value) -> Vec<(String, bool)> {
+/// `(agent id, still running)` ([`Latest::running`]), in entry order, for each task
+/// notification with a `<status>` in `v`, or for a successful `TaskStop` of a subagent.
+/// Anything else, routing notices included, decides nothing.
+fn evidence(v: &serde_json::Value) -> Vec<(String, Option<bool>)> {
     let attachment = &v["attachment"];
     let content = match v["type"].as_str() {
         Some("user") if v["origin"]["kind"] == "task-notification" => &v["message"]["content"],
@@ -239,7 +296,7 @@ fn evidence(v: &serde_json::Value) -> Vec<(String, bool)> {
         {
             &attachment["prompt"]
         }
-        Some("user") => return stopped(v).map(|id| (id, false)).into_iter().collect(),
+        Some("user") => return stopped(v).map(|id| (id, Some(false))).into_iter().collect(),
         _ => return Vec::new(),
     };
     let texts: Vec<&str> = match content {
@@ -257,30 +314,53 @@ fn evidence(v: &serde_json::Value) -> Vec<(String, bool)> {
         .filter_map(|n| {
             let status = n.status?;
             let note = n.note.unwrap_or_default();
-            let running = note.contains(PENDING_INPUT_NOTE)
-                || (status == "completed" && note.contains(INTERIM_NOTE));
+            let running = if note.contains(PENDING_INPUT_NOTE)
+                || (status == "completed" && note.contains(INTERIM_NOTE))
+            {
+                Some(true)
+            } else if TERMINAL.contains(&status) {
+                Some(false)
+            } else {
+                None
+            };
             Some((n.task_id?.to_owned(), running))
         })
         .collect()
 }
 
 /// A subagent's id from a `TaskStop` result that is not an error. `TaskStop` also stops
-/// shells, so the result must name a `local_agent`.
+/// shells, so the result must name a `local_agent`. Read from the structured
+/// `toolUseResult` when the entry has one, else from the `tool_result` content: a JSON
+/// string, or text blocks holding one.
 fn stopped(v: &serde_json::Value) -> Option<String> {
-    let result = &v["toolUseResult"];
-    if result["task_type"] != "local_agent" {
-        return None;
-    }
-    let blocks = v["message"]["content"].as_array()?;
-    let mut results = blocks
+    let results: Vec<_> = v["message"]["content"]
+        .as_array()?
         .iter()
         .filter(|b| b["type"] == "tool_result")
-        .peekable();
-    results.peek()?;
-    if results.any(|b| b["is_error"] == true) {
+        .collect();
+    if results.is_empty() || results.iter().any(|b| b["is_error"] == true) {
         return None;
     }
-    result["task_id"].as_str().map(str::to_owned)
+    let agent = |r: &serde_json::Value| {
+        (r["task_type"] == "local_agent")
+            .then(|| r["task_id"].as_str().map(str::to_owned))
+            .flatten()
+    };
+    if v["toolUseResult"].is_object() {
+        return agent(&v["toolUseResult"]);
+    }
+    results
+        .iter()
+        .flat_map(|b| match &b["content"] {
+            serde_json::Value::String(text) => vec![text.as_str()],
+            serde_json::Value::Array(blocks) => blocks
+                .iter()
+                .filter(|b| b["type"] == "text")
+                .filter_map(|b| b["text"].as_str())
+                .collect(),
+            _ => Vec::new(),
+        })
+        .find_map(|text| agent(&serde_json::from_str(text).ok()?))
 }
 
 #[derive(Default)]
@@ -528,7 +608,7 @@ mod tests {
     fn sidecars_count_running_finished_stopped_nested_and_forks_once() {
         let (_dir, path) = fixture();
         let s = scan(&path, Some("2.1.301"), Some(START)).unwrap();
-        assert!(s.needs_turn());
+        assert!(s.search().unwrap().turn);
         assert_eq!(
             s.counts(Some(TURN), &Lifecycle::default()),
             Counts {
@@ -564,7 +644,7 @@ mod tests {
             .is_none()
         );
         let s = scan(&path, Some("2.1.301"), Some(START + 121_000)).unwrap();
-        assert!(!s.needs_turn());
+        assert!(s.search().is_none());
         assert_eq!(
             s.counts(None, &Lifecycle::default()),
             Counts {
@@ -681,8 +761,9 @@ mod tests {
         );
     }
 
-    /// The lifecycle fixture: every meta written 120 s after the process start, so all
-    /// are current; the Turn starts at 00:01 and every finished log starts at 00:01:10.
+    /// The lifecycle fixture: every meta current, the finished ones written 120 s after the
+    /// process start and the unfinished ones at their launch, 65 s after it, since a stop
+    /// never rewrites a meta; the Turn starts at 00:01 and every log starts at 00:01:10.
     fn lifecycle_fixture() -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
         let source =
@@ -694,36 +775,59 @@ mod tests {
             dir.path().join("session.jsonl"),
         )
         .unwrap();
-        let at = UNIX_EPOCH + Duration::from_secs((START / 1000 + 120) as u64);
         for entry in fs::read_dir(source.join("session/subagents")).unwrap() {
             let path = entry.unwrap().path();
-            let dest = agents.join(path.file_name().unwrap());
+            let name = path.file_name().unwrap().to_str().unwrap();
+            let seconds = if name.starts_with("agent-unfinished-") {
+                65
+            } else {
+                120
+            };
+            let dest = agents.join(name);
             fs::copy(&path, &dest).unwrap();
-            File::options()
-                .write(true)
-                .open(dest)
-                .unwrap()
-                .set_times(FileTimes::new().set_modified(at))
-                .unwrap();
+            set_mtime(&dest, seconds);
         }
         let path = dir.path().join("session.jsonl");
         (dir, path)
+    }
+
+    /// Set `path`'s mtime `seconds` after the process start.
+    fn set_mtime(path: &Path, seconds: u64) {
+        File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_times(
+                FileTimes::new()
+                    .set_modified(UNIX_EPOCH + Duration::from_secs(START as u64 / 1000 + seconds)),
+            )
+            .unwrap();
     }
 
     /// What `list` does per Claude Code Session: the sidecars decide whether the shared
     /// tail searches for the Turn and the lifecycle evidence.
     fn poll(path: &Path) -> Counts {
         let s = scan(path, Some("2.1.308"), Some(START)).unwrap();
-        let awaited = s.needs_turn().then(|| s.awaited());
+        let search = s.search();
         let (_, turn, lifecycle) =
-            crate::core::context::for_transcript(path, None, awaited.as_deref());
+            crate::core::context::for_transcript(path, None, search.as_ref());
         s.counts(turn.as_deref(), &lifecycle)
+    }
+
+    /// The parent's evidence from the lifecycle fixture's whole Transcript.
+    fn parent_lifecycle(path: &Path) -> Lifecycle {
+        let search = Search {
+            awaited: Vec::new(),
+            quiet: Vec::new(),
+            turn: true,
+        };
+        crate::core::context::for_transcript(path, None, Some(&search)).2
     }
 
     #[test]
     fn a_finished_run_counts_as_running_until_its_latest_notification_settles_it() {
         let (_dir, path) = lifecycle_fixture();
-        let (_, _, parent) = crate::core::context::for_transcript(&path, None, Some(&[]));
+        let parent = parent_lifecycle(&path);
         let owner = owner_tail(&path.with_extension("").join("subagents/agent-owner.jsonl"));
         for (id, running) in [
             // Interim note, even one written before the Turn's prompt.
@@ -754,20 +858,192 @@ mod tests {
         ] {
             let nested = id.starts_with("nested").then_some(&owner);
             let latest = Lifecycle::latest(&parent, nested, id).unwrap();
-            assert_eq!(latest.running, running, "{id}");
+            assert_eq!(latest.running, Some(running), "{id}");
         }
         // No notification at all: finished, as before.
         assert!(Lifecycle::latest(&parent, None, "silent").is_none());
-        // Owner (running), interim, stop-failed, pending, routed, nested, joined-late and
-        // nested-joined-late run; settled, resettled, stopped, quoted, silent,
-        // nested-settled, joined and nested-joined finished in this Turn.
+        // Owner (running), interim, stop-failed, pending, routed, nested, joined-late,
+        // nested-joined-late and three unfinished run; settled, resettled, stopped, quoted,
+        // silent, nested-settled, joined, nested-joined and two unfinished finished in this
+        // Turn.
         assert_eq!(
             poll(&path),
             Counts {
-                running: 8,
-                finished: Some(8)
+                running: 11,
+                finished: Some(10)
             }
         );
+    }
+
+    #[test]
+    fn an_unfinished_sidecar_counts_as_finished_once_its_latest_evidence_ends_it() {
+        let (_dir, path) = lifecycle_fixture();
+        let parent = parent_lifecycle(&path);
+        for (id, running) in [
+            // A successful TaskStop whose result is only a JSON string in its content.
+            ("unfinished-stopped", Some(false)),
+            // A killed notification (and the queue record removing it, which is ignored).
+            ("unfinished-killed", Some(false)),
+            // A TaskStop that failed decides nothing.
+            ("unfinished-stop-failed", None),
+            // Stopped, then a later interim note: it runs again.
+            ("unfinished-revived", Some(true)),
+            // No evidence: the sidecar's own state, running.
+            ("unfinished-silent", None),
+        ] {
+            let latest = Lifecycle::latest(&parent, None, id);
+            assert_eq!(latest.and_then(|l| l.running), running, "{id}");
+        }
+        // Only the five unfinished sidecars: the stopped and the killed one ended in this
+        // Turn, the other three run.
+        let agents = path.with_extension("").join("subagents");
+        for entry in fs::read_dir(&agents).unwrap() {
+            let file = entry.unwrap().path();
+            let name = file.file_name().unwrap().to_str().unwrap();
+            if !name.starts_with("agent-unfinished-") {
+                fs::remove_file(file).unwrap();
+            }
+        }
+        let s = scan(&path, Some("2.1.308"), Some(START)).unwrap();
+        let search = s.search().unwrap();
+        // Unfinished sidecars never widen the read, for the prompt or for their evidence.
+        assert!(!search.turn && search.awaited.is_empty());
+        let counts = Counts {
+            running: 3,
+            finished: Some(2),
+        };
+        assert_eq!(poll(&path), counts);
+        // A settled unfinished sidecar ends with the evidence that settled it, not with its
+        // meta's write: the same stop entry before the Turn's prompt counts it in no Turn.
+        let early = |id: &str, at: &str| {
+            let mut lifecycle = Lifecycle::default();
+            lifecycle.observe(&serde_json::json!({"type": "user", "timestamp": at,
+                "message": {"content": [{"type": "tool_result", "content": format!(
+                    r#"{{"task_id":"{id}","task_type":"local_agent"}}"#)}]}}));
+            lifecycle
+        };
+        set_mtime(&agents.join("agent-unfinished-silent.meta.json"), 30);
+        for (at, finished) in [("2026-01-01T00:00:59Z", 0), (TURN, 1)] {
+            let counts = scan(&path, Some("2.1.308"), Some(START))
+                .unwrap()
+                .counts(Some(TURN), &early("unfinished-silent", at));
+            assert_eq!(
+                counts,
+                Counts {
+                    running: 4,
+                    finished: Some(finished)
+                },
+                "{at}"
+            );
+        }
+        // Undated evidence settles a sidecar never revived, but can't be placed after a
+        // revive, so then it settles nothing.
+        let mut undated = Lifecycle::default();
+        undated.observe(&serde_json::json!({"type": "user", "message": {"content": [
+            {"type": "tool_result", "content":
+                r#"{"task_id":"unfinished-silent","task_type":"local_agent"}"#}]}}));
+        let running = || {
+            scan(&path, Some("2.1.308"), Some(START))
+                .unwrap()
+                .counts(Some(TURN), &undated)
+                .running
+        };
+        assert_eq!(running(), 4);
+        let meta = agents.join("agent-unfinished-silent.meta.json");
+        fs::write(&meta, r#"{"spawnDepth":1,"revivedAt":1767225630000}"#).unwrap();
+        set_mtime(&meta, 30);
+        assert_eq!(running(), 5);
+    }
+
+    #[test]
+    fn only_a_revive_after_its_stop_runs_a_stopped_sidecar_again() {
+        let (_dir, path) = lifecycle_fixture();
+        let agents = path.with_extension("").join("subagents");
+        // Rewrite the meta with `extra` fields, later than any evidence.
+        let rewrite = |id: &str, extra: serde_json::Value| {
+            let file = agents.join(format!("agent-{id}.meta.json"));
+            let mut meta: serde_json::Value =
+                serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+            meta.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            fs::write(&file, meta.to_string()).unwrap();
+            set_mtime(&file, 200);
+        };
+        let at = |seconds: u64| (START as u64 / 1000 + seconds) * 1000;
+        let base = poll(&path);
+        // The killed notice is at 00:01:44 and the TaskStop at 00:01:43.
+        for (id, stop) in [("unfinished-killed", 104), ("unfinished-stopped", 103)] {
+            // Worktree cleanup and a user stop rewrite the meta after the stop.
+            rewrite(id, serde_json::json!({"worktreeCleanlyRemoved": true}));
+            assert_eq!(poll(&path), base, "{id} rewritten after its stop");
+            rewrite(id, serde_json::json!({"revivedAt": at(stop - 1)}));
+            assert_eq!(poll(&path), base, "{id} revived before its stop");
+            rewrite(id, serde_json::json!({"revivedAt": at(stop + 1)}));
+            assert_eq!(
+                poll(&path),
+                Counts {
+                    running: base.running + 1,
+                    finished: base.finished.map(|n| n - 1)
+                },
+                "{id} revived after its stop"
+            );
+            rewrite(id, serde_json::json!({"revivedAt": null}));
+        }
+        // A user stop ends a sidecar with no evidence at all, and is never revived.
+        rewrite(
+            "unfinished-silent",
+            serde_json::json!({"stoppedByUser": true, "revivedAt": at(1)}),
+        );
+        assert_eq!(poll(&path).running, base.running - 1);
+    }
+
+    #[test]
+    fn task_stop_results_are_read_from_the_structured_result_or_the_content() {
+        let json = |id: &str, kind: &str| {
+            format!(
+                r#"{{"message":"Successfully stopped task: {id} (Synthetic task)","task_id":"{id}","task_type":"{kind}","command":"Synthetic task"}}"#
+            )
+        };
+        let entry = |content: serde_json::Value, error: bool| {
+            let mut result = serde_json::json!({"type": "tool_result",
+                "tool_use_id": "tool-stop", "content": content});
+            if error {
+                result["is_error"] = serde_json::json!(true);
+            }
+            serde_json::json!({"type": "user", "timestamp": TURN,
+                "message": {"role": "user", "content": [result]}})
+        };
+        let text = |t: String| serde_json::json!([{"type": "text", "text": t}]);
+        let agent = json("a", "local_agent");
+        let mut structured = entry(serde_json::json!("Synthetic stop"), false);
+        structured["toolUseResult"] = serde_json::from_str(&agent).unwrap();
+        // A shell's stop in the structured result is not a subagent's, whatever the text.
+        let mut shell = entry(serde_json::json!(agent), false);
+        shell["toolUseResult"] = serde_json::from_str(&json("a", "local_bash")).unwrap();
+        for (entry, id) in [
+            (entry(serde_json::json!(agent), false), Some("a")),
+            (entry(text(agent.clone()), false), Some("a")),
+            (structured, Some("a")),
+            (entry(serde_json::json!(agent), true), None),
+            (entry(text(agent.clone()), true), None),
+            (
+                entry(serde_json::json!(json("a", "local_bash")), false),
+                None,
+            ),
+            (
+                entry(serde_json::json!("Synthetic: not JSON local_agent"), false),
+                None,
+            ),
+            (shell, None),
+        ] {
+            assert_eq!(stopped(&entry).as_deref(), id, "{entry}");
+            // The prefilter passes the escaped string form too.
+            assert!(
+                id.is_none() || Lifecycle::candidate(&entry.to_string()),
+                "{entry}"
+            );
+        }
     }
 
     #[test]
@@ -779,9 +1055,15 @@ mod tests {
             )
         };
         for (note, running) in [
-            ("Synthetic: background work of its own still running.", true),
-            ("Synthetic: stops with no live background children.", false),
-            ("Synthetic: a note Fleet does not recognise.", false),
+            (
+                "Synthetic: background work of its own still running.",
+                Some(true),
+            ),
+            (
+                "Synthetic: stops with no live background children.",
+                Some(false),
+            ),
+            ("Synthetic: a note Fleet does not recognise.", Some(false)),
         ] {
             let text = text(note);
             let blocks = serde_json::json!([{"type": "text", "text": text}]);
@@ -795,6 +1077,29 @@ mod tests {
                     assert_eq!(evidence(&entry), [("a".to_owned(), running)], "{entry}");
                 }
             }
+        }
+        // Every terminal status ends the subagent unless its note says it runs on; a status
+        // Fleet doesn't know leaves it to the sidecar.
+        let notice = |status: &str, note: &str| {
+            serde_json::json!({"type": "user", "origin": {"kind": "task-notification"},
+                "message": {"content": format!("<task-notification><task-id>a</task-id>\
+                    <status>{status}</status><note>{note}</note></task-notification>")}})
+        };
+        let interim = "background work of its own still running";
+        for (status, note, running) in [
+            ("killed", "", Some(false)),
+            ("stopped", "", Some(false)),
+            ("failed", "", Some(false)),
+            ("failed", interim, Some(false)),
+            ("killed", "new input arrived after this run", Some(true)),
+            ("synthetic-unknown", "", None),
+            ("synthetic-unknown", interim, None),
+        ] {
+            assert_eq!(
+                evidence(&notice(status, note)),
+                [("a".to_owned(), running)],
+                "{status} {note}"
+            );
         }
         // A user entry without the task-notification origin is not one, nor is a
         // notification that doesn't open the text or carries no id.
@@ -848,15 +1153,21 @@ mod tests {
         assert_eq!(
             evidence(&entry),
             [
-                ("a".to_owned(), true),
-                ("b".to_owned(), true),
-                ("a".to_owned(), false)
+                ("a".to_owned(), Some(true)),
+                ("b".to_owned(), Some(true)),
+                ("a".to_owned(), Some(false))
             ]
         );
         let mut lifecycle = Lifecycle::default();
         lifecycle.observe(&entry);
-        assert!(!Lifecycle::latest(&lifecycle, None, "a").unwrap().running);
-        assert!(Lifecycle::latest(&lifecycle, None, "b").unwrap().running);
+        assert_eq!(
+            Lifecycle::latest(&lifecycle, None, "a").unwrap().running,
+            Some(false)
+        );
+        assert_eq!(
+            Lifecycle::latest(&lifecycle, None, "b").unwrap().running,
+            Some(true)
+        );
         // Each element's <result> stays opaque: markup it quotes without the joiner is not
         // an element, and a <note> after it is not read.
         let quoted = format!(
@@ -901,8 +1212,8 @@ mod tests {
         assert_eq!(
             poll(&path),
             Counts {
-                running: 6,
-                finished: Some(7)
+                running: 9,
+                finished: Some(9)
             }
         );
         let opened = OPENED.with(|opened| opened.take());
@@ -911,43 +1222,49 @@ mod tests {
     }
 
     #[test]
-    fn without_finished_metas_no_notification_is_parsed_or_owner_read() {
+    fn without_current_metas_no_notification_is_parsed_or_owner_read() {
         let (_dir, path) = lifecycle_fixture();
         let agents = path.with_extension("").join("subagents");
-        for entry in fs::read_dir(&agents).unwrap() {
-            let meta = entry.unwrap().path();
-            if meta.to_str().unwrap().ends_with(".meta.json") {
-                fs::write(&meta, r#"{"parentAgentId":"owner"}"#).unwrap();
-            }
+        let stale = UNIX_EPOCH + Duration::from_millis(START as u64) - Duration::from_secs(1);
+        let metas: Vec<_> = fs::read_dir(&agents)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|p| p.to_str().unwrap().ends_with(".meta.json"))
+            .collect();
+        for meta in &metas {
+            File::options()
+                .write(true)
+                .open(meta)
+                .unwrap()
+                .set_times(FileTimes::new().set_modified(stale))
+                .unwrap();
         }
         OBSERVED.with(|n| n.set(0));
         OPENED.with(|opened| opened.borrow_mut().clear());
         assert_eq!(
             poll(&path),
             Counts {
-                running: 16,
+                running: 0,
                 finished: Some(0)
             }
         );
         assert_eq!(OBSERVED.with(|n| n.get()), 0);
-        let opened = OPENED.with(|opened| opened.take());
-        assert_eq!(opened.len(), 16);
-        assert!(
-            opened
-                .iter()
-                .all(|p| p.to_str().unwrap().ends_with(".meta.json"))
-        );
-        // The same Transcript is parsed once a finished meta asks for it.
-        fs::write(
-            agents.join("agent-silent.meta.json"),
-            r#"{"finished":true}"#,
-        )
-        .unwrap();
+        assert!(OPENED.with(|opened| opened.take()).is_empty());
+        // The same Transcript is parsed once a current meta asks for it, finished or not.
+        File::options()
+            .write(true)
+            .open(agents.join("agent-unfinished-silent.meta.json"))
+            .unwrap()
+            .set_times(
+                FileTimes::new()
+                    .set_modified(UNIX_EPOCH + Duration::from_secs((START / 1000 + 120) as u64)),
+            )
+            .unwrap();
         assert_eq!(
             poll(&path),
             Counts {
-                running: 15,
-                finished: Some(1)
+                running: 1,
+                finished: Some(0)
             }
         );
         assert!(OBSERVED.with(|n| n.get()) > 0);
