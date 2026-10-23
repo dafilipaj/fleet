@@ -345,6 +345,7 @@ by — with no config, `local`):
 | `model` | string \| null | the model it runs, when known (Claude: the context entry's) |
 | `effort` | string \| null | the reasoning effort it runs at, as its transcript last recorded it (`low`, `medium`, `high`, `xhigh`, `max`, or whatever the harness writes). Claude: the context entry's top-level `effort`; Codex: `effort` of the last `turn_context`. A mid-session change (`/effort`, Codex's `/model` picker) shows from the next reply on. `null` when unknown: no reply yet, a harness version that records none, and always for pi |
 | `subagents` | object \| null | `{ running, finished }`: tasks running now, across all Turns, and tasks that started and ended in the current Turn. `finished` alone is nullable. Claude Code 2.1.301+ only; always `null` for Codex and pi. See below |
+| `activity` | string \| null | what a Busy Claude Code Session is doing now: `"{tool}: {summary}"` of the latest main-thread `tool_use` with no `tool_result` for its id (the chat's own summary, `core::transcript::tool_summary`), or `Thinking` when every call is answered and the turn has not ended; `null` for any other Status (a pending `AskUserQuestion` is not Busy), after `end_turn` or an interrupt marker, and always for Codex and pi. See below |
 | `model_at` | string \| null | the `timestamp` of the transcript entry `model` was read from, as written there (RFC 3339): Claude Code's last reply (the context entry), Codex's last `turn_context`, pi's last reply or model change; `null` when there is none (no transcript, or `model` from the command line). It moves with every reply, whatever its model — so a caller holding a `fleet model` switch's `switched_at` knows once a reply came after it |
 | `transcript` | string \| null | absolute transcript path (Codex / pi only) |
 | `origin` | object \| null | `{ job, run }` of the [job](cli.md#jobs) run that started the session (its tmux pane option `@fleet_job_run`); `null` when none |
@@ -378,6 +379,26 @@ That entry's top-level `effort` is the row's `effort` (not part of `context`). I
 is not read: SDK sessions write it as `null` while `effort` is set. A `/effort` run in the
 terminal is recorded at once only as a local command's output text, so `effort` follows it from
 the next reply, as `model` follows `/model`.
+
+#### Activity
+
+`activity` comes from the same tail buffer and reverse pass as `context` (`core::context`), which
+therefore does not stop at the first usage entry: it walks the main-thread `assistant` and `user`
+entries back (`attachment`, `system` and bookkeeping lines are skipped) until the answer is
+decided. A `tool_result` met on the way marks its id answered (parallel calls interleave their
+results); the latest `tool_use` not so marked gives `"{tool}: {summary}"`, skipping
+`AskUserQuestion`; control characters (carriage return, escape, tab) and the Unicode line and
+paragraph separators become spaces, so it stays one line. Otherwise `Thinking` while the last entry
+is a result, a thinking or text block without `end_turn`, or a prompt, including a prompt with no
+reply yet (`activity` does not depend on `context`). The walk ends at a prompt, an earlier
+`end_turn`, or, once every result met has its call, at an entry of an earlier API message (another
+`message.id`; parallel sibling calls are separate entries sharing one id): the model writes a
+message only after every call of the one before has its result, so only the latest can hold a
+pending call. A long Turn's earlier calls, cut from their results by the buffer's edge, are so never
+reached, and a poll parses a few entries. `null` after `end_turn` or a `[Request interrupted`
+marker, and when a result's call is not in the buffer before the walk ends (a sibling may still be
+pending there; the read is not widened for this). `discovery` blanks it unless the registry Status
+is `busy`, so a stale call never shows on another row.
 
 #### Subagent counts
 

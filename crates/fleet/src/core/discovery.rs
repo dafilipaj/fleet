@@ -104,6 +104,11 @@ pub struct Session {
     /// Claude Code 2.1.301+: tasks running now and tasks started and finished in
     /// the current Turn. `None` when unknown, and always for Codex and pi.
     pub subagents: Option<crate::core::subagents::Counts>,
+    /// What a Busy Claude Code session is doing now, one short line: `"{tool}: {summary}"`
+    /// of the tool call still waiting for its result (the summary the chat shows), or
+    /// `Thinking`. `null` for any other Status, after `end_turn` or an interrupt, when the
+    /// pending call is beyond the transcript tail read, and always for Codex and pi.
+    pub activity: Option<String>,
     /// The `timestamp` of the transcript entry `model` was read from (Claude Code: its last
     /// reply; Codex: its `turn_context`; pi: its last reply or model change), as written;
     /// `None` without one (no model known, or one from the command line).
@@ -145,6 +150,7 @@ impl Default for Session {
             model: None,
             effort: None,
             subagents: None,
+            activity: None,
             model_at: None,
             transcript: None,
             origin: None,
@@ -375,10 +381,10 @@ fn claude_session(
         (true, Some(sid), Some(cwd)) => title_for(cwd, sid),
         _ => None,
     };
-    let (last, subagents) = if enrich {
+    let (last, subagents, activity) = if enrich {
         claude_details(&claude_home(), &reg)
     } else {
-        (None, None)
+        (None, None, None)
     };
     let (context, effort, model_at) = match last {
         Some(l) => (Some(l.context), l.effort, l.at),
@@ -406,6 +412,7 @@ fn claude_session(
         model: context.as_ref().and_then(|c| c.model.clone()),
         effort,
         subagents,
+        activity,
         context,
         stack: None,
         harness: Harness::Claude,
@@ -422,13 +429,14 @@ fn claude_details(
 ) -> (
     Option<crate::core::context::LastReply>,
     Option<crate::core::subagents::Counts>,
+    Option<String>,
 ) {
     let Some(path) = reg
         .session_id
         .as_deref()
         .and_then(|sid| crate::core::context::locate_transcript(home, reg.cwd.as_deref(), sid))
     else {
-        return (None, None);
+        return (None, None, None);
     };
     let scan = crate::core::subagents::scan(
         &path,
@@ -436,9 +444,15 @@ fn claude_details(
         reg.started_at.as_ref().and_then(serde_json::Value::as_i64),
     );
     let search = scan.as_ref().and_then(|s| s.search());
-    let (last, turn, lifecycle) =
+    let (last, turn, lifecycle, activity) =
         crate::core::context::for_transcript(&path, reg.cwd.as_deref(), search.as_ref());
-    (last, scan.map(|s| s.counts(turn.as_deref(), &lifecycle)))
+    // An unmatched call under any other Status is not what the session is doing now.
+    let activity = activity.filter(|_| reg.status.as_deref() == Some("busy"));
+    (
+        last,
+        scan.map(|s| s.counts(turn.as_deref(), &lifecycle)),
+        activity,
+    )
 }
 
 /// Live Codex and pi sessions (see [`crate::core::harness`]): found with `ps`, matched
@@ -1604,7 +1618,7 @@ mod tests {
                 ("no-prompt.jsonl", None),
             ] {
                 std::fs::copy(fixtures.join(file), &transcript).unwrap();
-                let (last, count) = claude_details(home.path(), &reg);
+                let (last, count, _) = claude_details(home.path(), &reg);
                 assert_eq!(last.unwrap().context.used, 10);
                 if version == "2.1.300" {
                     assert!(count.is_none());
@@ -1619,6 +1633,31 @@ mod tests {
         }))
         .unwrap();
         assert!(claude_details(home.path(), &reg).1.is_none());
+    }
+
+    #[test]
+    fn a_claude_row_has_an_activity_only_while_busy() {
+        let home = tempfile::tempdir().unwrap();
+        let project = home.path().join("projects/-work-project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../testdata/claude/activity-pending-read.jsonl"),
+            project.join("session.jsonl"),
+        )
+        .unwrap();
+        for (status, expected) in [
+            ("busy", Some("Read: /work/app/src/main.rs")),
+            ("idle", None),
+            ("waiting", None),
+        ] {
+            let reg: Reg = serde_json::from_value(serde_json::json!({
+                "sessionId": "session", "cwd": "/work/project", "status": status
+            }))
+            .unwrap();
+            let activity = claude_details(home.path(), &reg).2;
+            assert_eq!(activity.as_deref(), expected, "{status}");
+        }
     }
 
     #[test]
@@ -1657,6 +1696,8 @@ mod tests {
                 let row = serde_json::to_value(&s).unwrap();
                 assert!(row.as_object().unwrap().contains_key("subagents"));
                 assert!(row["subagents"].is_null());
+                assert!(row.as_object().unwrap().contains_key("activity"));
+                assert!(row["activity"].is_null());
             }
         }
     }
