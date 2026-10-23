@@ -809,7 +809,7 @@ mod tests {
     fn poll(path: &Path) -> Counts {
         let s = scan(path, Some("2.1.308"), Some(START)).unwrap();
         let search = s.search();
-        let (_, turn, lifecycle) =
+        let (_, turn, lifecycle, _) =
             crate::core::context::for_transcript(path, None, search.as_ref());
         s.counts(turn.as_deref(), &lifecycle)
     }

@@ -26,6 +26,13 @@
 //! turn ran at, which follows a mid-session `/effort` from the next reply on. Its
 //! `perTurnEffort` is not used: SDK sessions write it as `null` while `effort` is set.
 //!
+//! **Activity.** What a Busy session is doing now, from the same buffer and reverse pass
+//! ([`Activity`]): the latest main-thread `tool_use` with no `tool_result` for its id,
+//! phrased `"{tool}: {summary}"` as the chat shows it; `Thinking` when every call is
+//! answered and the turn is unfinished; none after `end_turn`, an interrupt, or when the
+//! pending call lies beyond the buffer (the read is not widened for it). The walk stops at
+//! the message before the latest one, so it parses a few entries, not the whole Turn.
+//!
 //! **Cost.** Only the tail is read (256 KiB, widened to 2 MiB and 8 MiB if no
 //! usable entry is found, or until both it and the Turn's prompt are found when
 //! finished subagents need it), and results are cached per `(path, size, mtime)`, so a
@@ -125,6 +132,8 @@ type CacheKey = (PathBuf, u64, Option<SystemTime>);
 #[derive(Debug, Default, Clone)]
 struct Raw {
     reply: Option<LastTurn>,
+    /// What the session is doing now ([`Activity`]).
+    activity: Option<String>,
     turn_start: Option<String>,
     // The latest prompt can have an unusable timestamp. It still ends the search.
     prompt_found: bool,
@@ -270,7 +279,9 @@ pub fn for_session(home: &Path, cwd: Option<&str>, session_id: &str) -> Option<L
 
 /// One cached tail supplies both the last reply and, when current sidecars need it
 /// (`search` is `Some`), the current Turn's prompt and the subagents' lifecycle evidence.
-/// Exact-target lookups do not call this enrichment.
+/// Exact-target lookups do not call this enrichment. The last item is what the session is
+/// doing now: `"{tool}: {summary}"` of the tool call still waiting for its result,
+/// `Thinking`, or `None` (see [`Activity`]); a prompt with no reply yet is `Thinking`.
 pub(crate) fn for_transcript(
     path: &Path,
     cwd: Option<&str>,
@@ -279,9 +290,10 @@ pub(crate) fn for_transcript(
     Option<LastReply>,
     Option<String>,
     super::subagents::Lifecycle,
+    Option<String>,
 ) {
     let Some(meta) = std::fs::metadata(path).ok() else {
-        return (None, None, Default::default());
+        return (None, None, Default::default(), None);
     };
     let key: CacheKey = (path.to_path_buf(), meta.len(), meta.modified().ok());
     let cached = CACHE.lock().ok().and_then(|c| {
@@ -299,7 +311,7 @@ pub(crate) fn for_transcript(
         raw
     });
     let reply = raw.reply.map(|last| reply_with_window(last, cwd));
-    (reply, raw.turn_start, raw.lifecycle)
+    (reply, raw.turn_start, raw.lifecycle, raw.activity)
 }
 
 fn reply_with_window(last: LastTurn, cwd: Option<&str>) -> LastReply {
@@ -390,6 +402,7 @@ fn read_tail(path: &Path, search: Option<&Search>) -> Option<Raw> {
 /// predate the Turn's prompt.
 fn scan_tail(text: &str, need_turn: bool) -> Raw {
     let mut found = Raw::default();
+    let mut activity = Activity::default();
     for line in text.lines().rev() {
         let reply =
             found.reply.is_none() && line.contains("\"usage\"") && line.contains("\"assistant\"");
@@ -397,7 +410,8 @@ fn scan_tail(text: &str, need_turn: bool) -> Raw {
             && !found.prompt_found
             && (line.contains("\"user\"") || line.contains("\"attachment\""));
         let lifecycle = need_turn && super::subagents::Lifecycle::candidate(line);
-        if !reply && !prompt && !lifecycle {
+        let act = activity.wants(line);
+        if !reply && !prompt && !lifecycle && !act {
             continue;
         }
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
@@ -416,11 +430,157 @@ fn scan_tail(text: &str, need_turn: bool) -> Raw {
         if lifecycle {
             found.lifecycle.observe(&v);
         }
-        if found.reply.is_some() && !need_turn {
+        if act {
+            activity.observe(&v);
+        }
+        if found.reply.is_some() && !need_turn && activity.done.is_some() {
             break;
         }
     }
+    found.activity = activity.finish();
     found
+}
+
+/// What a session is doing now, decided by walking its main-thread `assistant` and `user`
+/// entries backwards (everything else is bookkeeping). The first entry met sets the base
+/// answer: `Thinking` after a result, a thinking or text block mid-turn, or a prompt; none
+/// after `end_turn` or an interrupt. Walking on, the latest `tool_use` whose id no later
+/// `tool_result` answers wins (parallel calls interleave their results). A prompt or an
+/// `end_turn` ends the walk, and so does an earlier API message once every result met is
+/// answered: the model writes a message only after every call of the one before has its
+/// result, so a pending call can only be in the latest. The walk so stays within the last
+/// message or two, short of the buffer's edge in a long turn. A result whose call lies
+/// before the buffer may hide a pending sibling, so that is none, not a guess.
+#[derive(Default)]
+struct Activity {
+    /// The first meaningful entry has been seen.
+    started: bool,
+    /// `tool_result` ids met whose `tool_use` has not been.
+    open: std::collections::HashSet<String>,
+    /// The answer if no pending call turns up.
+    base: Option<String>,
+    /// The `message.id` met with `open` empty: an entry of any other message ends the walk.
+    /// Parallel sibling calls are separate entries of one message, so they share it.
+    settled: Option<String>,
+    /// The walk is over, with this answer.
+    done: Option<Option<String>>,
+}
+
+impl Activity {
+    fn wants(&self, line: &str) -> bool {
+        self.done.is_none() && (line.contains("\"assistant\"") || line.contains("\"user\""))
+    }
+
+    fn finish(self) -> Option<String> {
+        match self.done {
+            Some(done) => done,
+            // The buffer ended before the walk did. Results still open after a settled
+            // message answer an earlier one, whose calls all have their results.
+            None if !self.open.is_empty() && self.settled.is_none() => None,
+            None => self.base,
+        }
+    }
+
+    /// A turn boundary (a prompt, an earlier `end_turn`): the walk ends here.
+    fn boundary(&mut self) {
+        self.done = Some(if self.open.is_empty() {
+            self.base.take()
+        } else {
+            None
+        });
+    }
+
+    /// An entry of the turn in progress; the first one met sets the base answer.
+    fn mid_turn(&mut self) {
+        if !self.started {
+            self.base = Some("Thinking".to_string());
+        }
+        self.started = true;
+    }
+
+    fn observe(&mut self, v: &serde_json::Value) {
+        if self.done.is_some()
+            || v["isSidechain"] == true
+            || v["isMeta"] == true
+            || !matches!(v["type"].as_str(), Some("assistant" | "user"))
+        {
+            return;
+        }
+        let msg = &v["message"];
+        if v["type"] == "assistant" {
+            if v["isApiErrorMessage"] == true || msg["model"] == "<synthetic>" {
+                return;
+            }
+            let id = msg["id"].as_str();
+            if self.settled.as_deref().is_some_and(|s| id != Some(s)) {
+                // An earlier message: its calls are answered, or the later one would not be
+                // there. The results still open are its own.
+                self.done = Some(self.base.take());
+                return;
+            }
+            for b in msg["content"].as_array().into_iter().flatten().rev() {
+                if b["type"] != "tool_use" {
+                    continue;
+                }
+                if b["id"].as_str().is_some_and(|id| self.open.remove(id)) {
+                    continue;
+                }
+                let name = b["name"].as_str().unwrap_or_default();
+                if name.is_empty() || name == "AskUserQuestion" {
+                    continue;
+                }
+                let summary = super::transcript::tool_summary(name, &b["input"]);
+                let phrase = if summary.is_empty() {
+                    name.to_string()
+                } else {
+                    format!("{name}: {summary}")
+                };
+                // One line for a terminal row: no carriage return, escape, tab or separator.
+                let plain = |c: char| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}');
+                self.done = Some(Some(phrase.replace(plain, " ")));
+                return;
+            }
+            if msg["stop_reason"] == "end_turn" {
+                if self.started {
+                    self.boundary();
+                } else {
+                    self.done = Some(None);
+                }
+            } else {
+                self.mid_turn();
+            }
+            if self.settled.is_none() && self.open.is_empty() {
+                self.settled = id.map(str::to_string);
+            }
+            return;
+        }
+        // A `user` entry: a result, an interrupt marker, or a prompt (a turn's start).
+        let content = &msg["content"];
+        let blocks = content.as_array();
+        let results: Vec<&str> = blocks
+            .into_iter()
+            .flatten()
+            .filter(|b| b["type"] == "tool_result")
+            .filter_map(|b| b["tool_use_id"].as_str())
+            .collect();
+        if !results.is_empty() {
+            self.open.extend(results.into_iter().map(str::to_string));
+            self.mid_turn();
+            return;
+        }
+        let interrupted = |t: &str| t.trim_start().starts_with("[Request interrupted");
+        let marker = content.as_str().is_some_and(interrupted)
+            || blocks.is_some_and(|b| b.iter().filter_map(|b| b["text"].as_str()).any(interrupted));
+        if marker {
+            // The session is idle after an interrupt; any call before it is stale.
+            self.done = Some(None);
+        } else if self.started {
+            self.boundary();
+        } else {
+            // Your prompt, nothing since: the model is thinking.
+            self.done = Some(Some("Thinking".to_string()));
+        }
+    }
 }
 
 /// The first entry's `timestamp` in a buffer of whole lines.
@@ -801,6 +961,199 @@ mod tests {
         assert_eq!(effort.as_deref(), Some("high"));
     }
 
+    fn fixture(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../testdata/claude")
+            .join(format!("activity-{name}.jsonl"))
+    }
+
+    fn activity_of(name: &str) -> Option<String> {
+        last_tail_in(&fixture(name), None).activity
+    }
+
+    #[test]
+    fn a_pending_call_is_what_the_session_is_doing() {
+        for (name, expected) in [
+            ("pending-read", "Read: /work/app/src/main.rs"),
+            ("pending-edit", "Edit: /work/app/web/src/App.tsx"),
+            // The first line of the command, as the chat shows it, not the description.
+            ("pending-bash", "Bash: bundle exec rspec spec/models"),
+            ("pending-grep", "Grep: needle"),
+        ] {
+            assert_eq!(activity_of(name).as_deref(), Some(expected), "{name}");
+        }
+    }
+
+    #[test]
+    fn parallel_calls_show_the_latest_one_without_a_result() {
+        // `a` is answered; `b` was issued after it and is still running.
+        assert_eq!(
+            activity_of("parallel-one-answered").as_deref(),
+            Some("Grep: needle")
+        );
+        // Results interleave with later siblings: `a` and `b` are answered, `c` is not.
+        assert_eq!(
+            activity_of("parallel-interleaved").as_deref(),
+            Some("Bash: ls -la")
+        );
+    }
+
+    #[test]
+    fn no_pending_call_is_thinking_until_the_turn_ends() {
+        assert_eq!(activity_of("all-answered").as_deref(), Some("Thinking"));
+        // The skipped question leaves the turn thinking: Fleet's `waiting_for` says the rest.
+        assert_eq!(activity_of("ask-skipped").as_deref(), Some("Thinking"));
+        assert_eq!(activity_of("end-turn"), None);
+        assert_eq!(activity_of("interrupt"), None);
+    }
+
+    #[test]
+    fn the_scan_goes_past_the_usage_entry_the_reply_stops_at() {
+        // The newest usage entry is the `Bash` call, but the walk still reads on to decide.
+        let raw = last_tail_in(&fixture("all-answered"), None);
+        assert!(raw.reply.is_some());
+        assert_eq!(raw.activity.as_deref(), Some("Thinking"));
+        // A prompt and nothing else; and nothing at all.
+        let d = tempfile::tempdir().unwrap();
+        let p = write(d.path(), &[user("hi")]);
+        assert_eq!(last_tail_in(&p, None).activity.as_deref(), Some("Thinking"));
+        assert_eq!(last_tail_in(&write(d.path(), &[]), None).activity, None);
+    }
+
+    #[test]
+    fn a_result_whose_call_is_beyond_the_buffer_is_no_answer() {
+        let result = serde_json::json!({"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "gone", "content": "ok"}]}})
+        .to_string();
+        let d = tempfile::tempdir().unwrap();
+        let p = write(
+            d.path(),
+            &[assistant(1, 10, 0, "claude-opus-5-5", false), result],
+        );
+        // A sibling of `gone` may still be pending out there: not `Thinking`.
+        assert_eq!(last_tail_in(&p, None).activity, None);
+    }
+
+    /// An entry of API message `id` holding one content block, as Claude Code writes them.
+    fn block(id: &str, block: serde_json::Value) -> String {
+        serde_json::json!({"type": "assistant", "isSidechain": false, "message": {
+            "id": id, "model": "claude-opus-5-5", "role": "assistant", "content": [block],
+            "stop_reason": "tool_use", "usage": {"input_tokens": 3,
+            "cache_read_input_tokens": 20000, "cache_creation_input_tokens": 800,
+            "output_tokens": 50}}})
+        .to_string()
+    }
+
+    fn call(id: &str, use_id: &str, name: &str, input: serde_json::Value) -> String {
+        block(
+            id,
+            serde_json::json!({"type": "tool_use", "id": use_id, "name": name, "input": input}),
+        )
+    }
+
+    fn result(use_id: &str, content: &str) -> String {
+        serde_json::json!({"type": "user", "isSidechain": false, "message": {"role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": use_id, "content": content}]}})
+        .to_string()
+    }
+
+    #[test]
+    fn a_long_turn_is_thinking_though_the_buffer_splits_an_earlier_call_from_its_result() {
+        // `z`'s result alone outgrows the first tail, so the buffer holds `a`'s result but
+        // not the call: the walk must stop at `msg_2`, the message before the latest.
+        let lines = [
+            user("fix the rates"),
+            call(
+                "msg_1",
+                "a",
+                "Read",
+                serde_json::json!({"file_path": "/work/app/a.rs"}),
+            ),
+            call(
+                "msg_1",
+                "z",
+                "Bash",
+                serde_json::json!({"command": "cat build.log"}),
+            ),
+            result("z", &"x".repeat(300 * 1024)),
+            result("a", "ok"),
+            call(
+                "msg_2",
+                "b",
+                "Grep",
+                serde_json::json!({"pattern": "needle"}),
+            ),
+            result("b", "ok"),
+            call(
+                "msg_3",
+                "c",
+                "Read",
+                serde_json::json!({"file_path": "/work/app/c.rs"}),
+            ),
+            result("c", "ok"),
+            block(
+                "msg_4",
+                serde_json::json!({"type": "thinking", "thinking": ""}),
+            ),
+        ];
+        // Without `msg_2`, the buffer ends after `a`'s result, before any `msg_1` entry.
+        let unstopped: Vec<_> = [&lines[..5], &lines[7..]].concat();
+        let d = tempfile::tempdir().unwrap();
+        // Thinking after the latest result, and after a thinking block.
+        for lines in [&lines[..], &unstopped[..]] {
+            for n in [lines.len() - 1, lines.len()] {
+                let p = write(d.path(), &lines[..n]);
+                TAIL_READ.with(|read| read.set(0));
+                let raw = last_tail_in(&p, None);
+                assert_eq!(raw.activity.as_deref(), Some("Thinking"), "{n} lines");
+                assert_eq!(TAIL_READ.with(|read| read.get()), TAILS[0], "not widened");
+            }
+        }
+    }
+
+    #[test]
+    fn a_prompt_with_no_reply_yet_is_thinking() {
+        let d = tempfile::tempdir().unwrap();
+        let p = write(d.path(), &[user("fix the rates")]);
+        let (reply, _, _, activity) = for_transcript(&p, None, None);
+        assert!(reply.is_none());
+        assert_eq!(activity.as_deref(), Some("Thinking"));
+    }
+
+    #[test]
+    fn the_activity_is_one_plain_line() {
+        let command = "echo a\rb\t\u{1b}[1mc\u{2028}d\u{2029}e\nsecond line";
+        let d = tempfile::tempdir().unwrap();
+        let p = write(
+            d.path(),
+            &[
+                user("fix the rates"),
+                call(
+                    "msg_1",
+                    "a",
+                    "Bash",
+                    serde_json::json!({"command": command}),
+                ),
+            ],
+        );
+        assert_eq!(
+            last_tail_in(&p, None).activity.as_deref(),
+            Some("Bash: echo a b  [1mc d e")
+        );
+    }
+
+    #[test]
+    fn the_activity_says_what_the_chat_says() {
+        use super::super::{harness::Harness, transcript};
+        let bytes = std::fs::read(fixture("pending-bash")).unwrap();
+        let parsed = transcript::parse(Harness::Claude, &bytes, 0);
+        let chat = parsed.entries.iter().rfind(|e| e.tool.is_some()).unwrap();
+        assert_eq!(
+            activity_of("pending-bash").as_deref(),
+            Some(chat.text.as_str())
+        );
+    }
+
     #[test]
     fn levels_band_the_percentage() {
         assert_eq!(level(59), Level::Low);
@@ -874,7 +1227,7 @@ mod tests {
             "origin":{"kind":"human"}, "message":{"content":"Synthetic next prompt"}})
         )
         .unwrap();
-        let (last, turn, _) = for_transcript(&path, None, Some(&turn()));
+        let (last, turn, ..) = for_transcript(&path, None, Some(&turn()));
         assert_eq!(turn.as_deref(), Some("2026-01-01T00:03:00Z"));
         assert_eq!(last.unwrap().effort.as_deref(), Some("high"));
     }
@@ -1025,7 +1378,7 @@ mod tests {
             crate::core::subagents::scan(path, Some("2.1.308"), Some(1_767_225_600_000)).unwrap();
         let search = s.search();
         TAIL_READ.with(|read| read.set(0));
-        let (_, turn, lifecycle) = for_transcript(path, None, search.as_ref());
+        let (_, turn, lifecycle, _) = for_transcript(path, None, search.as_ref());
         let counts = s.counts(turn.as_deref(), &lifecycle);
         (counts.running, TAIL_READ.with(|read| read.get()))
     }
@@ -1215,7 +1568,7 @@ mod tests {
                 .unwrap();
             let search = s.search();
             TAIL_READ.with(|read| read.set(0));
-            let (_, turn, lifecycle) = for_transcript(&path, None, search.as_ref());
+            let (_, turn, lifecycle, _) = for_transcript(&path, None, search.as_ref());
             let counts = s.counts(turn.as_deref(), &lifecycle);
             (
                 counts.running,
