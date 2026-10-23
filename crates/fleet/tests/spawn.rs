@@ -1310,3 +1310,77 @@ fn liveness_is_per_harness_in_real_discovery() {
     assert_eq!(live_pid("claude"), claude);
     assert_eq!(live_pid("codex"), codex);
 }
+
+// The same options must reach the pane, not merely its reported command.
+#[test]
+fn spawn_types_effort_and_permissions_into_the_new_pane() {
+    let Some(r) = Rig::new() else { return };
+    r.env.write_config(&serde_json::json!({
+        "version": 1,
+        "harnesses": { "codex": { "command": r.s("bin/agent") } }
+    }));
+    let work = r.s("work");
+    for harness in ["claude", "codex"] {
+        for (index, flags) in [
+            vec!["--effort", "high"],
+            vec!["--skip-permissions"],
+            vec!["--effort", "high", "--skip-permissions"],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let name = format!("fleet-test-options-{harness}-{index}");
+            let mut args = vec![
+                "--dir",
+                &work,
+                "--harness",
+                harness,
+                "--name",
+                &name,
+                "--model",
+                "example-model",
+            ];
+            args.extend_from_slice(&flags);
+            args.extend(["--", "-explain this"]);
+            let (out, v) = r.spawn_json(&args);
+            assert!(out.status.success(), "{}", stderr(&out));
+            let mut expected = vec!["--model", "example-model"];
+            if harness == "claude" {
+                expected.extend(["-n", &name]);
+            }
+            let mut added = String::new();
+            if flags.contains(&"--effort") {
+                if harness == "claude" {
+                    expected.extend(["--effort", "high"]);
+                    added.push_str(" --effort high");
+                } else {
+                    expected.extend(["-c", "model_reasoning_effort=high"]);
+                    added.push_str(" -c model_reasoning_effort=high");
+                }
+            }
+            if flags.contains(&"--skip-permissions") {
+                let flag = if harness == "claude" {
+                    "--dangerously-skip-permissions"
+                } else {
+                    "--dangerously-bypass-approvals-and-sandbox"
+                };
+                expected.push(flag);
+                added.push(' ');
+                added.push_str(flag);
+            }
+            expected.extend(["--", "-explain this"]);
+            assert_eq!(r.agent_argv(), expected);
+            let named = if harness == "claude" {
+                format!(" -n '{name}'")
+            } else {
+                String::new()
+            };
+            assert!(
+                v["command"].as_str().unwrap().ends_with(&format!(
+                    " --model 'example-model'{named}{added} -- '-explain this'"
+                )),
+                "{v}"
+            );
+        }
+    }
+}

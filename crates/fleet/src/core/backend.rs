@@ -1154,8 +1154,40 @@ fn pi_message(p: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
+/// Per-session overrides for a fresh Claude Code or Codex spawn. The caller validates
+/// `effort` with [`crate::core::effort::valid_level`] and refuses these options for pi.
+#[derive(Clone, Copy, Default)]
+pub struct LaunchOptions<'a> {
+    pub effort: Option<&'a str>,
+    pub skip_permissions: bool,
+}
+
 fn run_command(prompt: Prompt, name: Option<&str>, launcher: &str, harness: Harness) -> String {
-    let bare = with_name(launcher, name, harness);
+    run_command_with_options(prompt, name, launcher, harness, LaunchOptions::default())
+}
+
+fn run_command_with_options(
+    prompt: Prompt,
+    name: Option<&str>,
+    launcher: &str,
+    harness: Harness,
+    options: LaunchOptions<'_>,
+) -> String {
+    let mut bare = with_name(launcher, name, harness);
+    if let Some(level) = options.effort {
+        match harness {
+            Harness::Claude => bare.push_str(&format!(" --effort {level}")),
+            Harness::Codex => bare.push_str(&format!(" -c model_reasoning_effort={level}")),
+            Harness::Pi => {}
+        }
+    }
+    if options.skip_permissions {
+        match harness {
+            Harness::Claude => bare.push_str(" --dangerously-skip-permissions"),
+            Harness::Codex => bare.push_str(" --dangerously-bypass-approvals-and-sandbox"),
+            Harness::Pi => {}
+        }
+    }
     // `--` ends the options, so the prompt is never read as a flag or a subcommand:
     // `codex '--help'` printed help, `codex 'resume'` opened the resume picker.
     let launcher = if harness.ends_options_at_double_dash() {
@@ -1196,6 +1228,22 @@ pub fn launch_command(
         "cd {} && {}",
         shq(dir),
         run_command(prompt, name, launcher, harness)
+    )
+}
+
+/// [`launch_command`] with fresh-session options after the model and name, before the prompt.
+pub fn launch_command_with_options(
+    dir: &str,
+    prompt: Prompt,
+    name: Option<&str>,
+    launcher: &str,
+    harness: Harness,
+    options: LaunchOptions<'_>,
+) -> String {
+    format!(
+        "cd {} && {}",
+        shq(dir),
+        run_command_with_options(prompt, name, launcher, harness, options)
     )
 }
 
@@ -1358,11 +1406,12 @@ pub fn spawn(
         window,
         launcher,
         harness,
+        LaunchOptions::default(),
         &mut |_| Ok(()),
     )
 }
 
-/// [`spawn`] with a `before_typing` hook (see [`spawn_hooked`]).
+/// [`spawn`] with fresh-session `options` and a `before_typing` hook (see [`spawn_hooked`]).
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_with_hook(
     backend: Backend,
@@ -1373,6 +1422,7 @@ pub fn spawn_with_hook(
     window: bool,
     launcher: &str,
     harness: Harness,
+    options: LaunchOptions<'_>,
     before_typing: &mut dyn FnMut(&Spawned) -> Result<()>,
 ) -> Result<Spawned> {
     let tag = crate::core::jobs::Tag::from_env();
@@ -1400,6 +1450,7 @@ pub fn spawn_with_hook(
         launcher,
         harness,
         tag.as_ref(),
+        options,
         before_typing,
     )
 }
@@ -1443,6 +1494,7 @@ pub fn spawn_tagged(
         launcher,
         harness,
         tag,
+        LaunchOptions::default(),
         &mut |_| Ok(()),
     )
 }
@@ -1461,6 +1513,7 @@ pub fn spawn_hooked(
     launcher: &str,
     harness: Harness,
     tag: Option<&crate::core::jobs::Tag>,
+    options: LaunchOptions<'_>,
     before_typing: &mut dyn FnMut(&Spawned) -> Result<()>,
 ) -> Result<Spawned> {
     let backend = effective_backend(backend, tag.is_some());
@@ -1470,7 +1523,8 @@ pub fn spawn_hooked(
     // same limit): it goes through a file the shell expands at launch instead.
     let long_file = match prompt {
         Prompt::Inline(p)
-            if launch_command(dir, prompt, name, launcher, harness).len() > TYPED_LINE_MAX =>
+            if launch_command_with_options(dir, prompt, name, launcher, harness, options).len()
+                > TYPED_LINE_MAX =>
         {
             Some(write_prompt_file(p)?)
         }
@@ -1480,7 +1534,7 @@ pub fn spawn_hooked(
         Some(f) => Prompt::File(f),
         None => prompt,
     };
-    let line = launch_command(dir, prompt, name, launcher, harness);
+    let line = launch_command_with_options(dir, prompt, name, launcher, harness, options);
     let prompt_file = match prompt {
         Prompt::File(f) => Some(f.to_string()),
         _ => None,
@@ -1563,7 +1617,7 @@ pub fn spawn_hooked(
                     partial: Box::new(spawned),
                 });
             }
-            let run = run_command(prompt, name, launcher, harness);
+            let run = run_command_with_options(prompt, name, launcher, harness, options);
             let typed =
                 send_keys(&pane, &["-l", "--", &run]).and_then(|()| send_keys(&pane, &["Enter"]));
             match typed {
@@ -2393,6 +2447,61 @@ mod tests {
             launch_command("/w", Prompt::Inline("go"), Some("x"), "pi", Harness::Pi),
             "cd '/w' && pi -n 'x' 'go'"
         );
+    }
+
+    #[test]
+    fn launch_options_cover_empty_and_file_prompts_without_changing_default_commands() {
+        for (harness, launcher, base, flags) in [
+            (
+                Harness::Claude,
+                "claude --model 'example-model'",
+                "claude --model 'example-model' -n 'example'",
+                " --effort high --dangerously-skip-permissions",
+            ),
+            (
+                Harness::Codex,
+                "codex --model 'example-model'",
+                "codex --model 'example-model'",
+                " -c model_reasoning_effort=high --dangerously-bypass-approvals-and-sandbox",
+            ),
+        ] {
+            let options = LaunchOptions {
+                effort: Some("high"),
+                skip_permissions: true,
+            };
+            for prompt in [
+                Prompt::None,
+                Prompt::Inline(""),
+                Prompt::Inline("-go"),
+                Prompt::File("/prompt.md"),
+            ] {
+                assert_eq!(
+                    launch_command_with_options(
+                        "/work",
+                        prompt,
+                        Some("example"),
+                        launcher,
+                        harness,
+                        LaunchOptions::default()
+                    ),
+                    launch_command("/work", prompt, Some("example"), launcher, harness),
+                );
+                let suffix = match prompt {
+                    Prompt::None | Prompt::Inline("") => String::new(),
+                    Prompt::Inline(_) => " -- '-go'".into(),
+                    Prompt::File(_) => r#" -- "${fleet_prompt%.}""#.into(),
+                };
+                let prefix = if matches!(prompt, Prompt::File(_)) {
+                    r#"fleet_prompt="$(cat '/prompt.md'; printf .)" && "#
+                } else {
+                    ""
+                };
+                assert_eq!(
+                    run_command_with_options(prompt, Some("example"), launcher, harness, options),
+                    format!("{prefix}{base}{flags}{suffix}"),
+                );
+            }
+        }
     }
 
     // `codex '--help'` showed Codex's help, `codex 'resume'` its resume picker: the prompt

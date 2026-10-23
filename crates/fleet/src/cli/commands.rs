@@ -886,6 +886,10 @@ pub struct SpawnOpts {
     pub name: Option<String>,
     /// Model for the new session (`<harness> --model <id>`); None = the harness's default.
     pub model: Option<String>,
+    /// Fresh spawn's effort override; never changes the harness's saved default.
+    pub effort: Option<String>,
+    /// Fresh spawn only: bypass permissions (and Codex's sandbox).
+    pub skip_permissions: bool,
     /// Which coding agent to launch (default Claude).
     pub harness: Harness,
     pub tmux_session: Option<String>,
@@ -898,6 +902,41 @@ pub struct SpawnOpts {
 }
 
 impl SpawnOpts {
+    /// Validate host-independent flags before local launch or remote dispatch.
+    pub fn validate_launch_options(&self, continuing: bool) -> Result<()> {
+        if self.effort.is_none() && !self.skip_permissions {
+            return Ok(());
+        }
+        if continuing {
+            return Err(Error::tagged(
+                "usage",
+                "--effort and --skip-permissions cannot be used with --resume or --from",
+            ));
+        }
+        if self.harness == Harness::Pi {
+            return Err(Error::tagged(
+                "usage",
+                "--effort and --skip-permissions require Claude Code or Codex",
+            ));
+        }
+        if let Some(level) = &self.effort
+            && !crate::core::effort::valid_level(level)
+        {
+            return Err(Error::tagged(
+                "usage",
+                "invalid effort level — lowercase letters only, 1-16 of them",
+            ));
+        }
+        Ok(())
+    }
+
+    fn launch_options(&self) -> backend::LaunchOptions<'_> {
+        backend::LaunchOptions {
+            effort: self.effort.as_deref(),
+            skip_permissions: self.skip_permissions,
+        }
+    }
+
     /// Fill in the defaults that need the environment: cwd, and the backend we're
     /// sitting in. Also validates, so a bad dir/name fails before anything opens.
     pub(crate) fn resolve(&self) -> Result<(String, Backend, Option<String>)> {
@@ -960,10 +999,12 @@ pub fn spawn(
     opts: SpawnOpts,
     json: bool,
 ) -> Result<()> {
-    let out = match from {
-        Some(src) => spawn_from(&src, prompt, opts, json),
-        None => spawn_new(prompt, opts, json),
-    };
+    let out = opts
+        .validate_launch_options(from.is_some())
+        .and_then(|()| match from {
+            Some(src) => spawn_from(&src, prompt, opts, json),
+            None => spawn_new(prompt, opts, json),
+        });
     if json && let Err(e) = &out {
         println!("{}", spawn_error_json(e, &host_label()));
     }
@@ -1198,7 +1239,14 @@ fn launch(
         v
     };
     if crate::core::hosts::dry_run() {
-        let line = backend::launch_command(at.dir, prompt, at.name, launcher, opts.harness);
+        let line = backend::launch_command_with_options(
+            at.dir,
+            prompt,
+            at.name,
+            launcher,
+            opts.harness,
+            opts.launch_options(),
+        );
         let backend_kind = backend::spawn_backend(at.backend);
         if json {
             let v = spawned_json(
@@ -1231,6 +1279,7 @@ fn launch(
         opts.window,
         launcher,
         opts.harness,
+        opts.launch_options(),
         before_typing,
     )?;
     if json {
@@ -1273,7 +1322,14 @@ fn spawn_linked(
         opts.harness,
     )?;
     if crate::core::hosts::dry_run() {
-        let line = backend::launch_command(dir, Prompt::Inline(""), name, &launcher, opts.harness);
+        let line = backend::launch_command_with_options(
+            dir,
+            Prompt::Inline(""),
+            name,
+            &launcher,
+            opts.harness,
+            opts.launch_options(),
+        );
         println!("dry-run: would spawn a tmux session: {line}");
         println!(
             "dry-run: then link it to {} for {}",
@@ -1283,7 +1339,7 @@ fn spawn_linked(
     }
     crate::cli::slack::check_linkable()?;
     let tag = crate::core::jobs::Tag::from_env();
-    let spawned = backend::spawn_tagged(
+    let spawned = backend::spawn_hooked(
         Backend::Tmux,
         dir,
         Prompt::Inline(""),
@@ -1293,6 +1349,8 @@ fn spawn_linked(
         &launcher,
         opts.harness,
         tag.as_ref(),
+        opts.launch_options(),
+        &mut |_| Ok(()),
     )?;
     println!("{spawned} in {}", home_rel(dir));
     let tmux = spawned
@@ -1333,7 +1391,9 @@ pub fn spawn_resume(
     json: bool,
 ) -> Result<()> {
     let mut live = None;
-    let out = resume(id, prompt, from, &opts, json, &mut live);
+    let out = opts
+        .validate_launch_options(true)
+        .and_then(|()| resume(id, prompt, from, &opts, json, &mut live));
     if json && let Err(e) = &out {
         let mut v = spawn_error_json(e, &host_label());
         if let Some(pid) = live {
