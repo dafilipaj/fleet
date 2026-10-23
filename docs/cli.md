@@ -125,7 +125,11 @@ from its Subagent sidecars. No sidecar directory means zero; malformed sidecars 
 and sidecars older than the Session's start are ignored. A sidecar marked finished still
 counts as running while its latest task notification says the task waits on background work
 of its own or resumes on new input, until a later notification or a successful `TaskStop`
-settles it. Nested, stopped and forked tasks
+settles it. A sidecar not marked finished counts as finished once its latest notification
+ends the task (`killed`, `stopped`, `failed`, or `completed` without such a note) or a
+successful `TaskStop` stops it: Claude Code does not mark a stopped task finished. Evidence
+older than the sidecar's last write is ignored, so a revived task counts as running. Nested,
+stopped and forked tasks
 count; background shell commands do not. Codex and pi always return `null` for now:
 Codex counting waits on a known pairing bug: Fleet's Codex pairing can pick a child agent's
 rollout, rather than the parent's, as an interactive Session's Transcript.

@@ -18,8 +18,14 @@ and the 8 MiB limit.
 notifications in both forms and both content shapes (interim, settled, pending input, notes
 quoted only inside `<summary>`/`<result>`, a routing notice without a status) and successful
 and failed `TaskStop` results, beside sidecars that all carry `finished: true` except their
-owner's. The owner's own log carries its nested tasks' notifications, one later than the
-parent's for each. Tests set every sidecar's mtime 120 seconds after the process start.
+owner's and the `unfinished-*` ones. The owner's own log carries its nested tasks'
+notifications, one later than the parent's for each. The `unfinished-*` sidecars lack
+`finished`, as a task stopped with `TaskStop` does: one stopped by a `TaskStop` whose result
+is only a JSON string in the `tool_result` content, one with a `killed` notification (and the
+`queue-operation` record removing it), one whose `TaskStop` failed, one stopped and then
+revived by a later interim note, and one with no evidence. Tests set the `unfinished-*`
+sidecars' mtime 65 seconds after the process start (their launch: a stop never rewrites the
+meta) and every other sidecar's 120 seconds after it.
 
 `codex/` pins a parent and three child rollouts: running, finished in this Turn and finished
 in the preceding Turn. They verify that Codex remains unknown until counting and its
