@@ -466,6 +466,11 @@ passes it through, or prints the failure to reach it, so the output is one objec
 `Error::Tagged` from where the failure happens (`core::backend`, `SpawnOpts::resolve`); untagged
 errors report `io` / `json` / `other`. See [cli.md](cli.md#spawning) for every field and kind.
 
+Fresh `spawn` sessions accept per-run effort and permission overrides for Claude Code and
+Codex. Core backend launch options append the harness's flags after model/name and before the
+prompt; the CLI validates effort with `core::effort::valid_level` and rejects these overrides
+for pi, `--resume` and `--from`. Other spawn commands leave the options at their defaults.
+
 ### `fleet messages --json`
 
 See [cli.md](cli.md#messages) for the shape. The parser (`core::transcript`) is a port of the web's

@@ -427,7 +427,8 @@ enum Commands {
         open: bool,
     },
 
-    /// Spawn a new agent session (Claude, Codex or pi) in a fresh tab/pane
+    /// Spawn a new agent session (Claude, Codex or pi) in a fresh tab/pane.
+    /// Fresh Claude/Codex sessions accept --effort and --skip-permissions for this run only.
     Spawn {
         /// Initial prompt (optional; with --from, added after the continue prompt)
         prompt: Option<String>,
@@ -449,6 +450,12 @@ enum Commands {
         /// Model for the new session (`<harness> --model <id>`; default: the harness's own)
         #[arg(long, value_name = "ID")]
         model: Option<String>,
+        /// Effort for this session only (Claude/Codex; lowercase letters, at most 16)
+        #[arg(long, value_name = "LEVEL")]
+        effort: Option<String>,
+        /// Skip permission prompts (Claude/Codex); also disables Codex's sandbox
+        #[arg(long)]
+        skip_permissions: bool,
         /// Coding agent to run: claude (default), codex or pi
         #[arg(long, value_enum)]
         harness: Option<HarnessArg>,
@@ -1310,6 +1317,30 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
         };
         hosts::debug(&format!("target: {t:?}"));
         if let Target::Remote(r) = t {
+            if let Commands::Spawn {
+                effort,
+                skip_permissions,
+                harness,
+                resume,
+                from,
+                ..
+            } = &command
+            {
+                commands::SpawnOpts {
+                    effort: effort.clone(),
+                    skip_permissions: *skip_permissions,
+                    harness: harness.map(Into::into).unwrap_or_default(),
+                    ..Default::default()
+                }
+                .validate_launch_options(resume.is_some() || from.is_some())
+                .map_err(|e| {
+                    if spawn_json {
+                        commands::spawn_json_failure(e, &r.name)
+                    } else {
+                        e
+                    }
+                })?;
+            }
             let raw: Vec<String> = std::env::args().skip(1).collect();
             let args = match hosts::remap_dir_args(&hosts::strip_host_flags(&raw)) {
                 Ok(a) => a,
@@ -1541,6 +1572,8 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
             backend,
             name,
             model,
+            effort,
+            skip_permissions,
             harness,
             tmux_session,
             window,
@@ -1551,6 +1584,8 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
                 backend: backend.map(Into::into),
                 name,
                 model,
+                effort,
+                skip_permissions,
                 harness: harness.map(Into::into).unwrap_or_default(),
                 tmux_session,
                 window,
@@ -1611,6 +1646,8 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
                         backend: backend.map(Into::into),
                         name,
                         model,
+                        effort: None,
+                        skip_permissions: false,
                         harness: harness.map(Into::into).unwrap_or_default(),
                         tmux_session,
                         window,
@@ -1673,6 +1710,8 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
                 backend: backend.map(Into::into),
                 name,
                 model,
+                effort: None,
+                skip_permissions: false,
                 harness: harness.map(Into::into).unwrap_or_default(),
                 tmux_session,
                 // A handoff means "over there, out of my way" — a window unless told otherwise.
@@ -1818,6 +1857,8 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
                     backend: backend.map(Into::into),
                     name,
                     model,
+                    effort: None,
+                    skip_permissions: false,
                     harness: harness.map(Into::into).unwrap_or_default(),
                     tmux_session,
                     window,
