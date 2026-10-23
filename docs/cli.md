@@ -127,6 +127,19 @@ A machine whose config has `"spawn": false` (an always-on server that runs no ag
 (config spawn: false)`, also when reached with `-H <host>` (the remote CLI reads its own config).
 tmux-only commands (`new`, `tmux …`) still work.
 
+### List JSON: activity
+
+Every `fleet list --json` row carries `activity`: one short line saying what a Busy Claude Code
+Session is doing now, or `null`. It is `"{tool}: {summary}"` of the main-thread tool call that has
+no result yet (the same text the chat shows for that call: `Bash: bundle exec rspec spec/models`,
+`Edit: web/src/App.tsx`, `Grep: needle`), at most 120 characters of summary, one line; with
+parallel calls, the latest one still waiting. `Thinking` when every call has its result and the
+turn is not over (the model is reading results or writing). `null` for any other Status, after the
+turn ended (`end_turn`) or was interrupted, for an `AskUserQuestion` call (that is `waiting_for`),
+when the Transcript can't be read, when the pending call lies beyond the Transcript tail `list`
+already reads (it is not widened for this), and always for Codex and pi. The text is the call's
+own argument, so a Bash row shows the command's first line, as the chat does.
+
 ### List JSON: subagents
 
 Every `fleet list --json` row carries `subagents`: `{ "running": n, "finished": m }`, or
