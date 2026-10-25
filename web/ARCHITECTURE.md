@@ -91,7 +91,7 @@ The server reads the **shared fleet config** written by `fleet init`:
 | `tmux` | tmux binary; `null` → PATH, `/opt/homebrew/bin`, `/usr/local/bin` |
 | `fleetBin` | `fleet` binary; `null` → PATH, fallbacks, `~/.local/bin`, `~/.cargo/bin` |
 | `claude` | launcher typed by spawn (default `claude`) |
-| `spawnDirs[]` | `{ label, paths: { <host>: dir } }` → this host offers `{ label, path: paths[self] }`; `{ label, path }` means the same dir on every host; `~` expanded; none → `[{ label: "Home", path: $HOME }]` |
+| `spawnDirs[]` | `{ label, paths: { <host>: dir }, hidden? }` → this host offers `{ label, path: paths[self] }`; `{ label, path }` means the same dir on every host; `~` expanded; none offered → `[{ label: "Home", path: $HOME }]`. `hidden: true` → not offered but allowed (`config.hiddenSpawnDirs`; the allow-list is `spawnRoots(config)` = offered + hidden) |
 
 Env overrides: `FLEET_CONFIG`, `FLEET_WEB_PORT` (or `PORT`), `FLEET_WEB_BIND`, `FLEET_WEB_UI`,
 `FLEET_WEB_AUTONAME` / `FLEET_WEB_GROUPING` / `FLEET_WEB_BRIEFS` / `FLEET_WEB_STACKS` (`0`/`false`/`off` disables, anything else enables;
@@ -186,8 +186,8 @@ JSON everywhere, same origin, no auth. Errors are `{ "error": "message" }`.
 | POST | `/api/hosts/:host/tasks/status` | `{ task: "1001" \| task link, status: id or name }` | `{ host, task }` — `fleet --local task status --json`: the task in its new status; 400 on a bad id. Proxied once to a peer |
 | POST | `/api/hosts/:host/tasks/spawn` | `{ task, dir, prompt?, name?, model?, harness? }` (validated like `spawn`; `dir` within the spawn dirs) | `{ host, task, spawn: SpawnResponse }` — `fleet --local task show --json` for the task's `contextLine`, then the spawner in `dir` with `contextLine` + `prompt`. Proxied once to a peer |
 | GET/POST | `/api/hosts/:host/focus` | POST `{ on: boolean, minutes?: 1–600 }` | `{ host, active, remainingMs, endsAt, apps, stale }` — lib/focus.mjs parses `focus status`; POST runs `focus start [minutes]` / `focus stop` first. 400 on a bad body, 501 without `focus`, 502 with its message. Proxied once to a peer (45 s) |
-| GET | `/api/hosts/:host/spawn-dirs` | | `{ host, hosts: [names], spawnDirs: [{ label, paths: { host: dir } }], checks: [{ path, resolved, exists, isDir } \| null], offered: [{ label, path }], limits: { maxEntries, maxLabel, maxPath } }` — see **spawn-dirs** |
-| PUT | `/api/hosts/:host/spawn-dirs` | `{ spawnDirs: [{ label, paths }], dryRun? }` | the GET shape for the new list + `saved` (`false` on a dry run). 400 `{ error, errors: [{ index, field, host?, error }], checks }`; 502 when `fleet config set` failed |
+| GET | `/api/hosts/:host/spawn-dirs` | | `{ host, hosts: [names], spawnDirs: [{ label, paths: { host: dir }, hidden? }], checks: [{ path, resolved, exists, isDir } \| null], offered: [{ label, path }], hiddenSpawnDirs: [{ label, path }], limits: { maxEntries, maxLabel, maxPath } }` — see **spawn-dirs** |
+| PUT | `/api/hosts/:host/spawn-dirs` | `{ spawnDirs: [{ label, paths, hidden? }], dryRun? }` | the GET shape for the new list + `saved` (`false` on a dry run). 400 `{ error, errors: [{ index, field, host?, error }], checks }`; 502 when `fleet config set` failed |
 | GET | `/api/hosts/:host/repos` | | `{ host, settings: { roots, every, overrides, exclude }, repos: [fleet repos --json --all rows], error, service: { installed, supported, tickMinutes }, limits }` — see **repos**; 501 when that host's CLI has no `repos` |
 | PUT | `/api/hosts/:host/repos` | `{ roots, every, overrides, exclude }` | the GET shape + `saved`. 400 `{ error, errors: [{ field, error }] }`; 502 when `fleet config set` failed |
 | POST | `/api/hosts/:host/repos/sync` | `{ names? }` | `{ host, results }` — `fleet --local repos sync --json [-- names]`; 409 while a sync runs there; peers get 16 min |
@@ -248,9 +248,10 @@ are filled in by the server that received the request (lib/editor.mjs), also for
 answer — see docs/architecture.md → Session briefs → Open in editor.
 Proxied to a peer like the other session routes (PUT bodies included).
 
-**Host** = `{ name, ok, error?, fetchedAt, spawnDirs?: [{ label, path }], home?, notes?: { name }, stacks?: [{ id, label, host, members: [{ session, host, live }] }], sessions: [Session] }`.
+**Host** = `{ name, ok, error?, fetchedAt, spawnDirs?: [{ label, path }], hiddenSpawnDirs?: [{ label, path }], home?, notes?: { name }, stacks?: [{ id, label, host, members: [{ session, host, live }] }], sessions: [Session] }`.
 `stacks` is that host's session stacks, compact (what its `fleet stack` calls last showed); the server building a merged view stamps `stack: { id, label, host }` on the rows of members that run on other hosts (`lib/stacks.mjs#stampForeign`), since only a stack's home host lists it.
-Each host advertises its own `spawnDirs` (absolute paths on that host), its `home` (to expand a
+Each host advertises its own `spawnDirs` (absolute paths on that host; the New session menu), its
+`hiddenSpawnDirs` when it has any (allowed, not offered: the embed view accepts them), its `home` (to expand a
 `~/…` path from a client, e.g. the embed view's `dir`; older servers omit it) and, when it has `web.notes.root`, `notes`.
 
 **Session** = the `fleet list --json` object + `host` + `editorUrl` (for its cwd; set by the server that answered). Sorted `waiting` → `busy` → `idle` →
@@ -262,8 +263,8 @@ Assistant text that ends a turn is `final: true`; narration between tool calls i
 Last `limit` messages, oldest first; `truncated` when older ones exist.
 
 **spawn**: `name` is sanitized (lowercase, `[a-z0-9_-]`, ≤ 40, default `fw-hhmmss`); `dir`
-defaults to the host's first `spawnDirs` entry and must be an existing absolute directory that,
-after `realpath` (symlinks and `..` resolved), is one of this host's `spawnDirs` or beneath one
+defaults to the host's first offered `spawnDirs` entry and must be an existing absolute directory that,
+after `realpath` (symlinks and `..` resolved), is one of this host's `spawnDirs` (hidden ones included) or beneath one
 (`$HOME` when none are configured) — anything else is a 400. A taken name is a 409.
 Runs `tmux new-session -d -s <name> -c <dir>`, types `claude -n '<name>' '<prompt>'`, and
 answers a first-run "trust this folder" dialog with "Yes" (`trusted: true` when it did). With no
@@ -297,11 +298,12 @@ run }` (from `fleet list --json`), which the UI uses to badge job sessions and h
 file (a `{ label, path }` / bare-string entry is spelled out as a path for every configured host)
 and stats each of this host's paths (`~` expanded). PUT validates: ≤ 30 entries; labels 1–40
 chars, one line, unique ignoring case; paths absolute or `~/…`, ≤ 1024 chars, no control
-characters, `""` = not offered on that host, at least one per entry; **this host's** path must be
+characters, `""` = not offered on that host, at least one per entry; `hidden` a boolean (kept only
+when true); other keys on an entry are carried through unchanged; **this host's** path must be
 an existing directory — other hosts' paths are stored as given (they are checked on their own
 host). A valid list is written with `fleet --local config set spawnDirs '<json>'` (the CLI owns the
 file: atomic tmp + rename, every other key and their order kept; writes are serialised), then
-`config.spawnDirs` is replaced in place, so `/api/fleet` and the spawn allow-list use it at once,
+`config.spawnDirs` / `config.hiddenSpawnDirs` are replaced in place, so `/api/fleet` and the spawn allow-list use it at once,
 and the merged snapshot is rebuilt before the response (a proxied save rebuilds the proxying
 server's too). `dryRun: true` validates and answers without writing. The UI writes one shared
 list to every host: a dry run on all reachable hosts first, the writes only when all pass.

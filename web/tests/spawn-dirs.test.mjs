@@ -205,6 +205,54 @@ test('PUT spawn-dirs writes through `fleet config set`, keeps other keys and hot
   assert.match(refused.body.error, /spawn dirs/);
 });
 
+test('hidden spawn dirs: kept on rewrite, allowed for spawns, not offered in /api/fleet', async (t) => {
+  const { hosts, urls } = await startPair(t);
+  const lap = hosts.laptop;
+  const brain = path.join(lap.home, 'brain');
+  const list = [
+    { label: 'Work', paths: { laptop: '~/Code/work', workstation: '~/Code/work' } },
+    { label: 'Brain', paths: { laptop: '~/brain', workstation: '~/brain' }, hidden: true, extra: { kept: 1 } },
+  ];
+  const res = await call(`${urls.laptop}/api/hosts/laptop/spawn-dirs`, 'PUT', { spawnDirs: list });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.deepEqual(res.body.spawnDirs, list, 'hidden and unknown keys round-trip');
+  assert.deepEqual(res.body.offered.map((d) => d.label), ['Work']);
+  assert.deepEqual(res.body.hiddenSpawnDirs, [{ label: 'Brain', path: brain }]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(lap.configFile, 'utf8')).spawnDirs, list);
+  assert.deepEqual((await call(`${urls.laptop}/api/hosts/laptop/spawn-dirs`)).body.spawnDirs, list);
+
+  // /api/fleet: the menu (`spawnDirs`) leaves it out; `hiddenSpawnDirs` lists it (merged and ?local=1)
+  const fleet = await call(`${urls.laptop}/api/fleet`);
+  const self = fleet.body.hosts.find((h) => h.name === 'laptop');
+  assert.deepEqual(self.spawnDirs.map((d) => d.label), ['Work']);
+  assert.deepEqual(self.hiddenSpawnDirs, [{ label: 'Brain', path: brain }]);
+  assert.equal(fleet.body.hosts.find((h) => h.name === 'workstation').hiddenSpawnDirs, undefined, 'none hidden there');
+
+  // still on the allow-list (an embed panel's spawn), beneath it too
+  assert.equal((await call(`${urls.laptop}/api/hosts/laptop/spawn`, 'POST', { dir: brain, embed: 'brain' })).status, 200);
+  // no dir → the first offered one, never a hidden one
+  assert.equal((await call(`${urls.laptop}/api/hosts/laptop/spawn`, 'POST', {})).status, 200);
+  assert.equal(lap.spawns.at(-1).dir, path.join(lap.home, 'Code', 'work'));
+
+  // only hidden entries → Home is offered (and allowed), the hidden dir stays allowed
+  const onlyHidden = [list[1]];
+  assert.equal((await call(`${urls.laptop}/api/hosts/laptop/spawn-dirs`, 'PUT', { spawnDirs: onlyHidden })).status, 200);
+  const local = await call(`${urls.laptop}/api/fleet?local=1`);
+  assert.deepEqual(local.body.hosts[0].spawnDirs, [{ label: 'Home', path: lap.home }]);
+  assert.equal((await call(`${urls.laptop}/api/hosts/laptop/spawn`, 'POST', { dir: brain })).status, 200);
+  assert.equal((await call(`${urls.laptop}/api/hosts/laptop/spawn`, 'POST', { dir: lap.home })).status, 200);
+
+  // un-hiding it puts it back in the menu
+  await call(`${urls.laptop}/api/hosts/laptop/spawn-dirs`, 'PUT', { spawnDirs: [{ ...list[1], hidden: false }] });
+  assert.deepEqual(lap.config.spawnDirs.map((d) => d.label), ['Brain']);
+  assert.deepEqual(lap.config.hiddenSpawnDirs, []);
+  assert.equal(JSON.parse(fs.readFileSync(lap.configFile, 'utf8')).spawnDirs[0].hidden, undefined, 'false is not stored');
+
+  const bad = await call(`${urls.laptop}/api/hosts/laptop/spawn-dirs`, 'PUT', { spawnDirs: [{ ...list[0], hidden: 'yes' }] });
+  assert.equal(bad.status, 400);
+  assert.deepEqual(bad.body.errors.map((e) => e.field), ['hidden']);
+});
+
 test('PUT spawn-dirs: 400 with per-entry errors, dry runs write nothing', async (t) => {
   const { hosts, urls } = await startPair(t);
   const before = fs.readFileSync(hosts.laptop.configFile, 'utf8');

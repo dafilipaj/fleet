@@ -54,9 +54,15 @@ pub fn run(action: &ConfigAction) -> Result<()> {
                     },
                     "tmux": crate::core::tools::tmux(),
                     "claude": c.claude.clone().unwrap_or_else(|| "claude".into()),
-                    "spawnDirs": c.spawn_dirs_for(&c.self_name())
+                    "spawnDirs": c.spawn_dir_entries_for(&c.self_name())
                         .into_iter()
-                        .map(|(label, path)| serde_json::json!({"label": label, "path": path}))
+                        .map(|(label, path, hidden)| {
+                            let mut d = serde_json::json!({"label": label, "path": path});
+                            if hidden {
+                                d["hidden"] = serde_json::Value::Bool(true);
+                            }
+                            d
+                        })
                         .collect::<Vec<_>>(),
                 });
                 println!("{}", serde_json::to_string_pretty(&out)?);

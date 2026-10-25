@@ -188,6 +188,9 @@ in the web app under **Settings → Start directories**: one row per label, a pa
 (empty = not offered there). Save checks every host's own paths, then writes the same list to
 each reachable host's config (through `fleet config set spawnDirs …`); the running servers use it
 at once, no restart. `fleet config set spawnDirs '<json>'` on each host does the same by hand.
+The eye button on a row hides it (`"hidden": true`): the directory stays allowed for spawns — e.g.
+an app whose [embedded panel](architecture.md#embed-view) starts sessions in its own folder — but
+is no longer offered in New session.
 Editing this list is as powerful as spawning (it widens what spawn accepts), and like spawn it is
 unauthenticated — keep the web servers on a private network.
 

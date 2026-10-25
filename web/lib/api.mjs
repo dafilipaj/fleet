@@ -17,7 +17,7 @@ import {
 import { createSnapshot } from './snapshot.mjs';
 import { DISABLED_GROUPS } from './grouping.mjs';
 import { checkInboxSettings } from './inbox.mjs';
-import { DEFAULT_MODELS } from './config.mjs';
+import { DEFAULT_MODELS, spawnRoots } from './config.mjs';
 import { parseNameOutput } from './autoname.mjs';
 import { SESSION_ID_RE } from './briefs.mjs';
 import { validThreadId } from './reviews.mjs';
@@ -221,6 +221,12 @@ export function createApi({
   sleep = defaultSleep,
   answerKeyGapMs = 80,
 }) {
+  // Each host advertises its start directories: `spawnDirs` (the New session menu) and, when it
+  // has any, `hiddenSpawnDirs` (allowed for spawns, e.g. an app's embedded panel, but not offered).
+  const spawnDirsInfo = () => ({
+    spawnDirs: config.spawnDirs,
+    ...(config.hiddenSpawnDirs?.length ? { hiddenSpawnDirs: config.hiddenSpawnDirs } : {}),
+  });
   // Each host advertises whether it has a notes explorer (like its spawnDirs).
   const notesInfo = () => (notes ? { notes: { name: notes.name ?? null } } : {});
   // …and its session stacks, compact, so a peer can stamp the rows of their members on its side.
@@ -231,7 +237,7 @@ export function createApi({
   // `home`: a `~/…` path from the UI (the embed view's `dir`) is matched against the absolute
   // spawnDirs and session cwds.
   async function buildFleet({ force = false } = {}) {
-    const selfHost = stampOperator({ ...(await fleet.localHost({ force })), spawnDirs: config.spawnDirs, home: os.homedir(), ...notesInfo(), ...stacksInfo() });
+    const selfHost = stampOperator({ ...(await fleet.localHost({ force })), ...spawnDirsInfo(), home: os.homedir(), ...notesInfo(), ...stacksInfo() });
     const peerNames = Object.keys(config.peers);
     const peerHosts = await Promise.all(
       peerNames.map((n) => fetchPeerHost(n, config.peers[n], { timeoutMs: peerFleetTimeoutMs })),
@@ -270,7 +276,7 @@ export function createApi({
     const withEditors = (body) => ({ ...body, hosts: body.hosts.map((h) => withSessionEditors(h, ec)) });
     if (url.searchParams.get('local') === '1') {
       // Peers poll this: the local host (2s TTL cache), never the merged snapshot.
-      const selfHost = stampOperator({ ...(await fleet.localHost()), spawnDirs: config.spawnDirs, home: os.homedir(), ...notesInfo(), ...stacksInfo() });
+      const selfHost = stampOperator({ ...(await fleet.localHost()), ...spawnDirsInfo(), home: os.homedir(), ...notesInfo(), ...stacksInfo() });
       return { status: 200, body: withEditors({ self: config.self, hosts: [selfHost] }) };
     }
     if (snapshot) return { status: 200, body: withEditors(await snapshot.get()) };
@@ -421,8 +427,8 @@ export function createApi({
 
   async function localSpawn(req) {
     const body = await readJsonBody(req);
-    const roots = config.spawnDirs.map((d) => d.path);
-    const check = validateSpawnRequest(body, { spawnDirs: roots });
+    const roots = spawnRoots(config); // hidden spawn dirs are allowed too
+    const check = validateSpawnRequest(body, { spawnDirs: config.spawnDirs.map((d) => d.path) });
     if (!check.ok) throw new HttpError(check.error, 400);
     try {
       check.dir = await resolveAllowedDir(check.dir, roots);
@@ -1329,8 +1335,8 @@ export function createApi({
       }
     }
 
-    const roots = config.spawnDirs.map((d) => d.path);
-    const check = validateSpawnRequest(body, { spawnDirs: roots });
+    const roots = spawnRoots(config); // hidden spawn dirs are allowed too
+    const check = validateSpawnRequest(body, { spawnDirs: config.spawnDirs.map((d) => d.path) });
     if (!check.ok) throw new HttpError(check.error, 400);
     let task;
     try {
@@ -1506,8 +1512,9 @@ export function createApi({
   async function localStackSpawn({ req, sessionId = null, stackId = null }) {
     if (!stacks) throw new HttpError('session stacks are not available on this server', 501);
     const body = await readJsonBody(req);
-    const roots = config.spawnDirs.map((d) => d.path);
-    const check = validateSpawnRequest(body, { spawnDirs: roots.length ? roots : ['/'] });
+    const roots = spawnRoots(config);
+    const offered = config.spawnDirs.map((d) => d.path);
+    const check = validateSpawnRequest(body, { spawnDirs: offered.length ? offered : ['/'] });
     if (!check.ok) throw new HttpError(check.error, 400);
     const requested = typeof body.dir === 'string' && body.dir.trim() ? check.dir : null;
     const label = validateStackLabel(body.label);

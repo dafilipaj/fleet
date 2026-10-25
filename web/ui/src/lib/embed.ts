@@ -69,12 +69,12 @@ export function isInside(path: string | null | undefined, root: string): boolean
 export type ResolvedDir = { ok: true; path: string } | { ok: false; error: string }
 
 /**
- * `dir` as an absolute path on `host`, allowed only when it is one of the host's spawnDirs or
- * beneath one (the server checks it again on spawn). `~` needs the host's `home`; a server too
+ * `dir` as an absolute path on `host`, allowed only when it is one of the host's spawnDirs (offered
+ * or hidden) or beneath one (the server checks it again on spawn). `~` needs the host's `home`; a server too
  * old to send it still matches a spawn dir that ends with the same path.
  */
-export function resolveEmbedDir(dir: string, host: Pick<Host, 'home' | 'spawnDirs'> | null | undefined): ResolvedDir {
-  const roots = (host?.spawnDirs ?? []).map((d) => trim(d.path))
+export function resolveEmbedDir(dir: string, host: Pick<Host, 'home' | 'spawnDirs' | 'hiddenSpawnDirs'> | null | undefined): ResolvedDir {
+  const roots = [...(host?.spawnDirs ?? []), ...(host?.hiddenSpawnDirs ?? [])].map((d) => trim(d.path))
   let abs: string | null = null
   if (dir.startsWith('/')) abs = trim(dir)
   else if (dir === '~' || dir.startsWith('~/')) {

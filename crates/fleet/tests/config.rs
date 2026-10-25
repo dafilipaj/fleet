@@ -256,3 +256,28 @@ fn config_show_resolved_fills_defaults() {
     assert_eq!(v["exists"], false);
     assert_eq!(v["web"]["port"], 7777);
 }
+
+#[test]
+fn config_show_resolved_marks_hidden_spawn_dirs() {
+    let env = Env::new();
+    let mut cfg = two_hosts();
+    cfg["spawnDirs"] = json!([
+        { "label": "Work", "paths": { "laptop": "~/Code/work" } },
+        { "label": "Brain", "paths": { "laptop": "~/brain" }, "hidden": true }
+    ]);
+    env.write_config(&cfg);
+    let out = env
+        .cmd()
+        .args(["config", "show", "--resolved"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        v["spawnDirs"],
+        json!([
+            { "label": "Work", "path": "~/Code/work" },
+            { "label": "Brain", "path": "~/brain", "hidden": true }
+        ])
+    );
+}

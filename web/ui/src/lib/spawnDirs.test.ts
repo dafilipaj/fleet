@@ -48,6 +48,30 @@ describe('draft round trip', () => {
   })
 })
 
+describe('hidden entries', () => {
+  const HIDDEN: SpawnDirEntry[] = [LIST[0], { label: 'Brain', paths: { laptop: '~/brain' }, hidden: true, future: { kept: 1 } }]
+  it('round-trip `hidden` and unknown keys; false is not sent', () => {
+    const rows = toDraft(HIDDEN)
+    expect(rows.map((r) => r.hidden)).toEqual([false, true])
+    expect(fromDraft(rows)).toEqual(HIDDEN)
+    rows[1].hidden = false
+    expect(fromDraft(rows)[1]).toEqual({ label: 'Brain', paths: { laptop: '~/brain' }, future: { kept: 1 } })
+  })
+  it('sameList sees a hide/show toggle as a change', () => {
+    expect(sameList(HIDDEN, HIDDEN.map((e) => ({ ...e })))).toBe(true)
+    expect(sameList(HIDDEN, [HIDDEN[0], { ...HIDDEN[1], hidden: false }])).toBe(false)
+  })
+  it('withOffered refreshes the hidden dirs too (dropped when none)', () => {
+    const fleet = {
+      self: 'laptop',
+      hosts: [{ name: 'laptop', ok: true, sessions: [], spawnDirs: [], hiddenSpawnDirs: [{ label: 'Old', path: '/old' }] }],
+    } as FleetResponse
+    const hidden = withOffered(fleet, { laptop: { ...resp('laptop'), hiddenSpawnDirs: [{ label: 'Brain', path: '/abs/brain' }] } })
+    expect(hidden.hosts[0].hiddenSpawnDirs).toEqual([{ label: 'Brain', path: '/abs/brain' }])
+    expect('hiddenSpawnDirs' in withOffered(fleet, { laptop: resp('laptop') }).hosts[0]).toBe(false)
+  })
+})
+
 describe('validateDraft', () => {
   it('passes a good list', () => {
     expect(validateDraft(toDraft(LIST)).ok).toBe(true)

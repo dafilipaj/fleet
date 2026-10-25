@@ -7,13 +7,17 @@
 // running server's `config.spawnDirs` is replaced in place, so /api/fleet and the spawn
 // allow-list use the new list at once — no restart.
 //
+// An entry with `hidden: true` stays on the spawn allow-list but is not offered in the New
+// session menu (e.g. a dir only an app's embedded panel spawns in). Keys this editor does not
+// know are carried through a GET → PUT round trip unchanged.
+//
 // Editing this list is as powerful as spawning (it widens what spawn accepts); like
 // spawn/send it relies on the network being private (no auth).
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { expandHome, spawnDirsFor } from './config.mjs';
+import { expandHome, hiddenSpawnDirsFor, spawnDirsFor } from './config.mjs';
 
 export const SPAWN_DIRS_LIMITS = Object.freeze({ maxEntries: 30, maxLabel: 40, maxPath: 1024, maxHost: 64 });
 
@@ -23,8 +27,17 @@ function isObject(v) {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
 
+// The keys the editor owns; any other key on an entry is kept as is.
+const OWN_KEYS = new Set(['label', 'paths', 'path', 'hidden']);
+
+/** An entry's other keys (unknown to the editor), to carry through a rewrite. */
+function extraKeys(e) {
+  return Object.fromEntries(Object.entries(e).filter(([k]) => !OWN_KEYS.has(k)));
+}
+
 /**
- * The raw config list in the canonical shape `[{ label, paths: { host: dir } }]`. A
+ * The raw config list in the canonical shape `[{ label, paths: { host: dir }, hidden? }]`
+ * (`hidden: true` only when set; unknown keys kept). A
  * `{ label, path }` entry (or a bare string) means "the same dir on every host": it is
  * spelled out for each of `hostNames`. A missing label becomes the dir's basename.
  */
@@ -42,7 +55,7 @@ export function canonicalSpawnDirs(list, hostNames = []) {
     }
     const first = Object.values(paths)[0] ?? '';
     const label = typeof e.label === 'string' && e.label.trim() ? e.label.trim() : path.basename(first) || first;
-    out.push({ label, paths });
+    out.push({ ...extraKeys(e), label, paths, ...(e.hidden === true ? { hidden: true } : {}) });
   }
   return out;
 }
@@ -69,8 +82,8 @@ export async function statDir(dir, fsp = fs.promises) {
  * (case-insensitive). Paths: absolute or `~/…`, ≤ 1024 chars, no control characters; an
  * empty path = not offered on that host; every entry needs at least one. This host's path
  * must be an existing directory; other hosts' paths are stored as given (they check on
- * their own host).
- * → { entries: [{ label, paths }], errors: [{ index, field: 'label'|'paths', host?, error }],
+ * their own host). `hidden`: optional boolean (stored only when true). Other keys are kept.
+ * → { entries: [{ label, paths, hidden? }], errors: [{ index, field: 'label'|'paths'|'hidden', host?, error }],
  *     checks: [{ path, resolved, exists, isDir } | null] }  (checks: this host, per entry)
  */
 export async function validateSpawnDirs(list, { self, home = os.homedir(), stat = statDir } = {}) {
@@ -98,6 +111,7 @@ export async function validateSpawnDirs(list, { self, home = os.homedir(), stat 
       if (seen.has(key)) errors.push({ index: i, field: 'label', error: `duplicate label "${label}"` });
       else seen.set(key, i);
     }
+    if (e.hidden != null && typeof e.hidden !== 'boolean') errors.push({ index: i, field: 'hidden', error: 'hidden must be true or false' });
     const paths = {};
     if (e.paths != null && !isObject(e.paths)) errors.push({ index: i, field: 'paths', error: 'paths must be an object { host: dir }' });
     for (const [host, raw] of Object.entries(isObject(e.paths) ? e.paths : {})) {
@@ -129,7 +143,7 @@ export async function validateSpawnDirs(list, { self, home = os.homedir(), stat 
       }
     }
     checks.push(check);
-    entries.push({ label, paths });
+    entries.push({ ...extraKeys(e), label, paths, ...(e.hidden === true ? { hidden: true } : {}) });
   }
   return { entries, errors, checks };
 }
@@ -169,6 +183,7 @@ export function createSpawnDirsEditor({ config, configFile, cli, home = os.homed
       spawnDirs: entries,
       checks,
       offered: config.spawnDirs,
+      hiddenSpawnDirs: config.hiddenSpawnDirs ?? [],
       limits: SPAWN_DIRS_LIMITS,
     };
   }
@@ -197,6 +212,7 @@ export function createSpawnDirsEditor({ config, configFile, cli, home = os.homed
       await cli.configSet({ key: 'spawnDirs', value: entries, configFile });
       const raw = readRaw();
       config.spawnDirs = spawnDirsFor(raw.spawnDirs, config.self, home); // hot reload
+      config.hiddenSpawnDirs = hiddenSpawnDirsFor(raw.spawnDirs, config.self, home);
       return { status: 200, body: { ...describe(raw, canonicalSpawnDirs(raw.spawnDirs, hostNames(raw)), checks), saved: true } };
     });
     queue = run.catch(() => {});

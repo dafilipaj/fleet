@@ -132,6 +132,10 @@ export interface SpawnDirEntry {
   label: string
   /** host name → directory on that host (absolute or `~/…`); a missing host = not offered there. */
   paths: Record<string, string>
+  /** Allowed for spawns (e.g. an app's embedded panel) but not offered in the New session menu. */
+  hidden?: boolean
+  /** Keys this UI does not know: sent back unchanged. */
+  [extra: string]: unknown
 }
 
 /** Whether the answering host's own path of one entry is a directory there (null: no path for it). */
@@ -153,6 +157,8 @@ export interface SpawnDirsResponse {
   checks: (SpawnDirCheck | null)[]
   /** What the host offers now (`Host.spawnDirs`). */
   offered: SpawnDir[]
+  /** Its hidden entries now (`Host.hiddenSpawnDirs`); older servers omit it. */
+  hiddenSpawnDirs?: SpawnDir[]
   limits: { maxEntries: number; maxLabel: number; maxPath: number }
   /** PUT only: false for a dry run. */
   saved?: boolean
@@ -161,7 +167,7 @@ export interface SpawnDirsResponse {
 /** A PUT spawn-dirs 400: `errors[].index` into the list sent; `host` = that host's path cell. */
 export interface SpawnDirsError {
   error: string
-  errors: { index: number; field: 'label' | 'paths' | 'list'; host?: string; error: string }[]
+  errors: { index: number; field: 'label' | 'paths' | 'hidden' | 'list'; host?: string; error: string }[]
   checks: (SpawnDirCheck | null)[]
 }
 
@@ -171,6 +177,8 @@ export interface Host {
   error?: string
   fetchedAt?: number
   spawnDirs?: SpawnDir[]
+  /** Start directories allowed for spawns but not offered (config `hidden: true`); absent when none. */
+  hiddenSpawnDirs?: SpawnDir[]
   /** That host's home directory (expands a `~/…` path); older servers omit it. */
   home?: string
   /** Set when that host's server has a notes explorer (`web.notes.root`). */

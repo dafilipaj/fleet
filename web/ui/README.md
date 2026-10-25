@@ -422,7 +422,8 @@ src/
   **Start directories** (`components/SpawnDirsEditor.tsx`)
   is fleet-wide instead: the `spawnDirs` the New session form offers, one row per label with a
   path field per host (hosts from `/api/fleet`; empty = not offered there), add / rename / delete /
-  move up-down. Loaded with `GET …/spawn-dirs` from every host (this server's list is the one
+  move up-down, and an eye toggle that hides a row (`hidden: true`: still allowed for spawns, e.g. an
+  app's embed panel, but not offered in New session; unknown entry keys round-trip). Loaded with `GET …/spawn-dirs` from every host (this server's list is the one
   edited; a host with a different one is named). Each cell shows that host's own check (✓ is a
   directory, ✗ missing / not a directory) from a debounced dry-run `PUT` of the draft; labels and
   path syntax are checked as you type. Save (enabled when dirty and valid; Revert resets; the

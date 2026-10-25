@@ -17,7 +17,7 @@
 //!   },
 //!   "web":  { "port": 7777, "bind": "0.0.0.0", "dir": null },
 //!   "tmux": null,
-//!   "spawnDirs": [ { "label": "Work", "paths": { "laptop": "~/Code/app" } } ]
+//!   "spawnDirs": [ { "label": "Work", "paths": { "laptop": "~/Code/app" }, "hidden": false } ]
 //! }
 //! ```
 
@@ -95,6 +95,17 @@ pub struct SpawnDir {
     pub label: Option<String>,
     /// host name → directory on that host.
     pub paths: Map<String, Value>,
+    /// Allowed for spawns (the web server's allow-list) but not offered in the New session menu.
+    /// Read leniently: anything but `true` is `false`, so a hand-edited value never breaks the config.
+    #[serde(
+        skip_serializing_if = "std::ops::Not::not",
+        deserialize_with = "true_or_false"
+    )]
+    pub hidden: bool,
+}
+
+fn true_or_false<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<bool, D::Error> {
+    Ok(Value::deserialize(d)?.as_bool() == Some(true))
 }
 
 /// `tui` — dashboard preferences that survive restarts.
@@ -376,8 +387,17 @@ impl Config {
         out
     }
 
-    /// The spawn directory list for one host: `(label, path)` with `~` kept.
+    /// The spawn directory list for one host: `(label, path)` with `~` kept, hidden entries
+    /// included (see [`Config::spawn_dir_entries_for`] to tell them apart).
     pub fn spawn_dirs_for(&self, host: &str) -> Vec<(String, String)> {
+        self.spawn_dir_entries_for(host)
+            .into_iter()
+            .map(|(label, path, _)| (label, path))
+            .collect()
+    }
+
+    /// Like [`Config::spawn_dirs_for`], plus each entry's `hidden` flag.
+    pub fn spawn_dir_entries_for(&self, host: &str) -> Vec<(String, String, bool)> {
         self.spawn_dirs
             .iter()
             .filter_map(|d| {
@@ -388,7 +408,7 @@ impl Config {
                         .map(|f| f.to_string_lossy().to_string())
                         .unwrap_or_else(|| p.clone())
                 });
-                Some((label, p))
+                Some((label, p, d.hidden))
             })
             .collect()
     }
@@ -588,6 +608,33 @@ mod tests {
             "spawnDirs": [ { "label": "Work", "paths": { "laptop": "~/Code/app", "workstation": "~/src/app" } } ],
             "somethingNew": { "keep": true }
         })
+    }
+
+    #[test]
+    fn spawn_dirs_carry_hidden_leniently() {
+        let mut raw = sample();
+        raw["spawnDirs"] = json!([
+            { "label": "Work", "paths": { "laptop": "~/Code/app" } },
+            { "label": "Brain", "paths": { "laptop": "~/brain" }, "hidden": true },
+            { "label": "Odd", "paths": { "laptop": "~/odd" }, "hidden": "yes" }
+        ]);
+        let c: Config = serde_json::from_value(raw).unwrap();
+        assert_eq!(
+            c.spawn_dir_entries_for("laptop")
+                .into_iter()
+                .map(|(l, _, h)| (l, h))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Work".to_string(), false),
+                ("Brain".to_string(), true),
+                ("Odd".to_string(), false)
+            ]
+        );
+        assert_eq!(
+            c.spawn_dirs_for("laptop").len(),
+            3,
+            "hidden ones are still listed"
+        );
     }
 
     #[test]

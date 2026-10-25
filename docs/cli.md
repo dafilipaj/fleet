@@ -427,7 +427,7 @@ JSON shapes:
 | command | does |
 | --- | --- |
 | `fleet init` | wizard: this machine's name, hosts (name, ssh target, web URL — can suggest from `tailscale status --json`), spawn dirs, web port. Never overwrites an existing config without confirmation (`--force`) |
-| `fleet config path\|show\|get\|set\|edit` | where the config lives / print it (`--resolved` fills in defaults) / read or write one dotted key (`hosts.workstation.ssh`; values parse as JSON when they can) / open in `$VISUAL`/`$EDITOR` |
+| `fleet config path\|show\|get\|set\|edit` | where the config lives / print it (`--resolved` fills in defaults; its `spawnDirs` are this host's, a hidden one marked `"hidden": true`) / read or write one dotted key (`hosts.workstation.ssh`; values parse as JSON when they can) / open in `$VISUAL`/`$EDITOR` |
 | `fleet install --host <name>` | copy this binary to `~/.local/bin/fleet` and the web app to `~/.local/share/fleet/web` on the host (rsync, or tar over ssh) — the host needs no Rust toolchain. Refuses when `uname -sm` differs between the machines unless `--force`; `--no-web` skips the web app. Of `web/ui` only the built `ui/dist` is copied (sources and `node_modules` never); when it is not built you get a warning (build with `fleet web build`) and the host serves only the API and a "not built" page |
 
 Non-interactive `init` (scripts, tests):

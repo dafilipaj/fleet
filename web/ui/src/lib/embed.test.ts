@@ -48,6 +48,13 @@ test('resolveEmbedDir: only a spawn dir or beneath one', () => {
   expect(resolveEmbedDir('~/Code/app', null).ok).toBe(false)
 })
 
+test('resolveEmbedDir: a hidden spawn dir (not in the menu) is allowed too', () => {
+  const host = { home: '/home/me', spawnDirs: [{ label: 'Work', path: '/home/me/Code' }], hiddenSpawnDirs: [{ label: 'Brain', path: '/home/me/brain' }] }
+  expect(resolveEmbedDir('~/brain', host)).toEqual({ ok: true, path: '/home/me/brain' })
+  expect(resolveEmbedDir('~/brain/sub', host)).toEqual({ ok: true, path: '/home/me/brain/sub' })
+  expect(resolveEmbedDir('~/other', host).ok).toBe(false)
+})
+
 test('resolveEmbedDir without home (an older server): a spawn dir with the same tail', () => {
   const host = { spawnDirs: [{ label: 'App', path: '/home/me/Code/app' }] }
   expect(resolveEmbedDir('~/Code/app', host)).toEqual({ ok: true, path: '/home/me/Code/app' })

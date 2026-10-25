@@ -56,6 +56,7 @@ export async function fetchPeerHost(name, baseUrl, { timeoutMs = 6000, now = Dat
       ...(host.ok === false && host.error ? { error: host.error } : {}),
       fetchedAt: Number(host.fetchedAt) || fetchedAt,
       ...(Array.isArray(host.spawnDirs) ? { spawnDirs: host.spawnDirs } : {}),
+      ...(Array.isArray(host.hiddenSpawnDirs) ? { hiddenSpawnDirs: host.hiddenSpawnDirs } : {}),
       ...(typeof host.home === 'string' && host.home ? { home: host.home } : {}),
       ...(host.notes && typeof host.notes === 'object' ? { notes: host.notes } : {}),
       ...(Array.isArray(host.stacks) ? { stacks: host.stacks } : {}),

@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { configPath, expandHome, ghIdentitiesOf, loadConfig, normalizeConfig, resolveBinary, resolveFleetBin } from '../lib/config.mjs';
+import { configPath, expandHome, ghIdentitiesOf, loadConfig, normalizeConfig, resolveBinary, resolveFleetBin, spawnRoots } from '../lib/config.mjs';
 
 function tmp() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-web-cfg-'));
@@ -64,6 +64,21 @@ test('normalizeConfig: per-host spawnDirs follow self', () => {
   const cfg = normalizeConfig({ ...SAMPLE, self: 'workstation' }, { env: {}, home: HOME });
   assert.deepEqual(cfg.spawnDirs.map((d) => d.label), ['Work', 'Notes', 'Shared']);
   assert.deepEqual(cfg.peers, { laptop: 'http://100.x.y.z:7777' });
+});
+
+test('normalizeConfig: hidden spawnDirs are allowed, not offered; only hidden → Home is offered', () => {
+  const cfg = normalizeConfig(
+    { self: 'laptop', spawnDirs: [{ label: 'Work', paths: { laptop: '~/Code/work' } }, { label: 'Brain', paths: { laptop: '~/brain' }, hidden: true }] },
+    { env: {}, home: HOME },
+  );
+  assert.deepEqual(cfg.spawnDirs, [{ label: 'Work', path: `${HOME}/Code/work` }]);
+  assert.deepEqual(cfg.hiddenSpawnDirs, [{ label: 'Brain', path: `${HOME}/brain` }]);
+  assert.deepEqual(spawnRoots(cfg), [`${HOME}/Code/work`, `${HOME}/brain`]);
+
+  const only = normalizeConfig({ self: 'laptop', spawnDirs: [{ label: 'Brain', paths: { laptop: '~/brain' }, hidden: true }] }, { env: {}, home: HOME });
+  assert.deepEqual(only.spawnDirs, [{ label: 'Home', path: HOME }]);
+  assert.deepEqual(spawnRoots(only), [HOME, `${HOME}/brain`]);
+  assert.deepEqual(normalizeConfig({}, { env: {}, home: HOME }).hiddenSpawnDirs, []);
 });
 
 test('normalizeConfig defaults: missing config = single loopback host', () => {

@@ -11,6 +11,10 @@ export interface DraftRow {
   label: string
   /** host → path as typed ('' = not offered there). Hosts without a column are kept as-is. */
   paths: Record<string, string>
+  /** Allowed for spawns but not offered in the New session menu. */
+  hidden: boolean
+  /** The entry's keys this UI does not know, sent back unchanged. */
+  extra: Record<string, unknown>
 }
 
 /** Per row key: the label's problem and each host cell's problem. */
@@ -20,19 +24,22 @@ let seq = 0
 export const newRowKey = () => `r${++seq}`
 
 export function toDraft(entries: SpawnDirEntry[] | null | undefined): DraftRow[] {
-  return (entries ?? []).map((e) => ({ key: newRowKey(), label: e.label, paths: { ...e.paths } }))
+  return (entries ?? []).map((e) => {
+    const { label, paths, hidden, ...extra } = e
+    return { key: newRowKey(), label, paths: { ...paths }, hidden: hidden === true, extra }
+  })
 }
 
 export function emptyRow(): DraftRow {
-  return { key: newRowKey(), label: '', paths: {} }
+  return { key: newRowKey(), label: '', paths: {}, hidden: false, extra: {} }
 }
 
-/** The list to PUT: trimmed labels and paths, empty paths dropped. */
+/** The list to PUT: trimmed labels and paths, empty paths dropped, `hidden` only when set, other keys kept. */
 export function fromDraft(rows: DraftRow[]): SpawnDirEntry[] {
   return rows.map((r) => {
     const paths: Record<string, string> = {}
     for (const [h, p] of Object.entries(r.paths)) if (p.trim()) paths[h] = p.trim()
-    return { label: r.label.trim(), paths }
+    return { ...r.extra, label: r.label.trim(), paths, ...(r.hidden ? { hidden: true } : {}) }
   })
 }
 
@@ -42,6 +49,7 @@ export function sameList(a: SpawnDirEntry[], b: SpawnDirEntry[]): boolean {
   return a.every((e, i) => {
     const o = b[i]
     if (e.label.trim() !== o.label.trim()) return false
+    if ((e.hidden === true) !== (o.hidden === true)) return false
     const ka = Object.keys(e.paths).filter((h) => e.paths[h]?.trim())
     const kb = Object.keys(o.paths).filter((h) => o.paths[h]?.trim())
     return ka.length === kb.length && ka.every((h) => e.paths[h].trim() === (o.paths[h] ?? '').trim())
@@ -135,7 +143,19 @@ export function divergedHosts(base: SpawnDirEntry[], loaded: Record<string, Spaw
     .map(([h]) => h)
 }
 
-/** The fleet with each saved host's `spawnDirs` replaced by what it now offers (the New session form reads it). */
+/**
+ * The fleet with each saved host's `spawnDirs` replaced by what it now offers (the New session
+ * form reads it) and its `hiddenSpawnDirs` by its hidden ones (the embed view allows them).
+ */
 export function withOffered(fleet: FleetResponse, saved: Record<string, SpawnDirsResponse>): FleetResponse {
-  return { ...fleet, hosts: fleet.hosts.map((h) => (saved[h.name] ? { ...h, spawnDirs: saved[h.name].offered } : h)) }
+  return {
+    ...fleet,
+    hosts: fleet.hosts.map((h) => {
+      const r = saved[h.name]
+      if (!r) return h
+      const { hiddenSpawnDirs: _old, ...rest } = h
+      const hidden = r.hiddenSpawnDirs ?? []
+      return { ...rest, spawnDirs: r.offered, ...(hidden.length ? { hiddenSpawnDirs: hidden } : {}) }
+    }),
+  }
 }

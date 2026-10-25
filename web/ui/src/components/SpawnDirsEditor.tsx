@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDownIcon, ArrowUpIcon, CheckIcon, CircleAlertIcon, Loader2Icon, PlusIcon, Trash2Icon } from 'lucide-react'
+import { ArrowDownIcon, ArrowUpIcon, CheckIcon, CircleAlertIcon, EyeIcon, EyeOffIcon, Loader2Icon, PlusIcon, Trash2Icon } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { ApiError, api, isAbortError } from '@/api/client'
@@ -34,6 +34,8 @@ const CHECK_DEBOUNCE_MS = 600
  * One row per label with a directory per host (empty = not offered there). The list is
  * shared: Save writes the same list to every reachable host (each validates its own paths
  * first — a dry run on all of them, then the writes), so the hosts' configs stay in sync.
+ * A hidden entry (eye toggle) stays allowed for spawns — e.g. an app's embedded panel starting
+ * sessions in its own dir — but is left out of the New session menu.
  */
 export function SpawnDirsEditor() {
   const { fleet, applyFleet, refresh } = useFleet()
@@ -213,6 +215,7 @@ export function SpawnDirsEditor() {
     <div className="space-y-3 py-3">
       <p className="text-xs text-dimmer">
         Where a new session can start, per host (empty = not offered there). One list for the whole fleet: Save writes it to every host.
+        A hidden directory is still allowed (e.g. for an app’s assistant panel) but not offered in New session.
       </p>
 
       {hosts
@@ -255,7 +258,7 @@ export function SpawnDirsEditor() {
                   {h}
                 </span>
               ))}
-              <span className="w-[6.25rem]" />
+              <span className="w-[8.375rem]" />
             </div>
             {rows.length === 0 ? <p className="py-2 text-sm text-dimmer">None — each host offers its home directory.</p> : null}
             {rows.map((r, i) => {
@@ -280,7 +283,7 @@ export function SpawnDirsEditor() {
                       aria-invalid={errs?.label ? true : undefined}
                       aria-describedby={errs?.label ? `${labelId}-err` : undefined}
                       onChange={(e) => update(r.key, (x) => ({ ...x, label: e.target.value }))}
-                      className="h-9 font-medium md:h-8"
+                      className={cn('h-9 font-medium md:h-8', r.hidden && 'text-muted-foreground italic')}
                     />
                     {errs?.label ? (
                       <p id={`${labelId}-err`} className="pt-1 text-xs text-destructive">
@@ -289,6 +292,17 @@ export function SpawnDirsEditor() {
                     ) : null}
                   </div>
                   <div className="col-start-2 row-start-1 flex items-center gap-0.5 md:col-[-2/-1]">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label={`Hide ${r.label || 'entry'} from New session`}
+                      aria-pressed={r.hidden}
+                      title={r.hidden ? 'Hidden: allowed, not offered in New session (click to show)' : 'Offered in New session (click to hide)'}
+                      onClick={() => update(r.key, (x) => ({ ...x, hidden: !x.hidden }))}
+                      className={cn('size-9 md:size-8', r.hidden ? 'text-status-waiting' : 'text-muted-foreground')}
+                    >
+                      {r.hidden ? <EyeOffIcon /> : <EyeIcon />}
+                    </Button>
                     <Button variant="ghost" size="icon" aria-label={`Move ${r.label || 'entry'} up`} title="Move up" disabled={i === 0} onClick={() => setRows((rs) => moveRow(rs, i, -1))} className="size-9 md:size-8">
                       <ArrowUpIcon />
                     </Button>

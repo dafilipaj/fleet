@@ -12,7 +12,7 @@
 //     stacks: { enabled, model },         (read by the CLI; the server only reports them)
 //     grouping: { enabled, model, host },   (enabled/model are read by the CLI)
 //     inbox: { host, scanMinutes, workHours, workDays, model, briefModel, briefMinutes, language, comms },
-//     tmux, fleetBin, claude, spawnDirs: [ { label, paths: { host: dir } } ] }
+//     tmux, fleetBin, claude, spawnDirs: [ { label, paths: { host: dir }, hidden? } ] }
 //
 // A missing config file is not an error: the server runs as a single local host
 // ("local", 127.0.0.1, no peers). A present-but-broken file is a hard error.
@@ -197,19 +197,41 @@ function spawnDirFor(entry, self, home) {
   const abs = expandHome(dir.trim(), home);
   if (!path.isAbsolute(abs)) throw new Error(`config.spawnDirs path must be absolute or start with ~: ${dir}`);
   const label = typeof entry.label === 'string' && entry.label.trim() ? entry.label.trim() : path.basename(abs);
-  return { label, path: path.normalize(abs) };
+  return { label, path: path.normalize(abs), hidden: entry.hidden === true };
+}
+
+function spawnDirsOf(list, self, home) {
+  if (list == null) list = [];
+  if (!Array.isArray(list)) throw new Error('config.spawnDirs must be an array');
+  return list.map((e) => spawnDirFor(e, self, home)).filter(Boolean);
 }
 
 /**
  * What this host offers for new sessions: the raw `spawnDirs` list → `[{ label, path }]`
- * (absolute, `~` expanded); `[{ label: "Home", path: home }]` when none is for this host.
+ * (absolute, `~` expanded), without the `hidden: true` entries; `[{ label: "Home", path: home }]`
+ * when none is offered on this host (also when all of this host's entries are hidden).
  * Also used to hot-reload the list after a Settings edit (lib/spawn-dirs.mjs).
  */
 export function spawnDirsFor(list, self, home = os.homedir()) {
-  if (list == null) list = [];
-  if (!Array.isArray(list)) throw new Error('config.spawnDirs must be an array');
-  const dirs = list.map((e) => spawnDirFor(e, self, home)).filter(Boolean);
+  const dirs = spawnDirsOf(list, self, home)
+    .filter((d) => !d.hidden)
+    .map(({ label, path: p }) => ({ label, path: p }));
   return dirs.length ? dirs : [{ label: 'Home', path: home }];
+}
+
+/**
+ * This host's `hidden: true` entries → `[{ label, path }]`: allowed for spawns (e.g. an app's
+ * embedded panel starting sessions in its own dir) but not offered in the New session menu.
+ */
+export function hiddenSpawnDirsFor(list, self, home = os.homedir()) {
+  return spawnDirsOf(list, self, home)
+    .filter((d) => d.hidden)
+    .map(({ label, path: p }) => ({ label, path: p }));
+}
+
+/** The spawn allow-list: every dir offered (`spawnDirs`) plus the hidden ones. */
+export function spawnRoots(config) {
+  return [...(config.spawnDirs ?? []), ...(config.hiddenSpawnDirs ?? [])].map((d) => d.path);
 }
 
 /** The retired `web.ui` shortcut for the old vanilla UI; now means "the default". */
@@ -300,6 +322,7 @@ export function normalizeConfig(
   const uiDir = resolveUiDir(uiRaw, { webRoot, home });
 
   const spawnDirs = spawnDirsFor(raw.spawnDirs, self.trim(), home);
+  const hiddenSpawnDirs = hiddenSpawnDirsFor(raw.spawnDirs, self.trim(), home);
 
   let quickReplies = null;
   if (web.quickReplies != null) {
@@ -585,6 +608,7 @@ export function normalizeConfig(
     // the launcher comes from `fleet gh-identity launcher`, which owns the shim.
     ghIdentities: ghIdentitiesOf(raw),
     spawnDirs,
+    hiddenSpawnDirs,
     uiDir,
     quickReplies,
     models,
