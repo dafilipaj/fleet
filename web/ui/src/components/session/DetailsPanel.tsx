@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
-  ArrowRightIcon,
   CopyIcon,
   FileDiffIcon,
+  GitForkIcon,
   LayersIcon,
   Link2Icon,
   Loader2Icon,
@@ -85,8 +85,9 @@ export function DetailsDrawer(p: DetailsPanelProps) {
 
 /**
  * Details: header (name + regenerate, host · cwd, context), the Brief (summary,
- * todos, resources), New session from here…, Session (attach, ids, close). `drawer` = inside the mobile drawer; `panel` = the desktop
- * details column (click-to-confirm wording, ✕ to close, no drawer chrome).
+ * todos, resources), Session (stack, attach command, ids). `drawer` = inside the mobile drawer; `panel` = the desktop
+ * details column (click-to-confirm wording, no drawer chrome). Close (⏻) sits top right; the
+ * actions (Review, New from here, Link, Attach) sit above the brief.
  */
 export function DetailsPanel(p: DetailsPanelProps & { variant: 'drawer' | 'panel'; cancelEditRef?: React.RefObject<(() => void) | null> }) {
   const panel = p.variant === 'panel'
@@ -177,23 +178,57 @@ export function DetailsPanel(p: DetailsPanelProps & { variant: 'drawer' | 'panel
                 </p>
               ) : null}
             </div>
+            <Button
+              variant="ghost"
+              size={armed ? 'sm' : 'icon'}
+              aria-label={armed ? 'Confirm close session' : 'Close session'}
+              title={`Close session: ends ${harnessLabel(s?.harness)} and its ${s?.backend === 'iterm' ? 'iTerm tab' : 'tmux window'}${armed ? '' : ` (${panel ? 'click' : 'tap'} twice)`}`}
+              disabled={closing}
+              onClick={closeSession}
+              className={cn(
+                'h-8 shrink-0 rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive',
+                armed ? 'bg-destructive px-2.5 text-white hover:bg-destructive/90 hover:text-white' : 'w-8',
+              )}
+            >
+              {closing ? <Loader2Icon className="animate-spin" /> : <PowerIcon />}
+              {armed ? (panel ? 'Click to close' : 'Tap to close') : null}
+            </Button>
           </Header>
 
+          {/* Actions first: Review, then the icon-only ones (New from here, Link to a stack, Attach). */}
+          {p.onReview || p.onNewFromHere || p.stack || attachCmd ? (
+            <div className="flex items-center gap-1.5 pt-1 pb-2">
+              {p.onReview ? (
+                <Button variant="outline" className="h-9 min-w-0 flex-1 rounded-lg" title="Review changes (diff)" onClick={p.onReview}>
+                  <FileDiffIcon />
+                  <span className="truncate">Review changes</span>
+                </Button>
+              ) : null}
+              {p.onNewFromHere ? (
+                <Button variant="outline" size="icon" className="size-9 shrink-0 rounded-lg" aria-label="New session from here" title="New session from here… (hand off / sibling)" onClick={p.onNewFromHere}>
+                  <GitForkIcon />
+                </Button>
+              ) : null}
+              {p.stack ? (
+                <Button variant="outline" size="icon" className="size-9 shrink-0 rounded-lg" aria-label="Link to a stack" title="Put another live session in this stack (or start one)" onClick={p.stack.onLink}>
+                  <Link2Icon />
+                </Button>
+              ) : null}
+              {attachLink ? (
+                <Button asChild variant="outline" size="icon" className="size-9 shrink-0 rounded-lg">
+                  <a href={attachLink} aria-label="Attach in iTerm" title={`Attach in iTerm: ${attachCmd}`}>
+                    <SquareTerminalIcon />
+                  </a>
+                </Button>
+              ) : attachCmd ? (
+                <Button variant="outline" size="icon" className="size-9 shrink-0 rounded-lg" aria-label="Copy attach command" title={`Copy attach command: ${attachCmd}`} onClick={() => void copyWithToast(attachCmd)}>
+                  <SquareTerminalIcon />
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
+
           <BriefSection {...p.brief} desktop={panel} cancelEditRef={p.cancelEditRef} />
-
-          {p.onReview ? (
-            <Button variant="outline" className="mt-1 h-10 w-full rounded-xl" title="Review changes (diff)" onClick={p.onReview}>
-              <FileDiffIcon />
-              Review changes
-            </Button>
-          ) : null}
-
-          {p.onNewFromHere ? (
-            <Button variant="outline" className="mt-1 h-10 w-full rounded-xl" onClick={p.onNewFromHere}>
-              New session from here…
-              <ArrowRightIcon />
-            </Button>
-          ) : null}
 
           <Section title="Session">
             {p.stack ? (
@@ -204,36 +239,17 @@ export function DetailsPanel(p: DetailsPanelProps & { variant: 'drawer' | 'panel
                     StackBrief
                   </Button>
                 ) : null}
-                <Button variant="outline" className="h-9 px-3" title="Put another live session in this stack (or start one)" onClick={p.stack.onLink}>
-                  <Link2Icon />
-                  Link…
-                </Button>
               </Row>
             ) : null}
-            {s ? (
+            {attachCmd ? (
               <div className="py-1.5">
-                <Row
-                  label={attachLink ? 'Attach' : 'Attach command'}
-                  hint={attachCmd ? (attachLink ? 'Opens an iTerm tab attached to its tmux session' : 'Run in a terminal on any fleet host') : 'Only for tmux sessions — this one is an iTerm tab'}
-                >
-                  <div className="flex gap-1.5">
-                    <Button variant={attachLink ? 'ghost' : 'outline'} className="h-9 px-3" disabled={!attachCmd} aria-label="Copy attach command" title="Copy attach command" onClick={() => attachCmd && void copyWithToast(attachCmd)}>
-                      <CopyIcon />
-                      Copy
-                    </Button>
-                    {attachLink ? (
-                      <Button asChild className="h-9 px-3">
-                        <a href={attachLink} title={attachCmd ?? undefined}>
-                          <SquareTerminalIcon />
-                          Attach
-                        </a>
-                      </Button>
-                    ) : null}
-                  </div>
+                <Row label="Attach command" hint="Run in a terminal on any fleet host">
+                  <Button variant="ghost" className="h-9 px-3" aria-label="Copy attach command" title="Copy attach command" onClick={() => void copyWithToast(attachCmd)}>
+                    <CopyIcon />
+                    Copy
+                  </Button>
                 </Row>
-                {attachCmd ? (
-                  <code className="block rounded-md bg-muted px-2.5 py-2 font-mono text-xs break-all text-muted-foreground select-all">{attachCmd}</code>
-                ) : null}
+                <code className="block rounded-md bg-muted px-2.5 py-2 font-mono text-xs break-all text-muted-foreground select-all">{attachCmd}</code>
               </div>
             ) : null}
             {s ? (
@@ -257,20 +273,6 @@ export function DetailsPanel(p: DetailsPanelProps & { variant: 'drawer' | 'panel
                   ))}
               </div>
             ) : null}
-            <div className="py-3">
-              <Button
-                variant="destructive"
-                className={cn('h-11 w-full text-sm', armed && 'bg-destructive text-white hover:bg-destructive/90 dark:bg-destructive dark:hover:bg-destructive/90')}
-                disabled={closing}
-                onClick={closeSession}
-              >
-                {closing ? <Loader2Icon className="animate-spin" /> : <PowerIcon />}
-                {closing ? 'Closing…' : armed ? (panel ? 'Click again to close' : 'Tap again to close') : 'Close session…'}
-              </Button>
-              <p className="pt-1.5 text-center text-xs text-dimmer">
-                Ends {harnessLabel(s?.harness)} and its {s?.backend === 'iterm' ? 'iTerm tab' : 'tmux window'}.
-              </p>
-            </div>
           </Section>
         </div>
   )

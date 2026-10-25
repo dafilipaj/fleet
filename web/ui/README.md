@@ -393,11 +393,11 @@ src/
   else / over 5 MB an info panel with Download and Open. Markdown safety is unchanged: file
   nodes exist only with `parseMarkdown(text, { files: true })` and render as buttons.
 - **⋯ → Details** (drawer, the same content as the desktop details column): name, host · cwd,
-  context, **Open in VS Code / Cursor** (`editorUrl`, a plain `vscode://` / `cursor://` link; hidden
-  on touch screens), the **brief** (below),
-  Auto-name → Run now (+ last run / schedule from `/api/health` when the host is this server),
-  session details (tmux, backend, pid, id), Close session (two taps within 5s → `api.kill`, back
-  to the list, row dropped optimistically).
+  context, ⏻ Close session top right (two taps within 5s, the second shows "Tap to close" →
+  `api.kill`, back to the list, row dropped optimistically); then an action row — Review changes
+  (desktop column; mobile has it in the header), and icon buttons New session from here, Link to a
+  stack, Attach (iTerm link, else copies the attach command); the **brief** (below); session
+  details (stack, attach command, tmux, backend, pid, id).
 - **Brief** (top of Details; web/ARCHITECTURE.md → Session briefs): "updated 3m ago · edited",
   Regenerate, Edit (the body markdown in a textarea; ⌘/Ctrl+Enter saves, Esc cancels — in the
   drawer Esc cancels the edit, not the drawer); Summary; **Todos** with clickable checkboxes and
@@ -506,8 +506,8 @@ session in the pane), so a link opens the same session on either layout.
   sidebar (260–560px, default 320px, double-click resets, ←/→ on the focused handle;
   `fleet.detailsWidth`); the chat keeps at least 380px, and a pane too narrow for both shows the
   ⋯ button (the drawer) instead. The mobile ⋯ drawer's content (`DetailsPanel`) — the brief first
-  (summary, todos, resources, continue), then auto-name,
-  tmux/backend/pid/id, Close session (click twice).
+  (summary, todos, resources, continue) under the action row, then the session details; ⏻ Close
+  session top right (click twice).
 - **New session**: the mobile form in a dialog. Toasts sit bottom-right, above the composer.
 - **Polling** is unchanged: one `/api/fleet` loop (FleetProvider, 5s) feeds the sidebar and the
   pane's status; the pane runs one messages (3s) loop. The tab title is
