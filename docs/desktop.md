@@ -85,7 +85,7 @@ within 30 s — shows "Fleet server is not running" with the error, the log tail
 | ⌘[ / ⌘] | back / forward (the app's hash routes) |
 | ⌘W, close button | hide the window; the Dock icon brings it back; ⌘Q quits |
 | links | the server's own pages stay in the window; other http(s) pages and every `target="_blank"` link open in the default browser; `vscode://`, `vscode-insiders://`, `cursor://`, `mailto:` go to macOS (**Open in VS Code / Cursor** works); other schemes are dropped |
-| attach | `fleet://attach?host=<host>&session=<tmux session>` opens an iTerm tab (a window when none is open) running `fleet -H <host> enter -- <session>`, both words shell-quoted; any other `fleet://` link is dropped. The session details' **Attach** button and the palette's *Attach in iTerm* use it (shown only when the init script sets `data-attach="iterm"`, so an older app keeps just **Copy**). The first use asks for permission to control iTerm (Info.plist `NSAppleEventsUsageDescription`) |
+| attach | `fleet://attach?host=<host>&session=<tmux session>` opens an iTerm tab (a window when none is open) running `fleet -H <host> enter -- <session>`, both words shell-quoted; `fleet://shell?host=<host>` opens one running `fleet -H <host> new` (the host's tmux: attach to, or create, `main`) — the top bar's ▣ menu, shown as links only when the init script sets `data-host-shell="iterm"` (else it copies the command); any other `fleet://` link is dropped. The session details' **Attach** button and the palette's *Attach in iTerm* use it (shown only when the init script sets `data-attach="iterm"`, so an older app keeps just **Copy**). The first use asks for permission to control iTerm (Info.plist `NSAppleEventsUsageDescription`) |
 | downloads | the preview's Download saves to `~/Downloads` (no overwrite: `name (1).ext`) and reveals the file in Finder |
 | files | dropping files on a session / the New session form, pasting images and the paperclip picker work as in the browser (Tauri's own drop handler is off, so the page gets the drop) |
 | clipboard | Copy path and ⌘C/⌘V/⌘X/⌘A work (Edit menu); on a plain-http tailnet URL the UI uses its non-secure-context copy fallback |
@@ -104,7 +104,7 @@ notification permission.
 The window uses Tauri's `titleBarStyle: Overlay` with a hidden title, so the page draws under the
 traffic lights. The page learns it is inside the app without IPC: the window's initialization
 script (it runs on every page, the server's too) sets `data-shell="desktop"` (and the class
-`shell-desktop`), `data-attach="iterm"`, `data-fullscreen`, `--titlebar-inset-left` (88px; 0 in full screen) and
+`shell-desktop`), `data-attach="iterm"`, `data-host-shell="iterm"`, `data-fullscreen`, `--titlebar-inset-left` (88px; 0 in full screen) and
 `--titlebar-height` (56px) on `<html>`. On a page load and whenever the window resizes into or
 out of full screen, the app evaluates the same script again with the current state. The web UI's
 rules for these live in `web/ui/src/index.css` (→ "Desktop app"); without `data-shell` — any

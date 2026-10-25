@@ -181,13 +181,21 @@ fn open_external(target: &str) {
     }
 }
 
-/// Open an iTerm tab running `fleet -H <host> enter <session>` (off the UI thread:
-/// the AppleScript waits for the new tab's shell).
+/// Open an iTerm tab running `fleet -H <host> enter <session>`.
 fn attach(host: &str, session: &str) {
-    let line = fleet::core::backend::attach_command(host, session);
+    run_in_iterm(fleet::core::backend::attach_command(host, session));
+}
+
+/// Open an iTerm tab in the host's tmux: `fleet -H <host> new` (attach to, or create, `main`).
+fn shell(host: &str) {
+    run_in_iterm(fleet::core::backend::host_shell_command(host));
+}
+
+/// Run `line` in a new iTerm tab, off the UI thread (the AppleScript waits for the tab's shell).
+fn run_in_iterm(line: String) {
     std::thread::spawn(move || {
         if let Err(e) = fleet::core::backend::iterm_run(&line, false) {
-            eprintln!("fleet-desktop: attach ({line}): {e}");
+            eprintln!("fleet-desktop: iTerm ({line}): {e}");
         }
     });
 }
@@ -329,6 +337,12 @@ fn build_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
             Action::Attach { host, session } => {
                 if fleet {
                     attach(&host, &session);
+                }
+                false
+            }
+            Action::Shell { host } => {
+                if fleet {
+                    shell(&host);
                 }
                 false
             }

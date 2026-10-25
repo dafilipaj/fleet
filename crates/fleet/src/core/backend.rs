@@ -601,6 +601,11 @@ pub fn attach_command(host: &str, tmux_session: &str) -> String {
     format!("fleet -H {} enter -- {}", shq(host), shq(tmux_session))
 }
 
+/// The host's tmux, not one session: `fleet -H <host> new` attaches to (or creates) `main`.
+pub fn host_shell_command(host: &str) -> String {
+    format!("fleet -H {} new", shq(host))
+}
+
 /// Open a new iTerm tab (a window with `window`, or when none is open) and run `line` in it.
 pub fn iterm_run(line: &str, window: bool) -> Result<()> {
     deny_fixture()?;
@@ -891,6 +896,14 @@ mod tests {
         assert_eq!(
             attach_command("laptop", "it's"),
             r"fleet -H 'laptop' enter -- 'it'\''s'"
+        );
+    }
+
+    #[test]
+    fn host_shell_command_quotes_the_host() {
+        assert_eq!(
+            host_shell_command("workstation"),
+            "fleet -H 'workstation' new"
         );
     }
 

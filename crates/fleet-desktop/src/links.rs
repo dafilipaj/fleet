@@ -17,22 +17,24 @@ pub enum Action {
         host: String,
         session: String,
     },
+    /// `fleet://shell?host=<h>`: open an iTerm tab in the host's tmux (`fleet -H <h> new`).
+    Shell {
+        host: String,
+    },
     Deny,
 }
 
-/// The app's own `fleet://` links: only `attach`, with a host and a session.
+/// The app's own `fleet://` links: `attach` (a host and a session) and `shell` (a host).
 fn fleet_link(url: &Url) -> Action {
-    if url.host_str() != Some("attach") {
-        return Action::Deny;
-    }
     let q = |k: &str| {
         url.query_pairs()
             .find(|(n, _)| n == k)
             .map(|(_, v)| v.into_owned())
             .filter(|v| !v.is_empty())
     };
-    match (q("host"), q("session")) {
-        (Some(host), Some(session)) => Action::Attach { host, session },
+    match (url.host_str(), q("host"), q("session")) {
+        (Some("attach"), Some(host), Some(session)) => Action::Attach { host, session },
+        (Some("shell"), Some(host), _) => Action::Shell { host },
         _ => Action::Deny,
     }
 }
@@ -180,7 +182,14 @@ mod tests {
                 session: "a b".into()
             }
         );
+        assert_eq!(
+            navigation(&u("fleet://shell?host=workstation"), &server, &[]),
+            Action::Shell {
+                host: "workstation".into()
+            }
+        );
         let deny = [
+            "fleet://shell?host=",
             "fleet://attach?host=workstation",
             "fleet://attach?host=&session=x",
             "fleet://run?host=h&session=x",

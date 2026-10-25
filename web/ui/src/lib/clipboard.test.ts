@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 
-import { attachCommand, canAttachInApp, sessionAttachCommand, sessionAttachLink, shellQuote } from './clipboard'
+import { attachCommand, canAttachInApp, hostShellCommand, hostShellLink, sessionAttachCommand, sessionAttachLink, shellQuote } from './clipboard'
 
 describe('shellQuote', () => {
   test('safe words stay plain', () => {
@@ -47,5 +47,16 @@ describe('canAttachInApp', () => {
     expect(canAttachInApp({ documentElement: { dataset: { shell: 'desktop', attach: 'iterm' } } })).toBe(true)
     expect(canAttachInApp({ documentElement: { dataset: { shell: 'desktop' } } })).toBe(false)
     expect(canAttachInApp(undefined)).toBe(false)
+  })
+})
+
+describe('host shell', () => {
+  test('the command attaches to (or creates) the host tmux', () => {
+    expect(hostShellCommand('workstation')).toBe('fleet -H workstation new')
+    expect(hostShellCommand('my host')).toBe("fleet -H 'my host' new")
+  })
+  test('the link only where Fleet.app opens it', () => {
+    expect(hostShellLink('workstation', { documentElement: { dataset: { hostShell: 'iterm' } } })).toBe('fleet://shell?host=workstation')
+    expect(hostShellLink('workstation', { documentElement: { dataset: { attach: 'iterm' } } })).toBeNull()
   })
 })

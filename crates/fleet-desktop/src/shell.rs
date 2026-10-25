@@ -105,11 +105,11 @@ mod macos {
 /// The script that tells the page it is in the desktop shell and whether the
 /// traffic lights are showing (they hide in full screen, so the inset collapses).
 /// Runs as the initialization script of every page and again on full-screen changes.
-/// `attach`: the app opens `fleet://attach` links (Fleet.app).
+/// `attach`: the app opens `fleet://attach` and `fleet://shell` links (Fleet.app).
 pub fn script(fullscreen: bool, attach: bool) -> String {
     let inset = if fullscreen { 0 } else { INSET_LEFT_PX };
     let attach = if attach {
-        "d.dataset.attach='iterm';"
+        "d.dataset.attach='iterm';d.dataset.hostShell='iterm';"
     } else {
         ""
     };
@@ -152,6 +152,7 @@ mod tests {
         assert!(s.contains("d.dataset.shell='desktop'"));
         assert!(s.contains("classList.add('shell-desktop')"));
         assert!(s.contains("d.dataset.attach='iterm'"));
+        assert!(s.contains("d.dataset.hostShell='iterm'"));
         assert!(s.contains("'--titlebar-inset-left','88px'"));
         assert!(s.contains("'--titlebar-height','56px'"));
         assert!(s.contains("fullscreen='false'"));

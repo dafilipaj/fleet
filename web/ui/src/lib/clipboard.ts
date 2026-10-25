@@ -34,6 +34,16 @@ export function canAttachInApp(doc: { documentElement?: { dataset?: Record<strin
   return doc?.documentElement?.dataset?.attach === 'iterm'
 }
 
+/** A host's tmux rather than one session: `fleet -H <host> new` attaches to (or creates) `main`. */
+export function hostShellCommand(host: string): string {
+  return `fleet -H ${shellQuote(host)} new`
+}
+
+/** The `fleet://shell` link a Fleet.app that knows it turns into an iTerm tab; else null (copy the command). */
+export function hostShellLink(host: string, doc: { documentElement?: { dataset?: Record<string, string | undefined> } | null } | undefined = globalThis.document): string | null {
+  return doc?.documentElement?.dataset?.hostShell === 'iterm' ? `fleet://shell?${new URLSearchParams({ host })}` : null
+}
+
 /**
  * Copy `text`; → whether it worked. `navigator.clipboard` only exists in a secure
  * context, and the app is usually served over plain http on a tailnet address, so the

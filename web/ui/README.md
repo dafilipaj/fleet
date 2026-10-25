@@ -394,10 +394,10 @@ src/
   nodes exist only with `parseMarkdown(text, { files: true })` and render as buttons.
 - **⋯ → Details** (drawer, the same content as the desktop details column): name, host · cwd,
   context, ⏻ Close session top right (two taps within 5s, the second shows "Tap to close" →
-  `api.kill`, back to the list, row dropped optimistically); then an action row of short-label buttons —
+  `api.kill`, back to the list, row dropped optimistically); then one row of action buttons (labels drop when the row is under 15rem) —
   Review (desktop column; mobile has it in the header), New (session from here), Link (to a
   stack), Attach (iTerm link, else copies the attach command); the **brief** (below); session
-  details (stack, attach command, tmux, backend, pid, id).
+  details (stack, tmux, backend, pid, id).
 - **Brief** (top of Details; web/ARCHITECTURE.md → Session briefs): "updated 3m ago · edited",
   Regenerate, Edit (the body markdown in a textarea; ⌘/Ctrl+Enter saves, Esc cancels — in the
   drawer Esc cancels the edit, not the drawer); Summary; **Todos** with clickable checkboxes and
@@ -485,7 +485,9 @@ Master–detail on the same hash routes as mobile (`#/` = nothing open, `#/s/<ho
 session in the pane), so a link opens the same session on either layout.
 
 - **Top bar** (the same over List and Board): Fleet summary, List | Board, search (⌘F),
-  Sessions | Bots toggle with status and host pickers, modules, `+`.
+  Sessions | Bots toggle with status and host pickers, modules, then the helpers — ▣ tmux on a
+  host (`HostShellMenu`: Fleet.app opens an iTerm tab via `fleet://shell`, a browser copies
+  `fleet -H <host> new`), Focus, Usage, Settings — and `+`.
 - **Sidebar** (left, List only): the session list (the open row is highlighted, the keyboard
   cursor has a ring), Dormant and Recently closed. Resizable by dragging its edge (280–560px,
   double-click resets, ←/→ on the focused handle; `fleet.sidebarWidth`).

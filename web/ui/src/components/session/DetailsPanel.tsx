@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
-  CopyIcon,
   FileDiffIcon,
   GitForkIcon,
   LayersIcon,
@@ -85,7 +84,7 @@ export function DetailsDrawer(p: DetailsPanelProps) {
 
 /**
  * Details: header (name + regenerate, host · cwd, context), the Brief (summary,
- * todos, resources), Session (stack, attach command, ids). `drawer` = inside the mobile drawer; `panel` = the desktop
+ * todos, resources), Session (stack, ids). `drawer` = inside the mobile drawer; `panel` = the desktop
  * details column (click-to-confirm wording, no drawer chrome). Close (⏻) sits top right; the
  * actions (Review, New from here, Link, Attach) sit above the brief.
  */
@@ -195,38 +194,38 @@ export function DetailsPanel(p: DetailsPanelProps & { variant: 'drawer' | 'panel
             </Button>
           </Header>
 
-          {/* Actions first, each a short label: Review, New (from here), Link (to a stack), Attach. */}
+          {/* Actions first: Review, New (from here), Link (to a stack), Attach. One row; a narrow pane drops the labels. */}
           {p.onReview || p.onNewFromHere || p.stack || attachCmd ? (
-            <div className="grid grid-cols-[repeat(auto-fit,minmax(4.25rem,1fr))] gap-1 pt-1 pb-2">
+            <div className="@container flex items-center gap-2 pt-1 pb-2">
               {p.onReview ? (
-                <Button variant="outline" className={ACTION} title="Review changes (diff)" onClick={p.onReview}>
+                <Button variant="outline" className={ACTION} aria-label="Review changes" title="Review changes (diff)" onClick={p.onReview}>
                   <FileDiffIcon />
-                  Review
+                  <span className={LABEL}>Review</span>
                 </Button>
               ) : null}
               {p.onNewFromHere ? (
-                <Button variant="outline" className={ACTION} title="New session from here… (hand off / sibling)" onClick={p.onNewFromHere}>
+                <Button variant="outline" className={ACTION} aria-label="New session from here" title="New session from here… (hand off / sibling)" onClick={p.onNewFromHere}>
                   <GitForkIcon />
-                  New
+                  <span className={LABEL}>New</span>
                 </Button>
               ) : null}
               {p.stack ? (
-                <Button variant="outline" className={ACTION} title="Link to a stack: put another live session in this stack (or start one)" onClick={p.stack.onLink}>
+                <Button variant="outline" className={ACTION} aria-label="Link to a stack" title="Link to a stack: put another live session in this stack (or start one)" onClick={p.stack.onLink}>
                   <Link2Icon />
-                  Link
+                  <span className={LABEL}>Link</span>
                 </Button>
               ) : null}
               {attachLink ? (
                 <Button asChild variant="outline" className={ACTION}>
-                  <a href={attachLink} title={`Attach in iTerm: ${attachCmd}`}>
+                  <a href={attachLink} aria-label="Attach in iTerm" title={`Attach in iTerm: ${attachCmd}`}>
                     <SquareTerminalIcon />
-                    Attach
+                    <span className={LABEL}>Attach</span>
                   </a>
                 </Button>
               ) : attachCmd ? (
-                <Button variant="outline" className={ACTION} title={`Copy attach command: ${attachCmd}`} onClick={() => void copyWithToast(attachCmd)}>
+                <Button variant="outline" className={ACTION} aria-label="Copy attach command" title={`Copy attach command: ${attachCmd}`} onClick={() => void copyWithToast(attachCmd)}>
                   <SquareTerminalIcon />
-                  Attach
+                  <span className={LABEL}>Attach</span>
                 </Button>
               ) : null}
             </div>
@@ -244,17 +243,6 @@ export function DetailsPanel(p: DetailsPanelProps & { variant: 'drawer' | 'panel
                   </Button>
                 ) : null}
               </Row>
-            ) : null}
-            {attachCmd ? (
-              <div className="py-1.5">
-                <Row label="Attach command" hint="Run in a terminal on any fleet host">
-                  <Button variant="ghost" className="h-9 px-3" aria-label="Copy attach command" title="Copy attach command" onClick={() => void copyWithToast(attachCmd)}>
-                    <CopyIcon />
-                    Copy
-                  </Button>
-                </Row>
-                <code className="block rounded-md bg-muted px-2.5 py-2 font-mono text-xs break-all text-muted-foreground select-all">{attachCmd}</code>
-              </div>
             ) : null}
             {s ? (
               <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 py-3 text-xs">
@@ -282,4 +270,6 @@ export function DetailsPanel(p: DetailsPanelProps & { variant: 'drawer' | 'panel
   )
 }
 
-const ACTION = 'h-9 min-w-0 gap-1 rounded-lg px-1.5 text-xs [&_svg:not([class*=size-])]:size-3.5'
+const ACTION = 'h-9 min-w-0 flex-1 gap-1 rounded-lg px-2 text-xs [&_svg:not([class*=size-])]:size-3.5'
+/** The action's label: shown once the row has room for all four. */
+const LABEL = 'hidden @[15rem]:inline'
