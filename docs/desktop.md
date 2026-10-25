@@ -90,7 +90,7 @@ within 30 s — shows "Fleet server is not running" with the error, the log tail
 | files | dropping files on a session / the New session form, pasting images and the paperclip picker work as in the browser (Tauri's own drop handler is off, so the page gets the drop) |
 | clipboard | Copy path and ⌘C/⌘V/⌘X/⌘A work (Edit menu); on a plain-http tailnet URL the UI uses its non-secure-context copy fallback |
 | title bar | none: the traffic lights sit over the UI's own top bar (vertically centred on its 56 px row), the page's headers leave room for them and collapse that room in full screen, where macOS hides them |
-| dragging | drag the window by the empty parts of any top bar (sidebar / board / session / settings / notes header, the empty pane, the collapsed rail); double-click there zooms. Buttons, fields, toggles and links don't drag |
+| dragging | drag the window by the empty parts of any top bar (the top bar, session / settings / notes header, the empty pane); double-click there zooms. Buttons, fields, toggles and links don't drag |
 | window | size, position and maximized/fullscreen state are remembered; the title follows the page (`(2) session · Fleet`, shown in the Window menu and Mission Control) |
 | single instance | opening the app again focuses the running one |
 

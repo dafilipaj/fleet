@@ -410,8 +410,7 @@ src/
   preview, URLs a new tab; **Continue in new session** (the New session form prefilled with the
   host, the session's cwd and `continuePrompt`, caret at the end). GET while Details is open,
   every 30s, every 2.5s while generating.
-- **Settings** (`#/settings`: the ⋯ More menu in the list header on mobile, the sidebar footer / rail and
-  the board header on desktop, ⌘K → Settings…): Text size (Small / Default /
+- **Settings** (`#/settings`: the ⋯ More menu in the list header on mobile, the top bar on desktop, ⌘K → Settings…): Text size (Small / Default /
   Large = chat at 13 / 15 / 17px, `fleet.chatFont`) scales the **whole** UI via the `<html>`
   font-size (index.html applies it before first paint); Terminal text (`fleet.termFont`, in rem so
   it follows the text size); Theme (`fleet.theme`); Progress notes (`fleet.chatHideNotes`); Send
@@ -460,7 +459,7 @@ src/
 - **Notes** (`#/notes[/<host>[/<path>]]`; ../ARCHITECTURE.md → notes): browse, search and read the
   markdown notes of any host with `web.notes.root` (hosts come from `/api/fleet` entries carrying
   `notes`; the last one used is `fleet.notesHost`). Reached from the ⋯ More menu in the mobile
-  list header, the sidebar footer / rail and the board header, ⌘K → Notes… (the palette also
+  list header, the desktop top bar, ⌘K → Notes… (the palette also
   lists the first notes host's 300 most recent notes) and ⌘⇧E. Folder tree (expanded folders
   per host in `fleet.notesOpen.<host>`, the open note's folders expand), search (180 ms debounce,
   previous request aborted; words AND-ed, `"phrases"`, `#tag`; Enter opens the first hit, Esc
@@ -488,11 +487,12 @@ src/
 Master–detail on the same hash routes as mobile (`#/` = nothing open, `#/s/<host>/<id>` = that
 session in the pane), so a link opens the same session on either layout.
 
-- **Sidebar** (left): Fleet summary, "updated Xs ago", `+`, search (⌘F), compact status + host
-  filter chips, the session list (the open row is highlighted, the keyboard cursor has a ring),
-  footer buttons for the palette and the shortcuts. Resizable by dragging its edge (280–560px,
-  double-click resets, ←/→ on the focused handle; `fleet.sidebarWidth`), collapsible to a rail
-  with ⌘\ (`fleet.sidebar`).
+- **Top bar** (the same over List and Board): Fleet summary, List | Board, search (⌘F),
+  Sessions | Bots toggle with status and host pickers, modules, `+`.
+- **Sidebar** (left, List only): the session list (the open row is highlighted, the keyboard
+  cursor has a ring), Dormant and Recently closed. Resizable by dragging its edge (280–560px,
+  double-click resets, ←/→ on the focused handle; `fleet.sidebarWidth`), hidden / shown with ⌘\
+  or the top bar's panel button (`fleet.sidebar`).
 - **Pane**: the session screen without the back button; header adds the cwd; chat is a wider
   (max-w-4xl) readable column, the terminal uses the full width; the composer sends on Enter (also
   ⌘/Ctrl+Enter, touch-capable laptops included), Shift+Enter is a newline. Nothing open → an empty
