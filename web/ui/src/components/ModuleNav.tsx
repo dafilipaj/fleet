@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { useLocation } from 'wouter'
 import { AudioLinesIcon, InboxIcon, BotIcon, CircleDotIcon, GaugeIcon, GitPullRequestIcon, NotebookPenIcon, SquareCheckBigIcon, NotebookTextIcon, Settings2Icon } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -46,7 +47,7 @@ function useModules(): Module[] {
   return all.filter((m): m is Module => m !== null)
 }
 
-/** One icon button per module (the sidebar row, the rail). The scratchpad has none there: ⌘K or its shortcut. */
+/** One icon button per module (the top bar); the open one is highlighted. The scratchpad has none there: ⌘K or its shortcut. */
 export function ModuleButtons({
   size = 'icon',
   className,
@@ -59,15 +60,18 @@ export function ModuleButtons({
   /** Only this group (absent: all). */
   group?: Module['group']
 }) {
+  const [location] = useLocation()
   const modules = useModules().filter((m) => m.id !== 'scratchpad' && !exclude.includes(m.id) && (!group || m.group === group))
   return (
     <>
       {modules.map((m) => {
         const title = m.hint ? withHint(m.label, m.hint) : m.label
-        const cls = cn('text-dimmer hover:text-foreground', className)
+        const path = m.href?.slice(1)
+        const active = !!path && (location === path || location.startsWith(`${path}/`))
+        const cls = cn('text-dimmer hover:text-foreground', className, active && 'bg-accent text-accent-foreground')
         return m.href ? (
           <Button key={m.id} asChild variant="ghost" size={size} className={cls}>
-            <a href={m.href} aria-label={m.label} title={title}>
+            <a href={m.href} aria-label={m.label} aria-current={active ? 'page' : undefined} title={title}>
               {m.icon}
             </a>
           </Button>
