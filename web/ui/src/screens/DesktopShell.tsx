@@ -57,7 +57,7 @@ import { useTheme } from '@/hooks/useTheme'
 import { openTitleEditor, startEditing, useSessionTitle } from '@/hooks/useTitles'
 import { editorLabel } from '@/lib/brief'
 import { canAttachInApp, copyWithToast, sessionAttachCommand, sessionAttachLink } from '@/lib/clipboard'
-import { boardOrder } from '@/lib/groups'
+import { boardOrder, type ViewMode } from '@/lib/groups'
 import { parseMemosLocation } from '@/lib/memos'
 import { notesHref, parseNotesLocation } from '@/lib/notes'
 import { scratchpad } from '@/lib/scratchpad'
@@ -160,7 +160,6 @@ export function DesktopShell() {
   // Esc work the same way.
   const [mode, setMode] = useViewMode()
   const board = mode === 'board'
-  const toggleView = () => setMode(board ? 'list' : 'board')
   const groups = useGroups(board)
   const { columns, moveColumn } = useBoardColumns(board, list.view.sessions, groups.groups, fleet, list.host, list.query)
   // The cursor walks the sessions in on-screen order: the list, or the board column by column.
@@ -205,6 +204,19 @@ export function DesktopShell() {
     },
     [navigate, selectedKey],
   )
+
+  // Board is for the overview: it closes the open session. List is for working through the
+  // top: it opens the first session.
+  const switchView = (v: ViewMode) => {
+    if (v === mode) return
+    setMode(v)
+    if (v === 'board') {
+      if (selectedKey) navigate('/')
+    } else if (list.view.sessions[0]) {
+      openSession(list.view.sessions[0], false)
+    }
+  }
+  const toggleView = () => switchView(board ? 'list' : 'board')
 
   // Focus moves that must wait for the next commit (the sidebar may be collapsed, the
   // cursor row not rendered yet). An effect, not requestAnimationFrame: rAF never fires
@@ -723,7 +735,7 @@ export function DesktopShell() {
               onOpen={(s) => openSession(s, false)}
               onNew={() => setNewOpen(true)}
               view={mode}
-              onView={setMode}
+              onView={switchView}
             />
           </section>
           {pane ? (
@@ -786,7 +798,7 @@ export function DesktopShell() {
             onNew={() => setNewOpen(true)}
             onCollapse={toggleSidebar}
             viewMode={mode}
-            onViewMode={setMode}
+            onViewMode={switchView}
           />
           <div
             role="separator"
