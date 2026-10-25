@@ -26,12 +26,21 @@ const trigger = cn(
   'data-[active=true]:border-primary/50 data-[active=true]:bg-accent data-[active=true]:text-accent-foreground',
 )
 const count = 'ml-auto pl-3 text-[0.6875rem] text-dimmer tabular-nums'
+/** `touch` (the mobile list): finger-sized segments, triggers and menu rows. */
+const TOUCH = {
+  segment: 'h-8 px-3 text-sm',
+  trigger: 'h-10 gap-1.5 px-3 text-sm [&_svg:not([class*=size-])]:size-4',
+  item: 'min-h-11 gap-3 px-3 text-[0.9375rem]',
+}
 
 /**
  * Sessions | Bots (| Apps) toggle, then status and host pickers behind one icon each.
- * `spread`: the pickers sit at the row's right end (the sidebar).
+ * `spread`: the pickers sit at the row's right end. `touch`: phone-sized (the mobile list).
  */
-export function SessionFilters({ list, spread = false }: { list: SessionListState; spread?: boolean }) {
+export function SessionFilters({ list, spread = false, touch = false }: { list: SessionListState; spread?: boolean; touch?: boolean }) {
+  const seg = cn(segment, touch && TOUCH.segment)
+  const trig = cn(trigger, touch && TOUCH.trigger)
+  const item = touch ? TOUCH.item : undefined
   const { fleet, status, setStatus, setHostFilter, hosts, hostNames, host, view, hostCounts } = list
   const counts = fleet ? view.counts : null
   const kind = KINDS.includes(status) ? status : SESSIONS
@@ -56,17 +65,17 @@ export function SessionFilters({ list, spread = false }: { list: SessionListStat
         onValueChange={pickKind}
         aria-label="Sessions or bots"
         spacing={0}
-        className="shrink-0 rounded-lg border border-border bg-card p-0.5"
+        className={cn("shrink-0 rounded-lg border border-border bg-card p-0.5", touch && "p-1")}
       >
-        <ToggleGroupItem value={SESSIONS} className={segment}>
+        <ToggleGroupItem value={SESSIONS} className={seg}>
           Sessions
         </ToggleGroupItem>
-        <ToggleGroupItem value="scheduled" className={segment} title="Sessions started by bots">
+        <ToggleGroupItem value="scheduled" className={seg} title="Sessions started by bots">
           Bots
           {counts?.scheduled ? <span className="text-[0.6875rem] text-dimmer tabular-nums">{counts.scheduled}</span> : null}
         </ToggleGroupItem>
         {kinds.map((f) => (
-          <ToggleGroupItem key={f.id} value={f.id} className={segment} title={f.title}>
+          <ToggleGroupItem key={f.id} value={f.id} className={seg} title={f.title}>
             {f.label}
             <span className="text-[0.6875rem] text-dimmer tabular-nums">{counts?.[f.id] ?? ''}</span>
           </ToggleGroupItem>
@@ -79,12 +88,12 @@ export function SessionFilters({ list, spread = false }: { list: SessionListStat
         <DropdownMenuTrigger asChild disabled={kind !== SESSIONS}>
           <Button
             variant="ghost"
-            className={trigger}
+            className={trig}
             data-active={statusActive}
             aria-label={`Filter by status: ${current?.label ?? 'All'}`}
             title="Filter by status"
           >
-            <ListFilterIcon className="size-3.5" />
+            <ListFilterIcon className={touch ? "size-4" : "size-3.5"} />
             {statusActive && current ? current.label : null}
           </Button>
         </DropdownMenuTrigger>
@@ -92,7 +101,7 @@ export function SessionFilters({ list, spread = false }: { list: SessionListStat
           <DropdownMenuLabel className="text-xs text-dimmer">Status</DropdownMenuLabel>
           <DropdownMenuRadioGroup value={status} onValueChange={(v) => setStatus(v as StatusFilterId)}>
             {statusFilters.map((f) => (
-              <DropdownMenuRadioItem key={f.id} value={f.id}>
+              <DropdownMenuRadioItem key={f.id} value={f.id} className={item}>
                 {f.label}
                 <span className={count}>{counts?.[f.id] ?? ''}</span>
               </DropdownMenuRadioItem>
@@ -106,21 +115,21 @@ export function SessionFilters({ list, spread = false }: { list: SessionListStat
           <DropdownMenuTrigger asChild>
             <Button
               variant="ghost"
-              className={trigger}
+              className={trig}
               data-active={host != null}
               aria-label={`Filter by host: ${host ?? 'All'}`}
               title="Filter by host"
             >
-              {host ? <HostDot host={host} /> : <ServerIcon className="size-3.5" />}
+              {host ? <HostDot host={host} /> : <ServerIcon className={touch ? "size-4" : "size-3.5"} />}
               {host ?? null}
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="min-w-44">
             <DropdownMenuLabel className="text-xs text-dimmer">Host</DropdownMenuLabel>
             <DropdownMenuRadioGroup value={host ?? ALL_HOSTS} onValueChange={setHostFilter}>
-              <DropdownMenuRadioItem value={ALL_HOSTS}>All hosts</DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value={ALL_HOSTS} className={item}>All hosts</DropdownMenuRadioItem>
               {hosts.map((h) => (
-                <DropdownMenuRadioItem key={h.name} value={h.name}>
+                <DropdownMenuRadioItem key={h.name} value={h.name} className={item}>
                   <HostDot host={h.name} />
                   <span className={cn(h.ok === false && 'text-destructive')}>{h.name}</span>
                   <span className={count}>{h.ok === false ? '!' : (hostCounts.get(h.name) ?? 0)}</span>

@@ -199,8 +199,8 @@ src/
   mode (`ThemeProvider forced`, and index.html's pre-paint) without saving it. Moves replace
   history entries. Contract: [docs/architecture.md → Embed view](../../docs/architecture.md#embed-view).
 - **List** (`#/`): all sessions across hosts, status + host filter chips, search, unreachable-host
-  banners, `+` → New session. Mobile: the filter chips (and the Board's regroup line) sit in a
-  drawer under the search field, closed by default — swipe down on the header (not in the
+  banners, `+` → New session. Mobile: the filters — as on desktop, `SessionFilters touch`: Sessions | Bots, then status
+  and host behind one icon each — (and the Board's regroup line) sit in a drawer under the search field, closed by default — swipe down on the header (not in the
   field) or tap the handle to open, swipe up / tap to close; the list itself scrolls as usual.
   While closed, active filters show on the handle ("Needs you · workstation") with ✕ to clear.
   The List | Board toggle stays next to the search field. The header's ⋯ opens every module

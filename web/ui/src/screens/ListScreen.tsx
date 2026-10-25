@@ -6,14 +6,13 @@ import { GroupedList } from '@/components/board/GroupedList'
 import { GroupsStatus } from '@/components/board/GroupsStatus'
 import { ClosedSection } from '@/components/ClosedSection'
 import { DormantSection } from '@/components/DormantSection'
-import { HostDot } from '@/components/HostBadge'
-import { StatusFilterLabel } from '@/components/JobChip'
 import { NewSessionDrawer } from '@/components/NewSessionDrawer'
 import { MemoRecordFab } from '@/components/MemoRecorder'
 import { FocusMenuItem } from '@/components/FocusToggle'
 import { MENU_ITEM, ModuleMenuItems } from '@/components/ModuleNav'
 import { ScreenHeader } from '@/components/ScreenHeader'
 import { SessionListSkeleton } from '@/components/SessionListSkeleton'
+import { SessionFilters } from '@/components/SessionFilters'
 import { SessionRow } from '@/components/SessionRow'
 import { StackGroup } from '@/components/stack/StackGroup'
 import { StatusDot } from '@/components/StatusDot'
@@ -21,25 +20,19 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { ViewToggle } from '@/components/ViewToggle'
 import { useBoardColumns, useGroups, useViewMode } from '@/hooks/useGroups'
 import { useSettings } from '@/hooks/useSettings'
 import { useNow } from '@/hooks/useNow'
 import { ALL_HOSTS, useSessionList } from '@/hooks/useSessionList'
 import { pullIntent } from '@/lib/gestures'
-import { allSessions, stackRuns, visibleStatusFilters, findStatusFilter, type StatusFilterId } from '@/lib/sessions'
+import { allSessions, stackRuns, findStatusFilter } from '@/lib/sessions'
 import { cn } from '@/lib/utils'
-
-const chipClass = cn(
-  'h-9 shrink-0 gap-1.5 rounded-full border border-border bg-card px-3.5 text-sm text-muted-foreground',
-  'data-[state=on]:border-primary/50 data-[state=on]:bg-accent data-[state=on]:text-accent-foreground',
-)
 
 export function ListScreen() {
   const now = useNow(1000)
-  const { fleet, error, query, setQuery, status, setStatus, setHostFilter, hosts, hostNames, host, view, hostCounts, summary, unreachable, note } =
-    useSessionList(now)
+  const list = useSessionList(now)
+  const { fleet, error, query, setQuery, status, setStatus, setHostFilter, host, view, summary, unreachable, note } = list
   const [newOpen, setNewOpen] = useState(false)
   const [, navigate] = useLocation()
   const [mode, setMode] = useViewMode()
@@ -166,43 +159,9 @@ export function ListScreen() {
           inert={!filtersOpen}
         >
         <div className="min-h-0 overflow-hidden">
-        <ToggleGroup
-          type="single"
-          value={status}
-          onValueChange={(v) => v && setStatus(v as StatusFilterId)}
-          aria-label="Filter by status"
-          className="no-scrollbar mt-2 w-full overflow-x-auto"
-        >
-          {visibleStatusFilters(fleet ? view.counts : null, status).map((f) => (
-            <ToggleGroupItem key={f.id} value={f.id} className={chipClass} title={f.title}>
-              <StatusFilterLabel filter={f} />
-              <span className="text-xs text-dimmer tabular-nums group-data-[state=on]/toggle:text-accent-foreground/70">
-                {fleet ? view.counts[f.id] : ''}
-              </span>
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
-
-        {hostNames.length > 1 ? (
-          <ToggleGroup
-            type="single"
-            value={host ?? ALL_HOSTS}
-            onValueChange={(v) => v && setHostFilter(v)}
-            aria-label="Filter by host"
-            className="no-scrollbar mt-2 w-full overflow-x-auto"
-          >
-            <ToggleGroupItem value={ALL_HOSTS} className={cn(chipClass, 'h-8 text-[0.8125rem]')}>
-              All
-            </ToggleGroupItem>
-            {hosts.map((h) => (
-              <ToggleGroupItem key={h.name} value={h.name} className={cn(chipClass, 'h-8 text-[0.8125rem]')}>
-                <HostDot host={h.name} />
-                <span className={cn(h.ok === false && 'text-destructive')}>{h.name}</span>
-                <span className="text-xs text-dimmer tabular-nums">{h.ok === false ? '!' : (hostCounts.get(h.name) ?? 0)}</span>
-              </ToggleGroupItem>
-            ))}
-          </ToggleGroup>
-        ) : null}
+        <div className="mt-2">
+          <SessionFilters list={list} spread touch />
+        </div>
 
         {board ? <GroupsStatus state={groups} now={now} size="lg" className="mt-1 -mb-1 justify-between" /> : null}
         </div>
