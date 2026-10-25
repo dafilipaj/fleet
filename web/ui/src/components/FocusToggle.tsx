@@ -34,13 +34,13 @@ export function FocusToggle({ size = 'icon', className }: { size?: 'icon' | 'ico
 }
 
 /** The same as a menu item (the mobile ⋯ menu). */
-export function FocusMenuItem() {
+export function FocusMenuItem({ className }: { className?: string }) {
   const focus = useFocus()
   const now = useNow(30 * 1000)
   if (!focus.host) return null
   const remaining = focusLeft(focus, now)
   return (
-    <DropdownMenuItem disabled={focus.busy} onSelect={() => void toggleFocus(focus)}>
+    <DropdownMenuItem disabled={focus.busy} onSelect={() => void toggleFocus(focus)} className={className}>
       <MoonIcon className={cn(remaining && 'fill-current text-primary')} />
       {remaining ? `Focus on · ${remaining}` : 'Focus mode'}
     </DropdownMenuItem>

@@ -1,5 +1,5 @@
 import { useRef, useState, type TouchEvent } from 'react'
-import { EllipsisIcon, MicIcon, PlusIcon, SearchIcon, TriangleAlertIcon, XIcon, GitPullRequestIcon } from 'lucide-react'
+import { EllipsisIcon, MicIcon, PlusIcon, SearchIcon, TriangleAlertIcon, XIcon } from 'lucide-react'
 import { useLocation } from 'wouter'
 
 import { GroupedList } from '@/components/board/GroupedList'
@@ -11,7 +11,7 @@ import { StatusFilterLabel } from '@/components/JobChip'
 import { NewSessionDrawer } from '@/components/NewSessionDrawer'
 import { MemoRecordFab } from '@/components/MemoRecorder'
 import { FocusMenuItem } from '@/components/FocusToggle'
-import { ModuleMenuItems } from '@/components/ModuleNav'
+import { MENU_ITEM, ModuleMenuItems } from '@/components/ModuleNav'
 import { ScreenHeader } from '@/components/ScreenHeader'
 import { SessionListSkeleton } from '@/components/SessionListSkeleton'
 import { SessionRow } from '@/components/SessionRow'
@@ -19,7 +19,7 @@ import { StackGroup } from '@/components/stack/StackGroup'
 import { StatusDot } from '@/components/StatusDot'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { ViewToggle } from '@/components/ViewToggle'
@@ -108,11 +108,6 @@ export function ListScreen() {
               </a>
             </Button>
           ) : null}
-          <Button asChild variant="ghost" size="icon" className="-my-1 size-8 shrink-0 rounded-full min-[400px]:size-9 sm:size-10 text-muted-foreground [&_svg:not([class*='size-'])]:size-5">
-            <a href="#/prs" aria-label="Pull requests" title="Pull requests">
-              <GitPullRequestIcon />
-            </a>
-          </Button>
           {/* The rest of the screens sit behind one button: the header row is narrow on a phone. */}
           <DropdownMenu modal={false}>
             <DropdownMenuTrigger asChild>
@@ -126,10 +121,12 @@ export function ListScreen() {
                 <EllipsisIcon />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-48">
-              {/* Pull requests stay in the header, the operator is the mic button. */}
-              <ModuleMenuItems exclude={['prs', 'operator']} />
-              <FocusMenuItem />
+            <DropdownMenuContent align="end" className="w-60 p-1.5">
+              {/* The modules (the operator is the mic button), then the helpers set apart. */}
+              <ModuleMenuItems group="work" exclude={['operator']} />
+              <DropdownMenuSeparator className="my-1.5" />
+              <FocusMenuItem className={MENU_ITEM} />
+              <ModuleMenuItems group="utility" />
             </DropdownMenuContent>
           </DropdownMenu>
         </div>

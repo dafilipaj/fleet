@@ -203,7 +203,9 @@ src/
   drawer under the search field, closed by default — swipe down on the header (not in the
   field) or tap the handle to open, swipe up / tap to close; the list itself scrolls as usual.
   While closed, active filters show on the handle ("Needs you · workstation") with ✕ to clear.
-  The List | Board toggle stays next to the search field.
+  The List | Board toggle stays next to the search field. The header's ⋯ opens every module
+  (Inbox, Pull requests, Tasks, …, Bots; finger-sized rows), then Focus, Usage limits, Settings
+  below a separator.
 - **Bot sessions**: a session a bot started (`origin` on its row) wears a bot chip
   (bot icon + bot name; the run id in a tooltip) on list rows and board cards. **Apps** does the
   same for sessions an app's embedded panel started (`embed`: app icon + app name, the Apps
@@ -395,7 +397,7 @@ src/
 - **⋯ → Details** (drawer, the same content as the desktop details column): name, host · cwd,
   context, ⏻ Close session top right (two taps within 5s, the second shows "Tap to close" →
   `api.kill`, back to the list, row dropped optimistically); then one row of action buttons (labels drop when the row is under 15rem) —
-  Review (desktop column; mobile has it in the header), New (session from here), Link (to a
+  Review (the diff reviewer; the session header has no Review or Scratchpad button), New (session from here), Link (to a
   stack), Attach (iTerm link, else copies the attach command); the **brief** (below); session
   details (stack, tmux, backend, pid, id).
 - **Brief** (top of Details; web/ARCHITECTURE.md → Session briefs): "updated 3m ago · edited",

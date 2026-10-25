@@ -3,7 +3,6 @@ import {
   ChevronLeftIcon,
   CircleAlertIcon,
   EllipsisIcon,
-  FileDiffIcon,
   WifiOffIcon,
   XIcon,
 } from 'lucide-react'
@@ -28,7 +27,6 @@ import { FilePreview } from '@/components/session/FilePreview'
 import { OutboxBubbles } from '@/components/session/OutboxBubbles'
 import type { QuestionActions } from '@/components/session/QuestionCard'
 import { DetailsDrawer, DetailsPanel, type DetailsPanelProps } from '@/components/session/DetailsPanel'
-import { ScratchpadButton } from '@/components/Scratchpad'
 import { Button } from '@/components/ui/button'
 import { useFileDrop } from '@/hooks/useAttach'
 import { useBrief } from '@/hooks/useBrief'
@@ -82,7 +80,7 @@ export interface SessionScreenProps {
   autoFocusComposer?: boolean
   /**
    * Shown beside the diff reviewer (pane) or inside another app (the embed view, screen): no
-   * Review / Details / Scratchpad buttons, no stack bar.
+   * Review / Details actions, no stack bar.
    */
   embedded?: boolean
   /** Screen only: Back (and after closing the session) goes here instead of the history / the list. */
@@ -431,7 +429,7 @@ export function SessionScreen({
     session,
     brief: { host, brief, fileLinks },
     onNewFromHere: session ? newFromHere : undefined,
-    onReview: session?.cwd && detailsW > 0 ? () => navigate(reviewHref(host, id)) : undefined,
+    onReview: session?.cwd && !embedded ? () => navigate(reviewHref(host, id)) : undefined,
     stack: embedded ? null : stackMenu,
     onClosed: () => {
       // Drop it from the list now and keep stale polls from bringing it back.
@@ -496,21 +494,7 @@ export function SessionScreen({
               </span>
             </div>
           </div>
-          {session?.cwd && !embedded && detailsW === 0 ? (
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label="Review changes"
-              title="Review changes (diff)"
-              onClick={() => navigate(reviewHref(host, id))}
-              className="size-11 shrink-0 rounded-xl text-muted-foreground"
-            >
-              <FileDiffIcon className="size-5" />
-            </Button>
-          ) : null}
           {detailsW > 0 ? null : (
-            <>
-            {embedded ? null : <ScratchpadButton className="size-11 shrink-0 rounded-xl text-muted-foreground [&_svg:not([class*='size-'])]:size-5" />}
             <Button
               variant="ghost"
               size="icon"
@@ -521,7 +505,6 @@ export function SessionScreen({
             >
               <EllipsisIcon className="size-5" />
             </Button>
-            </>
           )}
           {pane && onClose ? (
             <Button variant="ghost" size="icon" aria-label="Close session" title="Close (Esc)" onClick={onClose} className="size-11 shrink-0 rounded-xl">

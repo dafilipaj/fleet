@@ -35,7 +35,7 @@ export interface DetailsPanelProps {
   brief: Omit<BriefSectionProps, 'desktop' | 'cancelEditRef'>
   /** "New session from here…": the form with Hand off / Sibling (absent: no session row yet). */
   onNewFromHere?: () => void
-  /** "Review changes": the diff reviewer (desktop panel; on mobile it is a header button). */
+  /** "Review changes": the diff reviewer (the action row, desktop column and mobile drawer). */
   onReview?: () => void
   /** Session stacks: the label and the StackBrief sheet (when in one), and "Link…" (put another live session in it). */
   stack?: { label: string | null; onOpen?: () => void; onLink: () => void } | null
