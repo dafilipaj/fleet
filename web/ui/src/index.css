@@ -132,7 +132,7 @@
 }
 
 /* Palettes (Settings → Theme, lib/palettes.ts): `data-palette` on <html>, orthogonal to light/dark.
-   No attribute = the default tokens above. Each palette overrides every token for both modes:
+   No attribute = the base tokens above (Graphite; the default palette is Suite). Each palette overrides every token for both modes:
    light is `:root[data-palette=…]` (0,2,0 — it beats plain `.dark`, which is why the palette's
    dark variant is `:root[data-palette=…].dark`, 0,3,0). Keep lib/palettes.ts THEME_COLORS / swatches in
    sync (palettes.test.ts checks them against this file). The Suite palette's blocks are generated

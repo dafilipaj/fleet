@@ -1,14 +1,17 @@
 // Colour palettes (Settings → Theme) — orthogonal to the light/dark mode (useTheme). A palette is
-// `data-palette` on <html> (none = Default); its tokens live in index.css, one block per mode
+// `data-palette` on <html> (none = Graphite, the base tokens); its tokens live in index.css, one block per mode
 // (Suite's in the generated suite/palette-suite.css).
 // Pure helpers, unit-tested in palettes.test.ts (which also checks these hexes against index.css
 // and the index.html pre-paint script).
 
-export type PaletteId = 'default' | 'earth' | 'dusk' | 'suite'
+export type PaletteId = 'suite' | 'graphite' | 'earth' | 'dusk'
 export type PaletteMode = 'light' | 'dark'
 
 export const PALETTE_KEY = 'fleet.palette'
-export const DEFAULT_PALETTE: PaletteId = 'default'
+/** What a viewer gets until they pick one (not stored). */
+export const DEFAULT_PALETTE: PaletteId = 'suite'
+/** The palette of index.css's base tokens: no `data-palette` attribute. */
+export const BASE_PALETTE: PaletteId = 'graphite'
 
 /** The three tokens a picker swatch previews: page, card, primary. `background` is also the
  *  PWA status-bar colour (meta theme-color). */
@@ -27,8 +30,17 @@ export interface Palette {
 
 export const PALETTES: readonly Palette[] = [
   {
-    id: 'default',
-    label: 'Default',
+    id: 'suite',
+    label: 'Suite',
+    hint: 'Shared app-suite neutrals, terracotta accent',
+    swatch: {
+      light: { background: '#fbfbfa', card: '#f1f0ec', primary: '#a14a2a' },
+      dark: { background: '#17181a', card: '#1e2022', primary: '#e39a6f' },
+    },
+  },
+  {
+    id: 'graphite',
+    label: 'Graphite',
     hint: 'Neutral grey, blue accent',
     swatch: {
       light: { background: '#ffffff', card: '#f5f6f8', primary: '#2563eb' },
@@ -53,18 +65,9 @@ export const PALETTES: readonly Palette[] = [
       dark: { background: '#121119', card: '#1a1823', primary: '#b3a0ff' },
     },
   },
-  {
-    id: 'suite',
-    label: 'Suite',
-    hint: 'Shared app-suite neutrals, terracotta accent',
-    swatch: {
-      light: { background: '#fbfbfa', card: '#f1f0ec', primary: '#a14a2a' },
-      dark: { background: '#17181a', card: '#1e2022', primary: '#e39a6f' },
-    },
-  },
 ]
 
-/** A stored `fleet.palette` value → a known palette (anything else → Default). */
+/** A stored `fleet.palette` value → a known palette (anything else → the default, Suite). */
 export function parsePalette(v: string | null | undefined): PaletteId {
   return PALETTES.some((p) => p.id === v) ? (v as PaletteId) : DEFAULT_PALETTE
 }

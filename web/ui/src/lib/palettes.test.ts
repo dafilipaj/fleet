@@ -4,21 +4,22 @@ import { expect, test } from 'vitest'
 
 import { PALETTES, parsePalette, themeColor, type PaletteMode } from './palettes'
 
-test('parsePalette: known ids pass, anything else is Default', () => {
+test('parsePalette: known ids pass, anything else is the default (Suite)', () => {
   expect(parsePalette('earth')).toBe('earth')
   expect(parsePalette('dusk')).toBe('dusk')
+  expect(parsePalette('graphite')).toBe('graphite')
   expect(parsePalette('suite')).toBe('suite')
-  expect(parsePalette('default')).toBe('default')
-  expect(parsePalette(null)).toBe('default')
-  expect(parsePalette(undefined)).toBe('default')
-  expect(parsePalette('')).toBe('default')
-  expect(parsePalette('Earth')).toBe('default')
-  expect(parsePalette('toString')).toBe('default')
+  expect(parsePalette('default')).toBe('suite')
+  expect(parsePalette(null)).toBe('suite')
+  expect(parsePalette(undefined)).toBe('suite')
+  expect(parsePalette('')).toBe('suite')
+  expect(parsePalette('Earth')).toBe('suite')
+  expect(parsePalette('toString')).toBe('suite')
 })
 
 test('themeColor: the palette background per mode', () => {
-  expect(themeColor('default', 'dark')).toBe('#0b0c0e')
-  expect(themeColor('default', 'light')).toBe('#ffffff')
+  expect(themeColor('graphite', 'dark')).toBe('#0b0c0e')
+  expect(themeColor('graphite', 'light')).toBe('#ffffff')
   expect(themeColor('earth', 'light')).toBe('#f7f2ea')
   expect(themeColor('dusk', 'dark')).toBe('#121119')
   expect(themeColor('suite', 'light')).toBe('#fbfbfa')
@@ -32,7 +33,7 @@ const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8')
 
 /** The token block for a palette + mode in index.css. */
 function block(id: string, mode: PaletteMode): string {
-  const sel = id === 'default' ? (mode === 'dark' ? '.dark' : ':root') : `:root[data-palette="${id}"]${mode === 'dark' ? '.dark' : ''}`
+  const sel = id === 'graphite' ? (mode === 'dark' ? '.dark' : ':root') : `:root[data-palette="${id}"]${mode === 'dark' ? '.dark' : ''}`
   const start = css.indexOf(`\n${sel} {`)
   expect(start, sel).toBeGreaterThan(-1)
   return css.slice(start, css.indexOf('}', start))
@@ -50,12 +51,12 @@ test('swatches match the index.css tokens', () => {
   }
 })
 
-test('every non-default palette overrides every default token, in both modes', () => {
+test('every other palette overrides every base (Graphite) token, in both modes', () => {
   const names = (b: string) => [...b.matchAll(/--([a-z0-9-]+):/g)].map((m) => m[1]).filter((n) => n !== 'radius')
-  const light = names(block('default', 'light'))
-  const dark = names(block('default', 'dark'))
+  const light = names(block('graphite', 'light'))
+  const dark = names(block('graphite', 'dark'))
   expect(light.sort()).toEqual(dark.sort())
-  for (const p of PALETTES.filter((x) => x.id !== 'default')) {
+  for (const p of PALETTES.filter((x) => x.id !== 'graphite')) {
     expect(names(block(p.id, 'light')).sort(), p.id).toEqual(light)
     expect(names(block(p.id, 'dark')).sort(), p.id).toEqual(light)
   }

@@ -25,10 +25,10 @@
         if (forced) t = forced[1]
         var light = t === 'light' || (t !== 'dark' && matchMedia('(prefers-color-scheme: light)').matches)
         var p = localStorage.getItem('fleet.palette')
-        var colors = { default: ['#0b0c0e', '#ffffff'], earth: ['#1a1512', '#f7f2ea'], dusk: ['#121119', '#faf9fc'], suite: ['#17181a', '#fbfbfa'] }
-        if (!colors.hasOwnProperty(p)) p = 'default'
+        var colors = { suite: ['#17181a', '#fbfbfa'], graphite: ['#0b0c0e', '#ffffff'], earth: ['#1a1512', '#f7f2ea'], dusk: ['#121119', '#faf9fc'] }
+        if (!colors.hasOwnProperty(p)) p = 'suite'
         if (light) document.documentElement.classList.remove('dark')
-        if (p !== 'default') document.documentElement.dataset.palette = p
+        if (p !== 'graphite') document.documentElement.dataset.palette = p
         document.querySelector('meta[name="theme-color"]').setAttribute('content', colors[p][light ? 1 : 0])
       } catch (e) {}
       // Pre-paint text size (same rule as PrefsProvider / lib/prefs.ts rootFontSize): scales every rem.

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react'
 
 import { THEME_KEY, ThemeContext, resolveTheme, type ResolvedTheme, type ThemeChoice } from '@/hooks/useTheme'
-import { DEFAULT_PALETTE, PALETTE_KEY, parsePalette, themeColor, type PaletteId } from '@/lib/palettes'
+import { BASE_PALETTE, DEFAULT_PALETTE, PALETTE_KEY, parsePalette, themeColor, type PaletteId } from '@/lib/palettes'
 import { storage } from '@/lib/storage'
 
 const LIGHT_QUERY = '(prefers-color-scheme: light)'
@@ -20,7 +20,7 @@ function readChoice(): ThemeChoice {
 
 /**
  * Toggles the `dark` class on <html> (shadcn's convention) and sets `data-palette` (none for
- * Default). index.html sets both before first paint with the same rules, so there is no flash.
+ * Graphite, the base tokens). index.html sets both before first paint with the same rules, so there is no flash.
  */
 export function ThemeProvider({ children, forced }: { children: ReactNode; forced?: ResolvedTheme | null }) {
   const [theme, setThemeState] = useState<ThemeChoice>(readChoice)
@@ -33,7 +33,7 @@ export function ThemeProvider({ children, forced }: { children: ReactNode; force
     const root = document.documentElement
     root.classList.toggle('dark', resolved === 'dark')
     root.style.colorScheme = resolved
-    if (palette === DEFAULT_PALETTE) delete root.dataset.palette
+    if (palette === BASE_PALETTE) delete root.dataset.palette
     else root.dataset.palette = palette
     // The PWA status bar / overscroll colour: the palette's --background.
     document.querySelector('meta[name="theme-color"]')?.setAttribute('content', themeColor(palette, resolved))

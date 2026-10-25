@@ -74,7 +74,7 @@ src/
   lib/spawnDirs.ts    Settings → Start directories: the editable draft (DraftRow), fromDraft()/toDraft(), sameList(),
                       validateDraft() (mirrors lib/spawn-dirs.mjs), moveRow(), hostPathErrors()/checksByPath() (a
                       host's answer → its column), baseHost(), divergedHosts(), withOffered()
-  lib/palettes.ts     colour palettes (Settings → Theme: Default / Earth / Dusk / Suite, `data-palette` on <html>, tokens
+  lib/palettes.ts     colour palettes (Settings → Theme: Suite (default) / Graphite / Earth / Dusk, `data-palette` on <html>, tokens
                       in index.css; Suite's in the generated `suite/palette-suite.css`): PALETTES (picker swatches),
                       parsePalette(), themeColor() (meta theme-color per mode)
   suite/              generated, do not edit: `palette-suite.css`, the opt-in **Suite** palette (warm neutrals and a
