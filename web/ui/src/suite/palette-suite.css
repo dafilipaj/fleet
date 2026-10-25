@@ -13,8 +13,8 @@
   --secondary: #f1f0ec;
   --secondary-foreground: #1c1c1a;
   --muted: #f1f0ec;
-  --muted-foreground: #6f6f68;
-  --dimmer: #9a9a92;
+  --muted-foreground: #5c5c55;
+  --dimmer: #74746d;
   --accent: #f1dccb;
   --accent-foreground: #1c1c1a;
   --destructive: #a63d33;
@@ -23,10 +23,10 @@
   --ring: #a14a2a;
   --terminal: #f1f0ec;
 
-  --status-waiting: #a86b00;
+  --status-waiting: #976000;
   --status-busy: #1f7a4d;
-  --status-idle: #6f6f68;
-  --status-unknown: #9a9a92;
+  --status-idle: #5c5c55;
+  --status-unknown: #74746d;
   --status-error: #a63d33;
 
   --host-0: #6d4fc9;
@@ -47,8 +47,8 @@
   --secondary: #26282b;
   --secondary-foreground: #e9e8e4;
   --muted: #26282b;
-  --muted-foreground: #9d9d97;
-  --dimmer: #75756f;
+  --muted-foreground: #aaaaa5;
+  --dimmer: #8a8a84;
   --accent: #3b2b21;
   --accent-foreground: #e9e8e4;
   --destructive: #e08a7e;
@@ -59,8 +59,8 @@
 
   --status-waiting: #e0b04e;
   --status-busy: #6dc08c;
-  --status-idle: #9d9d97;
-  --status-unknown: #75756f;
+  --status-idle: #aaaaa5;
+  --status-unknown: #8a8a84;
   --status-error: #e08a7e;
 
   --host-0: #c9b6ff;
