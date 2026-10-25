@@ -346,6 +346,8 @@ fn build_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
             } else {
                 &title
             });
+            // A new title lays the title bar out again (see `shell::place_traffic_lights`).
+            place_traffic_lights(&w);
         })
         .on_download(move |_, ev| {
             let st = dl.state::<State>();
@@ -408,6 +410,16 @@ fn sync_shell(w: &WebviewWindow, force: bool) {
     if force || last != fs {
         let _ = w.eval(shell::script(fs, st.profile.is_fleet()));
     }
+}
+
+/// Put the traffic lights back where the overlay chrome wants them (overlay windows only).
+fn place_traffic_lights(w: &WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    if w.state::<State>().profile.overlay() {
+        shell::place_traffic_lights(w);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = w;
 }
 
 /// Window dragging for the page's top bar (`data-tauri-drag-region`): Tauri's
@@ -503,6 +515,15 @@ fn main() {
                 WindowEvent::Resized(_) => {
                     if let Some(wv) = w.app_handle().get_webview_window(w.label()) {
                         sync_shell(&wv, false);
+                        place_traffic_lights(&wv);
+                    }
+                }
+                // AppKit may lay the title bar out again on these (see `shell`).
+                WindowEvent::Focused(_)
+                | WindowEvent::ThemeChanged(_)
+                | WindowEvent::ScaleFactorChanged { .. } => {
+                    if let Some(wv) = w.app_handle().get_webview_window(w.label()) {
+                        place_traffic_lights(&wv);
                     }
                 }
                 _ => {}
