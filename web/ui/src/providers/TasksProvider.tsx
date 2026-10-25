@@ -3,7 +3,6 @@ import { useCallback, useMemo, useState, type ReactNode } from 'react'
 import { ApiError, api, isAbortError } from '@/api/client'
 import type { Task, TasksResponse } from '@/api/types'
 import { useFleet } from '@/hooks/useFleet'
-import { usePersistentState } from '@/hooks/usePersistentState'
 import { usePoller } from '@/hooks/usePoller'
 import { usePrs } from '@/hooks/usePrs'
 import { TasksContext, type TasksState } from '@/hooks/useTasks'
@@ -17,15 +16,14 @@ const UNCONFIGURED_RE = /productive api token|tasks\.(token|organization)/i
 
 /**
  * Your open Productive tasks, as one host's token sees them, polled app-wide so session rows
- * and PR cards can show the task they work on. Default host: the one this UI is served from;
- * the choice is remembered. Inside PrsProvider: sessions link to tasks through their PRs too.
+ * and PR cards can show the task they work on. The host: the one this UI is served from (every
+ * host is the same you in Productive). Inside PrsProvider: sessions link to tasks through their PRs too.
  */
 export function TasksProvider({ children }: { children: ReactNode }) {
   const { fleet } = useFleet()
   const prs = usePrs()
   const hosts = useMemo(() => (fleet?.hosts ?? []).filter((h) => h.ok).map((h) => h.name), [fleet])
-  const [picked, setHost] = usePersistentState<string>('fleet.tasksHost', '')
-  const host = hosts.includes(picked) ? picked : (fleet?.self ?? hosts[0] ?? null)
+  const host = fleet?.self && hosts.includes(fleet.self) ? fleet.self : (hosts[0] ?? null)
 
   // Last answer and failure per host (switching back paints at once; null error = ok).
   const [answers, setAnswers] = useState<Record<string, TasksResponse>>({})
@@ -85,8 +83,8 @@ export function TasksProvider({ children }: { children: ReactNode }) {
     [data, prs.data, prs.links, fleet],
   )
   const value = useMemo<TasksState>(
-    () => ({ hosts, host, setHost, data, error, unconfigured, loading, refresh, refreshing, reload, setStatus, links }),
-    [hosts, host, setHost, data, error, unconfigured, loading, refresh, refreshing, reload, setStatus, links],
+    () => ({ host, data, error, unconfigured, loading, refresh, refreshing, reload, setStatus, links }),
+    [host, data, error, unconfigured, loading, refresh, refreshing, reload, setStatus, links],
   )
   return <TasksContext.Provider value={value}>{children}</TasksContext.Provider>
 }

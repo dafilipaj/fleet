@@ -4,11 +4,8 @@ import type { PullRequest, Session, Task, TasksResponse } from '@/api/types'
 import type { TaskLinks } from '@/lib/tasks'
 
 export interface TasksState {
-  /** Reachable hosts (the picker). */
-  hosts: string[]
   /** Whose Productive token the tasks come from (default: this UI's server). */
   host: string | null
-  setHost: (h: string) => void
   data: TasksResponse | null
   error: string | null
   /** The host has no Productive token / organization configured (the error says which). */
@@ -25,9 +22,7 @@ export interface TasksState {
 }
 
 const EMPTY: TasksState = {
-  hosts: [],
   host: null,
-  setHost: () => {},
   data: null,
   error: null,
   unconfigured: false,

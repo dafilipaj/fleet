@@ -4,11 +4,8 @@ import type { PrsResponse, PullRequest, Session } from '@/api/types'
 import type { PrLinks } from '@/lib/prs'
 
 export interface PrsState {
-  /** Reachable hosts (the picker). */
-  hosts: string[]
   /** Whose `gh` login and checkouts the PRs come from (default: this UI's server). */
   host: string | null
-  setHost: (h: string) => void
   data: PrsResponse | null
   error: string | null
   loading: boolean
@@ -23,9 +20,7 @@ export interface PrsState {
 }
 
 const EMPTY: PrsState = {
-  hosts: [],
   host: null,
-  setHost: () => {},
   data: null,
   error: null,
   loading: false,

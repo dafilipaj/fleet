@@ -3,7 +3,6 @@ import { ChevronLeftIcon, ListChecksIcon, MoonIcon, RefreshCwIcon, SearchIcon, S
 import { useLocation } from 'wouter'
 
 import type { PullRequest, Session, Task } from '@/api/types'
-import { HostDot } from '@/components/HostBadge'
 import { ChecksIcon, PrSessionLink } from '@/components/PrChip'
 import { ScreenHeader } from '@/components/ScreenHeader'
 import { TaskDialog } from '@/components/TaskDialog'
@@ -27,7 +26,7 @@ import { cn } from '@/lib/utils'
 export function TasksScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane' }) {
   const pane = layout === 'pane'
   const [location, navigate] = useLocation()
-  const { hosts, host, setHost, data, error, unconfigured, loading, refresh, refreshing, reload, setStatus, links } = useTasks()
+  const { host, data, error, unconfigured, loading, refresh, refreshing, reload, setStatus, links } = useTasks()
   // `#/tasks/<id>`: that task's dialog is open (session task chips link here).
   const sel = parseTaskLocation(location)
   const setOpen = (t: Task) => navigate(taskHref(t))
@@ -68,18 +67,6 @@ export function TasksScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane' 
       <RefreshCwIcon className={cn('size-5', refreshing && 'animate-spin')} />
     </Button>
   )
-
-  const hostPicker =
-    hosts.length > 1 ? (
-      <div role="radiogroup" aria-label="Host" title="Whose Productive token to use (and where sessions start)" className="no-scrollbar flex gap-1 overflow-x-auto">
-        {hosts.map((h) => (
-          <button key={h} type="button" role="radio" aria-checked={h === host} onClick={() => setHost(h)} className={pill(h === host)}>
-            <HostDot host={h} />
-            {h}
-          </button>
-        ))}
-      </div>
-    ) : null
 
   const filter = (
     <div className="relative w-full">
@@ -204,7 +191,6 @@ export function TasksScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane' 
           <h1 className="flex shrink-0 items-center gap-1.5 text-[0.9375rem] font-bold">
             <SquareCheckBigIcon className="size-4 text-muted-foreground" /> Tasks
           </h1>
-          {hostPicker}
           <div className="mx-2 flex max-w-md min-w-0 flex-1">{filter}</div>
           {projectPicker}
           {idleToggle}
@@ -238,7 +224,6 @@ export function TasksScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane' 
           {refreshButton}
         </div>
         <div className="mt-2 space-y-2">
-          {hostPicker}
           <div className="flex items-center gap-2">
             {filter}
             {idleToggle}
