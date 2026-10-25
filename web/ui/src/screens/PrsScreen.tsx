@@ -32,7 +32,7 @@ import { cn } from '@/lib/utils'
 /**
  * `#/prs`: the GitHub pull requests that need you (`fleet prs` on one host), by column —
  * unseen @mentions of you, waiting on you, yours in review / ready / drafts, waiting on their author. `pane` = the
- * desktop layout (a board over the whole window, like the notes explorer); `screen` = mobile
+ * desktop layout (a board in the pane beside the session list); `screen` = mobile
  * (the columns stacked, swipe back).
  */
 export function PrsScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane' }) {

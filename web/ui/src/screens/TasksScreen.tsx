@@ -21,8 +21,8 @@ import { cn } from '@/lib/utils'
 
 /**
  * `#/tasks`: your open Productive tasks (`fleet tasks` on one host), by column — due soon or
- * overdue, in progress, to do. `pane` = the desktop layout (a board over the whole window, like
- * the pull requests); `screen` = mobile (the columns stacked, swipe back).
+ * overdue, in progress, to do. `pane` = the desktop layout (a board in the pane beside the session
+ * list, like the pull requests); `screen` = mobile (the columns stacked, swipe back).
  */
 export function TasksScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane' }) {
   const pane = layout === 'pane'

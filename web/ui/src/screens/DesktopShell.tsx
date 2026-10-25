@@ -127,7 +127,7 @@ export function DesktopShell() {
   const [operatorOpen] = useRoute('/operator')
   const memosOpen = parseMemosLocation(location) !== null
   const settings = useSettings()
-  // `#/prs`: the pull requests board takes the whole window too.
+  // `#/prs`: the pull requests board, in the pane.
   const prsOpen = isPrsLocation(location)
   // `#/tasks`: the tasks board too.
   const tasksOpen = isTasksLocation(location)
@@ -288,8 +288,6 @@ export function DesktopShell() {
     // The session list isn't on screen in the notes explorer: its keys do nothing there.
     if (notesOpen && !['search', 'new', 'back', 'blur', 'palette', 'help', 'notes', 'scratchpad'].includes(action)) return false
     if (reviewOpen && !['new', 'back', 'blur', 'palette', 'help', 'notes', 'scratchpad'].includes(action)) return false
-    if (prsOpen && !['new', 'back', 'blur', 'palette', 'help', 'notes', 'scratchpad', 'tasks'].includes(action)) return false
-    if (tasksOpen && !['new', 'back', 'blur', 'palette', 'help', 'notes', 'scratchpad', 'prs'].includes(action)) return false
     switch (action) {
       case 'next':
         moveCursor(1)
@@ -688,6 +686,10 @@ export function DesktopShell() {
     <OperatorScreen layout="pane" />
   ) : memosOpen ? (
     <MemosScreen layout="pane" />
+  ) : prsOpen ? (
+    <PrsScreen layout="pane" />
+  ) : tasksOpen ? (
+    <TasksScreen layout="pane" />
   ) : null
 
   return (
@@ -695,14 +697,6 @@ export function DesktopShell() {
       {notesOpen ? (
         <main className="flex min-h-0 min-w-0 flex-1">
           <NotesScreen layout="pane" searchRef={notesSearchRef} />
-        </main>
-      ) : prsOpen ? (
-        <main className="flex min-h-0 min-w-0 flex-1">
-          <PrsScreen layout="pane" />
-        </main>
-      ) : tasksOpen ? (
-        <main className="flex min-h-0 min-w-0 flex-1">
-          <TasksScreen layout="pane" />
         </main>
       ) : reviewOpen ? (
         <main className="flex min-h-0 min-w-0 flex-1">
