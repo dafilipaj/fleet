@@ -39,7 +39,8 @@ import type { Session } from '@/api/types'
 import { Board } from '@/components/board/Board'
 import { CommandPalette, type PaletteAction } from '@/components/desktop/CommandPalette'
 import { ShortcutsDialog } from '@/components/desktop/ShortcutsDialog'
-import { Sidebar, SidebarRail } from '@/components/desktop/Sidebar'
+import { Sidebar } from '@/components/desktop/Sidebar'
+import { TopBar } from '@/components/desktop/TopBar'
 import { NewSessionDialog } from '@/components/NewSessionDrawer'
 import { StatusDot } from '@/components/StatusDot'
 import { Kbd } from '@/components/ui/kbd'
@@ -238,7 +239,6 @@ export function DesktopShell() {
       notesSearchRef.current?.select()
       return
     }
-    if (!sidebarOpen && !board) setSidebarRaw('1')
     setFocusReq((r) => ({ to: 'search', n: (r?.n ?? 0) + 1 }))
   }
 
@@ -702,150 +702,150 @@ export function DesktopShell() {
   ) : null
 
   return (
-    <div className="flex h-dvh overflow-hidden bg-background text-foreground">
+    <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
       {notesOpen ? (
-        <main className="flex min-w-0 flex-1">
+        <main className="flex min-h-0 min-w-0 flex-1">
           <NotesScreen layout="pane" searchRef={notesSearchRef} />
         </main>
       ) : prsOpen ? (
-        <main className="flex min-w-0 flex-1">
+        <main className="flex min-h-0 min-w-0 flex-1">
           <PrsScreen layout="pane" />
         </main>
       ) : tasksOpen ? (
-        <main className="flex min-w-0 flex-1">
+        <main className="flex min-h-0 min-w-0 flex-1">
           <TasksScreen layout="pane" />
         </main>
       ) : reviewOpen ? (
-        <main className="flex min-w-0 flex-1">
+        <main className="flex min-h-0 min-w-0 flex-1">
           <ReviewScreen layout="pane" />
         </main>
-      ) : board ? (
-        <div ref={boardAreaRef} className="relative flex min-w-0 flex-1">
-          <section aria-label="Session board" className="flex min-w-0 flex-1">
-            <Board
-              list={list}
-              groups={groups}
-              columns={columns}
-              onMoveColumn={moveColumn}
-              now={now}
-              cursorKey={cursorKey}
-              selectedKey={selectedKey}
-              overlayInset={pane ? flyoutW : 0}
-              searchRef={searchRef}
-              onSearchNav={onSearchNav}
-              onOpen={(s) => openSession(s, false)}
-              onNew={() => setNewOpen(true)}
-              view={mode}
-              onView={switchView}
-            />
-          </section>
-          {pane ? (
-            // Non-modal: no backdrop, the board stays scrollable and clickable (a card switches the session).
-            <main
-              className={cn(
-                'absolute inset-y-0 right-0 z-20 flex border-l bg-background shadow-2xl',
-                'animate-in duration-200 ease-out fade-in-0 slide-in-from-right-8 motion-reduce:animate-none',
-              )}
-              style={{ width: flyoutW, ...titlebarOffset(boardW - flyoutW) }}
-            >
-              <div
-                role="separator"
-                aria-orientation="vertical"
-                aria-label="Resize session panel"
-                aria-valuemin={Math.min(FLYOUT_MIN_W, flyoutMaxWidth(boardW))}
-                aria-valuemax={flyoutMaxWidth(boardW)}
-                aria-valuenow={flyoutW}
-                tabIndex={0}
-                title="Drag to resize · double-click to reset"
-                onPointerDown={onFlyoutDown}
-                onPointerMove={onFlyoutMove}
-                onPointerUp={onFlyoutUp}
-                onPointerCancel={onFlyoutUp}
-                onDoubleClick={() => setFlyoutPref(0)}
-                onKeyDown={(e) => {
-                  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-                    e.preventDefault()
-                    const step = e.shiftKey ? FLYOUT_KEY_STEP * 4 : FLYOUT_KEY_STEP
-                    setFlyoutPref(clampFlyoutWidth(flyoutW + (e.key === 'ArrowLeft' ? step : -step), boardW))
-                  }
-                }}
-                className={cn(
-                  'group/grip absolute inset-y-0 -left-1 z-30 w-2 cursor-col-resize touch-none outline-none',
-                  'after:absolute after:inset-y-0 after:left-1/2 after:w-px after:-translate-x-1/2 after:transition-colors',
-                  'hover:after:w-0.5 hover:after:bg-primary/50 focus-visible:after:w-0.5 focus-visible:after:bg-ring',
-                )}
-              >
-                <span
-                  aria-hidden
-                  className={cn(
-                    'absolute top-1/2 left-1/2 h-10 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full border bg-background opacity-0 shadow-sm transition-opacity',
-                    'group-hover/grip:opacity-100 group-focus-visible/grip:opacity-100',
-                  )}
-                />
-              </div>
-              {pane}
-            </main>
-          ) : null}
-        </div>
-      ) : sidebarOpen ? (
-        <aside aria-label="Session list" className="relative shrink-0 border-r bg-background" style={{ width: sidebarW }}>
-          <Sidebar
+      ) : (
+        <>
+          <TopBar
             list={list}
             now={now}
-            cursorKey={cursorKey}
-            selectedKey={selectedKey}
+            view={mode}
+            onView={switchView}
             searchRef={searchRef}
             onSearchNav={onSearchNav}
             onNew={() => setNewOpen(true)}
-            onCollapse={toggleSidebar}
-            viewMode={mode}
-            onViewMode={switchView}
+            groups={board ? groups : undefined}
+            sidebar={board ? undefined : { open: sidebarOpen, toggle: toggleSidebar }}
           />
-          <div
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="Resize sidebar"
-            aria-valuemin={SIDEBAR_MIN_W}
-            aria-valuemax={SIDEBAR_MAX_W}
-            aria-valuenow={sidebarW}
-            tabIndex={0}
-            title="Drag to resize · double-click to reset"
-            onPointerDown={onResizeDown}
-            onPointerMove={onResizeMove}
-            onPointerUp={onResizeUp}
-            onPointerCancel={onResizeUp}
-            onDoubleClick={() => setSidebarW(SIDEBAR_DEFAULT_W)}
-            onKeyDown={(e) => {
-              if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-                e.preventDefault()
-                setSidebarW(clampSidebarWidth(sidebarW + (e.key === 'ArrowRight' ? 24 : -24)))
-              }
-            }}
-            className={cn(
-              'absolute inset-y-0 -right-1 z-30 w-2 cursor-col-resize touch-none outline-none',
-              'after:absolute after:inset-y-0 after:left-1/2 after:w-px after:-translate-x-1/2 after:transition-colors',
-              'hover:after:w-0.5 hover:after:bg-primary/50 focus-visible:after:w-0.5 focus-visible:after:bg-ring',
+          <div className="flex min-h-0 flex-1">
+            {board ? (
+              <div ref={boardAreaRef} className="relative flex min-w-0 flex-1">
+                <section aria-label="Session board" className="flex min-w-0 flex-1">
+                  <Board
+                    list={list}
+                    groups={groups}
+                    columns={columns}
+                    onMoveColumn={moveColumn}
+                    now={now}
+                    cursorKey={cursorKey}
+                    selectedKey={selectedKey}
+                    overlayInset={pane ? flyoutW : 0}
+                    onOpen={(s) => openSession(s, false)}
+                  />
+                </section>
+                {pane ? (
+                  // Non-modal: no backdrop, the board stays scrollable and clickable (a card switches the session).
+                  <main
+                    className={cn(
+                      'absolute inset-y-0 right-0 z-20 flex border-l bg-background shadow-2xl',
+                      'animate-in duration-200 ease-out fade-in-0 slide-in-from-right-8 motion-reduce:animate-none',
+                    )}
+                    style={{ width: flyoutW, ...UNDER_TOP_BAR }}
+                  >
+                    <div
+                      role="separator"
+                      aria-orientation="vertical"
+                      aria-label="Resize session panel"
+                      aria-valuemin={Math.min(FLYOUT_MIN_W, flyoutMaxWidth(boardW))}
+                      aria-valuemax={flyoutMaxWidth(boardW)}
+                      aria-valuenow={flyoutW}
+                      tabIndex={0}
+                      title="Drag to resize · double-click to reset"
+                      onPointerDown={onFlyoutDown}
+                      onPointerMove={onFlyoutMove}
+                      onPointerUp={onFlyoutUp}
+                      onPointerCancel={onFlyoutUp}
+                      onDoubleClick={() => setFlyoutPref(0)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+                          e.preventDefault()
+                          const step = e.shiftKey ? FLYOUT_KEY_STEP * 4 : FLYOUT_KEY_STEP
+                          setFlyoutPref(clampFlyoutWidth(flyoutW + (e.key === 'ArrowLeft' ? step : -step), boardW))
+                        }
+                      }}
+                      className={cn(
+                        'group/grip absolute inset-y-0 -left-1 z-30 w-2 cursor-col-resize touch-none outline-none',
+                        'after:absolute after:inset-y-0 after:left-1/2 after:w-px after:-translate-x-1/2 after:transition-colors',
+                        'hover:after:w-0.5 hover:after:bg-primary/50 focus-visible:after:w-0.5 focus-visible:after:bg-ring',
+                      )}
+                    >
+                      <span
+                        aria-hidden
+                        className={cn(
+                          'absolute top-1/2 left-1/2 h-10 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full border bg-background opacity-0 shadow-sm transition-opacity',
+                          'group-hover/grip:opacity-100 group-focus-visible/grip:opacity-100',
+                        )}
+                      />
+                    </div>
+                    {pane}
+                  </main>
+                ) : null}
+              </div>
+            ) : (
+              <>
+                {sidebarOpen ? (
+                  <aside aria-label="Session list" className="relative shrink-0 border-r bg-background" style={{ width: sidebarW }}>
+                    <Sidebar
+                      list={list}
+                      now={now}
+                      cursorKey={cursorKey}
+                      selectedKey={selectedKey}
+                    />
+                    <div
+                      role="separator"
+                      aria-orientation="vertical"
+                      aria-label="Resize sidebar"
+                      aria-valuemin={SIDEBAR_MIN_W}
+                      aria-valuemax={SIDEBAR_MAX_W}
+                      aria-valuenow={sidebarW}
+                      tabIndex={0}
+                      title="Drag to resize · double-click to reset"
+                      onPointerDown={onResizeDown}
+                      onPointerMove={onResizeMove}
+                      onPointerUp={onResizeUp}
+                      onPointerCancel={onResizeUp}
+                      onDoubleClick={() => setSidebarW(SIDEBAR_DEFAULT_W)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+                          e.preventDefault()
+                          setSidebarW(clampSidebarWidth(sidebarW + (e.key === 'ArrowRight' ? 24 : -24)))
+                        }
+                      }}
+                      className={cn(
+                        'absolute inset-y-0 -right-1 z-30 w-2 cursor-col-resize touch-none outline-none',
+                        'after:absolute after:inset-y-0 after:left-1/2 after:w-px after:-translate-x-1/2 after:transition-colors',
+                        'hover:after:w-0.5 hover:after:bg-primary/50 focus-visible:after:w-0.5 focus-visible:after:bg-ring',
+                      )}
+                    />
+                  </aside>
+                ) : null}
+                <main className="flex min-w-0 flex-1" style={UNDER_TOP_BAR}>
+                  {pane ?? (
+                    <EmptyPane
+                      waitingSessions={paletteSessions.filter((s) => s.status === 'waiting').slice(0, 6)}
+                      onOpen={(s) => openSession(s, true)}
+                    />
+                  )}
+                </main>
+              </>
             )}
-          />
-        </aside>
-      ) : (
-        <SidebarRail
-          waiting={waiting}
-          onExpand={toggleSidebar}
-          onNew={() => setNewOpen(true)}
-          onPalette={() => setPaletteOpen(true)}
-        />
-      )}
-
-      {board || notesOpen || prsOpen || tasksOpen || reviewOpen ? null : (
-        <main className="flex min-w-0 flex-1" style={titlebarOffset(sidebarOpen ? sidebarW : '3rem')}>
-          {pane ?? (
-            <EmptyPane
-              waitingSessions={paletteSessions.filter((s) => s.status === 'waiting').slice(0, 6)}
-              onOpen={(s) => openSession(s, true)}
-            />
-          )}
-        </main>
+          </div>
+        </>
       )}
 
       <NewSessionDialog open={newOpen} onOpenChange={setNewOpen} onOpenSession={(href) => navigate(href)} />
@@ -862,11 +862,9 @@ export function DesktopShell() {
   )
 }
 
-/** How far a pane's top bar is from the window's left edge: the desktop app's traffic lights
- *  (index.css → Desktop app) only need room in a bar that starts under them. */
-function titlebarOffset(left: number | string): CSSProperties {
-  return { '--titlebar-offset': typeof left === 'number' ? `${left}px` : left } as CSSProperties
-}
+/** Panes under the top bar are clear of the desktop app's traffic lights (index.css → Desktop
+ *  app): their own bars need no room for them. */
+const UNDER_TOP_BAR = { '--titlebar-offset': '100vw' } as CSSProperties
 
 function EmptyPane({ waitingSessions, onOpen }: { waitingSessions: Session[]; onOpen: (s: Session) => void }) {
   const hints: [string[], string][] = [

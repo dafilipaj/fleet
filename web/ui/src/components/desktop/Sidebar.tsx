@@ -1,26 +1,18 @@
-import { useEffect, useRef, type KeyboardEvent, type Ref } from 'react'
-import { NotebookTextIcon, PanelLeftCloseIcon, PanelLeftOpenIcon, PlusIcon, SearchIcon, XIcon } from 'lucide-react'
+import { useEffect, useRef } from 'react'
+import { NotebookTextIcon } from 'lucide-react'
 
 import { ClosedSection } from '@/components/ClosedSection'
 import { DormantSection } from '@/components/DormantSection'
-import { FocusToggle } from '@/components/FocusToggle'
-import { SessionFilters } from '@/components/SessionFilters'
 import { SessionListSkeleton } from '@/components/SessionListSkeleton'
 import type { Session } from '@/api/types'
 import { SessionRow } from '@/components/SessionRow'
 import { StackGroup } from '@/components/stack/StackGroup'
-import { StatusDot } from '@/components/StatusDot'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { ModuleButtons } from '@/components/ModuleNav'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Kbd } from '@/components/ui/kbd'
-import { ViewToggle } from '@/components/ViewToggle'
 import { useNotesHosts } from '@/hooks/useNotes'
 import type { SessionListState } from '@/hooks/useSessionList'
-import type { ViewMode } from '@/lib/groups'
 import { allSessions, stackRuns } from '@/lib/sessions'
-import { ariaShortcut, sessionKey, shortcutHint, withHint } from '@/lib/shortcuts'
+import { sessionKey, withHint } from '@/lib/shortcuts'
 import { cn } from '@/lib/utils'
 
 export interface SidebarProps {
@@ -28,19 +20,11 @@ export interface SidebarProps {
   now: number
   cursorKey: string | null
   selectedKey: string | null
-  searchRef: Ref<HTMLInputElement>
-  /** ↑ / ↓ / Enter inside the search field drive the list cursor. */
-  onSearchNav: (action: 'next' | 'prev' | 'open') => void
-  onNew: () => void
-  onCollapse: () => void
-  /** List | Board toggle (omitted → no toggle). */
-  viewMode?: ViewMode
-  onViewMode?: (v: ViewMode) => void
 }
 
-/** Desktop left column: header + summary, search, status/host filters, the session list. */
-export function Sidebar({ list, now, cursorKey, selectedKey, searchRef, onSearchNav, onNew, onCollapse, viewMode, onViewMode }: SidebarProps) {
-  const { fleet, error, query, setQuery, host, view, summary, unreachable, note } = list
+/** Desktop left column under the top bar (TopBar): the session list, dormant and recently closed. */
+export function Sidebar({ list, now, cursorKey, selectedKey }: SidebarProps) {
+  const { fleet, error, query, host, view, unreachable } = list
   const listRef = useRef<HTMLDivElement>(null)
 
   // Keep the cursor row visible (j/k past the edge).
@@ -50,97 +34,8 @@ export function Sidebar({ list, now, cursorKey, selectedKey, searchRef, onSearch
     el?.scrollIntoView({ block: 'nearest' })
   }, [cursorKey])
 
-  const onSearchKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.nativeEvent.isComposing) return
-    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      e.preventDefault()
-      onSearchNav(e.key === 'ArrowDown' ? 'next' : 'prev')
-    } else if (e.key === 'Enter') {
-      e.preventDefault()
-      onSearchNav('open')
-    } else if (e.key === 'Escape' && query) {
-      // First Esc clears, the second leaves the field (window handler).
-      e.preventDefault()
-      e.stopPropagation()
-      setQuery('')
-    }
-  }
-
   return (
     <div className="flex h-full min-w-0 flex-col">
-      <div data-tauri-drag-region className="shrink-0 space-y-2 border-b px-3 pt-3 pb-2.5">
-        {/* The desktop app's traffic lights sit over this row (see index.css → Desktop app). */}
-        <div data-tauri-drag-region="deep" className="titlebar-lead flex min-h-8 items-center gap-2 [--titlebar-offset:0.75rem]">
-          <h1 className="text-lg font-bold tracking-tight">Fleet</h1>
-          {fleet ? (
-            <div className="flex items-center gap-2 text-xs text-muted-foreground tabular-nums" aria-label="Status summary">
-              {summary.waiting > 0 ? (
-                <span className="flex items-center gap-1 font-semibold text-status-waiting" title="Needs you">
-                  <StatusDot status="waiting" className="size-2" />
-                  {summary.waiting}
-                </span>
-              ) : null}
-              <span className="flex items-center gap-1" title="Busy">
-                <StatusDot status="busy" className="size-2" />
-                {summary.busy}
-              </span>
-              <span className="flex items-center gap-1" title="Idle">
-                <StatusDot status="idle" className="size-2" />
-                {summary.idle}
-              </span>
-            </div>
-          ) : null}
-          <span
-            className={cn('ml-auto truncate text-right text-[0.6875rem] tabular-nums', note.error ? 'text-destructive' : 'text-dimmer')}
-            aria-live="polite"
-          >
-            {note.error ? note.text : null}
-          </span>
-          <Button size="icon" aria-label="New session" title={withHint('New session', 'new')} onClick={onNew} className="shrink-0 rounded-full">
-            <PlusIcon />
-          </Button>
-          <Button variant="ghost" size="icon" aria-label="Collapse sidebar" title={withHint('Collapse sidebar', 'sidebar')} onClick={onCollapse} className="shrink-0">
-            <PanelLeftCloseIcon />
-          </Button>
-        </div>
-
-        <div className="flex items-center gap-2">
-        <div className="relative min-w-0 flex-1">
-          <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-dimmer" />
-          <Input
-            ref={searchRef}
-            type="search"
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="none"
-            spellCheck={false}
-            placeholder="Search name, title, cwd…"
-            aria-label="Search sessions"
-            aria-keyshortcuts={ariaShortcut('search')}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={onSearchKeyDown}
-            className="h-9 rounded-lg bg-card pr-9 pl-8 [&::-webkit-search-cancel-button]:hidden"
-          />
-          {query ? (
-            <button
-              type="button"
-              aria-label="Clear search"
-              onClick={() => setQuery('')}
-              className="absolute inset-y-0 right-0 grid w-9 place-items-center rounded-r-lg text-dimmer outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
-            >
-              <XIcon className="size-4" />
-            </button>
-          ) : (
-            <Kbd className="absolute top-1/2 right-2 -translate-y-1/2">{shortcutHint('search')}</Kbd>
-          )}
-        </div>
-          {viewMode && onViewMode ? <ViewToggle value={viewMode} onChange={onViewMode} labels={false} className="p-px" /> : null}
-        </div>
-
-        <SessionFilters list={list} spread />
-      </div>
-
       <div ref={listRef} data-session-list className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-2">
         {error ? (
           <Alert variant="destructive" className="mb-2">
@@ -187,56 +82,6 @@ export function Sidebar({ list, now, cursorKey, selectedKey, searchRef, onSearch
         {fleet ? <ClosedSection now={now} host={host} query={query} desktop className="mt-3" /> : null}
       </div>
 
-      <div className="shrink-0 border-t px-2 py-1.5 text-xs text-dimmer">
-        {/* Work modules on the left, helper screens (usage, settings) on the right. Jump and the shortcuts live in ⌘K / ⌘? and Settings. */}
-        <nav aria-label="Modules" className="flex items-center gap-1">
-          <ModuleButtons size="icon-sm" group="work" />
-          <span className="ml-auto" />
-          <FocusToggle size="icon-sm" />
-          <ModuleButtons size="icon-sm" group="utility" />
-        </nav>
-      </div>
-    </div>
-  )
-}
-
-/** The collapsed sidebar: a thin rail with the essentials. */
-export function SidebarRail({
-  waiting,
-  onExpand,
-  onNew,
-  onPalette,
-}: {
-  waiting: number
-  onExpand: () => void
-  onNew: () => void
-  onPalette: () => void
-}) {
-  return (
-    <div data-tauri-drag-region className="titlebar-rail flex h-full w-12 shrink-0 flex-col items-center gap-1 border-r py-3">
-      <Button variant="ghost" size="icon" aria-label="Expand sidebar" title={withHint('Expand sidebar', 'sidebar')} onClick={onExpand}>
-        <PanelLeftOpenIcon />
-      </Button>
-      <Button size="icon" aria-label="New session" title={withHint('New session', 'new')} onClick={onNew} className="rounded-full">
-        <PlusIcon />
-      </Button>
-      <Button variant="ghost" size="icon" aria-label="Jump to a session" title={withHint('Jump to a session', 'palette')} onClick={onPalette}>
-        <SearchIcon />
-      </Button>
-      {waiting > 0 ? (
-        <span
-          className="mt-1 flex items-center gap-1 text-xs font-semibold text-status-waiting tabular-nums"
-          title={`${waiting} need you`}
-          aria-label={`${waiting} sessions need you`}
-        >
-          <StatusDot status="waiting" className="size-2" />
-          {waiting}
-        </span>
-      ) : null}
-      <div className="mt-auto flex flex-col items-center gap-1">
-        <FocusToggle />
-        <ModuleButtons />
-      </div>
     </div>
   )
 }
