@@ -394,9 +394,9 @@ src/
   nodes exist only with `parseMarkdown(text, { files: true })` and render as buttons.
 - **⋯ → Details** (drawer, the same content as the desktop details column): name, host · cwd,
   context, ⏻ Close session top right (two taps within 5s, the second shows "Tap to close" →
-  `api.kill`, back to the list, row dropped optimistically); then an action row — Review changes
-  (desktop column; mobile has it in the header), and icon buttons New session from here, Link to a
-  stack, Attach (iTerm link, else copies the attach command); the **brief** (below); session
+  `api.kill`, back to the list, row dropped optimistically); then an action row of short-label buttons —
+  Review (desktop column; mobile has it in the header), New (session from here), Link (to a
+  stack), Attach (iTerm link, else copies the attach command); the **brief** (below); session
   details (stack, attach command, tmux, backend, pid, id).
 - **Brief** (top of Details; web/ARCHITECTURE.md → Session briefs): "updated 3m ago · edited",
   Regenerate, Edit (the body markdown in a textarea; ⌘/Ctrl+Enter saves, Esc cancels — in the

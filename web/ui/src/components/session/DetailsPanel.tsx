@@ -179,15 +179,15 @@ export function DetailsPanel(p: DetailsPanelProps & { variant: 'drawer' | 'panel
               ) : null}
             </div>
             <Button
-              variant="ghost"
+              variant="destructive"
               size={armed ? 'sm' : 'icon'}
               aria-label={armed ? 'Confirm close session' : 'Close session'}
               title={`Close session: ends ${harnessLabel(s?.harness)} and its ${s?.backend === 'iterm' ? 'iTerm tab' : 'tmux window'}${armed ? '' : ` (${panel ? 'click' : 'tap'} twice)`}`}
               disabled={closing}
               onClick={closeSession}
               className={cn(
-                'h-8 shrink-0 rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive',
-                armed ? 'bg-destructive px-2.5 text-white hover:bg-destructive/90 hover:text-white' : 'w-8',
+                'h-8 shrink-0 rounded-lg',
+                armed ? 'bg-destructive px-2.5 text-white hover:bg-destructive/90 dark:bg-destructive dark:hover:bg-destructive/90' : 'w-8',
               )}
             >
               {closing ? <Loader2Icon className="animate-spin" /> : <PowerIcon />}
@@ -195,34 +195,38 @@ export function DetailsPanel(p: DetailsPanelProps & { variant: 'drawer' | 'panel
             </Button>
           </Header>
 
-          {/* Actions first: Review, then the icon-only ones (New from here, Link to a stack, Attach). */}
+          {/* Actions first, each a short label: Review, New (from here), Link (to a stack), Attach. */}
           {p.onReview || p.onNewFromHere || p.stack || attachCmd ? (
-            <div className="flex items-center gap-1.5 pt-1 pb-2">
+            <div className="grid grid-cols-[repeat(auto-fit,minmax(4.25rem,1fr))] gap-1 pt-1 pb-2">
               {p.onReview ? (
-                <Button variant="outline" className="h-9 min-w-0 flex-1 rounded-lg" title="Review changes (diff)" onClick={p.onReview}>
+                <Button variant="outline" className={ACTION} title="Review changes (diff)" onClick={p.onReview}>
                   <FileDiffIcon />
-                  <span className="truncate">Review changes</span>
+                  Review
                 </Button>
               ) : null}
               {p.onNewFromHere ? (
-                <Button variant="outline" size="icon" className="size-9 shrink-0 rounded-lg" aria-label="New session from here" title="New session from here… (hand off / sibling)" onClick={p.onNewFromHere}>
+                <Button variant="outline" className={ACTION} title="New session from here… (hand off / sibling)" onClick={p.onNewFromHere}>
                   <GitForkIcon />
+                  New
                 </Button>
               ) : null}
               {p.stack ? (
-                <Button variant="outline" size="icon" className="size-9 shrink-0 rounded-lg" aria-label="Link to a stack" title="Put another live session in this stack (or start one)" onClick={p.stack.onLink}>
+                <Button variant="outline" className={ACTION} title="Link to a stack: put another live session in this stack (or start one)" onClick={p.stack.onLink}>
                   <Link2Icon />
+                  Link
                 </Button>
               ) : null}
               {attachLink ? (
-                <Button asChild variant="outline" size="icon" className="size-9 shrink-0 rounded-lg">
-                  <a href={attachLink} aria-label="Attach in iTerm" title={`Attach in iTerm: ${attachCmd}`}>
+                <Button asChild variant="outline" className={ACTION}>
+                  <a href={attachLink} title={`Attach in iTerm: ${attachCmd}`}>
                     <SquareTerminalIcon />
+                    Attach
                   </a>
                 </Button>
               ) : attachCmd ? (
-                <Button variant="outline" size="icon" className="size-9 shrink-0 rounded-lg" aria-label="Copy attach command" title={`Copy attach command: ${attachCmd}`} onClick={() => void copyWithToast(attachCmd)}>
+                <Button variant="outline" className={ACTION} title={`Copy attach command: ${attachCmd}`} onClick={() => void copyWithToast(attachCmd)}>
                   <SquareTerminalIcon />
+                  Attach
                 </Button>
               ) : null}
             </div>
@@ -277,3 +281,5 @@ export function DetailsPanel(p: DetailsPanelProps & { variant: 'drawer' | 'panel
         </div>
   )
 }
+
+const ACTION = 'h-9 min-w-0 gap-1 rounded-lg px-1.5 text-xs [&_svg:not([class*=size-])]:size-3.5'
