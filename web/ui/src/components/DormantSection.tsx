@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Loader2Icon, MoonIcon, PlayIcon } from 'lucide-react'
+import { ChevronRightIcon, Loader2Icon, MoonIcon, PlayIcon } from 'lucide-react'
 
 import type { DormantView } from '@/api/types'
 import { HostBadge } from '@/components/HostBadge'
@@ -64,52 +64,66 @@ export function ArmButton({
 /**
  * Sessions a reboot left dormant, per host: what they were (tmux name, Claude titles, panes, how
  * long ago) with Resume (brings the tmux session back and resumes its Claude sessions), Forget
- * (two clicks) and Resume all (two clicks). Nothing when no host has dormant sessions.
+ * (two clicks) and Resume all (two clicks). Nothing when no host has dormant sessions. Collapsed
+ * until expanded, like Recently closed; a search shows its matches expanded.
  * `host`: only that host (the list's host filter). `query`: the session search — only matching entries. `desktop`: the denser sidebar / board sizes.
  */
 export function DormantSection({ now, host = null, query = '', desktop = false, className }: { now: number; host?: string | null; query?: string; desktop?: boolean; className?: string }) {
   const { hosts, busy, resume, resumeAll, forget } = useDormant()
+  const [open, setOpen] = useState(false)
   const shown = (host ? hosts.filter((h) => h.host === host) : hosts).map((h) => searchDormant(h, query)).filter((h) => h.views.length > 0)
   if (!shown.length) return null
+  const total = shown.reduce((n, h) => n + h.views.length, 0)
   const size = desktop ? 'sm' : 'lg'
+  // A search shows its matches without having to expand the section.
+  const expanded = open || !!query.trim()
   return (
     <section aria-label="Dormant sessions" className={cn('flex flex-col gap-2', className)}>
-      <header className="flex items-center gap-1.5 px-1 text-xs font-semibold text-muted-foreground">
+      <button
+        type="button"
+        aria-expanded={expanded}
+        onClick={() => setOpen((o) => !o)}
+        title="Stopped by a reboot"
+        className="flex min-h-8 items-center gap-1.5 rounded-md px-1 text-left text-xs font-semibold text-muted-foreground outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+      >
+        <ChevronRightIcon className={cn('size-3.5 transition-transform', expanded && 'rotate-90')} />
         <MoonIcon className="size-3.5" />
         Dormant
-        <span className="font-normal text-dimmer">· stopped by a reboot</span>
-      </header>
-      {shown.map((h) => (
-        <div key={h.host} className="flex flex-col gap-1.5">
-          <div className="flex items-center gap-2 px-1">
-            <HostBadge host={h.host} />
-            <span className="text-xs text-dimmer tabular-nums">{h.views.length}</span>
-            {h.views.length > 1 ? (
-              <ArmButton
-                confirm="Resume all?"
-                onConfirm={() => void resumeAll(h.host)}
-                busy={busy.has(`${h.host}/*`)}
-                size={size}
-                className="ml-auto text-muted-foreground"
-                title={`Bring back every dormant session on ${h.host}`}
-              >
-                <PlayIcon /> Resume all
-              </ArmButton>
-            ) : null}
-          </div>
-          {h.views.map((v) => (
-            <DormantRow
-              key={`${v.kind}/${v.target}`}
-              view={v}
-              now={now}
-              size={size}
-              busy={busy.has(`${h.host}/${v.target}`) || busy.has(`${h.host}/*`)}
-              onResume={() => void resume(h.host, v.target)}
-              onForget={() => void forget(h.host, v.target)}
-            />
-          ))}
-        </div>
-      ))}
+        <span className="font-normal text-dimmer tabular-nums">· {total}</span>
+      </button>
+      {expanded
+        ? shown.map((h) => (
+            <div key={h.host} className="flex flex-col gap-1.5">
+              <div className="flex items-center gap-2 px-1">
+                <HostBadge host={h.host} />
+                <span className="text-xs text-dimmer tabular-nums">{h.views.length}</span>
+                {h.views.length > 1 ? (
+                  <ArmButton
+                    confirm="Resume all?"
+                    onConfirm={() => void resumeAll(h.host)}
+                    busy={busy.has(`${h.host}/*`)}
+                    size={size}
+                    className="ml-auto text-muted-foreground"
+                    title={`Bring back every dormant session on ${h.host}`}
+                  >
+                    <PlayIcon /> Resume all
+                  </ArmButton>
+                ) : null}
+              </div>
+              {h.views.map((v) => (
+                <DormantRow
+                  key={`${v.kind}/${v.target}`}
+                  view={v}
+                  now={now}
+                  size={size}
+                  busy={busy.has(`${h.host}/${v.target}`) || busy.has(`${h.host}/*`)}
+                  onResume={() => void resume(h.host, v.target)}
+                  onForget={() => void forget(h.host, v.target)}
+                />
+              ))}
+            </div>
+          ))
+        : null}
     </section>
   )
 }
