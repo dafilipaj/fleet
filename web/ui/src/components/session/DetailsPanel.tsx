@@ -8,7 +8,6 @@ import {
   PowerIcon,
   RefreshCwIcon,
   SquareTerminalIcon,
-  XIcon,
 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -21,7 +20,6 @@ import { useSessionTitle } from '@/hooks/useTitles'
 import { canAttachInApp, copyWithToast, sessionAttachCommand, sessionAttachLink } from '@/lib/clipboard'
 import { ctxLevel, ctxSummary, shortCwd } from '@/lib/format'
 import { harnessLabel } from '@/lib/harness'
-import { withHint } from '@/lib/shortcuts'
 import { CTX_TEXT } from '@/lib/styles'
 import { cn } from '@/lib/utils'
 
@@ -35,8 +33,6 @@ export interface DetailsPanelProps {
   onClosed: () => void
   /** The brief at the top of the panel. */
   brief: Omit<BriefSectionProps, 'desktop' | 'cancelEditRef'>
-  /** Desktop panel: the ✕ in the top-right corner. */
-  onClose?: () => void
   /** "New session from here…": the form with Hand off / Sibling (absent: no session row yet). */
   onNewFromHere?: () => void
   /** Session stacks: the label and the StackBrief sheet (when in one), and "Link…" (put another live session in it). */
@@ -178,11 +174,6 @@ export function DetailsPanel(p: DetailsPanelProps & { variant: 'drawer' | 'panel
                 </p>
               ) : null}
             </div>
-            {panel && p.onClose ? (
-              <Button variant="ghost" size="icon" aria-label="Close details" title={withHint('Close', 'inspector')} onClick={p.onClose} className="-mr-2 size-10 shrink-0 rounded-xl">
-                <XIcon className="size-[1.125rem]" />
-              </Button>
-            ) : null}
           </Header>
 
           <BriefSection {...p.brief} desktop={panel} cancelEditRef={p.cancelEditRef} />

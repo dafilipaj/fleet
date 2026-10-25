@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import {
   ChevronLeftIcon,
   CircleAlertIcon,
   EllipsisIcon,
   FileDiffIcon,
   MessageSquareTextIcon,
-  PanelRightIcon,
   SquareTerminalIcon,
   WifiOffIcon,
   XIcon,
@@ -58,6 +57,7 @@ import { reviewHref } from '@/lib/review'
 import { stacksKnown } from '@/lib/stacks'
 import { isUndoBackspace, withHint } from '@/lib/shortcuts'
 import { STATUS_TEXT } from '@/lib/styles'
+import { clampDetailsWidth, DETAILS_DEFAULT_W, DETAILS_MAX_W, DETAILS_MIN_W, detailsWidth } from '@/lib/layout'
 import { cn } from '@/lib/utils'
 
 interface ChatState {
@@ -87,9 +87,6 @@ export interface SessionScreenProps {
   id: string
   /** `screen` (mobile, default): fixed full-screen page. `pane`: the desktop detail pane. */
   layout?: 'screen' | 'pane'
-  /** Pane only: show the details column (brief + session details; the header button toggles it). */
-  inspector?: boolean
-  onToggleInspector?: () => void
   /** Pane only: filled with the pane's API while mounted. */
   paneRef?: React.RefObject<PaneApi | null>
   /** Pane only: focus the composer on mount (opened with Enter). */
@@ -103,8 +100,6 @@ export interface SessionScreenProps {
   onBack?: () => void
   /** Pane only: a close button in the header (the Board view's flyout). */
   onClose?: () => void
-  /** Pane only: the pane is too narrow for a details column — lay it over the chat instead. */
-  detailsOverlay?: boolean
 }
 
 /**
@@ -116,12 +111,9 @@ export function SessionScreen({
   host,
   id,
   layout = 'screen',
-  inspector = false,
-  onToggleInspector,
   paneRef,
   autoFocusComposer = false,
   onClose,
-  detailsOverlay = false,
   embedded = false,
   onBack,
 }: SessionScreenProps) {
@@ -140,6 +132,34 @@ export function SessionScreen({
   const { termFont, hideNotes, sendDelay } = usePrefs()
 
   const [menuOpen, setMenuOpen] = useState(false)
+  // Pane: the Details column (brief + session details) is always beside the chat, resizable
+  // from its left edge (`fleet.detailsWidth`); a pane too narrow for both uses the ⋯ drawer.
+  const paneEl = useRef<HTMLDivElement>(null)
+  const [paneW, setPaneW] = useState(0)
+  useLayoutEffect(() => {
+    const el = paneEl.current
+    if (!el) return
+    setPaneW(el.getBoundingClientRect().width)
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(([entry]) => entry && entry.contentRect.width > 0 && setPaneW(entry.contentRect.width))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  const [detailsPref, setDetailsPref] = usePersistentState<number>('fleet.detailsWidth', DETAILS_DEFAULT_W, (r) => clampDetailsWidth(Number(r)))
+  const detailsW = pane && !embedded ? detailsWidth(detailsPref, paneW) : 0
+  const detailsDrag = useRef<{ x: number; w: number } | null>(null)
+  const onDetailsDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    e.currentTarget.setPointerCapture(e.pointerId)
+    detailsDrag.current = { x: e.clientX, w: detailsW }
+  }
+  const onDetailsMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!detailsDrag.current) return
+    setDetailsPref(clampDetailsWidth(detailsDrag.current.w - (e.clientX - detailsDrag.current.x)))
+  }
+  const onDetailsUp = () => {
+    detailsDrag.current = null
+  }
   const [jumpSignal, setJumpSignal] = useState(0)
   // Paths in Claude's messages that exist on the host → links → this preview.
   const sessionKey = `${host}/${id}`
@@ -150,7 +170,7 @@ export function SessionScreen({
 
   // Brief: the top of the Details panel — the desktop column (open state owned by the shell)
   // or the mobile drawer (⋯). Polled only while it shows.
-  const brief = useBrief(host, id, pane ? inspector : menuOpen)
+  const brief = useBrief(host, id, detailsW > 0 || menuOpen)
   // "Continue in new session" → the New session form, prefilled (host, this cwd, the brief's prompt).
   const [continueWith, setContinueWith] = useState<SpawnPrefill | null>(null)
 
@@ -479,7 +499,6 @@ export function SessionScreen({
     session,
     brief: { host, brief, fileLinks },
     onNewFromHere: session ? newFromHere : undefined,
-    onClose: pane ? onToggleInspector : undefined,
     stack: embedded ? null : stackMenu,
     onClosed: () => {
       // Drop it from the list now and keep stale polls from bringing it back.
@@ -574,19 +593,7 @@ export function SessionScreen({
               <FileDiffIcon className="size-5" />
             </Button>
           ) : null}
-          {pane && !embedded ? (
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label="Details panel"
-              title={withHint('Details', 'inspector')}
-              aria-pressed={inspector}
-              onClick={onToggleInspector}
-              className={cn('size-11 shrink-0 rounded-xl', inspector && 'bg-muted text-foreground')}
-            >
-              <PanelRightIcon className="size-5" />
-            </Button>
-          ) : (
+          {detailsW > 0 ? null : (
             <>
             {embedded ? null : <ScratchpadButton className="size-11 shrink-0 rounded-xl text-muted-foreground [&_svg:not([class*='size-'])]:size-5" />}
             <Button
@@ -658,15 +665,6 @@ export function SessionScreen({
         {(session?.harness || 'claude') === 'claude' && !lockedReason && !gone && !outbox.some((it) => it.state !== 'sent' && it.text.trim() === '/compact') ? (
           <CompactHint context={session?.context} onCompact={() => send('/compact')} />
         ) : null}
-        {pane && inspector && detailsOverlay ? (
-          // A narrow pane: the details lie over the chat (header and composer stay usable).
-          <aside
-            aria-label="Session details"
-            className="absolute inset-y-0 right-0 z-30 w-80 max-w-[90%] border-l bg-background shadow-xl xl:w-96"
-          >
-            <DetailsPanel {...menuProps} open variant="panel" />
-          </aside>
-        ) : null}
         {errText ? (
           <div className="pointer-events-none absolute inset-x-0 top-2 z-10 flex justify-center px-3">
             <div className="flex max-w-full items-center gap-2 rounded-full border border-destructive/40 bg-popover/95 px-3 py-1.5 text-xs text-destructive shadow-md backdrop-blur-sm">
@@ -705,15 +703,43 @@ export function SessionScreen({
 
   if (pane) {
     return (
-      <div className="flex h-full min-w-0 flex-1 overflow-hidden bg-background">
+      <div ref={paneEl} className="flex h-full min-w-0 flex-1 overflow-hidden bg-background">
         <section aria-label={`Session ${name}`} className="relative flex min-w-0 flex-1 flex-col" {...drop.bind}>
           {column}
         </section>
-        {inspector && !detailsOverlay ? (
-          <aside aria-label="Session details" className="w-80 shrink-0 border-l bg-card/30 xl:w-96">
+        {detailsW > 0 ? (
+          <aside aria-label="Session details" className="relative shrink-0 border-l bg-card/30" style={{ width: detailsW }}>
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize details"
+              aria-valuemin={DETAILS_MIN_W}
+              aria-valuemax={DETAILS_MAX_W}
+              aria-valuenow={detailsW}
+              tabIndex={0}
+              title="Drag to resize · double-click to reset"
+              onPointerDown={onDetailsDown}
+              onPointerMove={onDetailsMove}
+              onPointerUp={onDetailsUp}
+              onPointerCancel={onDetailsUp}
+              onDoubleClick={() => setDetailsPref(DETAILS_DEFAULT_W)}
+              onKeyDown={(e) => {
+                if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+                  e.preventDefault()
+                  setDetailsPref(clampDetailsWidth(detailsW + (e.key === 'ArrowLeft' ? 24 : -24)))
+                }
+              }}
+              className={cn(
+                'absolute inset-y-0 -left-1 z-30 w-2 cursor-col-resize touch-none outline-none',
+                'after:absolute after:inset-y-0 after:left-1/2 after:w-px after:-translate-x-1/2 after:transition-colors',
+                'hover:after:w-0.5 hover:after:bg-primary/50 focus-visible:after:w-0.5 focus-visible:after:bg-ring',
+              )}
+            />
             <DetailsPanel {...menuProps} open variant="panel" />
           </aside>
-        ) : null}
+        ) : (
+          <DetailsDrawer {...menuProps} />
+        )}
         {continueForm}
       </div>
     )

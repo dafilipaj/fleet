@@ -15,7 +15,6 @@ export type ShortcutAction =
   | 'back'
   | 'blur'
   | 'mode'
-  | 'inspector'
   | 'palette'
   | 'help'
   | 'view'
@@ -83,7 +82,6 @@ export const BINDINGS: readonly Binding[] = [
   { action: 'new', combo: ['mod', 'shift', 'O'] },
   { action: 'search', combo: ['mod', 'F'] },
   { action: 'view', combo: ['mod', 'B'] },
-  { action: 'inspector', combo: ['mod', 'I'] },
   { action: 'mode', combo: ['mod', 'J'] },
   { action: 'rename', combo: ['mod', 'E'] },
   { action: 'notes', combo: ['mod', 'shift', 'E'] },
@@ -259,7 +257,6 @@ export const SHORTCUT_HELP: { title: string; items: ShortcutHelp[] }[] = [
     title: 'Layout',
     items: [
       { action: 'view', label: 'Switch List / Board (sessions grouped by work)' },
-      { action: 'inspector', label: 'Toggle the details panel (brief: summary, todos, resources)' },
       { action: 'notes', label: 'Notes explorer (Esc back to the sessions)' },
       { action: 'scratchpad', label: 'Scratchpad: a floating, autosaved text buffer (again or Esc closes it)' },
       { action: 'help', label: 'This help' },

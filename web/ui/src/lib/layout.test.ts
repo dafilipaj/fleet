@@ -10,7 +10,11 @@ import {
   clampFlyoutWidth,
   clampSidebarWidth,
   defaultFlyoutWidth,
-  detailsFitBeside,
+  clampDetailsWidth,
+  DETAILS_CHAT_MIN_W,
+  DETAILS_DEFAULT_W,
+  DETAILS_MIN_W,
+  detailsWidth,
   flyoutMaxWidth,
 } from '@/lib/layout'
 
@@ -51,9 +55,10 @@ test('no stored preference → the default share of the board', () => {
   expect(defaultFlyoutWidth(700)).toBe(FLYOUT_MIN_W)
 })
 
-test('detailsFitBeside scales with the root font size', () => {
-  expect(detailsFitBeside(900, 16)).toBe(true)
-  expect(detailsFitBeside(800, 16)).toBe(false)
-  expect(detailsFitBeside(900, 18)).toBe(false) // Large text: a wider details column
-  expect(detailsFitBeside(900, 0)).toBe(true) // unknown font size → 16px
+test('detailsWidth keeps the chat its room, else no column', () => {
+  expect(clampDetailsWidth(100)).toBe(DETAILS_MIN_W)
+  expect(clampDetailsWidth(NaN)).toBe(DETAILS_DEFAULT_W)
+  expect(detailsWidth(400, 1200)).toBe(400)
+  expect(detailsWidth(400, 700)).toBe(700 - DETAILS_CHAT_MIN_W)
+  expect(detailsWidth(400, DETAILS_CHAT_MIN_W + DETAILS_MIN_W - 1)).toBe(0)
 })

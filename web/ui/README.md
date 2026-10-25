@@ -504,10 +504,11 @@ session in the pane), so a link opens the same session on either layout.
   its width and layout, stays scrollable (the last columns scroll out from under the flyout) and
   clickable — another card switches the flyout. Its left edge resizes it (drag, or focus it and
   ←/→, Shift for bigger steps; double-click resets to 55% of the board; min 420px, max the board
-  minus 240px; `fleet.flyoutWidth`). Esc (outside a field) or ✕ closes it. A flyout narrower than
-  54rem lays the Details panel over the chat instead of beside it. ⌘\ does nothing on the board.
-- **Details panel** (right, ⌘I, the header button or ⌘K; ✕ top-right closes it; `fleet.inspector`,
-  open by default from 1440px): the mobile ⋯ drawer's content (`DetailsPanel`) — the brief first
+  minus 240px; `fleet.flyoutWidth`). Esc (outside a field) or ✕ closes it.
+- **Details panel** (right of the chat, always open): resizable from its left edge like the
+  sidebar (260–560px, default 320px, double-click resets, ←/→ on the focused handle;
+  `fleet.detailsWidth`); the chat keeps at least 380px, and a pane too narrow for both shows the
+  ⋯ button (the drawer) instead. The mobile ⋯ drawer's content (`DetailsPanel`) — the brief first
   (summary, todos, resources, continue), then chat/terminal, scrollback, auto-name,
   tmux/backend/pid/id, Close session (click twice).
 - **New session**: the mobile form in a dialog. Toasts sit bottom-right, above the composer.

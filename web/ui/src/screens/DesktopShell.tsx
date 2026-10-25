@@ -20,7 +20,6 @@ import {
   NotebookPenIcon,
   NotebookTextIcon,
   PaletteIcon,
-  PanelRightIcon,
   PencilIcon,
   PlusIcon,
   RefreshCwIcon,
@@ -47,7 +46,6 @@ import { useFleet } from '@/hooks/useFleet'
 import { focusLeft, toggleFocus, useFocus } from '@/hooks/useFocus'
 import { useBoardColumns, useGroups, useViewMode } from '@/hooks/useGroups'
 import { useNotesHosts, useNotesTree } from '@/hooks/useNotes'
-import { WIDE_QUERY } from '@/hooks/useMediaQuery'
 import { useNow } from '@/hooks/useNow'
 import { usePersistentState } from '@/hooks/usePersistentState'
 import { useSessionList } from '@/hooks/useSessionList'
@@ -67,7 +65,6 @@ import { STATUS_FILTERS, allSessions, byLastActivity, findSession, sessionHref, 
 import {
   clampFlyoutWidth,
   clampSidebarWidth,
-  detailsFitBeside,
   FLYOUT_KEY_STEP,
   FLYOUT_MIN_W,
   flyoutMaxWidth,
@@ -104,7 +101,6 @@ import { JobsScreen } from '@/screens/JobsScreen'
 import { MemosScreen } from '@/screens/MemosScreen'
 import { OperatorScreen } from '@/screens/OperatorScreen'
 
-const parseBool01 = (raw: string) => (raw === '1' ? true : raw === '0' ? false : undefined)
 
 /**
  * ≥ lg: master–detail. Resizable sidebar (the session list) + the selected
@@ -143,14 +139,6 @@ export function DesktopShell() {
   const selectedSession = selected ? findSession(fleet, selected.host, selected.id) : null
 
   const [sidebarW, setSidebarW] = usePersistentState<number>('fleet.sidebarWidth', SIDEBAR_DEFAULT_W, (r) => clampSidebarWidth(Number(r)))
-  const [inspectorRaw, setInspectorRaw] = usePersistentState<string>(
-    'fleet.inspector',
-    typeof window !== 'undefined' && window.matchMedia?.(WIDE_QUERY).matches ? '1' : '0',
-    (r) => (parseBool01(r) === undefined ? undefined : r),
-  )
-  // The Details column: the brief first, then the session's details (⌘I).
-  const inspector = inspectorRaw === '1'
-  const toggleInspector = () => setInspectorRaw(inspector ? '0' : '1')
 
   // List | Board (`fleet.view`). Board: the grouped Kanban replaces the sidebar; an open
   // session is a flyout over its right edge (the board never relayouts), so ↑/↓, Enter and
@@ -329,10 +317,6 @@ export function DesktopShell() {
       case 'view':
         toggleView()
         return true
-      case 'inspector':
-        if (!selectedKey) return false
-        toggleInspector()
-        return true
       case 'palette':
         setPaletteOpen((o) => !o)
         return true
@@ -502,14 +486,6 @@ export function DesktopShell() {
           ? [
               { id: 'chat', label: 'Chat view', icon: <MessageSquareTextIcon />, shortcut: shortcutHint('mode'), run: () => paneRef.current?.setMode('chat') },
               { id: 'term', label: 'Terminal view', icon: <SquareTerminalIcon />, shortcut: shortcutHint('mode'), run: () => paneRef.current?.setMode('term') },
-              {
-                id: 'inspector',
-                label: inspector ? 'Hide details (brief)' : 'Show details (brief: summary, todos, resources)',
-                icon: <PanelRightIcon />,
-                shortcut: shortcutHint('inspector'),
-                keywords: ['details', 'brief', 'todos', 'summary', 'resources', 'continue', 'inspector'],
-                run: toggleInspector,
-              },
               ...(selected
                 ? [
                     {
@@ -665,12 +641,9 @@ export function DesktopShell() {
       host={selected.host}
       id={selected.id}
       layout="pane"
-      inspector={inspector}
-      onToggleInspector={toggleInspector}
       paneRef={paneRef}
       autoFocusComposer={focusOnOpen === selectedKey}
       onClose={board ? () => navigate('/') : undefined}
-      detailsOverlay={board && !detailsFitBeside(flyoutW, parseFloat(getComputedStyle(document.documentElement).fontSize))}
     />
   ) : settingsOpen ? (
     <SettingsScreen layout="pane" />

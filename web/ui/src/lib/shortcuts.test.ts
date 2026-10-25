@@ -40,7 +40,6 @@ describe('matchShortcut', () => {
     expect(cmd('o', { shiftKey: true })).toBe('new')
     expect(cmd('f')).toBe('search')
     expect(cmd('b')).toBe('view')
-    expect(cmd('i')).toBe('inspector')
     expect(cmd('j')).toBe('mode')
     expect(cmd('e')).toBe('rename')
     expect(cmd('E', { shiftKey: true })).toBe('notes')
