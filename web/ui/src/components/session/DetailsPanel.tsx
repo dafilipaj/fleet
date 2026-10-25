@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   ArrowRightIcon,
   CopyIcon,
+  FileDiffIcon,
   LayersIcon,
   Link2Icon,
   Loader2Icon,
@@ -35,6 +36,8 @@ export interface DetailsPanelProps {
   brief: Omit<BriefSectionProps, 'desktop' | 'cancelEditRef'>
   /** "New session from here…": the form with Hand off / Sibling (absent: no session row yet). */
   onNewFromHere?: () => void
+  /** "Review changes": the diff reviewer (desktop panel; on mobile it is a header button). */
+  onReview?: () => void
   /** Session stacks: the label and the StackBrief sheet (when in one), and "Link…" (put another live session in it). */
   stack?: { label: string | null; onOpen?: () => void; onLink: () => void } | null
 }
@@ -177,6 +180,13 @@ export function DetailsPanel(p: DetailsPanelProps & { variant: 'drawer' | 'panel
           </Header>
 
           <BriefSection {...p.brief} desktop={panel} cancelEditRef={p.cancelEditRef} />
+
+          {p.onReview ? (
+            <Button variant="outline" className="mt-1 h-10 w-full rounded-xl" title="Review changes (diff)" onClick={p.onReview}>
+              <FileDiffIcon />
+              Review changes
+            </Button>
+          ) : null}
 
           {p.onNewFromHere ? (
             <Button variant="outline" className="mt-1 h-10 w-full rounded-xl" onClick={p.onNewFromHere}>

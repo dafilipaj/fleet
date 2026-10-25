@@ -499,6 +499,7 @@ export function SessionScreen({
     session,
     brief: { host, brief, fileLinks },
     onNewFromHere: session ? newFromHere : undefined,
+    onReview: session?.cwd && detailsW > 0 ? () => navigate(reviewHref(host, id)) : undefined,
     stack: embedded ? null : stackMenu,
     onClosed: () => {
       // Drop it from the list now and keep stale polls from bringing it back.
@@ -581,7 +582,7 @@ export function SessionScreen({
               </ToggleGroupItem>
             </ToggleGroup>
           ) : null}
-          {session?.cwd && !embedded ? (
+          {session?.cwd && !embedded && detailsW === 0 ? (
             <Button
               variant="ghost"
               size="icon"
