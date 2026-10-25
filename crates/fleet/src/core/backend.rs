@@ -606,6 +606,25 @@ pub fn host_shell_command(host: &str) -> String {
     format!("fleet -H {} new", shq(host))
 }
 
+/// Open a new iTerm tab (a window when none is open) with a plain shell.
+pub fn iterm_open() -> Result<()> {
+    deny_fixture()?;
+    osa(
+        r#"on run argv
+  tell application "iTerm2"
+    activate
+    if (count of windows) is 0 then
+      create window with default profile
+    else
+      tell current window to create tab with default profile
+    end if
+  end tell
+end run"#,
+        &[],
+    )?;
+    Ok(())
+}
+
 /// Open a new iTerm tab (a window with `window`, or when none is open) and run `line` in it.
 pub fn iterm_run(line: &str, window: bool) -> Result<()> {
     deny_fixture()?;

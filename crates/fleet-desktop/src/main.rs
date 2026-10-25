@@ -187,7 +187,18 @@ fn attach(host: &str, session: &str) {
 }
 
 /// Open an iTerm tab in the host's tmux: `fleet -H <host> new` (attach to, or create, `main`).
+/// This machine gets a plain iTerm tab.
 fn shell(host: &str) {
+    use fleet::core::hosts::{Scope, Target, resolve};
+    let cfg = fleet::core::config::get();
+    if let Ok(Target::Local { .. }) = resolve(cfg, Some(host), false, Scope::DefaultHost) {
+        std::thread::spawn(|| {
+            if let Err(e) = fleet::core::backend::iterm_open() {
+                eprintln!("fleet-desktop: iTerm: {e}");
+            }
+        });
+        return;
+    }
     run_in_iterm(fleet::core::backend::host_shell_command(host));
 }
 

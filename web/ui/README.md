@@ -485,9 +485,9 @@ Master–detail on the same hash routes as mobile (`#/` = nothing open, `#/s/<ho
 session in the pane), so a link opens the same session on either layout.
 
 - **Top bar** (the same over List and Board): Fleet summary, List | Board, search (⌘F),
-  Sessions | Bots toggle with status and host pickers, modules, then the helpers — ▣ tmux on a
-  host (`HostShellMenu`: Fleet.app opens an iTerm tab via `fleet://shell`, a browser copies
-  `fleet -H <host> new`), Focus, Usage, Settings — and `+`.
+  Sessions | Bots toggle with status and host pickers, modules, then the helpers — a ▣ per host
+  (`HostShellButtons`, the host's colour dot: Fleet.app opens an iTerm tab via `fleet://shell`, a
+  browser copies `fleet -H <host> new`), Focus, Usage, Settings — and `+`.
 - **Sidebar** (left, List only): the session list (the open row is highlighted, the keyboard
   cursor has a ring), Dormant and Recently closed. Resizable by dragging its edge (280–560px,
   double-click resets, ←/→ on the focused handle; `fleet.sidebarWidth`).
