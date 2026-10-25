@@ -10,6 +10,7 @@ import { StackGroup } from '@/components/stack/StackGroup'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { useNotesHosts } from '@/hooks/useNotes'
+import { useFlip } from '@/hooks/useFlip'
 import type { SessionListState } from '@/hooks/useSessionList'
 import { allSessions, stackRuns } from '@/lib/sessions'
 import { sessionKey, withHint } from '@/lib/shortcuts'
@@ -24,8 +25,9 @@ export interface SidebarProps {
 
 /** Desktop left column under the top bar (TopBar): the session list, dormant and recently closed. */
 export function Sidebar({ list, now, cursorKey, selectedKey }: SidebarProps) {
-  const { fleet, error, query, host, view, unreachable } = list
+  const { fleet, error, query, host, view, unreachable, setFrozen } = list
   const listRef = useRef<HTMLDivElement>(null)
+  useFlip(listRef, view.sessions.map(sessionKey).join(' '))
 
   // Keep the cursor row visible (j/k past the edge).
   useEffect(() => {
@@ -36,7 +38,13 @@ export function Sidebar({ list, now, cursorKey, selectedKey }: SidebarProps) {
 
   return (
     <div className="flex h-full min-w-0 flex-col">
-      <div ref={listRef} data-session-list className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-2">
+      <div
+        ref={listRef}
+        data-session-list
+        onPointerEnter={(e) => e.pointerType === 'mouse' && setFrozen(true)}
+        onPointerLeave={() => setFrozen(false)}
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-2"
+      >
         {error ? (
           <Alert variant="destructive" className="mb-2">
             <AlertDescription>

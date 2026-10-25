@@ -3,7 +3,7 @@ import { useMemo, useState } from 'react'
 import { useFleet } from '@/hooks/useFleet'
 import { usePersistentState } from '@/hooks/usePersistentState'
 import { relTime } from '@/lib/format'
-import { allSessions, findStatusFilter, listView, statusSummary, type StatusFilterId } from '@/lib/sessions'
+import { allSessions, findStatusFilter, keepOrder, listView, statusSummary, type StatusFilterId } from '@/lib/sessions'
 
 export const ALL_HOSTS = '*'
 
@@ -11,6 +11,8 @@ export const ALL_HOSTS = '*'
  * The session list's state, shared by the mobile list screen and the desktop sidebar:
  * search, status + host filters (persisted in `fleet.filter`; "Scheduled" is a status filter),
  * the filtered view, per-host counts, the header summary and the "updated Xs ago" note.
+ * While `frozen` (the pointer is on the list) the view keeps its order: rows don't move
+ * under the mouse; the new order lands when it leaves.
  */
 export function useSessionList(now: number) {
   const { fleet, fleetAt, error, refreshing } = useFleet()
@@ -23,7 +25,11 @@ export function useSessionList(now: number) {
   // A remembered host that is no longer configured means "all".
   const host = hostFilter !== ALL_HOSTS && hostNames.includes(hostFilter) ? hostFilter : null
 
-  const view = useMemo(() => listView(fleet, { query, host, status }), [fleet, query, host, status])
+  const live = useMemo(() => listView(fleet, { query, host, status }), [fleet, query, host, status])
+  // The order the list froze in (session keys); null when it follows the live order.
+  const [frozenOrder, setFrozenOrder] = useState<string[] | null>(null)
+  const setFrozen = (on: boolean) => setFrozenOrder(on ? live.sessions.map((s) => `${s.host}/${s.session_id}`) : null)
+  const view = useMemo(() => (frozenOrder ? { ...live, sessions: keepOrder(live.sessions, frozenOrder) } : live), [live, frozenOrder])
   const hostCounts = useMemo(() => {
     const counts = new Map<string, number>()
     for (const s of allSessions(fleet)) counts.set(s.host, (counts.get(s.host) ?? 0) + 1)
@@ -51,6 +57,7 @@ export function useSessionList(now: number) {
     hostNames,
     host,
     view,
+    setFrozen,
     hostCounts,
     summary,
     unreachable,

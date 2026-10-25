@@ -21,6 +21,7 @@ import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { ViewToggle } from '@/components/ViewToggle'
+import { useFlip } from '@/hooks/useFlip'
 import { useBoardColumns, useGroups, useViewMode } from '@/hooks/useGroups'
 import { useSettings } from '@/hooks/useSettings'
 import { useNow } from '@/hooks/useNow'
@@ -40,6 +41,8 @@ export function ListScreen() {
   const board = mode === 'board'
   const groups = useGroups(board)
   const { columns } = useBoardColumns(board, view.sessions, groups.groups, fleet, host, query)
+  const rowsRef = useRef<HTMLDivElement>(null)
+  useFlip(rowsRef, view.sessions.map((s) => `${s.host}/${s.session_id}`).join(' '))
   // The filter rows live in a drawer under the search field, closed by default: swipe down on
   // the header (or tap the handle) opens it, swipe up closes it. Active filters show on the handle.
   const [filtersOpen, setFiltersOpen] = useState(false)
@@ -229,7 +232,7 @@ export function ListScreen() {
           ) : board && columns.length > 0 ? (
             <GroupedList columns={columns} now={now} />
           ) : view.sessions.length > 0 ? (
-            <div className="flex flex-col gap-2">
+            <div ref={rowsRef} className="flex flex-col gap-2">
               {stackRuns(view.sessions).map((e) =>
                 e.kind === 'stack' ? (
                   <StackGroup

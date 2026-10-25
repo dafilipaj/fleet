@@ -9,6 +9,7 @@ import {
   setAside,
   isEmbedSession,
   isJobSession,
+  keepOrder,
   listView,
   matchesSearch,
   sessionHref,
@@ -57,6 +58,32 @@ test('listView: flat, sorted by last activity, counts per status', () => {
   const v = listView(fleet, {})
   expect(v.sessions.map((x) => x.session_id)).toEqual(['b', 'c', 'a'])
   expect(v.counts).toEqual({ all: 3, waiting: 1, busy: 1, idle: 1, scheduled: 0, embedded: 0 })
+})
+
+test('listView: a prompt moves a session, a turn ending does not', () => {
+  const f: FleetResponse = {
+    self: 'laptop',
+    hosts: [
+      {
+        name: 'laptop',
+        ok: true,
+        sessions: [
+          // Just finished a turn prompted long ago.
+          s({ session_id: 'done', updated_at: 900, prompted_at: 100 }),
+          s({ session_id: 'asked', status: 'busy', updated_at: 500, prompted_at: 500 }),
+          // No prompt known (Codex / pi, or none yet): its activity stands in.
+          s({ session_id: 'codex', updated_at: 300 }),
+        ],
+      },
+    ],
+  }
+  expect(listView(f, {}).sessions.map((x) => x.session_id)).toEqual(['asked', 'codex', 'done'])
+})
+
+test('keepOrder: the frozen order holds, new sessions go on top, gone ones drop', () => {
+  const now = ['c', 'a', 'new', 'b'].map((id) => s({ session_id: id }))
+  const frozen = ['laptop/a', 'laptop/b', 'laptop/gone', 'laptop/c']
+  expect(keepOrder(now, frozen).map((x) => x.session_id)).toEqual(['new', 'a', 'b', 'c'])
 })
 
 test('listView: host + status + search filters', () => {

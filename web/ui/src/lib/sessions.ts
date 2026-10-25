@@ -81,8 +81,29 @@ export function byLastActivity(a: Session, b: Session): number {
   return (b.updated_at || 0) - (a.updated_at || 0)
 }
 
+/**
+ * Most recent prompt first: a session moves when someone talks to it, not on every turn
+ * start / end. Without a `prompted_at` (no prompt yet, Codex / pi) its last activity stands in.
+ */
+export function byLastPrompt(a: Session, b: Session): number {
+  return (b.prompted_at || b.updated_at || 0) - (a.prompted_at || a.updated_at || 0)
+}
+
+/**
+ * `sessions` in the order `prev` (session keys) had them — the list held still while the
+ * pointer is on it. Sessions new since then go on top, in their own order.
+ */
+export function keepOrder(sessions: Session[], prev: readonly string[]): Session[] {
+  const at = new Map(prev.map((k, i) => [k, i]))
+  const rank = (s: Session) => at.get(`${s.host}/${s.session_id}`) ?? -1
+  return sessions
+    .map((s, i) => ({ s, i, r: rank(s) }))
+    .sort((x, y) => x.r - y.r || x.i - y.i)
+    .map((x) => x.s)
+}
+
 export interface ListView {
-  /** Sessions to show: search + host + status filter applied, sorted by last activity. */
+  /** Sessions to show: search + host + status filter applied, most recent prompt first. */
   sessions: Session[]
   /** Per status-filter counts, after search + host scoping (what the chips show). */
   counts: Record<StatusFilterId, number>
@@ -118,7 +139,7 @@ export function listView(
   const visible = matched.filter((s) => !setAside(s))
   const scope = (f: StatusFilter) => (SET_ASIDE.includes(f.id) ? matched : visible).filter(f.match)
   const counts = Object.fromEntries(STATUS_FILTERS.map((f) => [f.id, scope(f).length])) as Record<StatusFilterId, number>
-  return { sessions: clusterByStack(scope(findStatusFilter(status)).sort(byLastActivity)), counts }
+  return { sessions: clusterByStack(scope(findStatusFilter(status)).sort(byLastPrompt)), counts }
 }
 
 /** Every session by status, job sessions included — the header's counters. */

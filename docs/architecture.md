@@ -272,6 +272,7 @@ by — with no config, `local`):
 | `status` | string | `busy` \| `idle` \| `waiting` \| `unknown` |
 | `waiting_for` | string \| null | what a `waiting` session is blocked on |
 | `updated_at` | number \| null | last status change, ms since epoch |
+| `prompted_at` | number \| null | last human prompt (transcript `origin.kind: "human"`), ms since epoch; `null` when unknown (none yet, Codex / pi). The web list sorts by it |
 | `tty` | string \| null | |
 | `backend` | string | `tmux` \| `iterm` \| `unknown` |
 | `handle` | string \| null | tmux pane id or iTerm session id |

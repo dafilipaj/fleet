@@ -55,6 +55,7 @@ export function SessionRow({ session: s, now, selected, cursor, inStack }: Sessi
       {...longPress}
       aria-current={selected ? 'page' : undefined}
       data-session-key={selected || cursor ? `${s.host}/${s.session_id}` : undefined}
+      data-flip={sessionKey(s)}
       className={cn(
         'group/row block min-h-16 rounded-xl border bg-card px-3.5 py-3 text-card-foreground transition-colors [-webkit-touch-callout:none]',
         'outline-none hover:bg-muted/60 focus-visible:ring-3 focus-visible:ring-ring/50 active:bg-muted',

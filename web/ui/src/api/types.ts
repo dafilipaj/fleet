@@ -16,6 +16,8 @@ export interface Session {
   status?: SessionStatus | string | null
   /** Last activity, epoch ms. */
   updated_at?: number | null
+  /** Last human prompt, epoch ms; null when unknown (no prompt yet, Codex / pi, older CLI). */
+  prompted_at?: number | null
   tty?: string | null
   backend?: Backend | string | null
   /** iTerm session id or tmux pane id (`%87`). */
