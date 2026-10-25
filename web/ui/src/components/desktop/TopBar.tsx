@@ -1,5 +1,5 @@
 import type { KeyboardEvent, Ref } from 'react'
-import { PanelLeftCloseIcon, PanelLeftOpenIcon, PlusIcon, SearchIcon, XIcon } from 'lucide-react'
+import { PlusIcon, SearchIcon, XIcon } from 'lucide-react'
 
 import { GroupsStatus } from '@/components/board/GroupsStatus'
 import { FocusToggle } from '@/components/FocusToggle'
@@ -26,15 +26,13 @@ export interface TopBarProps {
   onNew: () => void
   /** The Board's last grouping run + Regroup (omitted on the List). */
   groups?: GroupsState
-  /** The List's sidebar show / hide (omitted on the Board). */
-  sidebar?: { open: boolean; toggle: () => void }
 }
 
 /**
  * The desktop top bar, the same over the List and the Board: summary, List | Board, search,
  * session filters, modules, New. The desktop app's traffic lights sit over its left end.
  */
-export function TopBar({ list, now, view, onView, searchRef, onSearchNav, onNew, groups, sidebar }: TopBarProps) {
+export function TopBar({ list, now, view, onView, searchRef, onSearchNav, onNew, groups }: TopBarProps) {
   const { fleet, query, setQuery, summary, note } = list
 
   const onSearchKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
@@ -58,18 +56,6 @@ export function TopBar({ list, now, view, onView, searchRef, onSearchNav, onNew,
       data-tauri-drag-region="deep"
       className="titlebar titlebar-lead flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b px-4 py-2.5 [--titlebar-pad:1rem]"
     >
-      {sidebar ? (
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label={sidebar.open ? 'Hide session list' : 'Show session list'}
-          title={withHint(sidebar.open ? 'Hide session list' : 'Show session list', 'sidebar')}
-          onClick={sidebar.toggle}
-          className="-mx-1 shrink-0 text-muted-foreground"
-        >
-          {sidebar.open ? <PanelLeftCloseIcon /> : <PanelLeftOpenIcon />}
-        </Button>
-      ) : null}
       <h1 className="text-lg font-bold tracking-tight">Fleet</h1>
       {fleet ? (
         <div className="flex items-center gap-2 text-xs text-muted-foreground tabular-nums" aria-label="Status summary">

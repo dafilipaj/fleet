@@ -20,7 +20,6 @@ import {
   NotebookPenIcon,
   NotebookTextIcon,
   PaletteIcon,
-  PanelLeftIcon,
   PanelRightIcon,
   PencilIcon,
   PlusIcon,
@@ -108,7 +107,7 @@ import { OperatorScreen } from '@/screens/OperatorScreen'
 const parseBool01 = (raw: string) => (raw === '1' ? true : raw === '0' ? false : undefined)
 
 /**
- * ≥ lg: master–detail. Resizable / collapsible sidebar (the session list) + the selected
+ * ≥ lg: master–detail. Resizable sidebar (the session list) + the selected
  * session as a pane (+ an optional details column). Same hash routes as mobile:
  * `#/` = nothing selected, `#/s/:host/:id` = that session open. One window keydown
  * listener drives the keyboard shortcuts (lib/shortcuts.ts).
@@ -143,8 +142,6 @@ export function DesktopShell() {
   const selectedKey = selected ? `${selected.host}/${selected.id}` : null
   const selectedSession = selected ? findSession(fleet, selected.host, selected.id) : null
 
-  const [sidebarRaw, setSidebarRaw] = usePersistentState<string>('fleet.sidebar', '1', (r) => (parseBool01(r) === undefined ? undefined : r))
-  const sidebarOpen = sidebarRaw === '1'
   const [sidebarW, setSidebarW] = usePersistentState<number>('fleet.sidebarWidth', SIDEBAR_DEFAULT_W, (r) => clampSidebarWidth(Number(r)))
   const [inspectorRaw, setInspectorRaw] = usePersistentState<string>(
     'fleet.inspector',
@@ -153,7 +150,6 @@ export function DesktopShell() {
   )
   // The Details column: the brief first, then the session's details (⌘I).
   const inspector = inspectorRaw === '1'
-  const toggleSidebar = () => setSidebarRaw(sidebarOpen ? '0' : '1')
   const toggleInspector = () => setInspectorRaw(inspector ? '0' : '1')
 
   // List | Board (`fleet.view`). Board: the grouped Kanban replaces the sidebar; an open
@@ -219,8 +215,8 @@ export function DesktopShell() {
   }
   const toggleView = () => switchView(board ? 'list' : 'board')
 
-  // Focus moves that must wait for the next commit (the sidebar may be collapsed, the
-  // cursor row not rendered yet). An effect, not requestAnimationFrame: rAF never fires
+  // Focus moves that must wait for the next commit (the cursor row may not be rendered
+  // yet). An effect, not requestAnimationFrame: rAF never fires
   // in a background tab, and a late focus would steal the caret from the composer.
   const [focusReq, setFocusReq] = useState<{ to: 'search' | 'row'; key?: string; n: number } | null>(null)
   useEffect(() => {
@@ -334,10 +330,6 @@ export function DesktopShell() {
       case 'mode':
         paneRef.current?.toggleMode()
         return !!paneRef.current
-      case 'sidebar':
-        if (board) return false
-        toggleSidebar()
-        return true
       case 'view':
         toggleView()
         return true
@@ -541,9 +533,6 @@ export function DesktopShell() {
         ...(board && groups.groups?.enabled
           ? [{ id: 'regroup', label: 'Regroup now', icon: <SparklesIcon />, keywords: ['group', 'board'], run: () => void groups.run() }]
           : []),
-        ...(board
-          ? []
-          : [{ id: 'sidebar', label: sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar', icon: <PanelLeftIcon />, shortcut: shortcutHint('sidebar'), run: toggleSidebar }]),
         ...(selectedSession && selectedKey
           ? [{ id: 'rename', label: 'Rename session…', icon: <PencilIcon />, shortcut: shortcutHint('rename'), keywords: ['title', 'name'], run: () => startEditing('header', selectedKey) }]
           : []),
@@ -730,7 +719,6 @@ export function DesktopShell() {
             onSearchNav={onSearchNav}
             onNew={() => setNewOpen(true)}
             groups={board ? groups : undefined}
-            sidebar={board ? undefined : { open: sidebarOpen, toggle: toggleSidebar }}
           />
           <div className="flex min-h-0 flex-1">
             {board ? (
@@ -798,42 +786,40 @@ export function DesktopShell() {
               </div>
             ) : (
               <>
-                {sidebarOpen ? (
-                  <aside aria-label="Session list" className="relative shrink-0 border-r bg-background" style={{ width: sidebarW }}>
-                    <Sidebar
-                      list={list}
-                      now={now}
-                      cursorKey={cursorKey}
-                      selectedKey={selectedKey}
-                    />
-                    <div
-                      role="separator"
-                      aria-orientation="vertical"
-                      aria-label="Resize sidebar"
-                      aria-valuemin={SIDEBAR_MIN_W}
-                      aria-valuemax={SIDEBAR_MAX_W}
-                      aria-valuenow={sidebarW}
-                      tabIndex={0}
-                      title="Drag to resize · double-click to reset"
-                      onPointerDown={onResizeDown}
-                      onPointerMove={onResizeMove}
-                      onPointerUp={onResizeUp}
-                      onPointerCancel={onResizeUp}
-                      onDoubleClick={() => setSidebarW(SIDEBAR_DEFAULT_W)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-                          e.preventDefault()
-                          setSidebarW(clampSidebarWidth(sidebarW + (e.key === 'ArrowRight' ? 24 : -24)))
-                        }
-                      }}
-                      className={cn(
-                        'absolute inset-y-0 -right-1 z-30 w-2 cursor-col-resize touch-none outline-none',
-                        'after:absolute after:inset-y-0 after:left-1/2 after:w-px after:-translate-x-1/2 after:transition-colors',
-                        'hover:after:w-0.5 hover:after:bg-primary/50 focus-visible:after:w-0.5 focus-visible:after:bg-ring',
-                      )}
-                    />
-                  </aside>
-                ) : null}
+                <aside aria-label="Session list" className="relative shrink-0 border-r bg-background" style={{ width: sidebarW }}>
+                  <Sidebar
+                    list={list}
+                    now={now}
+                    cursorKey={cursorKey}
+                    selectedKey={selectedKey}
+                  />
+                  <div
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label="Resize sidebar"
+                    aria-valuemin={SIDEBAR_MIN_W}
+                    aria-valuemax={SIDEBAR_MAX_W}
+                    aria-valuenow={sidebarW}
+                    tabIndex={0}
+                    title="Drag to resize · double-click to reset"
+                    onPointerDown={onResizeDown}
+                    onPointerMove={onResizeMove}
+                    onPointerUp={onResizeUp}
+                    onPointerCancel={onResizeUp}
+                    onDoubleClick={() => setSidebarW(SIDEBAR_DEFAULT_W)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+                        e.preventDefault()
+                        setSidebarW(clampSidebarWidth(sidebarW + (e.key === 'ArrowRight' ? 24 : -24)))
+                      }
+                    }}
+                    className={cn(
+                      'absolute inset-y-0 -right-1 z-30 w-2 cursor-col-resize touch-none outline-none',
+                      'after:absolute after:inset-y-0 after:left-1/2 after:w-px after:-translate-x-1/2 after:transition-colors',
+                      'hover:after:w-0.5 hover:after:bg-primary/50 focus-visible:after:w-0.5 focus-visible:after:bg-ring',
+                    )}
+                  />
+                </aside>
                 <main className="flex min-w-0 flex-1" style={UNDER_TOP_BAR}>
                   {pane ?? (
                     <EmptyPane

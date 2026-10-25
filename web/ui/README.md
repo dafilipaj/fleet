@@ -491,8 +491,7 @@ session in the pane), so a link opens the same session on either layout.
   Sessions | Bots toggle with status and host pickers, modules, `+`.
 - **Sidebar** (left, List only): the session list (the open row is highlighted, the keyboard
   cursor has a ring), Dormant and Recently closed. Resizable by dragging its edge (280–560px,
-  double-click resets, ←/→ on the focused handle; `fleet.sidebarWidth`), hidden / shown with ⌘\
-  or the top bar's panel button (`fleet.sidebar`).
+  double-click resets, ←/→ on the focused handle; `fleet.sidebarWidth`).
 - **Pane**: the session screen without the back button; header adds the cwd; chat is a wider
   (max-w-4xl) readable column, the terminal uses the full width; the composer sends on Enter (also
   ⌘/Ctrl+Enter, touch-capable laptops included), Shift+Enter is a newline. Nothing open → an empty

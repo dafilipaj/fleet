@@ -40,7 +40,6 @@ describe('matchShortcut', () => {
     expect(cmd('o', { shiftKey: true })).toBe('new')
     expect(cmd('f')).toBe('search')
     expect(cmd('b')).toBe('view')
-    expect(cmd('\\')).toBe('sidebar')
     expect(cmd('i')).toBe('inspector')
     expect(cmd('j')).toBe('mode')
     expect(cmd('e')).toBe('rename')
@@ -125,7 +124,6 @@ describe('matchShortcut', () => {
 
   it('falls back to the physical key on other layouts', () => {
     expect(cmd('л', { code: 'KeyK' })).toBe('palette') // Cyrillic
-    expect(cmd('ž', { code: 'Backslash' })).toBe('sidebar') // Croatian
     expect(cmd('-', { code: 'Slash' })).toBe('help') // German: the Slash position types '-'
     expect(cmd('k', { code: 'KeyL' })).toBe('palette') // Dvorak and co. follow the printed letter
   })
@@ -143,7 +141,6 @@ describe('hints', () => {
     expect(shortcutHint('new', pc)).toBe('Ctrl+Shift+O')
     expect(shortcutHint('help', browser)).toBe('⌘?')
     expect(shortcutHint('palette', pc)).toBe('Ctrl+K')
-    expect(shortcutHint('sidebar', browser)).toBe('⌘\\')
     expect(shortcutHint('back', browser)).toBe('')
   })
   it('lists the app-only combo only in the app', () => {
