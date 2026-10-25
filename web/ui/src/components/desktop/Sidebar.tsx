@@ -4,8 +4,6 @@ import { NotebookTextIcon, PanelLeftCloseIcon, PanelLeftOpenIcon, PlusIcon, Sear
 import { ClosedSection } from '@/components/ClosedSection'
 import { DormantSection } from '@/components/DormantSection'
 import { FocusToggle } from '@/components/FocusToggle'
-import { HostDot } from '@/components/HostBadge'
-import { StatusFilterLabel } from '@/components/JobChip'
 import { SessionListSkeleton } from '@/components/SessionListSkeleton'
 import type { Session } from '@/api/types'
 import { SessionRow } from '@/components/SessionRow'
@@ -16,19 +14,14 @@ import { ModuleButtons } from '@/components/ModuleNav'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Kbd } from '@/components/ui/kbd'
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { ViewToggle } from '@/components/ViewToggle'
+import { SidebarFilters } from '@/components/desktop/SidebarFilters'
 import { useNotesHosts } from '@/hooks/useNotes'
-import { ALL_HOSTS, type SessionListState } from '@/hooks/useSessionList'
+import type { SessionListState } from '@/hooks/useSessionList'
 import type { ViewMode } from '@/lib/groups'
-import { allSessions, stackRuns, visibleStatusFilters, type StatusFilterId } from '@/lib/sessions'
+import { allSessions, stackRuns } from '@/lib/sessions'
 import { ariaShortcut, sessionKey, shortcutHint, withHint } from '@/lib/shortcuts'
 import { cn } from '@/lib/utils'
-
-const chip = cn(
-  'h-7 shrink-0 gap-1 rounded-full border border-border bg-card px-2.5 text-xs text-muted-foreground',
-  'data-[state=on]:border-primary/50 data-[state=on]:bg-accent data-[state=on]:text-accent-foreground',
-)
 
 export interface SidebarProps {
   list: SessionListState
@@ -47,7 +40,7 @@ export interface SidebarProps {
 
 /** Desktop left column: header + summary, search, status/host filters, the session list. */
 export function Sidebar({ list, now, cursorKey, selectedKey, searchRef, onSearchNav, onNew, onCollapse, viewMode, onViewMode }: SidebarProps) {
-  const { fleet, error, query, setQuery, status, setStatus, setHostFilter, hosts, hostNames, host, view, hostCounts, summary, unreachable, note } = list
+  const { fleet, error, query, setQuery, host, view, summary, unreachable, note } = list
   const listRef = useRef<HTMLDivElement>(null)
 
   // Keep the cursor row visible (j/k past the edge).
@@ -145,43 +138,7 @@ export function Sidebar({ list, now, cursorKey, selectedKey, searchRef, onSearch
           {viewMode && onViewMode ? <ViewToggle value={viewMode} onChange={onViewMode} labels={false} className="p-px" /> : null}
         </div>
 
-        <ToggleGroup
-          type="single"
-          value={status}
-          onValueChange={(v) => v && setStatus(v as StatusFilterId)}
-          aria-label="Filter by status"
-          className="no-scrollbar w-full flex-wrap"
-        >
-          {visibleStatusFilters(fleet ? view.counts : null, status).map((f) => (
-            <ToggleGroupItem key={f.id} value={f.id} className={chip} title={f.title}>
-              <StatusFilterLabel filter={f} />
-              <span className="text-[0.6875rem] text-dimmer tabular-nums group-data-[state=on]/toggle:text-accent-foreground/70">
-                {fleet ? view.counts[f.id] : ''}
-              </span>
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
-
-        {hostNames.length > 1 ? (
-          <ToggleGroup
-            type="single"
-            value={host ?? ALL_HOSTS}
-            onValueChange={(v) => v && setHostFilter(v)}
-            aria-label="Filter by host"
-            className="no-scrollbar w-full flex-nowrap overflow-x-auto"
-          >
-            <ToggleGroupItem value={ALL_HOSTS} className={chip}>
-              All
-            </ToggleGroupItem>
-            {hosts.map((h) => (
-              <ToggleGroupItem key={h.name} value={h.name} className={chip}>
-                <HostDot host={h.name} />
-                <span className={cn(h.ok === false && 'text-destructive')}>{h.name}</span>
-                <span className="text-[0.6875rem] text-dimmer tabular-nums">{h.ok === false ? '!' : (hostCounts.get(h.name) ?? 0)}</span>
-              </ToggleGroupItem>
-            ))}
-          </ToggleGroup>
-        ) : null}
+        <SidebarFilters list={list} />
       </div>
 
       <div ref={listRef} data-session-list className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-2">
