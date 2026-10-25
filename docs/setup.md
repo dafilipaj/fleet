@@ -236,7 +236,7 @@ changes), builds the CLI into `~/.local/bin/fleet`, runs `fleet web build`, rest
 
 1. Install the **Tailscale** app, log in to the same tailnet, turn the VPN on.
 2. Open `http://100.x.y.z:7777` (the workstation — it is always on) in Safari, then Share → **Add
-   to Home Screen**. It runs full-screen as a PWA: session list, chat and terminal view, a
+   to Home Screen**. It runs full-screen as a PWA: session list, chat, a
    composer with quick replies, and "new session".
 3. For a real terminal, use an ssh client such as **Termius**: generate a key in the app, append
    its public key to `~/.ssh/authorized_keys` on the workstation, host = `100.x.y.z`, enable Mosh

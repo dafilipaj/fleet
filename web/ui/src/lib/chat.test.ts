@@ -2,13 +2,11 @@ import { expect, test } from 'vitest'
 
 import type { Message } from '@/api/types'
 
-import { CHAT_FONT_SIZES, nearBottom, nextChatLimit, parseMode, parseSize, sameGroup, splitPasted, stepSize, visibleMessages } from './chat'
+import { CHAT_FONT_SIZES, nearBottom, nextChatLimit, parseSize, sameGroup, splitPasted, stepSize, visibleMessages } from './chat'
 
 const m = (over: Partial<Message>): Message => ({ role: 'assistant', kind: 'assistant', text: 'x', ts: 1_000_000, ...over })
 
-test('parseMode / parseSize', () => {
-  expect(parseMode('term')).toBe('term')
-  expect(parseMode('garbage')).toBe('chat')
+test('parseSize', () => {
   expect(parseSize(CHAT_FONT_SIZES)('17')).toBe(17)
   expect(parseSize(CHAT_FONT_SIZES)('16')).toBeUndefined()
 })

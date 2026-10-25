@@ -483,7 +483,7 @@ each app writing its own chat UI. It is a separate tree in the web UI (`screens/
 - **List**: the live sessions on `host` whose cwd is `dir` or beneath it (worktrees inside the
   repo), latest first, and **New session**: the New session form with host and directory fixed
   (agent, model, first prompt, attachments, voice as usual) → `POST /api/hosts/:host/spawn`.
-- **Session**: the mobile session screen (`#/s/:host/:id`, chat / terminal, composer, AskUserQuestion
+- **Session**: the mobile session screen (`#/s/:host/:id`, chat, composer, AskUserQuestion
   answers, attachments, voice, the details drawer with Close) with Back to the list. Sessions on
   other hosts are not opened.
 - **`dir`**: absolute or `~/…` (expanded with the host's `home`, now part of each `/api/fleet`

@@ -40,7 +40,7 @@ describe('matchShortcut', () => {
     expect(cmd('o', { shiftKey: true })).toBe('new')
     expect(cmd('f')).toBe('search')
     expect(cmd('b')).toBe('view')
-    expect(cmd('j')).toBe('mode')
+    expect(cmd('j')).toBeNull()
     expect(cmd('e')).toBe('rename')
     expect(cmd('E', { shiftKey: true })).toBe('notes')
     expect(cmd('S', { shiftKey: true })).toBe('scratchpad')
@@ -95,7 +95,7 @@ describe('matchShortcut', () => {
   })
 
   it('fires action combos while typing', () => {
-    for (const [k, a] of [['k', 'palette'], ['/', 'help'], ['b', 'view'], ['f', 'search'], ['j', 'mode']] as const)
+    for (const [k, a] of [['k', 'palette'], ['/', 'help'], ['b', 'view'], ['f', 'search']] as const)
       expect(cmd(k, {}, { typing: true })).toBe(a)
     expect(cmd('O', { shiftKey: true }, { typing: true })).toBe('new')
   })

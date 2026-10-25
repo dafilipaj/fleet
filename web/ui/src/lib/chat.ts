@@ -1,22 +1,15 @@
-// Chat/term view logic — pure, unit-tested in chat.test.ts.
+// Chat view logic — pure, unit-tested in chat.test.ts.
 import type { Message } from '@/api/types'
 
-export type DetailMode = 'chat' | 'term'
-
-export const TERM_FONT_SIZES = [11, 12, 14] as const
 export const CHAT_FONT_SIZES = [13, 15, 17] as const
-export const TERM_LINES = [200, 600] as const
 /** "Load older" steps through these message limits. */
 export const CHAT_LIMITS = [60, 200, 500] as const
 /** Captions only on the last message of a same-speaker burst this close in time. */
 export const GROUP_GAP_MS = 2 * 60 * 1000
 
 export const CHAT_POLL_MS = 3000
-export const PEEK_POLL_MS = 2000
 /** Composer text limit (server: 1..8000 chars). */
 export const MAX_SEND_CHARS = 8000
-
-export const parseMode = (raw: string): DetailMode => (raw === 'term' ? 'term' : 'chat')
 
 /** A stored size must be one of `sizes`; anything else is the middle one. */
 export function parseSize(sizes: readonly number[]) {

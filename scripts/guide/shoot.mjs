@@ -32,7 +32,6 @@ const MOBILE = { w: 390, h: 844, mobile: true, scale: 3 }
 const SHOTS = [
   // desktop
   ['d-session', DESKTOP, async (p) => { await p.go(U + INV) }],
-  ['d-term', DESKTOP, async (p) => { await p.go(U + INV, { 'fleet.detailMode': 'term' }) }],
   ['d-palette', DESKTOP, async (p) => { await p.go(U + INV); await p.key('k', { meta: true }); await p.type('onb') }],
   ['d-help', DESKTOP, async (p) => { await p.go(U + INV); await p.key('?', { meta: true, shift: true }) }],
   ['d-new', DESKTOP, async (p) => { await p.go(U + INV); await p.key('o', { meta: true, shift: true, ms: 1200 }) }],
@@ -71,7 +70,6 @@ const SHOTS = [
   ['m-chat', MOBILE, async (p) => { await p.go(U + INV) }],
   ['m-chips', MOBILE, async (p) => { await p.go(U + CHK); await p.click('Show quick replies', { ms: 900 }) }],
   ['m-question', MOBILE, async (p) => { await p.go(U + RL) }],
-  ['m-term', MOBILE, async (p) => { await p.go(U + INV, { 'fleet.detailMode': 'term' }) }],
   ['m-details', MOBILE, async (p) => { await p.go(U + INV); await p.click('=More', { ms: 900 }) }],
   ['m-stack', MOBILE, async (p) => { await p.go(U + ONB); await p.click('StackBrief', { ms: 1500 }) }],
   ['m-operator', MOBILE, async (p) => { await p.go(U + '#/operator', MUTE) }],

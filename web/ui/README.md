@@ -65,7 +65,7 @@ src/
   lib/gestures.ts     touch gestures: swipeIntent() (composer chips), pullIntent() (list filter drawer),
                       swipeAxis() / swipeBackIntent() / swipeBackBlocked() (session swipe-back)
   lib/prefs.ts        Settings screen prefs: TEXT_SIZES (Small / Default / Large), rootFontSize() (the <html>
-                      font-size that scales every rem), CHAT_FONT_REM, termFontRem(), storage keys
+                      font-size that scales every rem), CHAT_FONT_REM, storage keys
   lib/jobs.ts         Bots screen (`#/bots`, old `#/jobs`): flattenJobs() (every host's jobs), runTree() (a run's sessions under their
                       `parent`), liveSession() (host + tmux session → the /api/fleet row), whenLabel(), outcomeTone(),
                       liveSummary(), keepLabel(), promptLabel(), isJobsLocation()
@@ -100,7 +100,7 @@ src/
   lib/utils.ts        cn() (shadcn)
   hooks/usePoller.ts  setTimeout-chained poller: no overlap, pauses while hidden, abort on unmount,
                       refresh() (runs even while hidden)
-  hooks/useFollowScroll.ts  follow-the-tail scrolling for chat / term
+  hooks/useFollowScroll.ts  follow-the-tail scrolling for the chat
   hooks/useFleet.ts   fleet context + localStorage snapshot (`fleet.snapshot`)
   hooks/useSessionList.ts  list state shared by the mobile list and the desktop sidebar (search, filters, counts)
   hooks/useGroups.ts  useViewMode() (`fleet.view`: list | board), useGroups(enabled): polls /api/groups
@@ -141,8 +141,8 @@ src/
                       GroupsStatus (last run + Regroup), StatusSummaryDots
   components/stack/   StackUi (mounted once in App: the sheet + the sibling form), StackSheet, StackChip (list rows),
                       StackColumnMenu (board column / mobile section ⋯), StackBar (under the session header)
-  components/session/ detail screen parts: ChatView, TermView, Composer, OutboxBubbles (pending / sending / sent /
-                      failed user bubbles; the terminal view's strip), FilePreview, DetailsPanel (the desktop
+  components/session/ detail screen parts: ChatView, Composer, OutboxBubbles (pending / sending / sent /
+                      failed user bubbles), FilePreview, DetailsPanel (the desktop
                       details column) / DetailsDrawer (mobile ⋯), BriefSection (its top), LatestButton
   components/desktop/ Sidebar (+ SidebarRail when collapsed, NotesLink), CommandPalette (⌘K), ShortcutsDialog (⌘?)
   components/review/  FileDiff (one file's card: unified / split hunks, Viewed, line-number selection, threads under
@@ -163,7 +163,7 @@ src/
   so no server SPA fallback is needed and old bookmarks/PWA installs keep working.
 - **Data**: one `FleetProvider` polls `/api/fleet` for the whole app; screens read it with
   `useFleet()` (`fleet`, `fleetAt`, `error`, `refreshing`, `refresh()`, `applyFleet()`).
-  Per-screen loops (messages, peek) use `usePoller(fn, ms)` — `fn` gets an `AbortSignal`; pass it to
+  Per-screen loops (messages) use `usePoller(fn, ms)` — `fn` gets an `AbortSignal`; pass it to
   the `api.*` call. Never `setInterval` + fetch.
 - **Colours**: tokens in `src/index.css` — shadcn's (`background`, `card`, `muted-foreground`, …)
   plus `dimmer`, `status-{waiting,busy,idle,unknown,error}` and `host-{0..3}`. Use them as Tailwind
@@ -181,7 +181,7 @@ src/
   components take opt-in props (`layout="pane"`, `wide`, `desktop`, `selected`/`cursor`) whose
   defaults keep the mobile markup byte-identical; keep it that way (check a 390px iframe).
 - **Storage keys** are `fleet.*`; keep the existing ones stable, viewers' prefs live in them
-  (`fleet.detailMode`, `fleet.termFont`, `fleet.termLines`, `fleet.chatFont`, `fleet.chatHideNotes`).
+  (`fleet.chatFont`, `fleet.chatHideNotes`).
 - **Text from sessions is data**: render it as text (React escapes); never `dangerouslySetInnerHTML`.
   Markdown must stay DOM-only with `http(s)` links only.
 - Pure logic goes in `lib/` with a `*.test.ts` next to it.
@@ -312,7 +312,7 @@ src/
     (and whether the model wrote the StackBrief); then the usual spawn watch opens the new session.
 - **Session detail** (`#/s/:host/:id`), fixed full-screen layout that follows the visual viewport
   (`fixed-app`: `--app-h` + `--app-top`, so the composer stays above the iOS keyboard):
-  - header: back, title (click to rename), status, host, "updated Xs ago", Chat | Term toggle, ⋯;
+  - header: back, title (click to rename), status, host, "updated Xs ago", ⋯;
   - **swipe right** anywhere = back (also in the installed PWA, which has no native back swipe):
     the screen follows the finger and snaps back unless the swipe is ≥ 70px, mostly horizontal
     and long (≥ 120px) or quick. Left alone: the textarea / inputs, open sheets, a text
@@ -323,8 +323,7 @@ src/
     command / system lines, time captions per burst, "Claude is working…" / "Needs you" footer;
     markdown via `lib/markdown.ts` (AST, pure) + `components/Markdown.tsx` (React elements only,
     `http(s)` links only);
-  - **Term** polls `peek` every 2s (200/600 lines), bare URLs linkified;
-  - both follow the tail (`hooks/useFollowScroll.ts`): scrolling up pauses and shows "Latest";
+  - it follows the tail (`hooks/useFollowScroll.ts`): scrolling up pauses and shows "Latest";
     re-renders happen only when the payload changed;
   - errors (`sessionErrorMessage`) as a pill over the pane; host-unreachable / not-in-fleet /
     gone banners; the composer locks for a gone session or `backend: unknown`.
@@ -351,9 +350,8 @@ src/
     whitespace normalisation (or shares the first 32 chars — Claude Code may rewrite attached
     paths); an unmatched "Sent" bubble expires after 3 min.
   - Failure (409 with the server's reason, 404 gone, host / network unreachable): the bubble shows
-    "Not sent: …" with **Retry** (back of the line) and **Edit** (text back in the composer). In
-    the terminal view a strip above the composer shows pending / sending / failed messages, and a
-    toast says sent / not sent.
+    "Not sent: …" with **Retry** (back of the line) and **Edit** (text back in the composer). After
+    leaving the session a toast says not sent.
   - Leaving the session (back, another session, the Board flyout switching or closing) sends
     what is still counting down right away; so does the page going to the background (iOS
     freezes timers). On `pagehide` (tab / app closing) the rest go as keepalive fetches, best
@@ -396,7 +394,7 @@ src/
   nodes exist only with `parseMarkdown(text, { files: true })` and render as buttons.
 - **⋯ → Details** (drawer, the same content as the desktop details column): name, host · cwd,
   context, **Open in VS Code / Cursor** (`editorUrl`, a plain `vscode://` / `cursor://` link; hidden
-  on touch screens), the **brief** (below), Chat/Terminal, scrollback (`fleet.termLines`),
+  on touch screens), the **brief** (below),
   Auto-name → Run now (+ last run / schedule from `/api/health` when the host is this server),
   session details (tmux, backend, pid, id), Close session (two taps within 5s → `api.kill`, back
   to the list, row dropped optimistically).
@@ -412,8 +410,7 @@ src/
   every 30s, every 2.5s while generating.
 - **Settings** (`#/settings`: the ⋯ More menu in the list header on mobile, the top bar on desktop, ⌘K → Settings…): Text size (Small / Default /
   Large = chat at 13 / 15 / 17px, `fleet.chatFont`) scales the **whole** UI via the `<html>`
-  font-size (index.html applies it before first paint); Terminal text (`fleet.termFont`, in rem so
-  it follows the text size); Theme (`fleet.theme`); Progress notes (`fleet.chatHideNotes`); Send
+  font-size (index.html applies it before first paint); Theme (`fleet.theme`); Progress notes (`fleet.chatHideNotes`); Send
   delay (`fleet.sendDelay`, above). Per
   viewer (localStorage), for every session. **Git repos** (`components/ReposEditor.tsx`) is per host
   (a host switcher): Auto-sync (the `fleet.repos` launchd timer, on/off), the default interval, the
@@ -509,11 +506,11 @@ session in the pane), so a link opens the same session on either layout.
   sidebar (260–560px, default 320px, double-click resets, ←/→ on the focused handle;
   `fleet.detailsWidth`); the chat keeps at least 380px, and a pane too narrow for both shows the
   ⋯ button (the drawer) instead. The mobile ⋯ drawer's content (`DetailsPanel`) — the brief first
-  (summary, todos, resources, continue), then chat/terminal, scrollback, auto-name,
+  (summary, todos, resources, continue), then auto-name,
   tmux/backend/pid/id, Close session (click twice).
 - **New session**: the mobile form in a dialog. Toasts sit bottom-right, above the composer.
 - **Polling** is unchanged: one `/api/fleet` loop (FleetProvider, 5s) feeds the sidebar and the
-  pane's status; the pane runs exactly one messages (3s) or peek (2s) loop. The tab title is
+  pane's status; the pane runs one messages (3s) loop. The tab title is
   `(<needs you>) <session> · Fleet`.
 
 ### Shortcuts
@@ -540,7 +537,6 @@ New Session** menu item that dispatches a `fleet:command` DOM event into the pag
 | ⌘/Ctrl+`F` | search (in the field: ↑/↓ move, Enter opens, Esc clears then leaves; ⌘F again: the browser's find) |
 | ⌘`N` (Fleet.app), ⌘/Ctrl+⇧`O` | new session |
 | ⌘/Ctrl+`E`, `F2` | rename (the open session, else the cursor row / card) |
-| ⌘/Ctrl+`J` | switch chat / terminal |
 | ⌘/Ctrl+`⌫` | close the session (the open one, else the cursor row): press twice within 3 s; outside a field only (there it deletes to the line start) |
 | `Enter`, ⌘/Ctrl+`Enter` · `Shift+Enter` | send · newline (composer) |
 | `Esc` | cancel a pending send (first, while one counts down); leave the field; otherwise close the pane or Settings (`#/`) |

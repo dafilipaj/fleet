@@ -36,7 +36,7 @@ The setup it is built for:
   drives them through tmux or iTerm, and dispatches to other hosts by re-running itself over ssh
   (`ssh <host> fleet <same args>`).
 - **Web** — every machine runs the same server. It serves its own sessions and merges in its
-  peers', so any one URL shows the whole fleet. Built for a phone: list, chat/terminal view,
+  peers', so any one URL shows the whole fleet. Built for a phone: list, chat,
   send a message, spawn a session.
 - **Config** — one small JSON file per machine (`~/.config/fleet/config.json`), written by
   `fleet init`, read by both the CLI and the web server.

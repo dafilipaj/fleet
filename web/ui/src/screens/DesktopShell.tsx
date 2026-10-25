@@ -14,7 +14,6 @@ import {
   Link2Icon,
   ListIcon,
   FileDiffIcon,
-  MessageSquareTextIcon,
   MonitorIcon,
   MoonIcon,
   NotebookPenIcon,
@@ -311,9 +310,6 @@ export function DesktopShell() {
       case 'blur':
         target?.blur()
         return true
-      case 'mode':
-        paneRef.current?.toggleMode()
-        return !!paneRef.current
       case 'view':
         toggleView()
         return true
@@ -484,8 +480,6 @@ export function DesktopShell() {
         { id: 'new', label: 'New session…', icon: <PlusIcon />, shortcut: shortcutHint('new'), keywords: ['spawn', 'start'], run: () => setNewOpen(true) },
         ...(selectedKey
           ? [
-              { id: 'chat', label: 'Chat view', icon: <MessageSquareTextIcon />, shortcut: shortcutHint('mode'), run: () => paneRef.current?.setMode('chat') },
-              { id: 'term', label: 'Terminal view', icon: <SquareTerminalIcon />, shortcut: shortcutHint('mode'), run: () => paneRef.current?.setMode('term') },
               ...(selected
                 ? [
                     {

@@ -12,8 +12,6 @@ export interface OutboxBubblesProps {
   onUndo: () => void
   onRetry: (id: number) => void
   onEdit: (id: number) => void
-  /** `strip`: the terminal view's compact row above the composer (no sent bubbles). */
-  variant?: 'chat' | 'strip'
 }
 
 const RING_R = 6
@@ -50,7 +48,7 @@ function Countdown({ item }: { item: OutboxItem }) {
 const actionClass =
   'relative inline-flex h-7 items-center gap-1 rounded-full px-2 font-medium text-foreground/80 hover:bg-muted hover:text-foreground after:absolute after:inset-x-0 after:-inset-y-2 [&_svg]:size-3.5'
 
-function Status({ item, desktop, onUndo, onRetry, onEdit }: Omit<OutboxBubblesProps, 'items' | 'variant'> & { item: OutboxItem }) {
+function Status({ item, desktop, onUndo, onRetry, onEdit }: Omit<OutboxBubblesProps, 'items'> & { item: OutboxItem }) {
   switch (item.state) {
     case 'pending':
       return (
@@ -100,9 +98,7 @@ function Status({ item, desktop, onUndo, onRetry, onEdit }: Omit<OutboxBubblesPr
  * Optimistic user bubbles for messages in the outbox: pending (countdown ring + "Sending in 3s",
  * Backspace / Undo), sending…, sent (until the transcript shows the real one), failed (Retry / Edit).
  */
-export function OutboxBubbles({ items, desktop = false, onUndo, onRetry, onEdit, variant = 'chat' }: OutboxBubblesProps) {
-  const strip = variant === 'strip'
-  const shown = strip ? items.filter((it) => it.state !== 'sent') : items
+export function OutboxBubbles({ items, desktop = false, onUndo, onRetry, onEdit }: OutboxBubblesProps) {
   const pending = items.find((it) => it.state === 'pending')
   const announce = pending
     ? `Sending in ${Math.round(((pending.dueAt ?? pending.createdAt) - pending.createdAt) / 1000)} seconds, ${desktop ? 'press Backspace' : 'tap Undo'} to cancel`
@@ -112,33 +108,25 @@ export function OutboxBubbles({ items, desktop = false, onUndo, onRetry, onEdit,
       {announce}
     </div>
   )
-  if (!shown.length) return live
+  if (!items.length) return live
   return (
-    <div className={cn('flex flex-col', strip ? 'gap-1' : 'gap-2.5 pt-2.5')}>
+    <div className="flex flex-col gap-2.5 pt-2.5">
       {live}
-      {shown.map((it) => (
+      {items.map((it) => (
         <div key={it.id} className="flex w-full flex-col items-end" data-outbox={it.state}>
-          {strip ? null : (
-            <div
-              className={cn(
-                'w-full rounded-2xl rounded-br-md border px-3 py-2 whitespace-pre-wrap text-accent-foreground transition-opacity [overflow-wrap:anywhere]',
-                it.state === 'failed'
-                  ? 'border-destructive/50 bg-accent/60'
-                  : it.state === 'sent'
-                    ? 'border-primary/25 bg-accent'
-                    : 'border-dashed border-primary/40 bg-accent/60 opacity-80',
-              )}
-            >
-              {it.text}
-            </div>
-          )}
           <div
             className={cn(
-              'flex max-w-full min-w-0 items-center gap-1.5 text-dimmer',
-              strip ? 'w-full rounded-lg border bg-card px-2.5 py-1 text-xs' : 'px-1 pt-0.5 text-[0.6875rem]',
+              'w-full rounded-2xl rounded-br-md border px-3 py-2 whitespace-pre-wrap text-accent-foreground transition-opacity [overflow-wrap:anywhere]',
+              it.state === 'failed'
+                ? 'border-destructive/50 bg-accent/60'
+                : it.state === 'sent'
+                  ? 'border-primary/25 bg-accent'
+                  : 'border-dashed border-primary/40 bg-accent/60 opacity-80',
             )}
           >
-            {strip ? <span className="min-w-0 flex-1 truncate text-foreground/80">{it.text}</span> : null}
+            {it.text}
+          </div>
+          <div className="flex max-w-full min-w-0 items-center gap-1.5 px-1 pt-0.5 text-[0.6875rem] text-dimmer">
             <Status item={it} desktop={desktop} onUndo={onUndo} onRetry={onRetry} onEdit={onEdit} />
           </div>
         </div>

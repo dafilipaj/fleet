@@ -1,9 +1,8 @@
 // Viewer preferences shown on the Settings screen (`#/settings`) — pure helpers, unit-tested in
 // prefs.test.ts. Stored per viewer in localStorage.
-import { CHAT_FONT_SIZES, TERM_FONT_SIZES, parseSize } from '@/lib/chat'
+import { CHAT_FONT_SIZES, parseSize } from '@/lib/chat'
 
 export const TEXT_SIZE_KEY = 'fleet.chatFont'
-export const TERM_FONT_KEY = 'fleet.termFont'
 export const HIDE_NOTES_KEY = 'fleet.chatHideNotes'
 /** Composer send delay (ms: 0 / 3000 / 5000, lib/outbox.ts SEND_DELAYS) — the undo window. */
 export const SEND_DELAY_KEY = 'fleet.sendDelay'
@@ -17,11 +16,7 @@ export const TEXT_SIZES = CHAT_FONT_SIZES
 export const DEFAULT_TEXT_SIZE = 15
 export const TEXT_SIZE_LABELS: Record<number, string> = { 13: 'Small', 15: 'Default', 17: 'Large' }
 
-export const DEFAULT_TERM_FONT = 12
-export { TERM_FONT_SIZES }
-
 export const parseTextSize = parseSize(TEXT_SIZES)
-export const parseTermFont = parseSize(TERM_FONT_SIZES)
 
 /** The chat text size at the default root (16px), in rem: scales with the root. */
 export const CHAT_FONT_REM = `${DEFAULT_TEXT_SIZE / 16}rem`
@@ -34,6 +29,3 @@ export function rootFontSize(size: number): string {
   if (!TEXT_SIZES.includes(size as (typeof TEXT_SIZES)[number]) || size === DEFAULT_TEXT_SIZE) return ''
   return `${+((size / DEFAULT_TEXT_SIZE) * 100).toFixed(3)}%`
 }
-
-/** The terminal's font-size for a `fleet.termFont` value (px at the default text size), in rem. */
-export const termFontRem = (px: number) => `${px / 16}rem`

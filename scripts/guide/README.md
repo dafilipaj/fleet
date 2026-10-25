@@ -38,7 +38,7 @@ session `fleet-test-guide`, which the script removes.
    wide), `m-…` mobile (390×844 @3x, touch, iPhone UA; saved 640 px wide). Steps use `p.go(url,
    localStorage)`, `p.click(text)` (`'=Exact'` matches whole text / aria-label), `p.key(k, { meta,
    shift })`, `p.type`, `p.swipe`, `p.eval`. Preferences are set through localStorage keys
-   (`fleet.view`, `fleet.palette`, `fleet.theme`, `fleet.detailMode`, …).
+   (`fleet.view`, `fleet.palette`, `fleet.theme`, …).
 3. **Page** — add or change the section in `guide.html` and reference `img/<name>.webp`.
    `build.sh` fails when the page references an image that wasn't shot.
 4. Build, look at every new image, then publish.
