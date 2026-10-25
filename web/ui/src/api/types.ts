@@ -60,6 +60,12 @@ export interface Session {
   gh_identity?: string | null
   /** The app whose embedded Fleet panel started it (`fleet list --json` → `embed`, the pane's `@fleet_embed`); null / absent = none. */
   embed?: string | null
+  /**
+   * The git checkout its cwd is in (`fleet list --json` → `git`): branch (null = detached),
+   * root, linked worktree or main checkout, GitHub `owner/name` of origin. Null outside one;
+   * older CLIs omit it.
+   */
+  git?: { branch: string | null; root: string; linked: boolean; repo: string | null } | null
   /** The host's voice operator (web/lib/operator.mjs): kept out of session lists. Older servers omit it. */
   operator?: boolean
 }

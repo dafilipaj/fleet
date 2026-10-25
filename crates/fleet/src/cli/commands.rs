@@ -198,6 +198,8 @@ pub fn list_rows() -> Vec<Session> {
     title::stamp_display_titles(&mut rows);
     // Which session stack each row is in (read-only: no sync, no writes).
     crate::core::stack::stamp_stacks(&mut rows);
+    // The branch + GitHub repo of each row's checkout (views link PRs by it, on any host).
+    crate::core::git::stamp_git(&mut rows);
     // What runs now, for session recovery after a reboot (core::snapshot). Never fails the
     // listing; a no-op in fixture mode and when nothing changed.
     if discovered {

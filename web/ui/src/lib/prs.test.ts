@@ -136,6 +136,19 @@ describe('links', () => {
     expect(linkSessions([main], null, sessions).bySession.size).toBe(0)
   })
 
+  it('a session in a linked worktree on a PR branch links, on any host', () => {
+    const p = pr({ owner: 'Acme', repo: 'app', number: 4, url: 'u4', headBranch: 'feat-x' })
+    const fork = pr({ owner: 'acme', repo: 'app', number: 9, url: 'u9', headBranch: 'main' })
+    const git = (branch: string | null, linked = true, repo: string | null = 'acme/app') => ({ branch, root: '/x', linked, repo })
+    const s = (id: string, g: Session['git'], host = 'laptop') => ({ host, session_id: id, cwd: '/x', git: g }) as Session
+    const sessions = [s('a', git('feat-x')), s('b', git('pr-9'), 'ws'), s('c', git('feat-x', false)), s('d', git('feat-x', true, 'acme/other')), s('e', null), s('f', git(null))]
+    const { bySession } = linkSessions([p, fork], 'ws', sessions)
+    expect([...bySession].map(([k, x]) => [k, x.number])).toEqual([
+      ['laptop/a', 4],
+      ['ws/b', 9],
+    ])
+  })
+
   it('a main checkout on a PR branch links nothing', () => {
     const p = pr({ url: 'u', local: { repoPath: '/code/app', worktree: '/code/app' } })
     expect(linkSessions([p], 'ws', [{ host: 'ws', session_id: 'a', cwd: '/code/app/src' } as Session]).bySession.size).toBe(0)

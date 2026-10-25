@@ -92,6 +92,9 @@ pub struct Session {
     /// The app whose embedded Fleet panel started it (the web embed view's `app`, the pane's
     /// `@fleet_embed` option); `null` when none.
     pub embed: Option<String>,
+    /// The git checkout its cwd is in (`{ branch, root, linked, repo }`, see
+    /// [`crate::core::git`]); `null` outside one. Stamped by `list`; `None` inside discovery.
+    pub git: Option<crate::core::git::GitHead>,
 }
 
 impl Default for Session {
@@ -122,6 +125,7 @@ impl Default for Session {
             origin: None,
             gh_identity: None,
             embed: None,
+            git: None,
         }
     }
 }
@@ -348,6 +352,7 @@ pub fn discover_checked() -> Result<Vec<Session>, String> {
                 .map(|p| p.gh_identity.clone())
                 .filter(|g| !g.is_empty()),
             embed: pane.map(|p| p.embed.clone()).filter(|e| !e.is_empty()),
+            git: None,
         });
     }
     crate::core::context::apply_native_1m(out.iter_mut().filter_map(|s| s.context.as_mut()));

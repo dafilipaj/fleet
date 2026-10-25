@@ -125,20 +125,34 @@ export interface PrLinks {
 const under = (cwd: string, dir: string) => cwd === dir || cwd.startsWith(dir.endsWith('/') ? dir : `${dir}/`)
 
 /**
- * Sessions ↔ PRs: a session on `prHost` whose cwd is a PR's worktree (or inside it) works on
- * that PR. Worktrees can nest (`repo/.worktrees/x` inside `repo`): the deepest one wins.
- * Worktree paths are per host, so sessions on other hosts never match. A repo's main checkout
- * never links: it is on some PR's branch now and then, while its sessions do anything.
+ * Sessions ↔ PRs, on any host: a session in a linked worktree of the PR's repo, on its head
+ * branch (`pr-<n>` for a fork's PR, as `fleet pr checkout` names it), works on that PR. A
+ * session from an older CLI (no `git`) falls back to the PR host's worktree paths: on `prHost`,
+ * its cwd is a PR's worktree or inside it (the deepest one wins). A repo's main checkout never
+ * links: it is on some PR's branch now and then, while its sessions do anything.
  */
 export function linkSessions(prs: PullRequest[], prHost: string | null, sessions: Session[]): PrLinks {
   const bySession = new Map<string, PullRequest>()
   const byPr = new Map<string, Session[]>()
   if (!prHost) return { bySession, byPr }
+  const byBranch = new Map<string, PullRequest>()
+  for (const p of prs) {
+    const repo = `${p.owner}/${p.repo}`.toLowerCase()
+    for (const b of [p.headBranch, `pr-${p.number}`]) if (!byBranch.has(`${repo} ${b}`)) byBranch.set(`${repo} ${b}`, p)
+  }
   const withWt = prs.filter((p) => p.local?.worktree && p.local.worktree !== p.local.repoPath).sort((a, b) => b.local!.worktree!.length - a.local!.worktree!.length)
   for (const s of sessions) {
-    if (s.host !== prHost || !s.cwd || !s.session_id) continue
+    if (!s.cwd || !s.session_id) continue
     const cwd = s.cwd
-    const pr = withWt.find((p) => under(cwd, p.local!.worktree!))
+    const g = s.git
+    const pr =
+      g !== undefined
+        ? g?.linked && g.repo && g.branch
+          ? byBranch.get(`${g.repo.toLowerCase()} ${g.branch}`)
+          : undefined
+        : s.host === prHost
+          ? withWt.find((p) => under(cwd, p.local!.worktree!))
+          : undefined
     if (!pr) continue
     bySession.set(`${s.host}/${s.session_id}`, pr)
     byPr.set(pr.url, [...(byPr.get(pr.url) ?? []), s])
