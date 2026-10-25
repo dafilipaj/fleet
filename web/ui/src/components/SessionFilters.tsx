@@ -27,8 +27,11 @@ const trigger = cn(
 )
 const count = 'ml-auto pl-3 text-[0.6875rem] text-dimmer tabular-nums'
 
-/** Sessions | Bots (| Apps) toggle, then status and host pickers behind one icon each. */
-export function SidebarFilters({ list }: { list: SessionListState }) {
+/**
+ * Sessions | Bots (| Apps) toggle, then status and host pickers behind one icon each.
+ * `spread`: the pickers sit at the row's right end (the sidebar).
+ */
+export function SessionFilters({ list, spread = false }: { list: SessionListState; spread?: boolean }) {
   const { fleet, status, setStatus, setHostFilter, hosts, hostNames, host, view, hostCounts } = list
   const counts = fleet ? view.counts : null
   const kind = KINDS.includes(status) ? status : SESSIONS
@@ -70,7 +73,7 @@ export function SidebarFilters({ list }: { list: SessionListState }) {
         ))}
       </ToggleGroup>
 
-      <span className="ml-auto" />
+      {spread ? <span className="ml-auto" /> : null}
 
       <DropdownMenu>
         <DropdownMenuTrigger asChild disabled={kind !== SESSIONS}>

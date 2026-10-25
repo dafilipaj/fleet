@@ -4,6 +4,7 @@ import { NotebookTextIcon, PanelLeftCloseIcon, PanelLeftOpenIcon, PlusIcon, Sear
 import { ClosedSection } from '@/components/ClosedSection'
 import { DormantSection } from '@/components/DormantSection'
 import { FocusToggle } from '@/components/FocusToggle'
+import { SessionFilters } from '@/components/SessionFilters'
 import { SessionListSkeleton } from '@/components/SessionListSkeleton'
 import type { Session } from '@/api/types'
 import { SessionRow } from '@/components/SessionRow'
@@ -15,7 +16,6 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Kbd } from '@/components/ui/kbd'
 import { ViewToggle } from '@/components/ViewToggle'
-import { SidebarFilters } from '@/components/desktop/SidebarFilters'
 import { useNotesHosts } from '@/hooks/useNotes'
 import type { SessionListState } from '@/hooks/useSessionList'
 import type { ViewMode } from '@/lib/groups'
@@ -138,7 +138,7 @@ export function Sidebar({ list, now, cursorKey, selectedKey, searchRef, onSearch
           {viewMode && onViewMode ? <ViewToggle value={viewMode} onChange={onViewMode} labels={false} className="p-px" /> : null}
         </div>
 
-        <SidebarFilters list={list} />
+        <SessionFilters list={list} spread />
       </div>
 
       <div ref={listRef} data-session-list className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-2">
