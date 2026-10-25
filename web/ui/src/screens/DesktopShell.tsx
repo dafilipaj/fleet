@@ -131,7 +131,7 @@ export function DesktopShell() {
   const prsOpen = isPrsLocation(location)
   // `#/tasks`: the tasks board too.
   const tasksOpen = isTasksLocation(location)
-  // `#/notes…`: the notes explorer takes the whole window (no sidebar / board).
+  // `#/notes…`: the notes explorer, in the pane.
   const notesLoc = parseNotesLocation(location)
   const notesOpen = notesLoc !== null
   // `#/review/:host/:id`: the diff reviewer (with the session beside it) takes the whole window.
@@ -285,8 +285,6 @@ export function DesktopShell() {
 
   const run = (action: ShortcutAction, target: HTMLElement | null): boolean => {
     const cur = cursorKey ? byKey.get(cursorKey) : null
-    // The session list isn't on screen in the notes explorer: its keys do nothing there.
-    if (notesOpen && !['search', 'new', 'back', 'blur', 'palette', 'help', 'notes', 'scratchpad'].includes(action)) return false
     if (reviewOpen && !['new', 'back', 'blur', 'palette', 'help', 'notes', 'scratchpad'].includes(action)) return false
     switch (action) {
       case 'next':
@@ -690,15 +688,13 @@ export function DesktopShell() {
     <PrsScreen layout="pane" />
   ) : tasksOpen ? (
     <TasksScreen layout="pane" />
+  ) : notesOpen ? (
+    <NotesScreen layout="pane" searchRef={notesSearchRef} />
   ) : null
 
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
-      {notesOpen ? (
-        <main className="flex min-h-0 min-w-0 flex-1">
-          <NotesScreen layout="pane" searchRef={notesSearchRef} />
-        </main>
-      ) : reviewOpen ? (
+      {reviewOpen ? (
         <main className="flex min-h-0 min-w-0 flex-1">
           <ReviewScreen layout="pane" />
         </main>
