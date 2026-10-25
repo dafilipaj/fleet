@@ -454,7 +454,8 @@ export function DesktopShell() {
   useEffect(() => {
     const el = boardAreaRef.current
     if (!el || typeof ResizeObserver === 'undefined') return
-    const ro = new ResizeObserver(([entry]) => entry && setBoardW(entry.contentRect.width))
+    // An unmounting board reports 0 wide: keep the last real width.
+    const ro = new ResizeObserver(([entry]) => entry && entry.contentRect.width > 0 && setBoardW(entry.contentRect.width))
     ro.observe(el)
     return () => ro.disconnect()
   }, [board])

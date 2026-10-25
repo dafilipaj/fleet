@@ -29,6 +29,11 @@ test('flyout bounds follow the board width', () => {
   expect(flyoutMaxWidth(300)).toBe(300) // never wider than the board itself
 })
 
+test('clampFlyoutWidth survives a 0-wide board (no recursion)', () => {
+  expect(clampFlyoutWidth(0, 0)).toBe(0)
+  expect(defaultFlyoutWidth(0)).toBe(0)
+})
+
 test('clampFlyoutWidth keeps the flyout within bounds', () => {
   expect(clampFlyoutWidth(700, 1440)).toBe(700)
   expect(clampFlyoutWidth(700.4, 1440)).toBe(700)

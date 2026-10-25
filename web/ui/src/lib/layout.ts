@@ -30,7 +30,8 @@ export function defaultFlyoutWidth(container: number): number {
 
 /** A flyout width within bounds for this board; non-numeric or ≤ 0 (= "no preference") is the default. */
 export function clampFlyoutWidth(w: number, container: number): number {
-  if (!Number.isFinite(w) || w <= 0) return defaultFlyoutWidth(container)
+  // A 0-wide board (unmounted) makes the default share 0 too: bound it directly, no recursion.
+  if (!Number.isFinite(w) || w <= 0) w = container * FLYOUT_DEFAULT_FRACTION
   const max = flyoutMaxWidth(container)
   return Math.round(Math.max(Math.min(FLYOUT_MIN_W, max), Math.min(max, w)))
 }
