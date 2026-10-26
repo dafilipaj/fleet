@@ -9,6 +9,8 @@
 //   2+ questions   a "Review your answers" screen follows, "Submit answers" focused → Enter
 // A lone single-select question submits on its pick (no review screen).
 
+import { createHash } from 'node:crypto';
+
 export const QUESTION_TOOL = 'AskUserQuestion';
 export const MAX_ANSWER_TEXT = 2000;
 
@@ -69,6 +71,7 @@ export function validateAnswer(body, questions) {
     }
     const options = [...new Set(opts)].sort((x, y) => x - y);
     const text = typeof a.text === 'string' ? a.text.trim() : '';
+    if (text && q.noOther) return { ok: false, error: `answers[${i}]: pick an option` };
     if (/[\r\n]/.test(text)) return { ok: false, error: `answers[${i}].text must be a single line` };
     if (text.length > MAX_ANSWER_TEXT) return { ok: false, error: `answers[${i}].text too long (max ${MAX_ANSWER_TEXT})` };
     if (q.multiSelect) {
@@ -128,4 +131,87 @@ export function screenShowsPrompt(screen, questions) {
   const flat = squash(screen);
   const q = squash(questions[0].question).slice(0, 60);
   return flat.includes(q) && /❯ 1\. /.test(flat) && /Enter to select/.test(flat);
+}
+
+// ------------------------------------------------------------------ the prompt on screen
+//
+// Claude Code 2.1.310+ writes the AskUserQuestion call to the transcript only once it is
+// answered, so while it waits the terminal is the only place it shows. It shows one tab at a
+// time (the active tab isn't marked in plain text), then a "Review your answers" screen:
+//   ←  ☒ Fruit  ☐ Toppings  ✔ Submit  →      (a lone question: just "☐ Color")
+//   Pick toppings?                            (long ones may be quoted: "│ …")
+//   ❯ 1. [ ] Nuts                             ([ ] / [✔]: multi-select)
+//          Add nuts
+//     3. [ ] Type something                   (the "Type something" row is always last)
+//        Submit                               (multi-select: "Next" / "Submit")
+//   ────────
+//     4. Chat about this
+//   Enter to select · …
+// Review: "Review your answers", the picks, then "❯ 1. Submit answers" / "2. Cancel".
+
+const TAB_BAR = /^\s*(?:←\s+)?[☐☒]\s/;
+const OPTION = /^\s*(❯\s*)?(\d+)\.\s+(?:\[([ ✔])\]\s+)?(.*)$/;
+const RULE = /^\s*─{8,}/;
+
+/**
+ * The question the terminal shows, as `{ id, questions: [q], untouched }` (`q.noOther` on the
+ * review screen: no "Type something" row); null when it shows none. `untouched`: cursor on
+ * option 1, nothing checked — only then is it safe to answer by typing.
+ */
+export function parseScreenPrompt(screen) {
+  const lines = String(screen ?? '').split('\n').map((l) => l.replace(/\s+$/, ''));
+  let bar = -1;
+  for (let i = lines.length - 1; i >= 0 && bar < 0; i -= 1) if (TAB_BAR.test(lines[i])) bar = i;
+  if (bar < 0) return null;
+  const body = lines.slice(bar + 1);
+  const first = body.findIndex((l) => OPTION.test(l));
+  if (first < 0) return null;
+  const rawHead = body.slice(0, first);
+  const head = rawHead.map((l) => l.replace(/^\s*│ ?/, ''));
+  const review = head.find((l) => l.trim())?.trim() === 'Review your answers';
+  if (!review && !body.slice(first).some((l) => /Enter to select/.test(l))) return null;
+
+  const options = [];
+  let checked = false;
+  let cursorAt = -1;
+  for (const l of body.slice(first)) {
+    if (RULE.test(l) || /Enter to select/.test(l)) break;
+    const m = l.match(OPTION);
+    if (m) {
+      if (m[1]) cursorAt = options.length;
+      if (m[3] === '✔') checked = true;
+      options.push({ label: m[4].trim(), description: '', box: m[3] !== undefined });
+    } else if (l.trim().startsWith('❯')) {
+      cursorAt = options.length; // multi-select's "Next" / "Submit" row
+      break;
+    } else if (options.length && l.trim() && !/^(Next|Submit)$/.test(l.trim())) {
+      const o = options[options.length - 1];
+      o.description = o.description ? `${o.description} ${l.trim()}` : l.trim();
+    }
+  }
+  const multiSelect = options.some((o) => o.box);
+  if (!review) {
+    if (!/^Type something\.?$/.test(options[options.length - 1]?.label ?? '')) return null;
+    options.pop();
+  }
+  if (!options.length) return null;
+
+  // The question: lines the terminal wrapped (the next word would not have fit) rejoined, the
+  // others kept; the review's summary keeps its lines.
+  const width = Math.max(...lines.map((l) => l.length));
+  const wrapped = (i) => rawHead[i].length + 1 + (head[i + 1]?.trim().split(/\s/)[0].length ?? 0) > width - 2;
+  const question = review
+    ? head.map((l) => l.trim()).filter(Boolean).join('\n')
+    : head
+        .map((l, i) => l.trim() + (i === head.length - 1 ? '' : head[i + 1].trim() && l.trim() && wrapped(i) ? ' ' : '\n'))
+        .join('')
+        .trim()
+        .replace(/\n{3,}/g, '\n\n');
+  if (!question) return null;
+  const header = review ? 'Submit' : '';
+  const q = { question, header, multiSelect, options: options.map(({ label, description }) => ({ label, description })) };
+  if (review) q.noOther = true;
+  const sig = squash([question, ...q.options.map((o) => o.label)].join('\n'));
+  const id = `screen:${createHash('sha1').update(sig).digest('hex').slice(0, 12)}`;
+  return { id, questions: [q], untouched: cursorAt === 0 && !checked };
 }

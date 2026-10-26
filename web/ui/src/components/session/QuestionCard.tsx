@@ -25,7 +25,7 @@ export function QuestionCard({ m, actions }: { m: Message; actions?: QuestionAct
           open && actions ? 'border-status-waiting/60 shadow-[0_0_0_3px] shadow-status-waiting/10' : 'border-border/70',
         )}
       >
-        {open && actions ? <AnswerForm id={m.id ?? ''} questions={questions} actions={actions} /> : <Record m={m} questions={questions} />}
+        {open && actions ? <AnswerForm key={m.id} id={m.id ?? ''} questions={questions} actions={actions} /> : <Record m={m} questions={questions} />}
       </div>
     </div>
   )
@@ -140,22 +140,24 @@ function AnswerForm({ id, questions, actions }: { id: string; questions: Questio
                 </button>
               )
             })}
-            <input
-              value={drafts[i].text}
-              onChange={(e) => set(i, typeOther(q, drafts[i], e.target.value))}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.nativeEvent.isComposing && ready) {
-                  e.preventDefault()
-                  void run('answer')
-                }
-              }}
-              placeholder="Something else…"
-              aria-label={`Other answer: ${q.question}`}
-              className={cn(
-                'min-h-11 w-full rounded-xl border bg-background/40 px-3 py-2 text-base outline-none placeholder:text-dimmer focus-visible:border-ring md:text-[0.95em]',
-                drafts[i].text.trim() ? 'border-primary' : 'border-border',
-              )}
-            />
+            {q.noOther ? null : (
+              <input
+                value={drafts[i].text}
+                onChange={(e) => set(i, typeOther(q, drafts[i], e.target.value))}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.nativeEvent.isComposing && ready) {
+                    e.preventDefault()
+                    void run('answer')
+                  }
+                }}
+                placeholder="Something else…"
+                aria-label={`Other answer: ${q.question}`}
+                className={cn(
+                  'min-h-11 w-full rounded-xl border bg-background/40 px-3 py-2 text-base outline-none placeholder:text-dimmer focus-visible:border-ring md:text-[0.95em]',
+                  drafts[i].text.trim() ? 'border-primary' : 'border-border',
+                )}
+              />
+            )}
           </div>
         </fieldset>
       ))}

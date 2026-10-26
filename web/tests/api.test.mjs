@@ -706,6 +706,45 @@ test('fleet CLI usage runs `fleet --local usage --json [--refresh]` and surfaces
   await assert.rejects(cli.usage(), /^FleetCliError: no Claude Code login found/);
 });
 
+test('a question only on screen (not yet in the transcript) shows in messages and is answered tab by tab', async (t) => {
+  const id = 'cccccccc-0000-0000-0000-000000000004';
+  const host = fakeHost('solo', [{ session_id: id, name: 'q', status: 'waiting', backend: 'tmux', handle: '%4', updated_at: 4 }]);
+  host.transcripts = { messages: async () => ({ messages: [{ role: 'assistant', kind: 'assistant', text: 'Need a pick.' }], total: 1, truncated: false }) };
+  const tab = (q, cursor = 1) =>
+    `←  ☐ A  ☐ B  ✔ Submit  →\n\n${q}\n\n${cursor === 1 ? '❯' : ' '} 1. Yes\n${cursor === 2 ? '❯' : ' '} 2. No\n  3. Type something.\n${'─'.repeat(20)}\n  4. Chat about this\n\nEnter to select · Esc to cancel`;
+  let screen = tab('First?');
+  host.backend.peek = async () => screen;
+  host.backend.type = async (s, text) => void host.calls.push(['type', s.session_id, text]);
+  const config = normalizeConfig({ self: 'solo' }, { env: {}, home: '/home/tester' });
+  const api = createApi({ config, ...host, warmFleet: false, sleep: async () => {} });
+  const server = createHttpServer({ handleApi: api, uiDir: os.tmpdir() });
+  const base = await listen(server);
+  t.after(() => server.close());
+  const pending = async () => (await (await fetch(`${base}/api/hosts/solo/sessions/${id}/messages`)).json()).messages.at(-1);
+  const call = async (body) => (await post(`${base}/api/hosts/solo/sessions/${id}/answer`, body)).status;
+  const typed = () => host.calls.filter((c) => c[0] === 'keys' || c[0] === 'type').map((c) => c[2]);
+
+  const first = await pending();
+  assert.equal(first.kind, 'question');
+  assert.match(first.id, /^screen:/);
+  assert.equal(first.questions[0].question, 'First?');
+  assert.deepEqual(first.questions[0].options.map((o) => o.label), ['Yes', 'No']);
+
+  screen = tab('First?', 2);
+  assert.equal(await call({ toolUseId: first.id, answers: [{ options: [0] }] }), 409, 'moved in the terminal');
+  screen = tab('First?');
+  assert.equal(await call({ toolUseId: first.id, answers: [{ options: [1] }] }), 200);
+  assert.deepEqual(typed(), ['Down', 'Enter']);
+
+  screen = tab('Second?');
+  const second = await pending();
+  assert.notEqual(second.id, first.id);
+  assert.equal(await call({ toolUseId: first.id, answers: [{ options: [0] }] }), 409, 'the first tab is gone');
+
+  screen = '⏺ Done.';
+  assert.equal((await pending()).kind, 'assistant', 'no prompt on screen, no card');
+});
+
 test('answer types the keys for the pending question, only when it is safe to', async (t) => {
   const id = 'cccccccc-0000-0000-0000-000000000003';
   const host = fakeHost('solo', [{ session_id: id, name: 'q', status: 'waiting', backend: 'tmux', handle: '%3', updated_at: 3 }]);

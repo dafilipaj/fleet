@@ -385,6 +385,8 @@ export interface Question {
   header: string
   multiSelect: boolean
   options: { label: string; description: string }[]
+  /** No "Type something" row (the terminal's "Review your answers" screen). */
+  noOther?: boolean
 }
 
 /** POST …/answer: one entry per question, in order (option indexes and/or typed text). */
@@ -404,7 +406,8 @@ export interface Message {
   name?: string
   /** kind 'command': what was typed after the command, when anything was. */
   args?: string
-  /** kind 'question': the AskUserQuestion tool call's id (what …/answer names). */
+  /** kind 'question': the AskUserQuestion tool call's id (what …/answer names); `screen:…` for a
+   * prompt read off the terminal (Claude Code writes it to the transcript only once answered). */
   id?: string
   /** kind 'question': the prompt (`text` is its markdown rendering). */
   questions?: Question[]

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { HttpError, readJsonBody } from './http.mjs';
 import { clampLines, findSession, resolveHost, sleep as defaultSleep, validateKey, validateSendText, validateTitle } from './util.mjs';
-import { answerSteps, screenShowsPrompt, validateAnswer } from './questions.mjs';
+import { answerSteps, parseScreenPrompt, questionsText, screenShowsPrompt, validateAnswer } from './questions.mjs';
 import { resolveAllowedDir, validateSpawnRequest } from './spawn.mjs';
 import {
   fetchPeerHost as defaultFetchPeerHost,
@@ -307,6 +307,8 @@ export function createApi({
       const session = await resolveLocalSession(id);
       const result = await transcripts.messages(session, limit);
       if (!result) throw new HttpError('transcript not found for this session', 404);
+      const onScreen = await screenQuestion(session, result.messages);
+      if (onScreen) result.messages.push(onScreen);
       return {
         status: 200,
         body: {
@@ -397,6 +399,26 @@ export function createApi({
   }
 
   /**
+   * The AskUserQuestion prompt the terminal shows, as a question message, when the transcript
+   * has none open: Claude Code writes the call there only once it is answered. Null otherwise.
+   */
+  async function screenQuestion(session, messages) {
+    if (session.status !== 'waiting' || (session.harness && session.harness !== 'claude')) return null;
+    const last = messages.findLast((m) => m.kind === 'question');
+    if (last && !last.answers && !last.declined) return null;
+    let screen;
+    try {
+      screen = await backend.peek(session, 80);
+    } catch {
+      return null;
+    }
+    const prompt = parseScreenPrompt(screen);
+    if (!prompt) return null;
+    const { id, questions } = prompt;
+    return { role: 'assistant', kind: 'question', id, questions, text: questionsText(questions), ts: Date.now(), final: true };
+  }
+
+  /**
    * Answer the session's pending AskUserQuestion prompt by typing what a human would. Only the
    * prompt named by `toolUseId`, only while it is unanswered, the session waits, and the
    * terminal shows it untouched — anything else is a 409 and nothing is typed.
@@ -405,6 +427,7 @@ export function createApi({
     const session = await resolveLocalSession(id);
     const toolUseId = typeof body.toolUseId === 'string' ? body.toolUseId : '';
     if (!toolUseId) throw new HttpError('toolUseId is required', 400);
+    if (toolUseId.startsWith('screen:')) return answerScreenQuestion(session, toolUseId, body);
     const result = await transcripts.messages(session, 500);
     const prompt = result?.messages.find((m) => m.kind === 'question' && m.id === toolUseId);
     if (!prompt) throw new HttpError('no such question in this session', 404);
@@ -416,6 +439,23 @@ export function createApi({
     if (!screenShowsPrompt(screen, prompt.questions)) {
       throw new HttpError('the terminal is not showing this question untouched — answer it there', 409);
     }
+    for (const step of answerSteps(prompt.questions, check.answers)) {
+      if (step.text) await backend.type(session, step.text);
+      else await backend.keys(session, step.key);
+      await sleep(answerKeyGapMs);
+    }
+    refreshFleet();
+    return { status: 200, body: { ok: true } };
+  }
+
+  /** The same for a prompt read off the screen: one tab at a time, each its own `screen:` id. */
+  async function answerScreenQuestion(session, toolUseId, body) {
+    if (session.status !== 'waiting') throw new HttpError('the session is not waiting on a question', 409);
+    const prompt = parseScreenPrompt(await backend.peek(session, 80));
+    if (prompt?.id !== toolUseId) throw new HttpError('the terminal is no longer showing this question', 409);
+    const check = validateAnswer(body, prompt.questions);
+    if (!check.ok) throw new HttpError(check.error, 400);
+    if (!prompt.untouched) throw new HttpError('the terminal is not showing this question untouched — answer it there', 409);
     for (const step of answerSteps(prompt.questions, check.answers)) {
       if (step.text) await backend.type(session, step.text);
       else await backend.keys(session, step.key);
