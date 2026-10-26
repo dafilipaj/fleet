@@ -5,7 +5,7 @@ import type { DormantView } from '@/api/types'
 import { HostBadge } from '@/components/HostBadge'
 import { Button } from '@/components/ui/button'
 import { useDormant } from '@/hooks/useDormant'
-import { dormantMeta, dormantTitles, searchDormant } from '@/lib/dormant'
+import { byActivity, dormantMeta, dormantTitles, searchDormant } from '@/lib/dormant'
 import { cn } from '@/lib/utils'
 
 /**
@@ -62,7 +62,8 @@ export function ArmButton({
 }
 
 /**
- * Sessions a reboot left dormant, per host: what they were (tmux name, Claude titles, panes, how
+ * Sessions a reboot left dormant, every host in one list (most recently down first, each with its
+ * host badge; Resume all per host above it): what they were (tmux name, Claude titles, panes, how
  * long ago) with Resume (brings the tmux session back and resumes its Claude sessions), Forget
  * (two clicks) and Resume all (two clicks). Nothing when no host has dormant sessions. Collapsed
  * until expanded, like Recently closed; a search shows its matches expanded.
@@ -91,44 +92,46 @@ export function DormantSection({ now, host = null, query = '', desktop = false, 
         Dormant
         <span className="font-normal text-dimmer tabular-nums">· {total}</span>
       </button>
-      {expanded
-        ? shown.map((h) => (
-            <div key={h.host} className="flex flex-col gap-1.5">
-              <div className="flex items-center gap-2 px-1">
+      {expanded ? (
+        <>
+          {shown
+            .filter((h) => h.views.length > 1)
+            .map((h) => (
+              <div key={h.host} className="flex items-center gap-2 px-1">
                 <HostBadge host={h.host} />
                 <span className="text-xs text-dimmer tabular-nums">{h.views.length}</span>
-                {h.views.length > 1 ? (
-                  <ArmButton
-                    confirm="Resume all?"
-                    onConfirm={() => void resumeAll(h.host)}
-                    busy={busy.has(`${h.host}/*`)}
-                    size={size}
-                    className="ml-auto text-muted-foreground"
-                    title={`Bring back every dormant session on ${h.host}`}
-                  >
-                    <PlayIcon /> Resume all
-                  </ArmButton>
-                ) : null}
-              </div>
-              {h.views.map((v) => (
-                <DormantRow
-                  key={`${v.kind}/${v.target}`}
-                  view={v}
-                  now={now}
+                <ArmButton
+                  confirm="Resume all?"
+                  onConfirm={() => void resumeAll(h.host)}
+                  busy={busy.has(`${h.host}/*`)}
                   size={size}
-                  busy={busy.has(`${h.host}/${v.target}`) || busy.has(`${h.host}/*`)}
-                  onResume={() => void resume(h.host, v.target)}
-                  onForget={() => void forget(h.host, v.target)}
-                />
-              ))}
-            </div>
-          ))
-        : null}
+                  className="ml-auto text-muted-foreground"
+                  title={`Bring back every dormant session on ${h.host}`}
+                >
+                  <PlayIcon /> Resume all
+                </ArmButton>
+              </div>
+            ))}
+          {byActivity(shown, (h) => h.views).map(({ host: h, view: v }) => (
+            <DormantRow
+              key={`${h}/${v.kind}/${v.target}`}
+              host={h}
+              view={v}
+              now={now}
+              size={size}
+              busy={busy.has(`${h}/${v.target}`) || busy.has(`${h}/*`)}
+              onResume={() => void resume(h, v.target)}
+              onForget={() => void forget(h, v.target)}
+            />
+          ))}
+        </>
+      ) : null}
     </section>
   )
 }
 
 function DormantRow({
+  host,
   view: v,
   now,
   size,
@@ -136,6 +139,7 @@ function DormantRow({
   onResume,
   onForget,
 }: {
+  host: string
   view: DormantView
   now: number
   size: 'sm' | 'lg'
@@ -147,9 +151,12 @@ function DormantRow({
   return (
     <div className="rounded-lg border border-dashed border-border/70 bg-card/50 px-3 py-2">
       <div className="min-w-0 opacity-75">
-        <p className="truncate text-sm font-semibold" title={v.name}>
-          {v.name}
-        </p>
+        <div className="flex min-w-0 items-center gap-2">
+          <p className="min-w-0 flex-1 truncate text-sm font-semibold" title={v.name}>
+            {v.name}
+          </p>
+          <HostBadge host={host} />
+        </div>
         {titles && titles !== v.name ? <p className="line-clamp-2 text-xs break-words text-muted-foreground">{titles}</p> : null}
         <p className="mt-0.5 truncate text-[0.6875rem] text-dimmer tabular-nums">{dormantMeta(v, now)}</p>
       </div>

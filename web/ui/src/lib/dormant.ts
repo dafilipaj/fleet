@@ -95,6 +95,15 @@ export function matchesDormantMember(m: DormantMember, query: string): boolean {
   return !q || [m.title, m.host, m.id].join('\n').toLowerCase().includes(q)
 }
 
+/**
+ * Every host's entries in one list, most recently active first (closed: `closedAt`, dormant:
+ * `since` — when it went down); entries without a time go last.
+ */
+export function byActivity<V extends DormantView & { closedAt?: string | null }>(hosts: HostDormant[], pick: (h: HostDormant) => V[]): { host: string; view: V }[] {
+  const at = (v: V) => sinceMs(v.closedAt ?? v.since) ?? -Infinity
+  return hosts.flatMap((h) => pick(h).map((view) => ({ host: h.host, view }))).sort((a, b) => at(b.view) - at(a.view))
+}
+
 export const dormantCount = (hosts: HostDormant[]) => hosts.reduce((n, h) => n + h.views.length, 0)
 
 /** The Claude titles inside a dormant entry, or what it is when it has none. */

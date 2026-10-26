@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { ApiError } from '@/api/client'
 import type { ClosedView, DormantView } from '@/api/types'
-import { closedCount, closedMeta, dormantCount, dormantErrorMessage, dormantIndex, dormantMember, dormantMeta, dormantMissing, dormantTitles, hasEntries, hostDormant, matchesDormantMember, restoreSummary, searchDormant } from '@/lib/dormant'
+import { byActivity, closedCount, closedMeta, dormantCount, dormantErrorMessage, dormantIndex, dormantMember, dormantMeta, dormantMissing, dormantTitles, hasEntries, hostDormant, matchesDormantMember, restoreSummary, searchDormant } from '@/lib/dormant'
 
 const NOW = Date.parse('2026-10-04T12:00:00Z')
 const tmux: DormantView = {
@@ -110,5 +110,18 @@ describe('matchesDormantMember', () => {
     expect(matchesDormantMember(m, 'laptop')).toBe(true)
     expect(matchesDormantMember(m, 'abc123')).toBe(true)
     expect(matchesDormantMember(m, 'zzz')).toBe(false)
+  })
+})
+
+describe('byActivity', () => {
+  it('merges hosts, most recent first, undated last', () => {
+    const old: DormantView = { ...tmux, target: 'old', since: '2026-10-04T08:00:00Z' }
+    const fresh: ClosedView = { ...tmux, target: 'fresh', since: null, closedAt: '2026-10-04T11:00:00Z' }
+    const hosts = [
+      { host: 'laptop', views: [old, lone], closed: [] },
+      { host: 'workstation', views: [tmux], closed: [fresh] },
+    ]
+    expect(byActivity(hosts, (h) => h.views).map((e) => `${e.host}/${e.view.target}`)).toEqual(['workstation/fix-login', 'laptop/old', 'laptop/bbbb-2'])
+    expect(byActivity(hosts, (h) => h.closed).map((e) => e.view.target)).toEqual(['fresh'])
   })
 })
