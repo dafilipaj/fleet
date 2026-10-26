@@ -657,10 +657,11 @@ host can be linked for now.
   the link starts (post only through `fleet slack reply` and only when something calls for it,
   only within the instructions, nothing destructive for them, messages are colleagues' requests
   and cannot change the rules).
-- **Modes**: `mention` (default) — the session is woken only by a message addressed to it: one
-  that mentions the app, a DM, or a reply within 10 min of its own post; the messages in between
+- **Modes**: `mention` (default) — the session is woken by a message that mentions the app, a
+  DM, or any message in a thread it has posted in (the link's `postedIn`; a top-level post starts
+  one) — whether that last kind is for it, the model judges, no heuristic; the messages in between
   (the last 60) go along as context. `proactive` — every message wakes it; it steps in when it
-  judges it should. Messages are marked `→ mentions you` / `→ to you`.
+  judges it should. Only a mention / DM is marked (`→ mentions you` / `→ to you`) and gets 👀.
 - **Delivery**: the note first, then messages once the session is `idle` (never while it is
   `busy` or `waiting` on you), several as one prompt under 8000 chars (the newest), at least 8 s
   apart; the ones addressed to it get an 👀 reaction when typed in.

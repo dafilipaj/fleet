@@ -143,7 +143,7 @@ export function SlackLinkSection({ host, session: s }: { host: string; session: 
             <ToggleGroup type="single" value={mode} onValueChange={(v) => v && setMode(v as 'mention' | 'proactive')} aria-label="When it speaks" className="justify-start">
               {(
                 [
-                  ['mention', 'When mentioned', 'Woken only when someone mentions the app, DMs it or answers it; the rest goes along as context'],
+                  ['mention', 'When mentioned', 'Woken when someone mentions the app or DMs it, and by messages in threads it has posted in (it judges whether they are for it); the rest goes along as context'],
                   ['proactive', 'Proactive', 'Sees every message and steps in when it judges it should (your instructions say how much)'],
                 ] as const
               ).map(([v, label, hint]) => (
@@ -168,7 +168,7 @@ export function SlackLinkSection({ host, session: s }: { host: string; session: 
             <p className="text-xs text-dimmer">
               {mode === 'proactive'
                 ? 'It sees every message there and posts when it has something useful, as the Slack app.'
-                : 'It follows quietly and answers when someone mentions the app, DMs it or replies to it.'}{' '}
+                : 'It follows quietly and answers when someone mentions the app or DMs it, or, in a thread it has posted in, talks to it.'}{' '}
               Everyone there can talk to it until the link ends. Invite the app first.
             </p>
             <div className="flex justify-end gap-2">

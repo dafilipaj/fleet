@@ -125,7 +125,7 @@ test('link: reads the thread, types the intro into the idle session, then messag
   const intro = fx.sent[0].text;
   assert.match(intro, new RegExp(`^\\[slack ${link.id}\\] You are linked to a Slack thread until`));
   assert.match(intro, /The owner's instructions for it: artifact testing/);
-  assert.match(intro, /when one is for you/);
+  assert.match(intro, /a thread you have posted in[^]*not necessarily for you/);
   assert.match(intro, new RegExp(`fleet slack reply ${link.id}`));
   assert.match(intro, /Owner \(UOWNER, the owner of this session\)/);
   assert.match(intro, /Alex \(U1\)[^\n]*\n\s*How does it work\?/);
@@ -172,18 +172,16 @@ test('mention mode: chatter is kept as context, a mention wakes the session with
   assert.match(fx.sent[1].text, /something for you/);
   assert.match(fx.sent[1].text, /just chatting[\s\S]*more chatter[\s\S]*→ mentions you:\n@you what broke\?/);
 
-  // It answers: for a while, a reply without a mention is still for it.
+  // Once it has posted, every message in its thread wakes it — unmarked: whether it is for it is
+  // its own call — however long after.
   await fx.bridge.reply({ link: link.id, text: 'Looking.' });
-  fx.advance(10_000);
+  fx.advance(60 * 60 * 1000 - 30_000);
   await fx.bridge.handleEvent(msg(4, 'thanks, and the other one?'));
   await fx.bridge.tick();
   assert.equal(fx.sent.length, 3);
-  assert.match(fx.sent[2].text, /→ to you:\nthanks/);
-  // Long after, chatter is context again.
-  fx.advance(11 * 60 * 1000);
-  await fx.bridge.handleEvent(msg(5, 'unrelated'));
-  await fx.bridge.tick();
-  assert.equal(fx.sent.length, 3);
+  assert.match(fx.sent[2].text, /in a thread you posted in — answer only if it is for you/);
+  assert.match(fx.sent[2].text, /:\nthanks, and the other one\?/);
+  assert.doesNotMatch(fx.sent[2].text, /→/);
 });
 
 test('proactive mode: every message goes in, marked as not addressed', async (t) => {
@@ -289,6 +287,28 @@ test('a channel link: every thread in it, replies take --thread', async (t) => {
   assert.equal(fx.slack.calls.findLast((c) => c.method === 'chat.postMessage').params.thread_ts, '1792778000.000001');
   await fx.bridge.reply({ link: link.id, text: 'top-level' });
   assert.equal(fx.slack.calls.findLast((c) => c.method === 'chat.postMessage').params.thread_ts, undefined);
+});
+
+test('a channel link in mention mode: the threads it posted in wake it, others stay context', async (t) => {
+  const fx = fixture(t);
+  fx.slack.handlers['conversations.history'] = () => ({ messages: [] });
+  const link = await fx.bridge.link({ session: SID, url: 'https://team.slack.com/archives/C0123ABCDEF', minutes: 60, host: 'h' });
+  await fx.bridge.tick();
+  const said = (ts, text, thread_ts) => fx.bridge.handleEvent({ type: 'message', channel: 'C0123ABCDEF', ts, user: 'U1', text, ...(thread_ts ? { thread_ts } : {}) });
+  await fx.bridge.reply({ link: link.id, text: 'answer', thread: '1792778000.000001' });
+  const top = (await fx.bridge.reply({ link: link.id, text: 'top-level' })).ts;
+  fx.advance(10_000);
+  await said('1792778100.000001', 'elsewhere', '1792778050.000001');
+  await fx.bridge.tick();
+  assert.equal(fx.sent.length, 1, 'a thread it never posted in is context');
+  await said('1792778200.000001', 'on its top-level post', top);
+  await fx.bridge.tick();
+  assert.equal(fx.sent.length, 2);
+  assert.match(fx.sent[1].text, /answer only if it is for you[\s\S]*elsewhere[\s\S]*on its top-level post/);
+  fx.advance(10_000);
+  await said('1792778300.000001', 'in the answered thread', '1792778000.000001');
+  await fx.bridge.tick();
+  assert.equal(fx.sent.length, 3);
 });
 
 test('prompts stay under the send cap', () => {

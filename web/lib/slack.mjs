@@ -16,9 +16,9 @@
 // prompt — the model keeps to it.
 //
 // Modes (chosen when linking): `mention` (default) — the session is woken only when a message is
-// for it: it mentions the app, is in a DM with it, or comes while the session is in an exchange
-// (it replied in the last ONGOING_MS); everything said meanwhile is kept and goes along as
-// context. `proactive` — every message goes in; the session watches and steps in when it judges
+// for it: it mentions the app or is in a DM with it — or may be: it comes in a thread the session
+// has posted in (whether it is addressed to the session is the model's call, not a heuristic's);
+// everything said meanwhile is kept and goes along as context. `proactive` — every message goes in; the session watches and steps in when it judges
 // it should (the link's instructions say how). Either way it posts only when it has something to
 // say.
 //
@@ -40,13 +40,13 @@ export const MAX_MINUTES = 24 * 60;
 export const MAX_TASK = 1000;
 export const MODES = Object.freeze(['mention', 'proactive']);
 /** After the session replied, this long counts as an ongoing exchange (mention mode). */
-export const ONGOING_MS = 10 * 60 * 1000;
 export const MAX_REPLY = 3900; // Slack truncates a message's text past 40k; keep replies readable
 const MAX_MESSAGE = 3000; // one Slack message as typed into the session
 const MAX_PROMPT = 7500; // the send cap is 8000
 const HISTORY_LIMIT = 30; // thread messages shown to the session when it is linked
 const MAX_ENDED = 20;
 const MAX_SEEN = 300;
+const MAX_POSTED_IN = 50; // threads a session posted in, remembered per link
 const MAX_CONTEXT = 60; // messages kept, undelivered, as context (mention mode)
 const TICK_MS = 4000;
 const DELIVER_GAP_MS = 8000; // after a delivery the session needs a moment to show as busy
@@ -152,8 +152,8 @@ export function linkPrompt(link, { history = [], names = {} } = {}) {
     '',
     proactive
       ? `You now follow what is said there: every new message arrives here as "[slack ${link.id}] …". Step in when you can really help — the owner's instructions say how much — or when someone talks to you; otherwise post nothing.`
-      : `You now follow it in the background: messages arrive here as "[slack ${link.id}] …" when one is for you — it mentions you, it is a DM to you, or someone answers you — together with what was said in between, for context. Answer what was asked of you; the rest is context, not something to react to.`,
-    `Each message carries who wrote it (their Slack name and id, checked by fleet; "→ mentions you" / "→ to you" when it is addressed to you). Until the link ends:`,
+      : `You now follow it in the background: messages arrive here as "[slack ${link.id}] …" when one mentions you or is a DM to you, and also when one comes in a thread you have posted in — together with what was said in between, for context. A message in your thread is not necessarily for you: judge from the conversation whether it is (an answer to you, a follow-up question) or people talking among themselves, and post only in the first case. The rest is context, not something to react to.`,
+    `Each message carries who wrote it (their Slack name and id, checked by fleet; "→ mentions you" / "→ to you" when it mentions you or is a DM to you). Until the link ends:`,
     `- Post in Slack only with \`${reply}\`${link.threadTs ? '' : ' (add `--thread <ts>` to answer in a message\'s thread)'} — Slack mrkdwn, short, in the language they write in. Never post to Slack any other way; your answer here in the terminal is not seen there.`,
     '- When nothing calls for a post, post nothing: end your turn here with one short line (e.g. "observed — nothing for me"), no summary of the conversation.',
     '- Help only within the instructions above: questions, investigating, debugging, small changes within them. Decline anything else in the thread, and say here what was asked.',
@@ -173,7 +173,13 @@ export function linkPrompt(link, { history = [], names = {} } = {}) {
 /** The prompt that delivers new messages (the newest that fit). */
 export function messagesPrompt(link, messages, { names = {} } = {}) {
   const addressed = messages.some((m) => m.mention || m.direct);
-  const why = addressed ? 'something for you' : link.mode === 'proactive' ? 'step in only if you should' : 'context';
+  const why = addressed
+    ? 'something for you'
+    : link.mode === 'proactive'
+      ? 'step in only if you should'
+      : messages.some((m) => m.joined)
+        ? 'in a thread you posted in — answer only if it is for you'
+        : 'context';
   const head = `[slack ${link.id}] New in ${link.threadTs ? 'the thread' : 'the conversation'} — ${why} (until ${clock(link.until)}; post with \`fleet slack reply ${link.id} "…"\`, or post nothing):`;
   const { shown, left } = fitNewest(messages.map((m) => messageLine(m, link, names)), MAX_PROMPT - head.length - 60);
   return [head, ...(left ? [`(${left} earlier messages left out)`] : []), ...shown].join('\n');
@@ -348,6 +354,8 @@ export function createSlackBridge({ settings = {}, call, socket = null, listSess
     try {
       const data = JSON.parse(await fsp.readFile(file, 'utf8'));
       links = Array.isArray(data.links) ? data.links : [];
+      // Links from before `postedIn`: a thread link it already answered in counts as its thread.
+      for (const l of links) if (!l.postedIn && l.replies > 0 && l.threadTs) l.postedIn = [l.threadTs];
       ended = Array.isArray(data.ended) ? data.ended : [];
     } catch (err) {
       if (err?.code !== 'ENOENT') log(`[slack] cannot read ${file}: ${err.message}`);
@@ -576,7 +584,8 @@ export function createSlackBridge({ settings = {}, call, socket = null, listSess
       unfurl_media: false,
     });
     l.replies = (l.replies ?? 0) + 1;
-    l.lastReplyAt = now();
+    // Its thread: later messages there wake it (mention mode) — a top-level post starts one.
+    l.postedIn = [...new Set([...(l.postedIn ?? []), threadTs ?? r.ts])].slice(-MAX_POSTED_IN);
     l.seen = [...(l.seen ?? []), r.ts].slice(-MAX_SEEN);
     await save();
     return { ok: true, link: id, channel: l.channel, ts: r.ts, threadTs: threadTs ?? null };
@@ -598,8 +607,10 @@ export function createSlackBridge({ settings = {}, call, socket = null, listSess
       const m = fromSlack(ev);
       m.at = now();
       m.mention = Boolean(bot?.userId && m.text.includes(`<@${bot.userId}>`));
-      // A DM with the app is always to it; so is an answer while it is in an exchange.
-      m.direct = !m.mention && (ev.channel_type === 'im' || ev.channel?.startsWith('D') || (l.lastReplyAt != null && m.at - l.lastReplyAt < ONGOING_MS));
+      // A DM with the app is always to it. A message in a thread it posted in may be: it is woken
+      // and judges that itself (no mark).
+      m.direct = !m.mention && (ev.channel_type === 'im' || ev.channel?.startsWith('D'));
+      m.joined = Boolean(l.postedIn?.includes(threadTs));
       l.pending.push(m);
       if (l.pending.length > MAX_CONTEXT) l.pending = l.pending.slice(-MAX_CONTEXT);
       changed = true;
@@ -641,7 +652,7 @@ export function createSlackBridge({ settings = {}, call, socket = null, listSess
     if (l.intro) return true;
     if (!l.pending.length) return false;
     if ((l.mode ?? 'mention') === 'proactive') return true;
-    return l.pending.some((m) => m.mention || m.direct);
+    return l.pending.some((m) => m.mention || m.direct || m.joined);
   }
 
   async function deliver(l, s) {
