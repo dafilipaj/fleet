@@ -124,7 +124,8 @@ test('link: reads the thread, types the intro into the idle session, then messag
   assert.equal(fx.sent.length, 1);
   const intro = fx.sent[0].text;
   assert.match(intro, new RegExp(`^\\[slack ${link.id}\\] You are linked to a Slack thread until`));
-  assert.match(intro, /Task you may help with there: artifact testing\./);
+  assert.match(intro, /The owner's instructions for it: artifact testing/);
+  assert.match(intro, /when one is for you/);
   assert.match(intro, new RegExp(`fleet slack reply ${link.id}`));
   assert.match(intro, /Owner \(UOWNER, the owner of this session\)/);
   assert.match(intro, /Alex \(U1\)[^\n]*\n\s*How does it work\?/);
@@ -145,11 +146,60 @@ test('link: reads the thread, types the intro into the idle session, then messag
   fx.advance(10_000);
   await fx.bridge.tick();
   assert.equal(fx.sent.length, 2);
-  assert.match(fx.sent[1].text, /Alex \(U1\) at \d\d:\d\d:\n\s*Is @UBOT there\?/);
+  assert.match(fx.sent[1].text, /Alex \(U1\) at \d\d:\d\d → mentions you:\nIs @you there\?/);
   assert.match(fx.sent[1].text, /And this\?/);
   await new Promise((r) => setImmediate(r));
-  assert.deepEqual(fx.slack.calls.filter((c) => c.method === 'reactions.add').map((c) => c.params.timestamp), ['1792778000.000004', '1792778000.000005']);
+  // 👀 only on what was addressed to it.
+  assert.deepEqual(fx.slack.calls.filter((c) => c.method === 'reactions.add').map((c) => c.params.timestamp), ['1792778000.000004']);
   assert.equal((await fx.bridge.list()).links[0].pending, 0);
+});
+
+const msg = (n, text, extra = {}) => ({ type: 'message', channel: 'C0123ABCDEF', ts: `1792778100.00000${n}`, thread_ts: THREAD, user: 'U1', text, ...extra });
+
+test('mention mode: chatter is kept as context, a mention wakes the session with it, then answers follow', async (t) => {
+  const fx = fixture(t);
+  const link = await fx.bridge.link({ session: SID, url: URL_, minutes: 60, host: 'h' });
+  await fx.bridge.tick();
+  assert.equal(fx.sent.length, 1);
+  fx.advance(10_000);
+  await fx.bridge.handleEvent(msg(1, 'just chatting'));
+  await fx.bridge.handleEvent(msg(2, 'more chatter'));
+  await fx.bridge.tick();
+  assert.equal(fx.sent.length, 1, 'nothing for it yet');
+  await fx.bridge.handleEvent(msg(3, '<@UBOT> what broke?'));
+  await fx.bridge.tick();
+  assert.equal(fx.sent.length, 2);
+  assert.match(fx.sent[1].text, /something for you/);
+  assert.match(fx.sent[1].text, /just chatting[\s\S]*more chatter[\s\S]*→ mentions you:\n@you what broke\?/);
+
+  // It answers: for a while, a reply without a mention is still for it.
+  await fx.bridge.reply({ link: link.id, text: 'Looking.' });
+  fx.advance(10_000);
+  await fx.bridge.handleEvent(msg(4, 'thanks, and the other one?'));
+  await fx.bridge.tick();
+  assert.equal(fx.sent.length, 3);
+  assert.match(fx.sent[2].text, /→ to you:\nthanks/);
+  // Long after, chatter is context again.
+  fx.advance(11 * 60 * 1000);
+  await fx.bridge.handleEvent(msg(5, 'unrelated'));
+  await fx.bridge.tick();
+  assert.equal(fx.sent.length, 3);
+});
+
+test('proactive mode: every message goes in, marked as not addressed', async (t) => {
+  const fx = fixture(t);
+  const link = await fx.bridge.link({ session: SID, url: URL_, minutes: 60, mode: 'proactive', task: 'jump in when the demo breaks', host: 'h' });
+  assert.equal(link.mode, 'proactive');
+  await fx.bridge.tick();
+  assert.match(fx.sent[0].text, /Step in when you can really help/);
+  assert.match(fx.sent[0].text, /jump in when the demo breaks/);
+  fx.advance(10_000);
+  await fx.bridge.handleEvent(msg(1, 'the page is blank'));
+  await fx.bridge.tick();
+  assert.equal(fx.sent.length, 2);
+  assert.match(fx.sent[1].text, /step in only if you should/);
+  assert.equal(fx.slack.calls.filter((c) => c.method === 'reactions.add').length, 0);
+  await assert.rejects(fx.bridge.link({ session: SID, url: URL_, minutes: 60, mode: 'loud', host: 'h' }), /mode must be one of/);
 });
 
 test('delivery waits while the session is busy or waiting', async (t) => {

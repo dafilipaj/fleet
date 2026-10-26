@@ -61,6 +61,7 @@ export function SlackLinkSection({ host, session: s }: { host: string; session: 
   const [url, setUrl] = useState('')
   const [minutes, setMinutes] = useState(60)
   const [task, setTask] = useState('')
+  const [mode, setMode] = useState<'mention' | 'proactive'>('mention')
   const [busy, setBusy] = useState<string | null>(null)
 
   if (!s?.session_id || !slack?.enabled || slack.host !== host) return null
@@ -69,7 +70,7 @@ export function SlackLinkSection({ host, session: s }: { host: string; session: 
     if (busy || !url.trim()) return
     setBusy('link')
     try {
-      const l = await api.slackLink({ host, session: s.session_id!, url: url.trim(), minutes, ...(task.trim() ? { task: task.trim() } : {}) })
+      const l = await api.slackLink({ host, session: s.session_id!, url: url.trim(), minutes, mode, ...(task.trim() ? { task: task.trim() } : {}) })
       toast.success(l.renewed ? 'Slack link renewed' : 'Linked to Slack', { description: `until ${new Date(l.until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` })
       setOpen(false)
       setUrl('')
@@ -109,7 +110,7 @@ export function SlackLinkSection({ host, session: s }: { host: string; session: 
                 <ExternalLinkIcon className="size-3 text-dimmer" />
               </a>
               <div className="truncate text-xs text-dimmer">
-                {[l.task || 'the work of this session', `${l.delivered} in · ${l.replies} out`, l.pending ? `${l.pending} waiting` : null].filter(Boolean).join(' · ')}
+                {[l.mode === 'proactive' ? 'Proactive' : 'When mentioned', l.task || 'the work of this session', `${l.delivered} in · ${l.replies} out`, l.pending ? `${l.pending} waiting` : null].filter(Boolean).join(' · ')}
               </div>
             </div>
             <Button variant="outline" className="h-9 shrink-0 px-3" disabled={busy === l.id} onClick={() => void unlink(l.id)}>
@@ -139,16 +140,36 @@ export function SlackLinkSection({ host, session: s }: { host: string; session: 
                 </ToggleGroupItem>
               ))}
             </ToggleGroup>
+            <ToggleGroup type="single" value={mode} onValueChange={(v) => v && setMode(v as 'mention' | 'proactive')} aria-label="When it speaks" className="justify-start">
+              {(
+                [
+                  ['mention', 'When mentioned', 'Woken only when someone mentions the app, DMs it or answers it; the rest goes along as context'],
+                  ['proactive', 'Proactive', 'Sees every message and steps in when it judges it should (your instructions say how much)'],
+                ] as const
+              ).map(([v, label, hint]) => (
+                <ToggleGroupItem
+                  key={v}
+                  value={v}
+                  title={hint}
+                  className="h-8 rounded-full border border-border bg-card px-3 text-xs data-[state=on]:border-primary/50 data-[state=on]:bg-accent"
+                >
+                  {label}
+                </ToggleGroupItem>
+              ))}
+            </ToggleGroup>
             <Textarea
               value={task}
               onChange={(e) => setTask(e.target.value)}
-              rows={2}
-              maxLength={500}
-              placeholder="What it may help them with (default: the work of this session)"
+              rows={3}
+              maxLength={1000}
+              placeholder="Instructions: what it may help with, tone, when to step in (default: the work of this session)"
               className="min-h-0 text-sm"
             />
             <p className="text-xs text-dimmer">
-              Everyone in that conversation can talk to this session until the link ends; it answers there as the Slack app. Invite the app first.
+              {mode === 'proactive'
+                ? 'It sees every message there and posts when it has something useful, as the Slack app.'
+                : 'It follows quietly and answers when someone mentions the app, DMs it or replies to it.'}{' '}
+              Everyone there can talk to it until the link ends. Invite the app first.
             </p>
             <div className="flex justify-end gap-2">
               <Button variant="ghost" className="h-9 px-3" onClick={() => setOpen(false)}>

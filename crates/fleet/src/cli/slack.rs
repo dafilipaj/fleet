@@ -106,10 +106,11 @@ fn link_line(l: &Value) -> String {
     let until = l["until"].as_i64().map(clock).unwrap_or_default();
     let task = l["task"].as_str().filter(|t| !t.is_empty());
     format!(
-        "{}  {}  until {}  {}{}",
+        "{}  {}  until {}  {}  {}{}",
         l["id"].as_str().unwrap_or("?").bold(),
         who,
         until,
+        l["mode"].as_str().unwrap_or("mention"),
         l["permalink"].as_str().unwrap_or(""),
         task.map(|t| format!("\n            task: {t}"))
             .unwrap_or_default()
@@ -160,9 +161,11 @@ pub fn link(
     duration: &str,
     session: Option<&str>,
     task: Option<&str>,
+    proactive: bool,
     json: bool,
 ) -> Result<()> {
-    let mut body = json!({ "url": url, "minutes": duration });
+    let mode = if proactive { "proactive" } else { "mention" };
+    let mut body = json!({ "url": url, "minutes": duration, "mode": mode });
     if let Some(t) = task {
         body["task"] = json!(t);
     }

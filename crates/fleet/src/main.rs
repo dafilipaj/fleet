@@ -614,9 +614,14 @@ enum SlackCmd {
         /// The session to link (default: the one this command runs in, by $TMUX_PANE)
         #[arg(long, value_name = "TARGET")]
         session: Option<String>,
-        /// What it may help the people there with (default: the work of this session)
+        /// Your instructions: what it may help with, tone, when to step in (default: the work
+        /// of this session)
         #[arg(long)]
         task: Option<String>,
+        /// See every message and step in when it should (default: woken only when someone
+        /// mentions the app, DMs it or answers it; the rest goes along as context)
+        #[arg(long)]
+        proactive: bool,
         #[arg(long)]
         json: bool,
     },
@@ -1239,8 +1244,16 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
                 duration,
                 session,
                 task,
+                proactive,
                 json,
-            } => slack_cmd::link(&url, &duration, session.as_deref(), task.as_deref(), json)?,
+            } => slack_cmd::link(
+                &url,
+                &duration,
+                session.as_deref(),
+                task.as_deref(),
+                proactive,
+                json,
+            )?,
             SlackCmd::Unlink { link, json } => slack_cmd::unlink(&link, json)?,
             SlackCmd::Reply {
                 link,

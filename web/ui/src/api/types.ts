@@ -220,6 +220,8 @@ export interface SlackLink {
   threadTs: string | null
   permalink: string
   task: string
+  /** `mention`: woken when addressed (the rest goes along as context); `proactive`: sees every message. */
+  mode: 'mention' | 'proactive'
   createdAt: number
   until: number
   pending: number

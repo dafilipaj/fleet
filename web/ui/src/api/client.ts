@@ -364,7 +364,7 @@ export const api = {
   /** Slack links: the bridge's state, from the `slack.host` server (proxied). */
   slack: (o: Opts = {}) => request<SlackStatus>('/api/slack', o),
   /** Link a session to a Slack thread / channel / DM for `minutes`. */
-  slackLink: (body: { host: string; session: string; url: string; minutes: number; task?: string }, o: Opts = {}) =>
+  slackLink: (body: { host: string; session: string; url: string; minutes: number; task?: string; mode?: 'mention' | 'proactive' }, o: Opts = {}) =>
     request<SlackLink>('/api/slack/link', { ...o, method: 'POST', body }),
   slackUnlink: (id: string, o: Opts = {}) => request<SlackLink>(`/api/slack/links/${enc(id)}/unlink`, { ...o, method: 'POST', body: {} }),
   /** The live inbox: brief + everything waiting on you, from the inbox host (proxied). */

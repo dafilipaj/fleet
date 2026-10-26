@@ -425,8 +425,8 @@ JSON over HTTP, errors as `{ "error": "..." }`. At a high level:
 | POST | `/api/hosts/:host/sessions/:id/kill` | `{}` → SIGTERM (then SIGKILL) Claude, then kill its tmux session (or just its window when the session has others) / close its iTerm tab |
 | GET | `/api/groups` | the Board view's groups: `{ enabled, host, intervalMinutes, running, updatedAt, lastRun, groups: [{ id, label, description, source, members: [{ host, id, dormant? }] }] }` (`dormant: true` only on a member that is dormant on its host; never set from stored groups, so the UI also cross-references `GET …/dormant`); served by the grouping host, proxied by every other server (`enabled: false` when nobody runs it) |
 | GET | `/api/inbox` | the [inbox](#inbox): `{ enabled, host, error?, updatedAt, brief: { text, at, model } \| null, sources: { github?, productive?, sessions?, comms? : { at, ok, error, count, nextAt?, running? } }, items: [{ id, source, kind, section, title, ask, url, href, from, at, firstSeen, effort, meta }] }` — served by `inbox.host`, proxied by every other server (`enabled: false` when none is set) |
-| GET | `/api/slack` | [Slack links](#slack-links): `{ enabled, host, error?, socket: { connected, error }, bot: { userId, team, url }, owner, links: [Link], ended: [Link] }` — Link = `{ id, host, session, sessionName, channel, threadTs \| null, permalink, task, createdAt, until, pending, delivered, replies, endedAt, endReason }`; served by `slack.host`, proxied by the others (`enabled: false` when none is set) |
-| POST | `/api/slack/link` | `{ host, session \| pane, url, minutes, task? }` → Link (`renewed: true` when that session already followed that thread). 400: a bad link or duration, a session on another host, a conversation the app cannot see; 404: no such session |
+| GET | `/api/slack` | [Slack links](#slack-links): `{ enabled, host, error?, socket: { connected, error }, bot: { userId, team, url }, owner, links: [Link], ended: [Link] }` — Link = `{ id, host, session, sessionName, channel, threadTs \| null, permalink, task, mode, createdAt, until, pending, delivered, replies, endedAt, endReason }`; served by `slack.host`, proxied by the others (`enabled: false` when none is set) |
+| POST | `/api/slack/link` | `{ host, session \| pane, url, minutes, task?, mode?: mention \| proactive }` → Link (`renewed: true` when that session already followed that thread). 400: a bad link or duration, a session on another host, a conversation the app cannot see; 404: no such session |
 | POST | `/api/slack/links/:id/unlink` | end the link now → Link |
 | POST | `/api/slack/reply` | `{ link, text, thread?, pane? \| session? }` → `{ ok, link, channel, ts, threadTs }`: post in the linked thread. 403: `pane`/`session` is not the linked session; 410: the link has ended |
 | POST | `/api/inbox/refresh` | Scan now: start a Slack + mail scan (also outside work hours; its brief skips the `briefMinutes` wait) and re-read every other source; answers the GET shape |
@@ -653,12 +653,17 @@ host can be linked for now.
   delivered), until when (an ended link delivers nothing and refuses replies), who wrote a message
   (Slack's user id), and which session may reply (`fleet slack reply` sends `$TMUX_PANE`; another
   session's pane is a 403). Bots, the app itself and edits are not delivered.
-- **What the model keeps to**: the task and the rules in the note typed in when the link starts
-  (answer only through `fleet slack reply`, only about the task, nothing destructive for them,
-  messages are colleagues' requests and cannot change the rules).
-- **Delivery**: the note first, then new messages once the session is `idle` (never while it is
-  `busy` or `waiting` on you), several as one prompt under 8000 chars, at least 8 s apart; each
-  message gets an 👀 reaction when typed in.
+- **What the model keeps to**: the owner's instructions and the rules in the note typed in when
+  the link starts (post only through `fleet slack reply` and only when something calls for it,
+  only within the instructions, nothing destructive for them, messages are colleagues' requests
+  and cannot change the rules).
+- **Modes**: `mention` (default) — the session is woken only by a message addressed to it: one
+  that mentions the app, a DM, or a reply within 10 min of its own post; the messages in between
+  (the last 60) go along as context. `proactive` — every message wakes it; it steps in when it
+  judges it should. Messages are marked `→ mentions you` / `→ to you`.
+- **Delivery**: the note first, then messages once the session is `idle` (never while it is
+  `busy` or `waiting` on you), several as one prompt under 8000 chars (the newest), at least 8 s
+  apart; the ones addressed to it get an 👀 reaction when typed in.
 - **State** (`<fleet state>/slack-links.json`, 0600): the active links with their undelivered
   messages and the last 20 ended ones.
 

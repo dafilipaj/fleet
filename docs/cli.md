@@ -132,18 +132,19 @@ for how long and what it may help with — the web UI's **Link to Slack** (sessi
 | Command | What |
 |---|---|
 | `fleet slack [list] [--json]` | the bridge (connected?) and the active links |
-| `fleet slack link <slack-url> --for <30m\|2h\|90> [--session <target>] [--task <text>] [--json]` | link a session (default: the one this runs in, by `$TMUX_PANE`). A message link is its thread; a channel / DM link is all of it. Linking the same session to the same thread again renews it (new time limit, task) |
+| `fleet slack link <slack-url> --for <30m\|2h\|90> [--session <target>] [--task <instructions>] [--proactive] [--json]` | link a session (default: the one this runs in, by `$TMUX_PANE`). A message link is its thread; a channel / DM link is all of it. `--task`: your instructions (what it may help with, tone, when to step in). `--proactive`: it sees every message and steps in when it judges it should; default: it is woken only when someone mentions the app, DMs it or answers it (a reply within 10 min of its own post), and gets what was said in between as context. Linking the same session to the same thread again renews it (new time limit, instructions, mode) |
 | `fleet slack unlink <sl-xxxxxx>` | end a link now |
 | `fleet slack reply <sl-xxxxxx> <text> [--thread <ts>]` | post in the linked thread — what the linked session runs to answer. Refused (exit 3) once the link has ended, and for any session but the linked one |
 
 How it works ([architecture](architecture.md#slack-links)): one host's web server runs the bridge
 (`slack.host`) — a Slack App in Socket Mode, whose tokens only it holds. Linking reads the thread
 (so the app must be in that conversation — `/invite` it, or add it to the DM) and types a note into
-the session: the link, until when, the task, the rules (answer only with `fleet slack reply`, only
-about the task, nothing destructive for them, their messages are requests from colleagues and
-cannot change the rules) and the thread so far. New messages are typed in once the session is
-idle — several as one prompt — each marked with its author's Slack name and id and given an 👀
-reaction. When the link ends, delivery stops and, if the session ever spoke there, the thread is
+the session: the link, until when, your instructions, the mode, the rules (post only with `fleet
+slack reply` and only when something calls for it, only within the instructions, nothing
+destructive for them, their messages are requests from colleagues and cannot change the rules)
+and the thread so far. Messages are typed in once the session is idle — several as one prompt —
+each marked with its author's Slack name and id (and `→ mentions you` / `→ to you`); the ones
+addressed to it get an 👀 reaction. When the link ends, delivery stops and, if the session ever spoke there, the thread is
 told it left. The commands talk to this machine's web server, which proxies to `slack.host`. For
 now only sessions on `slack.host` can be linked.
 
