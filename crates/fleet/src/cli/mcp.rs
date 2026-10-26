@@ -538,7 +538,8 @@ fn initialize(params: &Value) -> Value {
 }
 
 /// Tools a remote (`--http`) server leaves out unless `--tools` names them: they change the
-/// machine itself, not the sessions on it (and every `*_install_service`).
+/// machine itself, not the sessions on it (and every `*_install_service`), or open a session to
+/// other people (`slack_link`: who talks to a session is the owner's call).
 const HTTP_EXCLUDED: &[&str] = &[
     "exec",
     "install",
@@ -546,6 +547,7 @@ const HTTP_EXCLUDED: &[&str] = &[
     "config_set",
     "web_build",
     "skill_install",
+    "slack_link",
 ];
 
 fn http_excluded(name: &str) -> bool {

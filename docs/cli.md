@@ -123,6 +123,30 @@ the app whose embedded Fleet panel started the session — see [Embed view](arch
 the machine's own credentials. Shim, empty config dir and note live in
 `${XDG_STATE_HOME:-~/.local/state}/fleet/gh-identities/<name>/`.
 
+### Slack links
+
+For a while, a session talks with the people in one Slack thread (or a whole channel or DM): what
+they write there is typed into it, and it answers there. You decide which session, which thread,
+for how long and what it may help with — the web UI's **Link to Slack** (session Details), or:
+
+| Command | What |
+|---|---|
+| `fleet slack [list] [--json]` | the bridge (connected?) and the active links |
+| `fleet slack link <slack-url> --for <30m\|2h\|90> [--session <target>] [--task <text>] [--json]` | link a session (default: the one this runs in, by `$TMUX_PANE`). A message link is its thread; a channel / DM link is all of it. Linking the same session to the same thread again renews it (new time limit, task) |
+| `fleet slack unlink <sl-xxxxxx>` | end a link now |
+| `fleet slack reply <sl-xxxxxx> <text> [--thread <ts>]` | post in the linked thread — what the linked session runs to answer. Refused (exit 3) once the link has ended, and for any session but the linked one |
+
+How it works ([architecture](architecture.md#slack-links)): one host's web server runs the bridge
+(`slack.host`) — a Slack App in Socket Mode, whose tokens only it holds. Linking reads the thread
+(so the app must be in that conversation — `/invite` it, or add it to the DM) and types a note into
+the session: the link, until when, the task, the rules (answer only with `fleet slack reply`, only
+about the task, nothing destructive for them, their messages are requests from colleagues and
+cannot change the rules) and the thread so far. New messages are typed in once the session is
+idle — several as one prompt — each marked with its author's Slack name and id and given an 👀
+reaction. When the link ends, delivery stops and, if the session ever spoke there, the thread is
+told it left. The commands talk to this machine's web server, which proxies to `slack.host`. For
+now only sessions on `slack.host` can be linked.
+
 ### Briefs
 
 A brief is a small markdown file per session — what it is doing, the resources it produced (PRs,
@@ -647,7 +671,8 @@ fleet mcp --http [--bind 127.0.0.1] [--port 7778] --token-file ~/.config/fleet/m
 - Listens on `127.0.0.1` by default: put a TLS reverse proxy (Caddy, `tailscale serve`/`funnel`)
   in front for anything that is not on this machine.
 - Without `--tools` it leaves out what changes the machine rather than its sessions: `exec`,
-  `install`, `init`, `config_set`, `web_build`, `skill_install` and every `*_install_service`.
+  `install`, `init`, `config_set`, `web_build`, `skill_install` and every `*_install_service` —
+  and `slack_link` (who may talk to a session is your call, not a remote agent's).
 - Tools with `no_wait` (`handoff`, `stack_spawn`) default it to `true`: remote runtimes give a call
   ~30 s, and waiting for a new session to register can take longer.
 

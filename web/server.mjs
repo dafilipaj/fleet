@@ -34,6 +34,7 @@ import { createBriefExtractor } from './lib/brief-extract.mjs';
 import { createBriefStore, createBriefs, createClaudeAsk, gitInfo } from './lib/briefs.mjs';
 import { createStacks } from './lib/stacks.mjs';
 import { createAgentAsk, createInbox } from './lib/inbox.mjs';
+import { TOKEN_NAMES, createSlackApi, createSlackBridge, createSocketClient } from './lib/slack.mjs';
 import { fetchPeerHost } from './lib/peers.mjs';
 import { createDormant } from './lib/dormant.mjs';
 import { createMemos } from './lib/memos.mjs';
@@ -141,6 +142,28 @@ const inbox = config.inbox.enabled
       log,
     })
   : null;
+// Slack links: the bridge runs on the `slack.host` server only (the others proxy /api/slack there).
+let slack = null;
+if (config.slack.enabled) {
+  const call = createSlackApi({ getToken: createKeySource({ name: TOKEN_NAMES.bot, run }) });
+  const socket = createSocketClient({
+    getAppToken: createKeySource({ name: TOKEN_NAMES.app, run }),
+    onEvent: (event) => slack.handleEvent(event),
+    log,
+  });
+  slack = createSlackBridge({
+    settings: config.slack,
+    call,
+    socket,
+    listSessions: async () => {
+      const host = await fleet.localHost({ force: true });
+      return host.ok ? host.sessions : null;
+    },
+    send: (session, text) => backend.send(session, text),
+    file: path.join(fleetStateDir(process.env), 'slack-links.json'),
+    log,
+  });
+}
 // Session recovery: dormant sessions after a reboot (`fleet --local restore … --json`).
 const dormant = createDormant({ cli, log });
 // Voice: an OpenAI key for speech-to-text (voice prompts) and one for text-to-speech (the
@@ -203,6 +226,7 @@ const handleApi = createApi({
   dormant,
   grouper,
   inbox,
+  slack,
   name: NAME,
   version: VERSION,
   logError,
@@ -256,6 +280,12 @@ server.listen(config.port, config.bind, () => {
   } else if (config.inbox.host) {
     log(`[fleet-web] inbox: served by ${config.inbox.host}`);
   }
+  if (slack) {
+    slack.start();
+    log(`[fleet-web] slack links on (Socket Mode; ${TOKEN_NAMES.bot} + ${TOKEN_NAMES.app} from env or Keychain)`);
+  } else if (config.slack.host) {
+    log(`[fleet-web] slack links: served by ${config.slack.host}`);
+  }
   // The sync judges members on other hosts with the merged fleet (the warm snapshot when someone
   // is watching, else one fresh build); a sibling started on a peer is found in that peer's list.
   stacks.attach({
@@ -289,6 +319,7 @@ function shutdown(signal) {
   grouper?.stop();
   briefs.stop();
   inbox?.stop();
+  slack?.stop();
   stacks.stop();
   operator.stop();
   uploader.stop();

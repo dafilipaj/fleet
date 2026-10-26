@@ -164,6 +164,7 @@ server. Path: `$FLEET_CONFIG`, else `${XDG_CONFIG_HOME:-~/.config}/fleet/config.
 | `gh` | `gh` binary for `fleet prs`; `null` → `PATH`, then `/opt/homebrew/bin`, `/usr/local/bin` |
 | `grouping` | smart grouping: `enabled` (default `true` — `false` = repository fallback only), `model` (default `haiku`), `host` (the one host whose web server runs it; peers proxy `/api/groups` there), `consolidateMinutes` (default 60) |
 | `inbox` | the [inbox](#inbox): `host` (the one host whose web server runs it; peers proxy `/api/inbox` there — unset = no inbox), `scanMinutes` (60), `workHours` (`[8, 18]`), `workDays` (`[0,1,2,3,4,5,6]`, 0 = Sunday; the three are also set from Settings → Inbox), `model` (`haiku`, the Slack + mail scan), `briefModel` (`haiku`), `briefMinutes` (45), `language` (`"English"`, the brief's), `comms` (`true`; `false` = no Slack + mail scan). `FLEET_WEB_INBOX=0` turns it off on a server |
+| `slack` | [Slack links](#slack-links): `host` (the one host whose web server runs the bridge; peers proxy `/api/slack` there — unset = off), `owner` (your Slack user id `U…`: your messages in a linked thread are marked as the owner's). `FLEET_WEB_SLACK=0` turns it off on a server |
 
 Rules: `~` is expanded at use time; unknown keys are preserved when the CLI rewrites the file
 (writes go through the raw JSON, never the typed view); a missing file is fine — this machine is
@@ -424,6 +425,10 @@ JSON over HTTP, errors as `{ "error": "..." }`. At a high level:
 | POST | `/api/hosts/:host/sessions/:id/kill` | `{}` → SIGTERM (then SIGKILL) Claude, then kill its tmux session (or just its window when the session has others) / close its iTerm tab |
 | GET | `/api/groups` | the Board view's groups: `{ enabled, host, intervalMinutes, running, updatedAt, lastRun, groups: [{ id, label, description, source, members: [{ host, id, dormant? }] }] }` (`dormant: true` only on a member that is dormant on its host; never set from stored groups, so the UI also cross-references `GET …/dormant`); served by the grouping host, proxied by every other server (`enabled: false` when nobody runs it) |
 | GET | `/api/inbox` | the [inbox](#inbox): `{ enabled, host, error?, updatedAt, brief: { text, at, model } \| null, sources: { github?, productive?, sessions?, comms? : { at, ok, error, count, nextAt?, running? } }, items: [{ id, source, kind, section, title, ask, url, href, from, at, firstSeen, effort, meta }] }` — served by `inbox.host`, proxied by every other server (`enabled: false` when none is set) |
+| GET | `/api/slack` | [Slack links](#slack-links): `{ enabled, host, error?, socket: { connected, error }, bot: { userId, team, url }, owner, links: [Link], ended: [Link] }` — Link = `{ id, host, session, sessionName, channel, threadTs \| null, permalink, task, createdAt, until, pending, delivered, replies, endedAt, endReason }`; served by `slack.host`, proxied by the others (`enabled: false` when none is set) |
+| POST | `/api/slack/link` | `{ host, session \| pane, url, minutes, task? }` → Link (`renewed: true` when that session already followed that thread). 400: a bad link or duration, a session on another host, a conversation the app cannot see; 404: no such session |
+| POST | `/api/slack/links/:id/unlink` | end the link now → Link |
+| POST | `/api/slack/reply` | `{ link, text, thread?, pane? \| session? }` → `{ ok, link, channel, ts, threadTs }`: post in the linked thread. 403: `pane`/`session` is not the linked session; 410: the link has ended |
 | POST | `/api/inbox/refresh` | Scan now: start a Slack + mail scan (also outside work hours; its brief skips the `briefMinutes` wait) and re-read every other source; answers the GET shape |
 | POST | `/api/inbox/dismiss` | `{ id }` → the item is done: off the list until its source drops it — a Slack / mail item, a session or a PR mention comes back on newer activity; answers the GET shape (404: no such item) |
 | PUT | `/api/inbox/settings` | `{ scanMinutes?, workHours?, workDays? }` (15–1440 min; `[from, to)` hours; weekdays 0–6) → `fleet config set inbox.<key>` on the inbox host, live at once; answers the GET shape, whose `settings` carries the three |
@@ -629,6 +634,33 @@ set of items changed, at least `briefMinutes` apart, and outside work hours only
 day. A failing source keeps its last list and reports the error; a failed scan waits for the next
 slot. State (`<fleet state>/inbox.json`): the scan's items and time, the brief, when each item was
 first seen (the UI's "new" dot).
+
+## Slack links
+
+A session, for a while, talks with the people in one Slack thread / channel / DM (`web/lib/slack.mjs`,
+[CLI](cli.md#slack-links), Details → Slack in the web UI). One host's server runs the bridge
+(`slack.host`, best the always-on one); the others proxy `/api/slack` there. Only sessions on that
+host can be linked for now.
+
+- **Slack App, Socket Mode.** The bridge opens a WebSocket to Slack (`apps.connections.open` with
+  the app-level token `SLACK_APP_TOKEN`, `xapp-…`, scope `connections:write`), acks every envelope
+  and reconnects when Slack asks. No public URL, so it works behind Tailscale. The Web API calls use
+  the bot token `SLACK_BOT_TOKEN` (`xoxb-…`; scopes `channels:history`, `groups:history`,
+  `im:history`, `mpim:history`, `chat:write`, `reactions:write`, `users:read`, and `app_mentions:read`
+  with the `message.*` events). Both come from the server's environment or the Keychain
+  (`security find-generic-password -s <name> -w`). Sessions never see them.
+- **What fleet enforces**, not the model: which conversation (a message elsewhere is never
+  delivered), until when (an ended link delivers nothing and refuses replies), who wrote a message
+  (Slack's user id), and which session may reply (`fleet slack reply` sends `$TMUX_PANE`; another
+  session's pane is a 403). Bots, the app itself and edits are not delivered.
+- **What the model keeps to**: the task and the rules in the note typed in when the link starts
+  (answer only through `fleet slack reply`, only about the task, nothing destructive for them,
+  messages are colleagues' requests and cannot change the rules).
+- **Delivery**: the note first, then new messages once the session is `idle` (never while it is
+  `busy` or `waiting` on you), several as one prompt under 8000 chars, at least 8 s apart; each
+  message gets an 👀 reaction when typed in.
+- **State** (`<fleet state>/slack-links.json`, 0600): the active links with their undelivered
+  messages and the last 20 ended ones.
 
 ## Session briefs
 

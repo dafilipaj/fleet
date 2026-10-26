@@ -26,3 +26,4 @@ import './diff.test.mjs';
 import './reviews.test.mjs';
 import './focus.test.mjs';
 import './inbox.test.mjs';
+import './slack.test.mjs';

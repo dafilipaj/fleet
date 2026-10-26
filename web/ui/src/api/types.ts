@@ -209,6 +209,37 @@ export interface ModelOption {
 
 /** GET /api/settings */
 /** GET/POST /api/hosts/:host/focus: that host's `focus` session (Do Not Disturb + quit apps). */
+/** A Slack link (web/lib/slack.mjs): a session follows one Slack thread / conversation until `until`. */
+export interface SlackLink {
+  id: string
+  host: string
+  session: string
+  sessionName: string | null
+  channel: string
+  /** null: the whole channel / DM. */
+  threadTs: string | null
+  permalink: string
+  task: string
+  createdAt: number
+  until: number
+  pending: number
+  delivered: number
+  replies: number
+  endedAt: number | null
+  endReason: string | null
+  renewed?: boolean
+}
+
+/** GET /api/slack: the bridge on `slack.host` (proxied there). */
+export interface SlackStatus {
+  enabled: boolean
+  host: string | null
+  error?: string
+  socket?: { connected: boolean; error: string | null }
+  links: SlackLink[]
+  ended: SlackLink[]
+}
+
 export interface FocusStatus {
   host: string
   active: boolean

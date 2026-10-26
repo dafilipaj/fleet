@@ -5,8 +5,8 @@ use colored::Colorize;
 
 use fleet::cli::{
     brief as brief_cmd, commands, config_cmd, group, hosts as host_cmds, init, jobs as jobs_cmd,
-    mcp, prs as prs_cmd, repos as repos_cmd, restore, skill, stack as stack_cmds,
-    tasks as tasks_cmd, tmux as tmux_cmds, usage as usage_cmd, web,
+    mcp, prs as prs_cmd, repos as repos_cmd, restore, skill, slack as slack_cmd,
+    stack as stack_cmds, tasks as tasks_cmd, tmux as tmux_cmds, usage as usage_cmd, web,
 };
 use fleet::core::config;
 use fleet::core::discovery::Backend;
@@ -303,6 +303,12 @@ enum Commands {
         cmd: StackCmd,
     },
 
+    /// Slack links: a session talks, for a while, with the people in one Slack thread (`slack.host`)
+    Slack {
+        #[command(subcommand)]
+        cmd: Option<SlackCmd>,
+    },
+
     /// Claude subscription usage limits: session (5h), weekly, per-model weekly, extra usage
     Usage {
         /// Machine-readable output (the web API's shape)
@@ -588,6 +594,50 @@ enum HarnessCmd {
         /// Skip the model lists (pi's needs a `pi --list-models` run)
         #[arg(long)]
         no_models: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum SlackCmd {
+    /// The bridge (connected?) and the active links
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Link a session to a Slack thread, channel or DM for a while (default: this session)
+    Link {
+        /// A Slack link: a message (its thread), or a channel / DM (all of it)
+        url: String,
+        /// How long: minutes, or like 30m, 2h, 1h30m (max 24h)
+        #[arg(long = "for", value_name = "DURATION")]
+        duration: String,
+        /// The session to link (default: the one this command runs in, by $TMUX_PANE)
+        #[arg(long, value_name = "TARGET")]
+        session: Option<String>,
+        /// What it may help the people there with (default: the work of this session)
+        #[arg(long)]
+        task: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// End a link now
+    Unlink {
+        /// The link id (sl-xxxxxx)
+        link: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Post in a linked thread — what a linked session runs to answer there
+    Reply {
+        /// The link id (sl-xxxxxx)
+        link: String,
+        /// The message (Slack mrkdwn)
+        text: String,
+        /// For a channel link: the thread to answer in (a message ts)
+        #[arg(long, value_name = "TS")]
+        thread: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -1182,6 +1232,23 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
         }
         Commands::Peek { target, lines } => commands::peek(&target, lines)?,
         Commands::Usage { json, refresh } => usage_cmd::run(json, refresh)?,
+        Commands::Slack { cmd } => match cmd.unwrap_or(SlackCmd::List { json: false }) {
+            SlackCmd::List { json } => slack_cmd::list(json)?,
+            SlackCmd::Link {
+                url,
+                duration,
+                session,
+                task,
+                json,
+            } => slack_cmd::link(&url, &duration, session.as_deref(), task.as_deref(), json)?,
+            SlackCmd::Unlink { link, json } => slack_cmd::unlink(&link, json)?,
+            SlackCmd::Reply {
+                link,
+                text,
+                thread,
+                json,
+            } => slack_cmd::reply(&link, &text, thread.as_deref(), json)?,
+        },
         Commands::Send { target, text } => commands::send(&target, &text)?,
         Commands::Rename {
             target,

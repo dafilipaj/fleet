@@ -13,6 +13,7 @@ pub mod render;
 pub mod repos;
 pub mod restore;
 pub mod skill;
+pub mod slack;
 pub mod stack;
 pub mod tasks;
 pub mod tmux;

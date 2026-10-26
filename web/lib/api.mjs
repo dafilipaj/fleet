@@ -35,6 +35,7 @@ import {
 import { DEFAULT_STACKS_MODEL } from './config.mjs';
 import { validateDormantRequest } from './dormant.mjs';
 import { validJobName } from './jobs.mjs';
+import { SlackError, validLinkId } from './slack.mjs';
 
 export const API_VERSION = 1;
 
@@ -119,6 +120,7 @@ const FOCUS_PROXY_MS = 45 * 1000;
 const HARNESSES_ROUTE = /^\/api\/hosts\/([^/]+)\/harnesses$/;
 /** `fleet harness list` runs `pi --list-models` (a node start): keep its answer a while. */
 const HARNESSES_TTL_MS = 10 * 60 * 1000;
+const SLACK_UNLINK_ROUTE = /^\/api\/slack\/links\/([^/]+)\/unlink$/;
 const DORMANT_ROUTE = /^\/api\/hosts\/([^/]+)\/dormant(?:\/(restore|forget))?$/;
 /** A restore types launch lines into new tmux panes; `--all` may bring back many sessions. */
 const DORMANT_PROXY_MS = 6 * 60 * 1000;
@@ -203,6 +205,7 @@ export function createApi({
   focus = null,
   grouper = null,
   inbox = null,
+  slack = null,
   groupingDiscoveryMs = 5 * 60 * 1000,
   name = 'fleet-web',
   version = '0.0.0',
@@ -591,6 +594,49 @@ export function createApi({
     return off(r.body?.error ?? `HTTP ${r.status} from ${host}`);
   }
 
+  /**
+   * Slack links (lib/slack.mjs), on the `slack.host` server; the others proxy there. GET status
+   * → `{ enabled, host, socket, bot, links, ended }`; POST link `{ host, session | pane, url,
+   * minutes, task? }`; POST reply `{ link, text, thread?, pane? }`; POST links/:id/unlink.
+   */
+  async function handleSlack(req, url, action, id = null) {
+    const body = action === 'status' ? null : await readJsonBody(req);
+    const host = config.slack?.host ?? null;
+    if (slack) {
+      try {
+        if (action === 'status') return { status: 200, body: { host, ...(await slack.status()) } };
+        if (action === 'unlink') {
+          if (!validLinkId(id)) throw new HttpError('link must look like sl-xxxxxx', 400);
+          return { status: 200, body: await slack.unlink(id) };
+        }
+        if (action === 'reply') return { status: 200, body: await slack.reply(body ?? {}) };
+        const target = typeof body?.host === 'string' && body.host ? body.host : config.self;
+        if (target !== config.self) throw new HttpError(`only sessions on ${config.self} can be linked to Slack for now`, 400);
+        const link = await slack.link({ ...body, host: config.self });
+        refreshFleet();
+        return { status: 200, body: link };
+      } catch (err) {
+        if (err instanceof SlackError) throw new HttpError(err.message, err.status);
+        throw err;
+      }
+    }
+    const off = (error) => (action === 'status'
+      ? { status: 200, body: { enabled: false, host, ...(error ? { error } : {}), links: [], ended: [] } }
+      : { status: 409, body: { error: error ?? 'no server runs Slack links (slack.host)' } });
+    if (!host) return off(null);
+    if (host === config.self) return off('Slack links are off on this server (FLEET_WEB_SLACK)');
+    if (url.searchParams.get('local') === '1') return off(null); // never chain
+    const peerUrl = config.peers[host];
+    if (!peerUrl) return off(`slack.host "${host}" is not a peer with a web URL`);
+    const r = await proxyToPeer(peerUrl, {
+      method: action === 'status' ? 'GET' : 'POST',
+      pathname: url.pathname,
+      ...(body == null ? {} : { body: JSON.stringify(body) }),
+      timeoutMs: peerProxyTimeoutMs,
+    });
+    return { status: r.status, body: r.body };
+  }
+
   /** POST /api/groups/edit — rename a group / move a session, on the grouping host. */
   async function handleGroupEdit(req, url) {
     const op = groupEditOp(await readJsonBody(req));
@@ -819,6 +865,22 @@ export function createApi({
     if (url.pathname === '/api/inbox/settings') {
       if (req.method !== 'PUT') throw new HttpError('method not allowed', 405);
       return handleInbox(req, url, 'settings');
+    }
+
+    if (url.pathname === '/api/slack') {
+      if (req.method !== 'GET') throw new HttpError('method not allowed', 405);
+      return handleSlack(req, url, 'status');
+    }
+
+    if (url.pathname === '/api/slack/link' || url.pathname === '/api/slack/reply') {
+      if (req.method !== 'POST') throw new HttpError('method not allowed', 405);
+      return handleSlack(req, url, url.pathname.slice('/api/slack/'.length));
+    }
+
+    const su = SLACK_UNLINK_ROUTE.exec(url.pathname);
+    if (su) {
+      if (req.method !== 'POST') throw new HttpError('method not allowed', 405);
+      return handleSlack(req, url, 'unlink', decodeURIComponent(su[1]));
     }
 
     if (url.pathname === '/api/groups/edit') {
