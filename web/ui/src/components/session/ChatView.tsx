@@ -152,7 +152,7 @@ const Bubble = memo(function Bubble({ m, caption, actions }: { m: Message; capti
       </div>
     )
   }
-  // Agent text: the caption row carries a read-aloud button.
+  // Agent text: the final reply's caption row carries a read-aloud button; interim notes don't.
   const speakId = `${m.ts ?? ''}:${text.length}:${text.slice(0, 24)}`
   const agentCap = (
     <div className="flex items-center gap-1 px-1 pt-0.5 text-[0.625rem] text-dimmer tabular-nums">
@@ -164,7 +164,7 @@ const Bubble = memo(function Bubble({ m, caption, actions }: { m: Message; capti
     return (
       <div className="flex w-full flex-col items-start">
         <Markdown text={text} className="border-l-2 border-border pl-2.5 text-[0.86em] leading-normal text-muted-foreground" />
-        {agentCap}
+        {cap}
       </div>
     )
   }
