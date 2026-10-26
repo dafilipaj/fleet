@@ -11,6 +11,7 @@ import { createApi } from '../lib/api.mjs';
 import { createHttpServer } from '../lib/app.mjs';
 import { normalizeConfig } from '../lib/config.mjs';
 import {
+  createSlackApi,
   createSlackBridge,
   createSocketClient,
   linkPrompt,
@@ -79,6 +80,24 @@ test('parseSlackUrl: message, reply and channel links', () => {
   assert.throws(() => parseSlackUrl('https://evil.test/archives/C0123ABCDEF'), /not a Slack link/);
   assert.throws(() => parseSlackUrl('https://team.slack.com/messages/x'), /not a Slack message or channel link/);
   assert.throws(() => parseSlackUrl('nope'), /not a Slack link/);
+});
+
+test('the Web API is called form-encoded (read methods reject JSON bodies)', async () => {
+  let seen = null;
+  const call = createSlackApi({
+    getToken: async () => 'xoxb-test',
+    fetch: async (url, opts) => {
+      seen = { url, opts };
+      return { status: 200, json: async () => ({ ok: true, messages: [] }) };
+    },
+  });
+  await call('conversations.replies', { channel: 'C0123ABCDEF', ts: THREAD, limit: 31, unfurl_links: false, skip: undefined });
+  assert.equal(seen.url, 'https://slack.com/api/conversations.replies');
+  assert.equal(seen.opts.headers['content-type'], 'application/x-www-form-urlencoded');
+  assert.equal(seen.opts.headers.authorization, 'Bearer xoxb-test');
+  assert.equal(seen.opts.body, `channel=C0123ABCDEF&ts=${THREAD}&limit=31&unfurl_links=false`);
+  const failing = createSlackApi({ getToken: async () => 'x', fetch: async () => ({ status: 200, json: async () => ({ ok: false, error: 'invalid_arguments' }) }) });
+  await assert.rejects(failing('auth.test'), (err) => err.slack === 'invalid_arguments' && err.status === 502);
 });
 
 test('parseMinutes', () => {

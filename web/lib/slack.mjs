@@ -164,6 +164,19 @@ export function messagesPrompt(link, messages, { names = {} } = {}) {
   return out.join('\n');
 }
 
+/**
+ * Form-encoded params: every Web API method takes them, while the read methods
+ * (`conversations.replies`, `…history`, `users.info`) reject a JSON body (`invalid_arguments`).
+ */
+export function formBody(params) {
+  const form = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v == null) continue;
+    form.set(k, typeof v === 'object' ? JSON.stringify(v) : String(v));
+  }
+  return form.toString();
+}
+
 /** The Slack Web API with the bot token: `call(method, params)` → the JSON, or a SlackError. */
 export function createSlackApi({ getToken, fetch = globalThis.fetch, timeoutMs = 15000 }) {
   return async function call(method, params = {}) {
@@ -173,8 +186,8 @@ export function createSlackApi({ getToken, fetch = globalThis.fetch, timeoutMs =
     try {
       res = await fetch(`${API}/${method}`, {
         method: 'POST',
-        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json; charset=utf-8' },
-        body: JSON.stringify(params),
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/x-www-form-urlencoded' },
+        body: formBody(params),
         signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (err) {
