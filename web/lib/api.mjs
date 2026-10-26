@@ -21,6 +21,7 @@ import { DEFAULT_MODELS, spawnRoots } from './config.mjs';
 import { parseNameOutput } from './autoname.mjs';
 import { SESSION_ID_RE } from './briefs.mjs';
 import { validThreadId } from './reviews.mjs';
+import { validItemId } from './queue.mjs';
 import { editorUrl, editorViewer, withBriefEditor, withSessionEditors } from './editor.mjs';
 import {
   STACK_BODY_LIMIT,
@@ -82,6 +83,8 @@ const COMPLETE_ROUTE = /^\/api\/hosts\/([^/]+)\/sessions\/([^/]+)\/complete$/;
 const COMPLETE_KINDS = new Set(['skills', 'files', 'brain']);
 const DIFF_ROUTE = /^\/api\/hosts\/([^/]+)\/sessions\/([^/]+)\/(diffs?)$/;
 const REVIEW_ROUTE = /^\/api\/hosts\/([^/]+)\/sessions\/([^/]+)\/review(?:\/(submit)|\/(threads)(?:\/([^/]+)(?:\/(reply))?)?)?$/;
+/** The prompt queue: …/queue (GET list, POST add), …/queue/pause, …/queue/:item (PUT edit, DELETE), …/queue/:item/send|move. */
+const QUEUE_ROUTE = /^\/api\/hosts\/([^/]+)\/sessions\/([^/]+)\/queue(?:\/(pause)|\/([^/]+)(?:\/(send|move))?)?$/;
 /** A review comment quotes the selected code: room for a big selection. */
 const REVIEW_BODY_LIMIT = 1024 * 1024;
 const BRIEF_ROUTE = /^\/api\/hosts\/([^/]+)\/sessions\/([^/]+)\/brief(\/regenerate)?$/;
@@ -157,6 +160,7 @@ export const DEFAULT_QUICK_REPLIES = [
  *   differ      lib/diff.mjs#createDiffer (…/diff, …/diffs: the diff reviewer; absent → 501)
  *   touched     lib/touched.mjs index — the files a session worked on (…/diffs finds their checkouts)
  *   reviews     lib/reviews.mjs#createReviews (…/review: comment threads sent to the session; absent → 501)
+ *   queue       lib/queue.mjs#createPromptQueue (…/queue: prompts that wait for the run to end; absent → 501)
  *   briefs      lib/briefs.mjs instance (brief, brief/regenerate; absent → 501)
  *   notes       lib/notes.mjs instance (notes/tree|search|file|raw; absent → 501: web.notes.root unset)
  *   spawnDirs   lib/spawn-dirs.mjs#createSpawnDirsEditor (GET/PUT spawn-dirs; absent → 501)
@@ -196,6 +200,7 @@ export function createApi({
   differ = null,
   touched = null,
   reviews = null,
+  queue = null,
   notes = null,
   spawnDirs = null,
   repos = null,
@@ -322,6 +327,8 @@ export function createApi({
           name: session.name,
           limit,
           messages: result.messages,
+          // The prompts waiting for this run to end (lib/queue.mjs), null when none.
+          queue: (await queue?.peek(session).catch(() => null)) ?? null,
           total: result.total,
           truncated: result.truncated,
           updatedAt: result.updatedAt,
@@ -1149,6 +1156,47 @@ export function createApi({
                       : op === 'remove'
                         ? await reviews.remove(session, tid)
                         : await reviews.update(session, tid, body);
+            return { status: 200, body: { host: config.self, id: session.session_id, ...r } };
+          } catch (err) {
+            if (err?.status) throw new HttpError(err.message, err.status);
+            throw err;
+          }
+        },
+      });
+    }
+
+    const qm = QUEUE_ROUTE.exec(url.pathname);
+    if (qm) {
+      const [, rawHost, rawId, pause, rawItem, sub] = qm;
+      const itemId = rawItem == null ? null : decodeURIComponent(rawItem);
+      const op = pause ? 'pause' : itemId == null ? (req.method === 'GET' ? 'get' : 'add') : sub ?? (req.method === 'DELETE' ? 'remove' : 'edit');
+      const method = { get: 'GET', add: 'POST', pause: 'POST', send: 'POST', move: 'POST', remove: 'DELETE', edit: 'PUT' }[op];
+      if (req.method !== method) throw new HttpError('method not allowed', 405);
+      if (itemId != null && !validItemId(itemId)) throw new HttpError('invalid queue item id', 400);
+      const id = decodeURIComponent(rawId);
+      return forHost({
+        req,
+        url,
+        host: decodeURIComponent(rawHost),
+        local: async () => {
+          if (!queue) throw new HttpError('the prompt queue is not available on this server', 501);
+          const body = method === 'POST' || method === 'PUT' ? await readJsonBody(req) : null;
+          const session = await resolveLocalSession(id);
+          try {
+            const r =
+              op === 'get'
+                ? await queue.get(session)
+                : op === 'add'
+                  ? await queue.add(session, body)
+                  : op === 'pause'
+                    ? await queue.pause(session, body)
+                    : op === 'send'
+                      ? await queue.sendNow(session, itemId)
+                      : op === 'move'
+                        ? await queue.move(session, itemId, body)
+                        : op === 'remove'
+                          ? await queue.remove(session, itemId)
+                          : await queue.edit(session, itemId, body);
             return { status: 200, body: { host: config.self, id: session.session_id, ...r } };
           } catch (err) {
             if (err?.status) throw new HttpError(err.message, err.status);

@@ -34,6 +34,7 @@ import { createBriefExtractor } from './lib/brief-extract.mjs';
 import { createBriefStore, createBriefs, createClaudeAsk, gitInfo } from './lib/briefs.mjs';
 import { createStacks } from './lib/stacks.mjs';
 import { createAgentAsk, createInbox } from './lib/inbox.mjs';
+import { createPromptQueue } from './lib/queue.mjs';
 import { TOKEN_NAMES, createSlackApi, createSlackBridge, createSocketClient } from './lib/slack.mjs';
 import { fetchPeerHost } from './lib/peers.mjs';
 import { createDormant } from './lib/dormant.mjs';
@@ -164,6 +165,16 @@ if (config.slack.enabled) {
     log,
   });
 }
+// Prompt queue: messages typed while a session works go in one per run, once it is idle again.
+const queue = createPromptQueue({
+  file: path.join(fleetStateDir(process.env), 'prompt-queue.json'),
+  listSessions: async () => {
+    const host = await fleet.localHost({ force: true });
+    return host.ok ? host.sessions : null;
+  },
+  send: (session, text) => backend.send(session, text),
+  log,
+});
 // Session recovery: dormant sessions after a reboot (`fleet --local restore … --json`).
 const dormant = createDormant({ cli, log });
 // Voice: an OpenAI key for speech-to-text (voice prompts) and one for text-to-speech (the
@@ -227,6 +238,7 @@ const handleApi = createApi({
   grouper,
   inbox,
   slack,
+  queue,
   name: NAME,
   version: VERSION,
   logError,
@@ -280,6 +292,7 @@ server.listen(config.port, config.bind, () => {
   } else if (config.inbox.host) {
     log(`[fleet-web] inbox: served by ${config.inbox.host}`);
   }
+  queue.start();
   if (slack) {
     slack.start();
     log(`[fleet-web] slack links on (Socket Mode; ${TOKEN_NAMES.bot} + ${TOKEN_NAMES.app} from env or Keychain)`);
@@ -319,6 +332,7 @@ function shutdown(signal) {
   grouper?.stop();
   briefs.stop();
   inbox?.stop();
+  queue.stop();
   slack?.stop();
   stacks.stop();
   operator.stop();

@@ -1,5 +1,5 @@
 import { useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type TouchEvent } from 'react'
-import { ArrowDownIcon, ArrowUpIcon, CornerDownLeftIcon, Loader2Icon, MicIcon, PaperclipIcon, SendHorizontalIcon, SquareIcon } from 'lucide-react'
+import { ArrowDownIcon, ArrowUpIcon, CornerDownLeftIcon, ListPlusIcon, Loader2Icon, MicIcon, PaperclipIcon, SendHorizontalIcon, SquareIcon } from 'lucide-react'
 
 import type { QuickReply, SessionKey } from '@/api/types'
 import { CompletionPopup } from '@/components/session/CompletionPopup'
@@ -64,6 +64,11 @@ export interface ComposerProps {
   sessionId?: string
   /** `/skill` autocomplete too (Claude sessions). */
   slashCommands?: boolean
+  /**
+   * The agent is working: Enter (and the button) queue the message for when the run ends;
+   * ⌘/Ctrl+Enter sends it now. Absent = always send.
+   */
+  onQueue?: ((text: string) => boolean) | null
 }
 
 export interface ComposerApi {
@@ -88,6 +93,7 @@ export function Composer({
   voiceHint = '',
   sessionId,
   slashCommands = false,
+  onQueue = null,
 }: ComposerProps) {
   const [text, setText] = useState(() => takeDraft(draftKey))
   useEffect(() => saveDraft(draftKey, text), [draftKey, text])
@@ -202,9 +208,9 @@ export function Composer({
     }
   }, [text])
 
-  const submit = () => {
+  const submit = (now = false) => {
     if (locked || empty || tooLong) return
-    if (onSend(text)) setText('')
+    if (onQueue && !now ? onQueue(text) : onSend(text)) setText('')
   }
 
   // Attach + mic: inline beside the input on desktop; on mobile they live in the chips drawer
@@ -389,11 +395,21 @@ export function Composer({
               if (isTouch && !desktop) return
               if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault()
-                submit()
+                submit(e.metaKey || e.ctrlKey)
               }
             }}
             disabled={locked}
-            placeholder={locked ? 'Read-only' : desktop ? `Message ${agent}…  (Enter to send, Shift+Enter for a new line)` : `Message ${agent}…`}
+            placeholder={
+              locked
+                ? 'Read-only'
+                : onQueue
+                  ? desktop
+                    ? `${agent} is working — Enter queues for when it finishes, ⌘Enter sends now`
+                    : `Queue for when ${agent} finishes…`
+                  : desktop
+                    ? `Message ${agent}…  (Enter to send, Shift+Enter for a new line)`
+                    : `Message ${agent}…`
+            }
             aria-label="Message"
             role="combobox"
             aria-autocomplete="list"
@@ -426,11 +442,12 @@ export function Composer({
           <Button
             type="submit"
             size="icon"
-            aria-label="Send"
+            aria-label={onQueue ? 'Queue' : 'Send'}
+            title={onQueue ? `Queue: goes in when ${agent} finishes this run` : undefined}
             disabled={locked || empty || tooLong}
             className="size-11 rounded-full [&_svg:not([class*='size-'])]:size-5"
           >
-            <SendHorizontalIcon />
+            {onQueue ? <ListPlusIcon /> : <SendHorizontalIcon />}
           </Button>
         </div>
         {voice.state !== 'idle' ? (

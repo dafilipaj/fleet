@@ -467,6 +467,23 @@ export interface MessagesResponse {
   truncated: boolean
   updatedAt?: number | null
   capturedAt: number
+  /** Prompts waiting for the run to end (the server's prompt queue); null / absent = none. */
+  queue?: PromptQueue | null
+}
+
+export interface QueuedPrompt {
+  id: string
+  text: string
+  createdAt: number
+}
+
+/** A session's prompt queue: one goes in per run, once the session is idle (never while it waits on you). */
+export interface PromptQueue {
+  items: QueuedPrompt[]
+  /** Held for the run under way; clears itself when that run ends. */
+  paused: boolean
+  /** The paused run ended: waits for the next run to end (or Send now). */
+  held: boolean
 }
 
 export type SessionKey = 'Enter' | 'Escape' | 'Up' | 'Down'

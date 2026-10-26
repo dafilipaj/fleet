@@ -10,7 +10,7 @@ import { useLocation } from 'wouter'
 import { toast } from 'sonner'
 
 import { ApiError, api, isAbortError, isSessionGone, sendErrorMessage, sessionErrorMessage } from '@/api/client'
-import type { FileStat, Message, SessionKey } from '@/api/types'
+import type { FileStat, Message, PromptQueue, SessionKey } from '@/api/types'
 import { ContextMeter } from '@/components/ContextMeter'
 import { DropOverlay } from '@/components/DropOverlay'
 import { EditableTitle } from '@/components/EditableTitle'
@@ -23,6 +23,7 @@ import { StackBar } from '@/components/stack/StackBar'
 import { ChatView } from '@/components/session/ChatView'
 import { CompactHint } from '@/components/session/CompactHint'
 import { Composer, type ComposerApi } from '@/components/session/Composer'
+import { QueuePanel } from '@/components/session/QueuePanel'
 import { FilePreview } from '@/components/session/FilePreview'
 import { OutboxBubbles } from '@/components/session/OutboxBubbles'
 import type { QuestionActions } from '@/components/session/QuestionCard'
@@ -179,6 +180,8 @@ export function SessionScreen({
   const [msgBackend, setMsgBackend] = useState<string | null>(null)
 
   const [gone, setGone] = useState(false)
+  // The server's prompt queue for this session (lib/queue.mjs): carried by every chat poll.
+  const [queue, setQueue] = useState<PromptQueue | null>(null)
 
   const pollChat = useCallback(
     async (signal: AbortSignal) => {
@@ -192,6 +195,8 @@ export function SessionScreen({
         const at = data.capturedAt || Date.now()
         setChat((prev) => (prev?.key === key ? { ...prev, at } : { messages, truncated, status, name, at, key }))
         if (data.backend) setMsgBackend(String(data.backend))
+        const q = data.queue ?? null
+        setQueue((prev) => (JSON.stringify(prev) === JSON.stringify(q) ? prev : q))
         setChatErr(null)
         setGone(false)
       } catch (err) {
@@ -309,6 +314,31 @@ export function SessionScreen({
   const editFailed = (itemId: number) => {
     const text = box.discard(itemId)
     if (text != null) composerApi.current?.restore(text)
+  }
+  // Typed while the agent works: queued on the server, it goes in when the run ends (⌘Enter: now).
+  const queueing = status === 'busy' && !lockedReason
+  const enqueue = (text: string): boolean => {
+    if (lockedReason || !text.trim()) return false
+    api
+      .queueAdd(host, id, text)
+      .then(({ items, paused, held }) => setQueue({ items, paused, held }))
+      .catch((err) => {
+        steerError(err)
+        composerApi.current?.restore(text)
+      })
+    return true
+  }
+  const queueAction = (p: Promise<PromptQueue>, after?: () => void) =>
+    p
+      .then((q) => {
+        setQueue({ items: q.items, paused: q.paused, held: q.held })
+        after?.()
+      })
+      .catch(steerError)
+  const queueEdit = (itemId: string) => {
+    const it = queue?.items.find((x) => x.id === itemId)
+    if (!it) return
+    void queueAction(api.queueDelete(host, id, itemId), () => composerApi.current?.restore(it.text))
   }
   const retryFailed = (itemId: number) => box.retry(itemId, tailAnchor(chatRef.current?.messages))
 
@@ -569,10 +599,24 @@ export function SessionScreen({
         ) : null}
       </main>
 
+      <QueuePanel
+        queue={queue}
+        agent={harnessLabel(session?.harness)}
+        desktop={pane}
+        onSendNow={(itemId) => void queueAction(api.queueSend(host, id, itemId), afterSteer)}
+        onEdit={queueEdit}
+        onDelete={(itemId) => void queueAction(api.queueDelete(host, id, itemId))}
+        onMoveUp={(itemId) => {
+          const i = queue?.items.findIndex((x) => x.id === itemId) ?? -1
+          if (i > 0) void queueAction(api.queueMove(host, id, itemId, i - 1))
+        }}
+        onPause={(paused) => void queueAction(api.queuePause(host, id, paused))}
+      />
       <Composer
         quickReplies={settings.quickReplies}
         lockedReason={lockedReason}
         onSend={send}
+        onQueue={queueing ? enqueue : null}
         onKey={sendKey}
         desktop={pane}
         inputRef={composerRef}

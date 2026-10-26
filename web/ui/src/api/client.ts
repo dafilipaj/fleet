@@ -38,6 +38,8 @@ import type {
   NotesTree,
   OkResponse,
   PeekResponse,
+  PromptQueue,
+  QueuedPrompt,
   QuestionAnswer,
   RegenerateNameResponse,
   RenameResponse,
@@ -155,6 +157,19 @@ export const api = {
   /** Every checkout the session works in (cwd's + those of the files it worked on); `since` = the last fingerprint. */
   diffs: (host: string, id: string, since: string | null = null, o: Opts = {}) =>
     request<DiffsResponse>(`${sessionPath(host, id, 'diffs')}${since ? `?since=${enc(since)}` : ''}`, o),
+  // Prompt queue (server-side): sent one per run once the session is idle.
+  queueAdd: (host: string, id: string, text: string, o: Opts = {}) =>
+    request<PromptQueue & { item: QueuedPrompt }>(sessionPath(host, id, 'queue'), { ...o, method: 'POST', body: { text } }),
+  queueEdit: (host: string, id: string, item: string, text: string, o: Opts = {}) =>
+    request<PromptQueue>(sessionPath(host, id, `queue/${enc(item)}`), { ...o, method: 'PUT', body: { text } }),
+  queueDelete: (host: string, id: string, item: string, o: Opts = {}) =>
+    request<PromptQueue>(sessionPath(host, id, `queue/${enc(item)}`), { ...o, method: 'DELETE' }),
+  queueSend: (host: string, id: string, item: string, o: Opts = {}) =>
+    request<PromptQueue>(sessionPath(host, id, `queue/${enc(item)}/send`), { ...o, method: 'POST', body: {} }),
+  queueMove: (host: string, id: string, item: string, to: number, o: Opts = {}) =>
+    request<PromptQueue>(sessionPath(host, id, `queue/${enc(item)}/move`), { ...o, method: 'POST', body: { to } }),
+  queuePause: (host: string, id: string, paused: boolean, o: Opts = {}) =>
+    request<PromptQueue>(sessionPath(host, id, 'queue/pause'), { ...o, method: 'POST', body: { paused } }),
   review: (host: string, id: string, o: Opts = {}) => request<ReviewState>(sessionPath(host, id, 'review'), o),
   /** `draft: false` types the comment into the session now; `true` keeps it for `submitReview`. */
   reviewComment: (host: string, id: string, body: ReviewAnchor & { body: string; draft: boolean; base?: string | null }, o: Opts = {}) =>
