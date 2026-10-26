@@ -107,6 +107,8 @@ test('parseMinutes', () => {
   assert.equal(parseMinutes('45'), 45);
   assert.equal(parseMinutes('2h'), 120);
   assert.equal(parseMinutes('1h30m'), 90);
+  assert.equal(parseMinutes('2d'), 2880);
+  assert.equal(parseMinutes('1d12h'), 2160);
   assert.equal(parseMinutes('soon'), null);
   assert.equal(parseMinutes(''), null);
 });
@@ -254,6 +256,7 @@ test('link: validation, renewal, unlink, and a conversation the app cannot see',
   const fx = fixture(t);
   await assert.rejects(fx.bridge.link({ session: SID, url: URL_, minutes: 0, host: 'h' }), /minutes must be/);
   await assert.rejects(fx.bridge.link({ session: SID, url: URL_, minutes: 'forever', host: 'h' }), /minutes must be/);
+  await assert.rejects(fx.bridge.link({ session: SID, url: URL_, minutes: '2d1m', host: 'h' }), /minutes must be 1–2880/);
   await assert.rejects(fx.bridge.link({ session: 'cccccccc-0000', url: URL_, minutes: 5, host: 'h' }), { status: 404 });
   await assert.rejects(fx.bridge.link({ url: URL_, minutes: 5, host: 'h' }), /session \(or pane\) is required/);
 
@@ -379,6 +382,9 @@ test('prompts stay under the send cap', () => {
   assert.ok(linkPrompt(link, { history: many }).length < 8000);
   assert.match(linkPrompt(link, { history: many }), /earlier messages left out/);
   assert.ok(messagesPrompt(link, many).length < 8000);
+  // A link that ends another day says which.
+  assert.match(linkPrompt({ ...link, createdAt: link.until - 2 * 24 * 3600 * 1000 }), /until [A-Z][a-z]{2} \d{1,2} [A-Z][a-z]{2} \d\d:\d\d:/);
+  assert.match(linkPrompt({ ...link, createdAt: link.until - 60 * 1000 }), /until \d\d:\d\d:/);
 });
 
 test('socket client: opens, acks every envelope, hands events on, reconnects on disconnect', async () => {

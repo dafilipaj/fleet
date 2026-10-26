@@ -609,7 +609,7 @@ enum SlackCmd {
         /// A Slack link: a message (its thread), or a channel / DM (all of it); or a person
         /// (@name or their user id): the app's DM with them
         url: String,
-        /// How long: minutes, or like 30m, 2h, 1h30m (max 24h)
+        /// How long: minutes, or like 30m, 2h, 1h30m, 2d (max 2 days)
         #[arg(long = "for", value_name = "DURATION")]
         duration: String,
         /// The session to link (default: the one this command runs in, by $TMUX_PANE)

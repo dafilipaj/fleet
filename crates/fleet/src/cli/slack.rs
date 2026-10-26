@@ -92,9 +92,18 @@ fn ok_or_err(status: &str, v: &Value) -> Result<()> {
     ))
 }
 
+/// `18:00` today, `Wed 28 Oct 18:00` another day (a link lasts up to 2 days).
 fn clock(ms: i64) -> String {
     chrono::DateTime::from_timestamp_millis(ms)
-        .map(|t| t.with_timezone(&chrono::Local).format("%H:%M").to_string())
+        .map(|t| {
+            let t = t.with_timezone(&chrono::Local);
+            let fmt = if t.date_naive() == chrono::Local::now().date_naive() {
+                "%H:%M"
+            } else {
+                "%a %-d %b %H:%M"
+            };
+            t.format(fmt).to_string()
+        })
         .unwrap_or_else(|| "?".into())
 }
 

@@ -19,6 +19,8 @@ const DURATIONS = [
   { label: '2h', minutes: 120 },
   { label: '4h', minutes: 240 },
   { label: '8h', minutes: 480 },
+  { label: '1d', minutes: 24 * 60 },
+  { label: '2d', minutes: 2 * 24 * 60 },
 ]
 
 /**

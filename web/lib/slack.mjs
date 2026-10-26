@@ -36,7 +36,7 @@ import { findSession } from './util.mjs';
 export const API = 'https://slack.com/api';
 export const TOKEN_NAMES = Object.freeze({ bot: 'SLACK_BOT_TOKEN', app: 'SLACK_APP_TOKEN' });
 export const MIN_MINUTES = 1;
-export const MAX_MINUTES = 24 * 60;
+export const MAX_MINUTES = 2 * 24 * 60;
 export const MAX_TASK = 1000;
 export const MODES = Object.freeze(['mention', 'proactive']);
 /** After the session replied, this long counts as an ongoing exchange (mention mode). */
@@ -109,20 +109,27 @@ export function matchPeople(members, name) {
   return people.filter((u) => fields(u).some((f) => f.startsWith(name) || f.split(/\s+/).some((w) => w.startsWith(name))));
 }
 
-/** `30`, `30m`, `2h`, `1h30m` → minutes (integer), or null. */
+/** `30`, `30m`, `2h`, `1h30m`, `2d`, `1d12h` → minutes (integer), or null. */
 export function parseMinutes(v) {
   if (typeof v === 'number') return Number.isInteger(v) ? v : null;
   const s = String(v ?? '').trim().toLowerCase();
   if (/^\d+$/.test(s)) return Number(s);
-  const m = /^(?:(\d+)h)?(?:(\d+)m)?$/.exec(s);
-  if (!m || (!m[1] && !m[2])) return null;
-  return Number(m[1] ?? 0) * 60 + Number(m[2] ?? 0);
+  const m = /^(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?$/.exec(s);
+  if (!m || (!m[1] && !m[2] && !m[3])) return null;
+  return Number(m[1] ?? 0) * 24 * 60 + Number(m[2] ?? 0) * 60 + Number(m[3] ?? 0);
 }
 
 const clock = (ms) => {
   const d = new Date(ms);
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 };
+
+/** When a link ends: `18:00`, or `Wed 28 Oct 18:00` when that is not the day it was made. */
+function ends(link) {
+  const d = new Date(link.until);
+  if (link.createdAt != null && new Date(link.createdAt).toDateString() === d.toDateString()) return clock(link.until);
+  return `${d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }).replace(',', '')} ${clock(link.until)}`;
+}
 
 function clip(text, max) {
   const t = String(text ?? '');
@@ -172,7 +179,7 @@ export function linkPrompt(link, { history = [], names = {} } = {}) {
   const reply = `fleet slack reply ${link.id} "<text>"`;
   const proactive = link.mode === 'proactive';
   const lines = [
-    `[slack ${link.id}] You are linked to ${where} until ${clock(link.until)}: ${link.permalink}`,
+    `[slack ${link.id}] You are linked to ${where} until ${ends(link)}: ${link.permalink}`,
     `The owner's instructions for it: ${link.task || 'help with the work of this session'}`,
     '',
     proactive
@@ -206,7 +213,7 @@ export function messagesPrompt(link, messages, { names = {} } = {}) {
       : messages.some((m) => m.joined)
         ? 'in a thread you posted in — answer only if it is for you'
         : 'context';
-  const head = `[slack ${link.id}] New in ${link.threadTs ? 'the thread' : link.dm ? `the DM with ${link.dm.name}` : 'the conversation'} — ${why} (until ${clock(link.until)}; post with \`fleet slack reply ${link.id} "…"\`, or post nothing):`;
+  const head = `[slack ${link.id}] New in ${link.threadTs ? 'the thread' : link.dm ? `the DM with ${link.dm.name}` : 'the conversation'} — ${why} (until ${ends(link)}; post with \`fleet slack reply ${link.id} "…"\`, or post nothing):`;
   const { shown, left } = fitNewest(messages.map((m) => messageLine(m, link, names)), MAX_PROMPT - head.length - 60);
   return [head, ...(left ? [`(${left} earlier messages left out)`] : []), ...shown].join('\n');
 }
@@ -499,7 +506,7 @@ export function createSlackBridge({ settings = {}, call, socket = null, listSess
     const target = person != null ? null : parseSlackUrl(url);
     if (mode != null && !MODES.includes(mode)) throw new SlackError(`mode must be one of: ${MODES.join(', ')}`);
     const mins = parseMinutes(minutes);
-    if (mins == null || mins < MIN_MINUTES || mins > MAX_MINUTES) throw new SlackError(`minutes must be ${MIN_MINUTES}–${MAX_MINUTES} (or like 30m, 2h)`);
+    if (mins == null || mins < MIN_MINUTES || mins > MAX_MINUTES) throw new SlackError(`minutes must be ${MIN_MINUTES}–${MAX_MINUTES} min (or like 30m, 2h, 2d)`);
     const taskText = typeof task === 'string' ? task.trim() : '';
     if (taskText.length > MAX_TASK) throw new SlackError(`task is too long (max ${MAX_TASK} chars)`);
     const session = await findLinkSession({ sessionId, pane });

@@ -61,8 +61,9 @@ export function useSessionSlackLinks(host: string | null | undefined, sessionId:
 }
 const NONE: SlackLink[] = []
 
-/** "42m" / "1h 5m" left. */
+/** "42m" / "1h 5m" / "1d 3h" left. */
 export function slackLeft(until: number, now: number): string {
   const m = Math.max(1, Math.ceil((until - now) / 60000))
+  if (m >= 24 * 60) return `${Math.floor(m / 1440)}d${Math.floor((m % 1440) / 60) ? ` ${Math.floor((m % 1440) / 60)}h` : ''}`
   return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ''}`
 }
