@@ -9,7 +9,9 @@
 //   the artifact an Artifact publish made or updated (not the types a quickstart lists) → Artifact
 //   assistant text: GitHub PR/issue, claude.ai artifact and other http(s) links    → PR/Issue/Artifact/Link
 //   user prompts: GitHub PR/issue and artifact links (what the work is about)      → PR/Issue/Artifact
-//     — but not those of a brief handed over by a continue prompt (another session's work)
+//     — but not those of a brief handed over by a continue prompt (another session's work),
+//     except its Origin and PR links, which carry on down a chain of continued sessions
+//   the first user prompt: its other links (a task, a Slack thread, an issue)      → Origin
 // Todos: the latest TodoWrite list, or the task list built from TaskCreate / TaskUpdate calls.
 // Dirs: the working directories the session's entries record (`cwd`; a `cd` in Bash moves it).
 import { promises as fsp } from 'node:fs';
@@ -18,12 +20,12 @@ import path from 'node:path';
 
 import { classifyUserText, parseTranscript } from './transcript.mjs';
 import { ingestCommand } from './touched.mjs';
-import { classifyUrl, cleanUrl, resourceKey } from './brief-format.mjs';
+import { CONTINUE_SEPARATOR, classifyUrl, cleanUrl, resourceKey } from './brief-format.mjs';
 
 /** On the first read of a transcript, only its last this-many bytes are scanned. */
 export const MAX_SCAN_BYTES = 16 * 1024 * 1024;
 /** Most recent items kept per kind. */
-export const PER_KIND = { PR: 20, Issue: 20, Artifact: 20, Spec: 10, File: 30, Link: 15 };
+export const PER_KIND = { Origin: 10, PR: 20, Issue: 20, Artifact: 20, Spec: 10, File: 30, Link: 15 };
 const MAX_PENDING = 500;
 /** Working directories kept per session (the oldest are dropped past this). */
 export const MAX_DIRS = 30;
@@ -39,11 +41,34 @@ export const TEMP_PATH_RE = /^\/(?:tmp|private\/tmp|private\/var\/folders|var\/f
 const SPEC_RE = /(?:^|\/)(?:SPEC|FINAL)\.md$|\/specs?\//i;
 /** Where a continue prompt (brief-format's continuePrompt, the CLI's handoff) starts quoting another session's brief. */
 const HANDED_BRIEF_RE = /\bContinue the work of [^\n]*\. Its brief:/;
+/** The separator line that ends the handed brief (an older continue prompt has none: the rest is the brief). */
+const SEPARATOR_RE = new RegExp(`^${CONTINUE_SEPARATOR}[ \\t]*$`, 'm');
 
-/** User prompt text without the brief a continue prompt hands over. */
-function ownText(text) {
+/** A user prompt split into the user's own text and the brief a continue prompt hands over (or ''). */
+function splitHanded(text) {
   const m = HANDED_BRIEF_RE.exec(text);
-  return m ? text.slice(0, m.index) : text;
+  if (!m) return { own: text, handed: '' };
+  const rest = text.slice(m.index);
+  const sep = SEPARATOR_RE.exec(rest);
+  if (!sep) return { own: text.slice(0, m.index), handed: rest };
+  return { own: `${text.slice(0, m.index)}\n${rest.slice(sep.index + sep[0].length)}`, handed: rest.slice(0, sep.index) };
+}
+
+/** The `Origin:` list of a handed brief → its lines. */
+function handedOrigin(handed) {
+  const m = /^Origin:[ \t]*\n((?:[ \t]*[-*+][ \t].*(?:\n|$))+)/m.exec(handed);
+  return m ? m[1] : '';
+}
+
+/** Links in a user prompt: what it is about, and — the session's first prompt — where the work came from. */
+function ingestUserText(state, text) {
+  const { own, handed } = splitHanded(text);
+  for (const u of extractUrls(own, ['PR', 'Issue', 'Artifact'])) addItem(state, u);
+  if (handed) for (const u of extractUrls(handed, ['PR'])) addItem(state, u);
+  if (state.sawFirstPrompt) return;
+  state.sawFirstPrompt = true;
+  const origins = [...extractUrls(handedOrigin(handed)), ...extractUrls(own, ['Issue', 'Link'])];
+  for (const u of origins) addItem(state, { ...u, kind: 'Origin' });
 }
 
 /**
@@ -90,14 +115,15 @@ export function extractUrls(text, kinds = null) {
 }
 
 function newState(file, skipPath) {
-  return { file, skipPath, offset: 0, size: 0, mtimeMs: 0, seq: 0, items: new Map(), dirs: new Set(), pending: new Map(), todos: null, tasks: new Map(), taskSeq: 0 };
+  return { file, skipPath, offset: 0, size: 0, mtimeMs: 0, seq: 0, items: new Map(), dirs: new Set(), pending: new Map(), todos: null, tasks: new Map(), taskSeq: 0, sawFirstPrompt: false };
 }
 
 function addItem(state, item) {
   const key = resourceKey(item);
   if (!key) return;
+  const kind = state.items.get(key)?.kind === 'Origin' ? 'Origin' : item.kind; // once an origin, always one
   state.items.delete(key); // re-insert: Map order = recency
-  state.items.set(key, { ...item, seq: ++state.seq });
+  state.items.set(key, { ...item, kind, seq: ++state.seq });
 }
 
 function addFile(state, abs) {
@@ -171,7 +197,7 @@ export function ingestLine(state, line, home = os.homedir()) {
   if (entry.type !== 'user' || entry.isMeta) return;
   if (typeof content === 'string') {
     const c = classifyUserText(content);
-    if (c?.kind === 'user') for (const u of extractUrls(ownText(c.text), ['PR', 'Issue', 'Artifact'])) addItem(state, u);
+    if (c?.kind === 'user') ingestUserText(state, c.text);
     return;
   }
   if (!Array.isArray(content)) return;
@@ -179,7 +205,7 @@ export function ingestLine(state, line, home = os.homedir()) {
     if (!block || typeof block !== 'object') continue;
     if (block.type === 'text') {
       const c = classifyUserText(block.text ?? '');
-      if (c?.kind === 'user') for (const u of extractUrls(ownText(c.text), ['PR', 'Issue', 'Artifact'])) addItem(state, u);
+      if (c?.kind === 'user') ingestUserText(state, c.text);
       continue;
     }
     if (block.type !== 'tool_result') continue;
@@ -277,6 +303,7 @@ export function createBriefExtractor({ locate, maxBytes = MAX_SCAN_BYTES, userHo
         if (skipPartial) {
           const nl = buf.indexOf(0x0a);
           from = nl === -1 ? buf.length : nl + 1;
+          st.sawFirstPrompt = true; // the start was cut off: its first prompt is not known
         }
         const lastNl = buf.lastIndexOf(0x0a);
         const upto = lastNl >= from ? lastNl + 1 : from;

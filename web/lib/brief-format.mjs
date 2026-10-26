@@ -24,7 +24,7 @@
 // `*` bullets and `[X]`; serialising writes the three sections in canonical order.
 
 export const SECTIONS = ['Summary', 'Resources', 'Todos'];
-export const RESOURCE_KINDS = ['PR', 'Issue', 'Artifact', 'Spec', 'File', 'Git', 'Branch', 'Worktree', 'Link'];
+export const RESOURCE_KINDS = ['Origin', 'PR', 'Issue', 'Artifact', 'Spec', 'File', 'Git', 'Branch', 'Worktree', 'Link'];
 const KIND_BY_LOWER = new Map(RESOURCE_KINDS.map((k) => [k.toLowerCase(), k]));
 
 /** Frontmatter keys in the order they are written; unknown keys follow, as found. */
@@ -262,25 +262,36 @@ export function emptyBrief(sessionId) {
 /**
  * Add auto-extracted resources to the Resources section: every existing line is kept as it is
  * (hand-written ones included), new items are appended unless their key is already there or
- * was dismissed. → { text, added }.
+ * was dismissed. An `Origin` item whose link is already there as an auto `Link:` / `Issue:`
+ * line turns that line into its `Origin:` one. → { text, added } (`added` counts those too).
  */
 export function mergeResources(resourcesText, items, dismissed = [], { max = 80 } = {}) {
   const existing = String(resourcesText ?? '').trimEnd();
   const lines = existing ? existing.split('\n') : [];
   const have = new Set();
+  const upgradable = new Map(); // key → index of an auto Link / Issue line
   let count = 0;
-  for (const line of lines) {
+  lines.forEach((line, i) => {
     const b = BULLET_RE.exec(line);
-    if (!b) continue;
+    if (!b) return;
     count += 1;
     const r = parseResourceLine(b[1]);
     have.add(r.key);
     if (r.url) have.add(resourceKey({ url: classifyUrl(r.url).url }));
-  }
+    if ((r.kind === 'Link' || r.kind === 'Issue') && r.url && formatResource(r) === b[1].trim()) upgradable.set(r.key, i);
+  });
   const skip = new Set(dismissed);
   let added = 0;
   for (const item of items) {
     const key = resourceKey(item);
+    if (item.kind === 'Origin' && upgradable.has(key)) {
+      const i = upgradable.get(key);
+      const r = parseResourceLine(BULLET_RE.exec(lines[i])[1]);
+      lines[i] = `- ${formatResource({ ...r, kind: 'Origin' })}`;
+      upgradable.delete(key);
+      added += 1;
+      continue;
+    }
     if (!key || have.has(key) || skip.has(key)) continue;
     if (count >= max) break;
     lines.push(`- ${formatResource(item)}`);
@@ -377,8 +388,22 @@ export function parseModelOutput(text) {
 
 // ------------------------------------------------------------------ continue prompt
 
+/** The line that ends the handed-over brief in a continue prompt; the task for the new session follows it. */
+export const CONTINUE_SEPARATOR = '---';
+/** The task when nothing is written below the separator. */
+export const CONTINUE_DEFAULT_TASK =
+  'Pick up where it left off. Check the current state (git status, the PRs above) before changing anything, and tell me briefly what you found first.';
+
+/** A resource as a continue-prompt bullet: `[label](url)`, a bare url, else its label / text. */
+function promptLink(r) {
+  if (r.url) return r.label && r.label !== r.url ? `[${r.label.replace(/[[\]]/g, '')}](${r.url})` : r.url;
+  return r.label ?? r.text;
+}
+
 /**
- * The first prompt for a NEW session that picks up where the brief's session left off.
+ * The first prompt for a NEW session that picks up where the brief's session left off: where it
+ * ran, the summary, where the work came from (Origin), its PRs and its linked worktree — not its
+ * files, artifacts or todos — then a separator line the user writes the new session's task below.
  * `where` = { host, cwd } (defaults: the brief's frontmatter).
  */
 export function continuePrompt(brief, where = {}) {
@@ -388,14 +413,16 @@ export function continuePrompt(brief, where = {}) {
   const origin = [session ? `session ${session}` : 'a previous session', host ? `on ${host}` : null, cwd ? `in ${cwd}` : null]
     .filter(Boolean)
     .join(' ');
+  const resources = brief.resources ?? [];
+  const list = (kind) => resources.filter((r) => r.kind === kind).map((r) => `- ${promptLink(r)}`);
   const out = [`Continue the work of ${origin}. Its brief:`];
-  if (brief.summary) out.push(`Summary:\n${brief.summary}`);
-  if (brief.resourcesText) out.push(`Resources:\n${brief.resourcesText}`);
-  if (brief.todosText) out.push(`Todos:\n${brief.todosText}`);
-  const open = brief.todos?.find((i) => !i.done);
-  out.push(
-    `${open ? `Pick up the first open todo ("${open.text}")` : 'Pick up where it left off'}. ` +
-      'Check the current state (git status, the files and PRs above) before changing anything, and tell me briefly what you found first.',
-  );
+  if (brief.summary) out.push(brief.summary);
+  const origins = list('Origin');
+  if (origins.length) out.push(`Origin:\n${origins.join('\n')}`);
+  const prs = list('PR');
+  if (prs.length) out.push(`PRs:\n${prs.join('\n')}`);
+  const wt = resources.find((r) => (r.kind === 'Git' && r.linked === true && r.path) || (r.kind === 'Worktree' && r.path));
+  if (wt) out.push(`Worktree: \`${wt.path}\`${wt.kind === 'Git' && wt.branch ? ` (branch \`${wt.branch}\`)` : ''}`);
+  out.push(CONTINUE_SEPARATOR);
   return out.join('\n\n');
 }

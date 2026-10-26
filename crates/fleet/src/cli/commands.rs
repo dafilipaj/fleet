@@ -677,7 +677,7 @@ pub fn spawn(prompt: Option<String>, from: Option<String>, opts: SpawnOpts) -> R
 
 /// `spawn --from <session>`: a new session in the source's cwd (on this host — `-H` already
 /// brought us to the source's host) whose first prompt is the brief's continue prompt, plus
-/// `extra` after a blank line. The prompt goes through a file, like a handoff brief: it is
+/// `extra` (the task; the default one when empty) below its separator. The prompt goes through a file, like a handoff brief: it is
 /// multi-line, and the file stays as the record of what was handed on.
 fn spawn_from(source: &str, extra: Option<String>, mut opts: SpawnOpts) -> Result<()> {
     let c = crate::cli::brief::continue_from(source)?;
@@ -696,11 +696,12 @@ fn spawn_from(source: &str, extra: Option<String>, mut opts: SpawnOpts) -> Resul
         .map(clean_model)
         .transpose()?
         .flatten();
-    let mut text = c.prompt.clone();
-    if let Some(e) = extra.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
-        text.push_str("\n\n");
-        text.push_str(e);
-    }
+    let task = extra.as_deref().map(str::trim).filter(|e| !e.is_empty());
+    let text = format!(
+        "{}\n\n{}",
+        c.prompt,
+        task.unwrap_or(crate::core::brief::CONTINUE_DEFAULT_TASK)
+    );
     let now = chrono::Local::now();
     let short: String = c.id.chars().take(8).collect();
     let path = handoff_dir().join(format!(

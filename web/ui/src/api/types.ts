@@ -540,7 +540,7 @@ export interface GroupsResponse {
 }
 
 /** A `## Resources` bullet of a session brief. `url` or `path` is set; `kind: null` = a hand-written line. */
-export type BriefResourceKind = 'PR' | 'Issue' | 'Artifact' | 'Spec' | 'File' | 'Git' | 'Branch' | 'Worktree' | 'Link'
+export type BriefResourceKind = 'Origin' | 'PR' | 'Issue' | 'Artifact' | 'Spec' | 'File' | 'Git' | 'Branch' | 'Worktree' | 'Link'
 
 export interface BriefResource {
   kind: BriefResourceKind | string | null

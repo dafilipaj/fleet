@@ -22,7 +22,7 @@
   },
   "preamble": "A note before the first heading.",
   "summary": "Fixing the login redirect loop in ~/Code/project on branch fix-login.\n\nIt is in review.",
-  "resourcesText": "- PR: [owner/repo#12](https://github.com/owner/repo/pull/12)\n- File: `src/login.ts`\n* Branch: `fix-login`\n- Git: `fix-login` · worktree `~/Code/project-wt`\n+ see https://github.com/owner/repo/issues/7.\n- Artifact: [Login report](https://claude.ai/code/artifact/0123456789abcdef)\n- link: https://docs.example.dev/auth/)\n- a hand-written line, no kind",
+  "resourcesText": "- Origin: [Task 42: login loop](https://app.example.dev/tasks/42)\n- origin: https://chat.example.dev/archives/C01/p1700000000\n- PR: [owner/repo#12](https://github.com/owner/repo/pull/12)\n- File: `src/login.ts`\n* Branch: `fix-login`\n- Git: `fix-login` · worktree `~/Code/project-wt`\n+ see https://github.com/owner/repo/issues/7.\n- Artifact: [Login report](https://claude.ai/code/artifact/0123456789abcdef)\n- link: https://docs.example.dev/auth/)\n- a hand-written line, no kind",
   "todosText": "- [x] reproduce the loop\n* [X] write a failing test\n- [ ] fix the redirect (in progress)\nnot a checkbox\n- [ ] open the PR",
   "extra": [
     {
@@ -31,6 +31,26 @@
     }
   ],
   "resources": [
+    {
+      "kind": "Origin",
+      "label": "Task 42: login loop",
+      "url": "https://app.example.dev/tasks/42",
+      "path": null,
+      "text": "Origin: [Task 42: login loop](https://app.example.dev/tasks/42)",
+      "branch": null,
+      "linked": null,
+      "key": "https://app.example.dev/tasks/42"
+    },
+    {
+      "kind": "Origin",
+      "label": "https://chat.example.dev/archives/C01/p1700000000",
+      "url": "https://chat.example.dev/archives/C01/p1700000000",
+      "path": null,
+      "text": "origin: https://chat.example.dev/archives/C01/p1700000000",
+      "branch": null,
+      "linked": null,
+      "key": "https://chat.example.dev/archives/C01/p1700000000"
+    },
     {
       "kind": "PR",
       "label": "owner/repo#12",

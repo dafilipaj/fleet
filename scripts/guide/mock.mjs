@@ -146,7 +146,7 @@ function brief(host, id) {
   return {
     host, id, exists: true, markdown: md, parsed: { summary, resources, todos, plan: todos },
     updated: iso(now() - 3 * M), editedAt: null, generatedAt: iso(now() - 3 * M), generatedThrough: 1000, generating: false, enabled: true,
-    continuePrompt: `Continue this work (handed over from session "${s?.display_title}" on ${host}).\n\n${summary}\n\nOpen todos:\n${todos.filter((t) => !t.done).map((t) => `- ${t.text}`).join('\n')}\n`,
+    continuePrompt: `Continue the work of session ${id} on ${host}. Its brief:\n\n${summary}\n\n---`,
     absCwd: s?.cwd ?? null, gitRoot: s?.cwd ?? null, editor: 'vscode', editorUrl: s?.editorUrl ?? null,
     worktrees: s?.cwd ? [{ path: s.cwd, display: s.cwd.replace(H, '~'), branch: big ? 'fix-invoice-rounding' : 'main', linked: big, editorUrl: s.editorUrl }] : [],
   }

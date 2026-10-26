@@ -664,6 +664,7 @@ git: Git: `fix-login` · worktree `~/Code/project-wt`
 Fixing the login redirect loop in ~/Code/project on branch fix-login; the fix is in review.
 
 ## Resources
+- Origin: [Task 42: login loop](https://app.example.dev/tasks/42)
 - Git: `fix-login` · worktree `~/Code/project-wt`
 - PR: [owner/repo#12](https://github.com/owner/repo/pull/12)
 - File: `src/login.ts`
@@ -693,8 +694,9 @@ Fixing the login redirect loop in ~/Code/project on branch fix-login; the fix is
   `[X]`. A `## Plan` section (the name before Todos) is read as `## Todos` and written back as
   `## Todos` on the next write.
 - Resources: one bullet per item, `- <Kind>: <value>`, value a markdown link `[label](url)` or a
-  code span `` `path` ``. Kinds: `PR`, `Issue`, `Artifact`, `Spec`, `File`, `Git`, `Link` (and the
-  legacy `Branch`, `Worktree`). Any other bullet (no kind, free text) is a hand-written line and
+  code span `` `path` ``. Kinds: `Origin` (where the work came from: a task, a Slack thread, an
+  issue), `PR`, `Issue`, `Artifact`, `Spec`, `File`, `Git`, `Link` (and the legacy `Branch`,
+  `Worktree`). Any other bullet (no kind, free text) is a hand-written line and
   kept as is. An item's **key** is its URL (fragment and trailing `/` dropped), else its path
   (`branch:<name>` / `worktree:<path>` for the legacy kinds); every `Git` line has the key `git`.
   Paths are relative to the session's cwd when inside it, else `~/…`, else absolute.
@@ -710,7 +712,9 @@ Fixing the login redirect loop in ~/Code/project on branch fix-login; the fix is
 - Todos: `- [ ] todo` / `- [x] todo` lines; other lines in the section are kept.
 
 **Merge rules** (every writer): never drop a line a human wrote; new auto items are appended
-unless their key is already present or in `dismissed` (the Git line: replaced in place, above); a
+unless their key is already present or in `dismissed` (the Git line: replaced in place, above; an
+`Origin` item whose link is already there as an auto `Link:` / `Issue:` line turns that line into
+`Origin:`); a
 human edit (PUT) that removes a resource line adds its key to `dismissed`; the machine keys
 (`generatedThrough`, `generatedAt`, `todos`, `dismissed`, `git`) are the writer's, not taken from
 an edited body.
@@ -721,7 +725,10 @@ an edited body.
    (Edit / Write / MultiEdit / NotebookEdit targets, shell redirects and `tee`; temp dirs skipped;
    `SPEC.md`, `FINAL.md` and files under `specs/` are `Spec`), PR/issue URLs printed by
    `gh pr|issue create`, artifact URLs returned by an Artifact publish, PR/issue/artifact/other
-   links in the assistant's text, PR/issue/artifact links in the user's prompts; the Git line
+   links in the assistant's text, PR/issue/artifact links in the user's prompts; `Origin` = the
+   other links (issue, task, Slack thread, …) of the session's **first** prompt, plus the `Origin:`
+   list of a brief that prompt hands over (so the origin carries down a chain of continued
+   sessions — as do the handed brief's PR links); the Git line
    (branch, checkout root, linked worktree or not) from one `git rev-parse` in the cwd. Links to this machine or the private network (IP
    literals, dotless or `.local`/`.ts.net` hosts), schema hosts, templated or `…`-truncated URLs are
    dropped. Read-only tool output (a file that lists PRs) never counts.
@@ -736,6 +743,34 @@ an edited body.
    authoritative and to update, not rewrite. The answer must be a `## Summary` (≤ 1200 chars) and
    optionally a `## Todos` of checkboxes (`## Plan` is accepted too); anything else keeps the old brief. An edit that lands
    while the model runs wins (the answer is discarded).
+
+**Continue prompt** (`continuePrompt` in `web/lib/brief-format.mjs`, `continue_prompt` in
+`core::brief`; byte-identical, pinned by `testdata/briefs/sample.continue.txt`) — the first prompt
+of a new session that picks the work up. It carries only what the next session needs to find the
+work, not the session's detail:
+
+```text
+Continue the work of session <id> on <host> in <cwd>. Its brief:
+
+<Summary>
+
+Origin:
+- [Task 42: login loop](https://app.example.dev/tasks/42)
+
+PRs:
+- [owner/repo#12](https://github.com/owner/repo/pull/12)
+
+Worktree: `~/Code/project-wt` (branch `fix-login`)
+
+---
+```
+
+`Origin:` / `PRs:` / `Worktree:` (a linked worktree only) are left out when empty; files,
+artifacts, links and todos are never included. The **task** for the new session goes below the
+`---` line (the UI puts the caret there; `fleet spawn --from <s> "<task>"` appends it); sent with
+nothing below it, the task is `Pick up where it left off. Check the current state (git status, the
+PRs above) before changing anything, and tell me briefly what you found first.` Extraction treats
+the text below the separator as the user's own prompt and the part above it as the handed brief.
 
 **Budget** — model calls are what costs, so every automatic one has to pass all of:
 

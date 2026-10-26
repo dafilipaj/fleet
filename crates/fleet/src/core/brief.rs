@@ -28,8 +28,8 @@ const META_ORDER: [&str; 10] = [
 pub const MAX_DISMISSED: usize = 200;
 /// The server refuses a longer edit (413); so do we.
 pub const MAX_EDIT_CHARS: usize = 60000;
-const RESOURCE_KINDS: [&str; 9] = [
-    "PR", "Issue", "Artifact", "Spec", "File", "Git", "Branch", "Worktree", "Link",
+const RESOURCE_KINDS: [&str; 10] = [
+    "Origin", "PR", "Issue", "Artifact", "Spec", "File", "Git", "Branch", "Worktree", "Link",
 ];
 
 // ------------------------------------------------------------------ storage
@@ -923,8 +923,24 @@ pub fn human_edit(
 
 // ------------------------------------------------------------------ continue prompt
 
+/// The line that ends the handed-over brief in a continue prompt; the task follows it.
+pub const CONTINUE_SEPARATOR: &str = "---";
+/// The task when none is given (the server's `CONTINUE_DEFAULT_TASK`).
+pub const CONTINUE_DEFAULT_TASK: &str = "Pick up where it left off. Check the current state (git status, the PRs above) before changing anything, and tell me briefly what you found first.";
+
+/// A resource as a continue-prompt bullet: `[label](url)`, a bare url, else its label / text.
+fn prompt_link(r: &Resource) -> String {
+    match (&r.url, &r.label) {
+        (Some(u), Some(l)) if l != u => format!("[{}]({u})", l.replace(['[', ']'], "")),
+        (Some(u), _) => u.clone(),
+        (None, l) => l.clone().unwrap_or_else(|| r.text.clone()),
+    }
+}
+
 /// The first prompt for a NEW session that picks up where the brief's session left off — the
-/// server's `continuePrompt(brief, { host, cwd })`; `None` falls back to the frontmatter.
+/// server's `continuePrompt(brief, { host, cwd })`; `None` falls back to the frontmatter. Where
+/// it ran, the summary, Origin, PRs and the linked worktree, then the separator line the task
+/// goes below.
 pub fn continue_prompt(brief: &Brief, host: Option<&str>, cwd: Option<&str>) -> String {
     let host = host.map(String::from).or_else(|| brief.meta_str("host"));
     let cwd = cwd.map(String::from).or_else(|| brief.meta_str("cwd"));
@@ -941,24 +957,45 @@ pub fn continue_prompt(brief: &Brief, host: Option<&str>, cwd: Option<&str>) -> 
     .flatten()
     .collect::<Vec<_>>()
     .join(" ");
+    let list = |kind: &str| {
+        brief
+            .resources
+            .iter()
+            .filter(|r| r.kind.as_deref() == Some(kind))
+            .map(|r| format!("- {}", prompt_link(r)))
+            .collect::<Vec<_>>()
+    };
     let mut out = vec![format!("Continue the work of {origin}. Its brief:")];
     if !brief.summary.is_empty() {
-        out.push(format!("Summary:\n{}", brief.summary));
+        out.push(brief.summary.clone());
     }
-    if !brief.resources_text.is_empty() {
-        out.push(format!("Resources:\n{}", brief.resources_text));
+    let origins = list("Origin");
+    if !origins.is_empty() {
+        out.push(format!("Origin:\n{}", origins.join("\n")));
     }
-    if !brief.todos_text.is_empty() {
-        out.push(format!("Todos:\n{}", brief.todos_text));
+    let prs = list("PR");
+    if !prs.is_empty() {
+        out.push(format!("PRs:\n{}", prs.join("\n")));
     }
-    let open = brief.todos.iter().find(|i| !i.done);
-    out.push(format!(
-        "{}. Check the current state (git status, the files and PRs above) before changing anything, and tell me briefly what you found first.",
-        match open {
-            Some(i) => format!("Pick up the first open todo (\"{}\")", i.text),
-            None => "Pick up where it left off".into(),
-        }
-    ));
+    let wt = brief.resources.iter().find(|r| {
+        r.path.is_some()
+            && match r.kind.as_deref() {
+                Some("Git") => r.linked == Some(true),
+                Some("Worktree") => true,
+                _ => false,
+            }
+    });
+    if let Some(r) = wt {
+        let branch = match (&r.branch, r.kind.as_deref()) {
+            (Some(b), Some("Git")) => format!(" (branch `{b}`)"),
+            _ => String::new(),
+        };
+        out.push(format!(
+            "Worktree: `{}`{branch}",
+            r.path.as_deref().unwrap_or_default()
+        ));
+    }
+    out.push(CONTINUE_SEPARATOR.into());
     out.join("\n\n")
 }
 
@@ -1063,9 +1100,10 @@ mod tests {
     fn continue_prompt_matches_the_server_byte_for_byte() {
         assert_eq!(continue_prompt(&parse_brief(SAMPLE), None, None), CONTINUE);
         let empty = continue_prompt(&empty_brief(SID), Some("workstation"), None);
-        assert!(empty.starts_with(&format!(
-            "Continue the work of session {SID} on workstation. Its brief:\n\nPick up where it left off."
-        )));
+        assert_eq!(
+            empty,
+            format!("Continue the work of session {SID} on workstation. Its brief:\n\n---")
+        );
     }
 
     #[test]

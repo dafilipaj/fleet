@@ -2,7 +2,7 @@ import { describe, expect, test } from 'vitest'
 
 import type { BriefResource } from '@/api/types'
 
-import { briefBody, briefTime, briefTodos, continueDraft, editorLabel, gitLine, groupResources, retryMinutes, setTodoItem, todoProgress } from './brief'
+import { briefBody, briefTime, briefTodos, CONTINUE_DEFAULT_TASK, continueDraft, editorLabel, gitLine, groupResources, retryMinutes, setTodoItem, todoProgress, withContinueTask } from './brief'
 
 const md = `---
 session: 0000-aaaa
@@ -152,4 +152,11 @@ test('briefTime', () => {
   expect(briefTime('2026-01-02T03:04:05.000Z')).toBe(Date.UTC(2026, 0, 2, 3, 4, 5))
   expect(briefTime(null)).toBeNull()
   expect(briefTime('nope')).toBeNull()
+})
+
+test('withContinueTask: the default task only when nothing follows the separator', () => {
+  const p = 'Continue the work of session s on laptop. Its brief:\n\nDid x.\n\n---'
+  expect(withContinueTask(`${p}\n\n`)).toBe(`${p}\n\n${CONTINUE_DEFAULT_TASK}`)
+  expect(withContinueTask(`${p}\n\nReview the PR.`)).toBe(`${p}\n\nReview the PR.`)
+  expect(withContinueTask('a plain prompt\n---')).toBe('a plain prompt\n---')
 })

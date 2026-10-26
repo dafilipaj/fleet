@@ -49,13 +49,14 @@ export function setTodoItem(markdown: string, index: number, done: boolean): str
 }
 
 /**
- * Display order of resource groups: where the work lives (Git, and the legacy Branch / Worktree
+ * Display order of resource groups: where the work came from (Origin), where it lives (Git, and the legacy Branch / Worktree
  * lines), what it produced, links, then files (long, collapsed by default); hand-written lines
  * (`kind: null`) come last as Notes.
  */
-export const RESOURCE_ORDER: BriefResourceKind[] = ['Git', 'Branch', 'Worktree', 'PR', 'Issue', 'Artifact', 'Spec', 'Link', 'File']
+export const RESOURCE_ORDER: BriefResourceKind[] = ['Origin', 'Git', 'Branch', 'Worktree', 'PR', 'Issue', 'Artifact', 'Spec', 'Link', 'File']
 
 const GROUP_LABEL: Record<string, string> = {
+  Origin: 'Origin',
   Git: 'Git',
   PR: 'Pull requests',
   Issue: 'Issues',
@@ -117,10 +118,21 @@ export function todoProgress(todos: readonly { done: boolean }[] | null | undefi
   return { done: todos.filter((i) => i.done).length, total: todos.length }
 }
 
-/** The New session prompt for "Continue in new session": the brief's prompt, a blank line, the caret. */
+/** The New session prompt for "Continue in new session": the brief's prompt (it ends with the separator), a blank line, the caret. */
 export function continueDraft(prompt: string | null | undefined): string {
   const p = String(prompt ?? '').trimEnd()
   return p ? `${p}\n\n` : ''
+}
+
+/** The server's CONTINUE_DEFAULT_TASK (lib/brief-format.mjs): the task when nothing is written below the separator. */
+export const CONTINUE_DEFAULT_TASK =
+  'Pick up where it left off. Check the current state (git status, the PRs above) before changing anything, and tell me briefly what you found first.'
+
+/** A continue prompt sent with nothing below its separator gets the default task; any other prompt is sent as is. */
+export function withContinueTask(prompt: string): string {
+  if (!/\bContinue the work of [^\n]*\. Its brief:/.test(prompt)) return prompt
+  const p = prompt.trimEnd()
+  return /(?:^|\n)---$/.test(p) ? `${p}\n\n${CONTINUE_DEFAULT_TASK}` : prompt
 }
 
 /** Whole minutes (≥ 1) until the hourly cap frees up. */

@@ -91,7 +91,7 @@ src/
   lib/drafts.ts       composer drafts per session: unsent text saved in `fleet.drafts` (saveDraft, 14 days,
                       cleared on send) + one-shot parked text (setDraft) — "Send to session" from a note
   lib/brief.ts        brief helpers: briefTodos(), setTodoItem() (`## Todos`, legacy `## Plan`), groupResources()
-                      (RESOURCE_ORDER), gitLine(), editorLabel(), todoProgress(), continueDraft()
+                      (RESOURCE_ORDER), gitLine(), editorLabel(), todoProgress(), continueDraft(), withContinueTask()
   lib/storage.ts      localStorage that never throws
   lib/dormant.ts      dormant sessions (a reboot left them): dormantIndex() / dormantMember() (Board cards, the server's
                       `dormant` flag or the dormant list), dormantTitles() / dormantMeta(), restoreSummary(), dormantMissing();
@@ -404,11 +404,12 @@ src/
   Regenerate, Edit (the body markdown in a textarea; ⌘/Ctrl+Enter saves, Esc cancels — in the
   drawer Esc cancels the edit, not the drawer); Summary; **Todos** with clickable checkboxes and
   `3/7` (checked items are muted, not struck through; toggling rewrites that line of `## Todos`,
-  or of a legacy `## Plan`, and PUTs the body); Resources grouped Git (one row: branch · worktree
+  or of a legacy `## Plan`, and PUTs the body); Resources grouped Origin, Git (one row: branch · worktree
   / repo + path; legacy Branch / Worktree rows too), Pull requests, Issues, Artifacts, Specs,
   Links, Files (collapsed by default with a count; `fleet.briefFilesOpen`), Notes — files open the
   preview, URLs a new tab; **Continue in new session** (the New session form prefilled with the
-  host, the session's cwd and `continuePrompt`, caret at the end). GET while Details is open,
+  host, the session's cwd and `continuePrompt`, caret below its `---` line, where the task goes;
+  sent with nothing there, the default task is added). GET while Details is open,
   every 30s, every 2.5s while generating.
 - **Settings** (`#/settings`: the ⋯ More menu in the list header on mobile, the top bar on desktop, ⌘K → Settings…): Text size (Small / Default /
   Large = chat at 13 / 15 / 17px, `fleet.chatFont`) scales the **whole** UI via the `<html>`

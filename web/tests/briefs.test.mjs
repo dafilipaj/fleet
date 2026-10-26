@@ -156,14 +156,33 @@ test('format: model output — valid, fenced, and garbage', () => {
   assert.equal(parseModelOutput('## Summary\nok\n### nested heading\n'), null);
 });
 
-test('format: continue prompt carries where, resources and the first open todo', () => {
-  const p = continuePrompt(parseBrief(SAMPLE));
-  assert.match(p, new RegExp(`^Continue the work of session ${SID} on laptop in ~/Code/project\\. Its brief:`));
-  assert.match(p, /Summary:\nFixing the login flow/);
-  assert.match(p, /Resources:\n- PR: \[o\/r#12\]/);
-  assert.match(p, /Todos:\n- \[x\] reproduce/);
-  assert.match(p, /Pick up the first open todo \("fix"\)/);
-  assert.match(continuePrompt(emptyBrief(SID), { host: 'workstation' }), /Pick up where it left off/);
+test('format: continue prompt carries where, the summary, origin, PRs and the worktree, then a separator', () => {
+  const b = parseBrief(
+    SAMPLE.replace('## Resources\n', '## Resources\n- Origin: [Task 7](https://app.example.dev/tasks/7)\n- Git: `fix-login` · worktree `~/Code/project-wt`\n- Artifact: [Report](https://claude.ai/artifact/abcdef123456)\n'),
+  );
+  assert.equal(
+    continuePrompt(b),
+    `Continue the work of session ${SID} on laptop in ~/Code/project. Its brief:\n\n` +
+      'Fixing the login flow in ~/Code/project on branch fix-login.\n\n' +
+      'Origin:\n- [Task 7](https://app.example.dev/tasks/7)\n\n' +
+      'PRs:\n- [o/r#12](https://github.com/o/r/pull/12)\n\n' +
+      'Worktree: `~/Code/project-wt` (branch `fix-login`)\n\n---',
+  );
+  // No origin, no PRs, the main checkout: none of those blocks.
+  const plain = continuePrompt(parseBrief('## Summary\nx\n\n## Resources\n- Git: `main` · repo `~/Code/project`\n- File: `a.ts`\n'));
+  assert.doesNotMatch(plain, /Origin:|PRs:|Worktree:|a\.ts/);
+  assert.equal(continuePrompt(emptyBrief(SID), { host: 'workstation' }), `Continue the work of session ${SID} on workstation. Its brief:\n\n---`);
+});
+
+test('format: an Origin item turns its auto Link / Issue line into an Origin line', () => {
+  const text = '- Link: [app.example.dev/tasks/7](https://app.example.dev/tasks/7)\n- Issue: hand-written https://github.com/o/r/issues/3';
+  const items = [
+    { kind: 'Origin', label: 'app.example.dev/tasks/7', url: 'https://app.example.dev/tasks/7' },
+    { kind: 'Origin', label: 'o/r#3', url: 'https://github.com/o/r/issues/3' },
+  ];
+  const r = mergeResources(text, items);
+  assert.equal(r.text, '- Origin: [app.example.dev/tasks/7](https://app.example.dev/tasks/7)\n- Issue: hand-written https://github.com/o/r/issues/3');
+  assert.equal(r.added, 1);
 });
 
 // Shared with the Rust `core::brief` tests: both implementations must produce these bytes.
@@ -222,9 +241,10 @@ test('extract: resources come from what the session made, not what it read', asy
     'Artifact https://claude.ai/code/artifact/0123456789abcdef0123 (Login report)',
     `File ${path.join(cwd, 'out.txt')}`,
     `File ${path.join(cwd, 'src', 'a.ts')}`,
-    'Issue https://github.com/o/r/issues/7',
     'Link https://docs.example.dev/auth',
+    'Origin https://github.com/o/r/issues/7',
     'PR https://github.com/o/r/pull/12',
+    'PR https://github.com/o/r/pull/5',
     `Spec ${path.join(cwd, 'specs', 'SPEC.md')}`,
   ]);
   assert.deepEqual(r.todos, [
@@ -242,6 +262,29 @@ test('extract: resources come from what the session made, not what it read', asy
   const r2 = await ex.refresh({ session_id: SID, cwd });
   assert.deepEqual(r2.todos, [{ done: true, text: 'Ship it' }]);
   assert.ok(r2.offset < fs.statSync(file).size, 'an unfinished last line waits');
+});
+
+test('extract: origin comes from the first prompt and carries down a continue chain; the task below the separator is own text', async (t) => {
+  const dir = tmpdir(t);
+  const file = path.join(dir, 's.jsonl');
+  const handed =
+    'Continue the work of session abc on laptop. Its brief:\n\nDid things, see https://github.com/o/r/pull/3.\n\n' +
+    'Origin:\n- [Task 7](https://app.example.dev/tasks/7)\n- https://chat.example.dev/archives/C1/p2\n\n' +
+    'PRs:\n- [o/r#5](https://github.com/o/r/pull/5)\n\n' +
+    'Worktree: `~/Code/project-wt` (branch `x`)\n\n---\n\n' +
+    'Now review https://github.com/o/r/pull/8 against https://app.example.dev/tasks/9';
+  fs.writeFileSync(file, user(handed) + user('also see https://chat.example.dev/archives/C1/p9') + assistantText('Mentioned https://app.example.dev/tasks/7 again.'));
+  const ex = createBriefExtractor({ locate: async () => file, userHome: dir });
+  const r = await ex.refresh({ session_id: SID, cwd: dir });
+  const got = r.resources.map((x) => `${x.kind} ${x.url}`).sort();
+  assert.deepEqual(got, [
+    'Origin https://app.example.dev/tasks/7',
+    'Origin https://app.example.dev/tasks/9',
+    'Origin https://chat.example.dev/archives/C1/p2',
+    'PR https://github.com/o/r/pull/3',
+    'PR https://github.com/o/r/pull/5',
+    'PR https://github.com/o/r/pull/8',
+  ]);
 });
 
 test('extract: URL filter drops local, templated and schema links', () => {

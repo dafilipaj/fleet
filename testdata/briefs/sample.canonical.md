@@ -19,6 +19,8 @@ Fixing the login redirect loop in ~/Code/project on branch fix-login.
 It is in review.
 
 ## Resources
+- Origin: [Task 42: login loop](https://app.example.dev/tasks/42)
+- origin: https://chat.example.dev/archives/C01/p1700000000
 - PR: [owner/repo#12](https://github.com/owner/repo/pull/12)
 - File: `src/login.ts`
 * Branch: `fix-login`

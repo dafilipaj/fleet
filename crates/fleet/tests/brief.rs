@@ -91,14 +91,15 @@ fn json_has_the_web_api_shape() {
             .unwrap()
             .starts_with("---\nsession: ")
     );
-    assert_eq!(v["parsed"]["resources"][0]["kind"], "PR");
-    assert_eq!(v["parsed"]["resources"][0]["label"], "owner/repo#12");
+    assert_eq!(v["parsed"]["resources"][0]["kind"], "Origin");
+    assert_eq!(v["parsed"]["resources"][2]["kind"], "PR");
+    assert_eq!(v["parsed"]["resources"][2]["label"], "owner/repo#12");
     assert_eq!(v["parsed"]["todos"][2]["done"], false);
     assert_eq!(
         v["parsed"]["plan"], v["parsed"]["todos"],
         "deprecated alias, one release"
     );
-    let git = &v["parsed"]["resources"][3];
+    let git = &v["parsed"]["resources"][5];
     assert_eq!(
         (&git["kind"], &git["branch"], &git["linked"]),
         (&"Git".into(), &"fix-login".into(), &true.into())
@@ -175,7 +176,7 @@ fn set_is_a_human_edit() {
     assert!(!saved.contains("updated: 2026-01-02T03:04:05.000Z"));
     // Every removed resource line is dismissed; the old dismissed entry stays first.
     assert!(saved.contains(
-        "dismissed: [\"https://github.com/owner/repo/pull/9\",\"https://github.com/owner/repo/pull/12\",\"branch:fix-login\""
+        "dismissed: [\"https://github.com/owner/repo/pull/9\",\"https://app.example.dev/tasks/42\",\"https://chat.example.dev/archives/C01/p1700000000\",\"https://github.com/owner/repo/pull/12\",\"branch:fix-login\""
     ), "{saved}");
     assert!(saved.ends_with("## Summary\nDone, in review.\n\n## Resources\n- File: `src/login.ts`\n\n## Todos\n- [x] fix\n"));
     // No temp files next to it.
@@ -354,13 +355,22 @@ fn spawn_from_honours_dry_run_and_uses_the_sessions_cwd() {
         "{text}"
     );
     assert!(text.contains("Continue the work of session"), "{text}");
-    assert!(
-        text.ends_with("tell me briefly what you found first.\n\nand add a test\n"),
-        "{text}"
-    );
+    assert!(text.ends_with("\n\n---\n\nand add a test\n"), "{text}");
     assert!(
         !t.env.path(".claude/fleet-handoffs").exists(),
         "dry-run writes no prompt file"
+    );
+    // No task given → the default one below the separator.
+    let out = t
+        .cmd()
+        .args(["-n", "spawn", "--from", "app-9d", "--backend", "tmux"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.ends_with("\n\n---\n\nPick up where it left off. Check the current state (git status, the PRs above) before changing anything, and tell me briefly what you found first.\n"),
+        "{text}"
     );
 
     // No brief → nothing to continue from.

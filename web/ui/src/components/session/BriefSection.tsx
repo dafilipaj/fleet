@@ -4,6 +4,7 @@ import {
   CircleAlertIcon,
   CircleDotIcon,
   FileIcon,
+  FlagIcon,
   FolderGit2Icon,
   GitBranchIcon,
   GitPullRequestIcon,
@@ -32,6 +33,7 @@ import { pathCandidates } from '@/lib/paths'
 import { cn } from '@/lib/utils'
 
 const KIND_ICON: Record<string, typeof FileIcon> = {
+  Origin: FlagIcon,
   PR: GitPullRequestIcon,
   Issue: CircleDotIcon,
   Artifact: SparklesIcon,

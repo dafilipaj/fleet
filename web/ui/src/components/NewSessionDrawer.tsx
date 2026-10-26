@@ -20,6 +20,7 @@ import { useGhIdentities, useHarnesses } from '@/hooks/useHarnesses'
 import { useSettings } from '@/hooks/useSettings'
 import { useVoice } from '@/hooks/useVoice'
 import type { SiblingTarget } from '@/hooks/useStackUi'
+import { withContinueTask } from '@/lib/brief'
 import { copyText } from '@/lib/clipboard'
 import { shortCwd } from '@/lib/format'
 import { harnessLabel, modelKey, offeredHarnesses, pickHarness } from '@/lib/harness'
@@ -282,7 +283,7 @@ function NewSessionForm({
     setBusy(true)
     setError(null)
     try {
-      const sent = prompt
+      const sent = withContinueTask(prompt)
       const body = {
         prompt: sent.trim() ? sent : undefined,
         model: model || undefined,
@@ -326,7 +327,7 @@ function NewSessionForm({
     setBusy(true)
     setError(null)
     try {
-      const sent = prompt
+      const sent = withContinueTask(prompt)
       const res = await api.spawn(host, {
         dir: dir.path,
         prompt: sent.trim() ? sent : undefined,
