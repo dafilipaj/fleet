@@ -133,6 +133,8 @@ function brief(host, id) {
     ? [{ done: true, text: 'Find where line totals are rounded' }, { done: true, text: 'Sum in cents, round once' }, { done: true, text: 'Regression test with INV-2026-0912 and -0927' }, { done: false, text: 'Check JPY / KWD (0 and 3 decimals)' }, { done: false, text: 'Address review comments on #482' }]
     : [{ done: true, text: 'Read the current implementation' }, { done: false, text: 'Finish and hand over' }]
   const resources = big ? [
+    { kind: 'Origin', label: 'Invoice totals off by a cent', url: 'https://app.acme.dev/tasks/2041', path: null, text: 'Origin' },
+    { kind: 'Origin', label: 'acme.slack.com/archives/C04BILLING/p1760000000', url: 'https://acme.slack.com/archives/C04BILLING/p1760000000', path: null, text: 'Origin' },
     { kind: 'Git', label: null, url: null, path: '~/Code/acme-api/.worktrees/fix-invoice-rounding', text: 'Git: `fix-invoice-rounding` · worktree', branch: 'fix-invoice-rounding', linked: true },
     { kind: 'PR', label: 'acme/acme-api#482', url: 'https://github.com/acme/acme-api/pull/482', path: null, text: 'PR' },
     { kind: 'Issue', label: 'acme/acme-api#1777', url: 'https://github.com/acme/acme-api/issues/1777', path: null, text: 'Issue' },

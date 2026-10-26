@@ -404,7 +404,7 @@ src/
   Regenerate, Edit (the body markdown in a textarea; ⌘/Ctrl+Enter saves, Esc cancels — in the
   drawer Esc cancels the edit, not the drawer); Summary; **Todos** with clickable checkboxes and
   `3/7` (checked items are muted, not struck through; toggling rewrites that line of `## Todos`,
-  or of a legacy `## Plan`, and PUTs the body); Resources grouped Origin, Git (one row: branch · worktree
+  or of a legacy `## Plan`, and PUTs the body) — Origin and Pull requests sit between Summary and Todos as parts of their own; Resources (below the Todos) grouped Git (one row: branch · worktree
   / repo + path; legacy Branch / Worktree rows too), Pull requests, Issues, Artifacts, Specs,
   Links, Files (collapsed by default with a count; `fleet.briefFilesOpen`), Notes — files open the
   preview, URLs a new tab; **Continue in new session** (the New session form prefilled with the

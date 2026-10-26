@@ -44,6 +44,8 @@ const KIND_ICON: Record<string, typeof FileIcon> = {
   Worktree: FolderGit2Icon,
   Link: LinkIcon,
 }
+/** Resource groups shown as their own parts between the Summary and the Todos. */
+const TOP_KINDS = new Set(['Origin', 'PR'])
 /** Kinds whose `path` is a file the preview can show. */
 const FILE_KINDS = new Set(['File', 'Spec'])
 /** The Files group is collapsed until the viewer opens it (remembered per viewer). */
@@ -112,6 +114,9 @@ export function BriefSection({ host, brief: st, fileLinks, desktop = false, canc
   const worktrees = b?.worktrees ?? []
   // The Worktrees list includes the cwd's checkout: the Git line would say it twice.
   const groups = groupResources(parsed?.resources).filter((g) => !(worktrees.length && g.kind === 'Git'))
+  // Where the work came from and what it shipped sit under the Summary; the rest goes below the Todos.
+  const topGroups = groups.filter((g) => g.kind != null && TOP_KINDS.has(g.kind))
+  const restGroups = groups.filter((g) => !(g.kind != null && TOP_KINDS.has(g.kind)))
   const empty = !!b && !b.exists && !summary && !todos.length && !groups.length && !worktrees.length
 
   const regenerateButton = (label: string, className?: string) => (
@@ -206,6 +211,16 @@ export function BriefSection({ host, brief: st, fileLinks, desktop = false, canc
             )}
           </Part>
 
+          {topGroups.map((g) => (
+            <Part key={g.kind} title={g.label} aside={g.items.length > 1 ? <span className="tabular-nums">{g.items.length}</span> : null}>
+              <ul className="space-y-1">
+                {g.items.map((r, i) => (
+                  <ResourceRow key={`${r.text}-${i}`} r={r} fileLinks={fileLinks} />
+                ))}
+              </ul>
+            </Part>
+          ))}
+
           {todos.length ? (
             <Part title="Todos" aside={progress ? <span className="tabular-nums">{`${progress.done}/${progress.total}`}</span> : null}>
               {progress ? (
@@ -233,11 +248,11 @@ export function BriefSection({ host, brief: st, fileLinks, desktop = false, canc
             </Part>
           ) : null}
 
-          {groups.length || worktrees.length ? (
+          {restGroups.length || worktrees.length ? (
             <Part title="Resources">
               <div className="space-y-3">
                 {worktrees.length ? <WorktreesGroup worktrees={worktrees} editor={b.editor} /> : null}
-                {groups.map((g) => (g.kind === 'File' ? <FilesGroup key="files" g={g} fileLinks={fileLinks} /> : <Group key={g.kind ?? 'notes'} g={g} fileLinks={fileLinks} />))}
+                {restGroups.map((g) => (g.kind === 'File' ? <FilesGroup key="files" g={g} fileLinks={fileLinks} /> : <Group key={g.kind ?? 'notes'} g={g} fileLinks={fileLinks} />))}
               </div>
             </Part>
           ) : null}
