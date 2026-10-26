@@ -106,7 +106,7 @@ export function SlackLinkSection({ host, session: s }: { host: string; session: 
             <div className="min-w-0">
               <a href={l.permalink} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm hover:underline">
                 <MessagesSquareIcon className="size-3.5 shrink-0 text-primary" />
-                {l.threadTs ? 'Thread' : 'Conversation'} · {slackLeft(l.until, now)} left
+                {l.dm ? `DM with ${l.dm.name}` : l.threadTs ? 'Thread' : 'Conversation'} · {slackLeft(l.until, now)} left
                 <ExternalLinkIcon className="size-3 text-dimmer" />
               </a>
               <div className="truncate text-xs text-dimmer">
@@ -126,7 +126,7 @@ export function SlackLinkSection({ host, session: s }: { host: string; session: 
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && void link()}
-              placeholder="Slack link: a message (its thread), a channel or a DM"
+              placeholder="Slack link (a message's thread, a channel) or @person for a DM"
               className="h-9 text-sm"
             />
             <ToggleGroup type="single" value={String(minutes)} onValueChange={(v) => v && setMinutes(Number(v))} aria-label="How long" className="justify-start">
@@ -169,7 +169,7 @@ export function SlackLinkSection({ host, session: s }: { host: string; session: 
               {mode === 'proactive'
                 ? 'It sees every message there and posts when it has something useful, as the Slack app.'
                 : 'It follows quietly and answers when someone mentions the app or DMs it, or, in a thread it has posted in, talks to it.'}{' '}
-              Everyone there can talk to it until the link ends. Invite the app first.
+              {url.trim().startsWith('http') ? 'Everyone there can talk to it until the link ends. Invite the app first.' : 'A person: the app DMs with them — tell them to write to the app, or ask it in the instructions to start.'}
             </p>
             <div className="flex justify-end gap-2">
               <Button variant="ghost" className="h-9 px-3" onClick={() => setOpen(false)}>

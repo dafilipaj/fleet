@@ -15,8 +15,10 @@ import {
   createSlackBridge,
   createSocketClient,
   linkPrompt,
+  matchPeople,
   messagesPrompt,
   parseMinutes,
+  parsePerson,
   parseSlackUrl,
   plainText,
 } from '../lib/slack.mjs';
@@ -31,7 +33,7 @@ function fakeSlack() {
   let n = 0;
   const handlers = {
     'auth.test': () => ({ user_id: 'UBOT', bot_id: 'B1', team: 'Team' }),
-    'users.info': ({ user }) => ({ user: { profile: { display_name: { U1: 'Alex', UOWNER: 'Owner' }[user] ?? '' }, name: user } }),
+    'users.info': ({ user }) => ({ user: { profile: { display_name: { U1: 'Alex', UOWNER: 'Owner' }[user] ?? '' }, name: user, id: user } }),
     'conversations.replies': () => ({
       messages: [
         { ts: THREAD, user: 'UOWNER', text: 'Demo of <https://x.test|the thing>' },
@@ -309,6 +311,66 @@ test('a channel link in mention mode: the threads it posted in wake it, others s
   await said('1792778300.000001', 'in the answered thread', '1792778000.000001');
   await fx.bridge.tick();
   assert.equal(fx.sent.length, 3);
+});
+
+const MEMBERS = [
+  { id: 'U1', name: 'alex', real_name: 'Alex Šimić', profile: { display_name: 'Alex', real_name: 'Alex Šimić' } },
+  { id: 'U2', name: 'alexandra', real_name: 'Alexandra Kos', profile: { display_name: '', real_name: 'Alexandra Kos' } },
+  { id: 'U0SAM0001', name: 'sam', real_name: 'Sam Lee', profile: { display_name: 'Sam', real_name: 'Sam Lee' } },
+  { id: 'U4', name: 'gone', real_name: 'Gone Person', deleted: true, profile: {} },
+  { id: 'UB', name: 'somebot', is_bot: true, profile: {} },
+];
+
+test('parsePerson / matchPeople: ids, names, exact before prefix, no deleted or bots', () => {
+  assert.deepEqual(parsePerson('U0123ABC'), { id: 'U0123ABC' });
+  assert.deepEqual(parsePerson('<@U0123ABC|alex>'), { id: 'U0123ABC' });
+  assert.deepEqual(parsePerson(' @Alex Šimić '), { name: 'alex simic' });
+  assert.throws(() => parsePerson('@'), /name the person/);
+  assert.deepEqual(matchPeople(MEMBERS, 'alex').map((u) => u.id), ['U1']);
+  assert.deepEqual(matchPeople(MEMBERS, 'simic').map((u) => u.id), ['U1']);
+  assert.deepEqual(matchPeople(MEMBERS, 'al').map((u) => u.id), ['U1', 'U2']);
+  assert.deepEqual(matchPeople(MEMBERS, 'gone'), []);
+  assert.deepEqual(matchPeople(MEMBERS, 'somebot'), []);
+});
+
+test('a DM link: a person instead of a URL — the app\'s DM with them, every message for the session', async (t) => {
+  const fx = fixture(t);
+  fx.slack.handlers['users.list'] = ({ cursor }) => (cursor ? { members: MEMBERS.slice(2) } : { members: MEMBERS.slice(0, 2), response_metadata: { next_cursor: 'p2' } });
+  fx.slack.handlers['auth.test'] = () => ({ user_id: 'UBOT', bot_id: 'B1', team: 'Team', url: 'https://team.slack.com/' });
+  fx.slack.handlers['conversations.open'] = ({ users }) => ({ channel: { id: `D0${users}XYZ` } });
+  fx.slack.handlers['conversations.history'] = () => ({ messages: [] });
+
+  await assert.rejects(fx.bridge.link({ session: SID, url: '@al', minutes: 30, host: 'h' }), /matches 2 people — name one: Alex Šimić \(@alex, U1\); Alexandra Kos/);
+  await assert.rejects(fx.bridge.link({ session: SID, url: '@nobody', minutes: 30, host: 'h' }), (e) => e.status === 404);
+  const link = await fx.bridge.link({ session: SID, url: '@Sam', minutes: 30, task: 'greet Sam and explain the demo', host: 'h' });
+  assert.equal(link.channel, 'D0U0SAM0001XYZ');
+  assert.equal(link.threadTs, null);
+  assert.deepEqual(link.dm, { user: 'U0SAM0001', name: 'Sam' });
+  assert.equal(link.permalink, 'https://team.slack.com/team/U0SAM0001');
+  assert.deepEqual(fx.slack.calls.find((c) => c.method === 'conversations.open').params, { users: 'U0SAM0001' });
+
+  await fx.bridge.tick();
+  assert.match(fx.sent[0].text, /linked to a Slack DM with Sam/);
+  assert.match(fx.sent[0].text, /if the instructions say to start, post a short opener now/);
+  assert.doesNotMatch(fx.sent[0].text, /--thread/);
+  fx.advance(10_000);
+  await fx.bridge.handleEvent({ type: 'message', channel: 'D0U0SAM0001XYZ', channel_type: 'im', ts: '1792778000.000001', user: 'U0SAM0001', text: 'hi, what is this?' });
+  await fx.bridge.tick();
+  assert.equal(fx.sent.length, 2);
+  assert.match(fx.sent[1].text, /New in the DM with Sam — something for you/);
+  assert.match(fx.sent[1].text, /Sam \(U0SAM0001\) at \d\d:\d\d → to you:\nhi, what is this\?/);
+
+  // By id, again: the same DM — renewed.
+  const again = await fx.bridge.link({ session: SID, user: 'U0SAM0001', minutes: 60, host: 'h' });
+  assert.equal(again.renewed, true);
+});
+
+test('a DM link without the im:write scope says so', async (t) => {
+  const fx = fixture(t);
+  fx.slack.handlers['conversations.open'] = () => {
+    throw Object.assign(new Error('missing_scope'), { slack: 'missing_scope' });
+  };
+  await assert.rejects(fx.bridge.link({ session: SID, user: 'U0ALEX001', minutes: 30, host: 'h' }), /im:write/);
 });
 
 test('prompts stay under the send cap', () => {

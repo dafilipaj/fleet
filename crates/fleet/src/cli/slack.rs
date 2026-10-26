@@ -105,13 +105,17 @@ fn link_line(l: &Value) -> String {
         .unwrap_or("?");
     let until = l["until"].as_i64().map(clock).unwrap_or_default();
     let task = l["task"].as_str().filter(|t| !t.is_empty());
+    let place = match l["dm"]["name"].as_str() {
+        Some(name) => format!("DM with {name}"),
+        None => l["permalink"].as_str().unwrap_or("").to_string(),
+    };
     format!(
         "{}  {}  until {}  {}  {}{}",
         l["id"].as_str().unwrap_or("?").bold(),
         who,
         until,
         l["mode"].as_str().unwrap_or("mention"),
-        l["permalink"].as_str().unwrap_or(""),
+        place,
         task.map(|t| format!("\n            task: {t}"))
             .unwrap_or_default()
     )
@@ -155,7 +159,8 @@ pub fn list(json: bool) -> Result<()> {
     Ok(())
 }
 
-/// `fleet slack link <url> --for <duration> [--session <target>] [--task <text>]`.
+/// `fleet slack link <url | @person> --for <duration> [--session <target>] [--task <text>]` — a
+/// person is resolved by the bridge (the app's DM with them).
 pub fn link(
     url: &str,
     duration: &str,

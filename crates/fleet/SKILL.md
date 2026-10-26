@@ -31,7 +31,7 @@ A firstmate-style orchestrator for the many Claude Code sessions the user runs i
 | "my tasks / what's due / what am I working on in Productive" | `fleet tasks` (`--json` to parse) — see Productive tasks below |
 | "work on task X in a session / move task X to review" | `fleet task spawn <task> "<prompt>" -C <dir>` / `fleet task status <task> "<status>"` — see Productive tasks below |
 | "check out PR X / work on PR X / review PR X in a session" | `fleet pr checkout <pr>` / `fleet pr spawn <pr> "<prompt>"` — see Pull requests below |
-| "let people in this Slack thread talk to X for an hour" | `fleet slack link <slack-url> --for 1h [--session <target>] [--task "<instructions>"] [--proactive]` — opens a session to other people: **only when the user asks, confirm like `spawn`**; `fleet slack` lists links, `fleet slack unlink <sl-…>` ends one |
+| "let people in this Slack thread talk to X for an hour" / "let Alex DM X" | `fleet slack link <slack-url \| @person> --for 1h [--session <target>] [--task "<instructions>"] [--proactive]` — opens a session to other people: **only when the user asks, confirm like `spawn`**; `fleet slack` lists links, `fleet slack unlink <sl-…>` ends one |
 | "what's running everywhere" | `fleet list --all-hosts` (add `--json`; every row carries `host`) |
 | "…on the workstation" | `fleet -H <host> <any command above>` — runs it on that host over ssh |
 

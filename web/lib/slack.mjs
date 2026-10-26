@@ -46,6 +46,7 @@ const MAX_PROMPT = 7500; // the send cap is 8000
 const HISTORY_LIMIT = 30; // thread messages shown to the session when it is linked
 const MAX_ENDED = 20;
 const MAX_SEEN = 300;
+const PEOPLE_TTL_MS = 10 * 60 * 1000;
 const MAX_POSTED_IN = 50; // threads a session posted in, remembered per link
 const MAX_CONTEXT = 60; // messages kept, undelivered, as context (mention mode)
 const TICK_MS = 4000;
@@ -82,6 +83,30 @@ export function parseSlackUrl(input) {
   const threadParam = url.searchParams.get('thread_ts');
   if (threadParam && /^\d{10}\.\d{6}$/.test(threadParam)) return { channel, threadTs: threadParam };
   return { channel, threadTs: sec ? `${sec}.${micro}` : null };
+}
+
+/** A Slack link (`https://…`) or a person to DM: `@name`, a name, `U123…` or `<@U123…>`. */
+export function isPersonTarget(input) {
+  return typeof input === 'string' && input.trim() !== '' && !/^https?:\/\//i.test(input.trim());
+}
+
+/** `@Alex Smith` / `<@U123>` / `U123` → `{ id }` or `{ name }` (lowercase, no diacritics). */
+export function parsePerson(input) {
+  const s = String(input ?? '').trim().replace(/^<@([UW][A-Z0-9]+)(?:\|[^>]*)?>$/, '$1').replace(/^@/, '').trim();
+  if (!s) throw new SlackError('name the person to DM: @name or their Slack user id');
+  if (/^[UW][A-Z0-9]{4,}$/.test(s)) return { id: s };
+  return { name: fold(s) };
+}
+
+const fold = (s) => String(s ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+
+/** The workspace's people matching `name`: exact (handle, display or full name), else by prefix. */
+export function matchPeople(members, name) {
+  const people = members.filter((u) => u && !u.deleted && !u.is_bot && u.id !== 'USLACKBOT');
+  const fields = (u) => [u.name, u.real_name, u.profile?.display_name, u.profile?.real_name].map(fold).filter(Boolean);
+  const exact = people.filter((u) => fields(u).includes(name));
+  if (exact.length) return exact;
+  return people.filter((u) => fields(u).some((f) => f.startsWith(name) || f.split(/\s+/).some((w) => w.startsWith(name))));
 }
 
 /** `30`, `30m`, `2h`, `1h30m` → minutes (integer), or null. */
@@ -125,7 +150,7 @@ function whoLine(m, link, names) {
 
 function messageLine(m, link, names) {
   const files = m.files?.length ? ` [attached: ${m.files.join(', ')}]` : '';
-  const thread = link.threadTs ? '' : ` · thread ${m.threadTs}`;
+  const thread = link.threadTs || (link.dm && m.threadTs === m.ts) ? '' : ` · thread ${m.threadTs}`;
   const mark = m.mention ? ' → mentions you' : m.direct ? ' → to you' : '';
   return `• ${whoLine(m, link, names)} at ${clock(Number(m.ts) * 1000)}${thread}${mark}:\n${clip(plainText(m.text, names), MAX_MESSAGE)}${files}`;
 }
@@ -143,7 +168,7 @@ function fitNewest(lines, budget) {
 
 /** The prompt that tells the session it is linked: the rules, the task and the thread so far. */
 export function linkPrompt(link, { history = [], names = {} } = {}) {
-  const where = link.threadTs ? 'a Slack thread' : 'a Slack conversation';
+  const where = link.threadTs ? 'a Slack thread' : link.dm ? `a Slack DM with ${link.dm.name}` : 'a Slack conversation';
   const reply = `fleet slack reply ${link.id} "<text>"`;
   const proactive = link.mode === 'proactive';
   const lines = [
@@ -154,7 +179,8 @@ export function linkPrompt(link, { history = [], names = {} } = {}) {
       ? `You now follow what is said there: every new message arrives here as "[slack ${link.id}] …". Step in when you can really help — the owner's instructions say how much — or when someone talks to you; otherwise post nothing.`
       : `You now follow it in the background: messages arrive here as "[slack ${link.id}] …" when one mentions you or is a DM to you, and also when one comes in a thread you have posted in — together with what was said in between, for context. A message in your thread is not necessarily for you: judge from the conversation whether it is (an answer to you, a follow-up question) or people talking among themselves, and post only in the first case. The rest is context, not something to react to.`,
     `Each message carries who wrote it (their Slack name and id, checked by fleet; "→ mentions you" / "→ to you" when it mentions you or is a DM to you). Until the link ends:`,
-    `- Post in Slack only with \`${reply}\`${link.threadTs ? '' : ' (add `--thread <ts>` to answer in a message\'s thread)'} — Slack mrkdwn, short, in the language they write in. Never post to Slack any other way; your answer here in the terminal is not seen there.`,
+    ...(link.dm ? [`This is a direct conversation between ${link.dm.name} and you (the app): what they write there is for you. They may not know they can write to you yet — if the instructions say to start, post a short opener now.`] : []),
+    `- Post in Slack only with \`${reply}\`${link.threadTs || link.dm ? '' : ' (add `--thread <ts>` to answer in a message\'s thread)'} — Slack mrkdwn, short, in the language they write in. Never post to Slack any other way; your answer here in the terminal is not seen there.`,
     '- When nothing calls for a post, post nothing: end your turn here with one short line (e.g. "observed — nothing for me"), no summary of the conversation.',
     '- Help only within the instructions above: questions, investigating, debugging, small changes within them. Decline anything else in the thread, and say here what was asked.',
     '- Nothing destructive or irreversible for them (deleting data, deploys, force pushes, secrets, credentials, access to other systems or repos) — say it needs the owner and stop.',
@@ -180,7 +206,7 @@ export function messagesPrompt(link, messages, { names = {} } = {}) {
       : messages.some((m) => m.joined)
         ? 'in a thread you posted in — answer only if it is for you'
         : 'context';
-  const head = `[slack ${link.id}] New in ${link.threadTs ? 'the thread' : 'the conversation'} — ${why} (until ${clock(link.until)}; post with \`fleet slack reply ${link.id} "…"\`, or post nothing):`;
+  const head = `[slack ${link.id}] New in ${link.threadTs ? 'the thread' : link.dm ? `the DM with ${link.dm.name}` : 'the conversation'} — ${why} (until ${clock(link.until)}; post with \`fleet slack reply ${link.id} "…"\`, or post nothing):`;
   const { shown, left } = fitNewest(messages.map((m) => messageLine(m, link, names)), MAX_PROMPT - head.length - 60);
   return [head, ...(left ? [`(${left} earlier messages left out)`] : []), ...shown].join('\n');
 }
@@ -345,6 +371,7 @@ export function createSlackBridge({ settings = {}, call, socket = null, listSess
   let timer = null;
   let bot = null; // { userId, team, url } from auth.test
   const names = {}; // Slack user id → display name
+  let people = null; // { at, members } — users.list, for finding a person to DM by name
   const busy = new Set(); // link ids being delivered
   const lastDelivery = new Map(); // link id → ms
 
@@ -381,6 +408,46 @@ export function createSlackBridge({ settings = {}, call, socket = null, listSess
     return bot;
   }
 
+  async function members() {
+    if (people && now() - people.at < PEOPLE_TTL_MS) return people.members;
+    const all = [];
+    let cursor;
+    for (let page = 0; page < 50; page++) {
+      const r = await call('users.list', { limit: 200, ...(cursor ? { cursor } : {}) });
+      all.push(...(r.members ?? []));
+      cursor = r.response_metadata?.next_cursor;
+      if (!cursor) break;
+    }
+    people = { at: now(), members: all };
+    return all;
+  }
+
+  /** The person a DM link is with: by id, or by name — never a guess between several. */
+  async function findPerson(input) {
+    const q = parsePerson(input);
+    let u;
+    if (q.id) {
+      try {
+        u = (await call('users.info', { user: q.id })).user;
+      } catch (err) {
+        if (err.slack === 'user_not_found') throw new SlackError(`no Slack user ${q.id}`, 404);
+        throw err;
+      }
+    } else {
+      const found = matchPeople(await members(), q.name);
+      if (!found.length) throw new SlackError(`no one in Slack matches "${input}"`, 404);
+      if (found.length > 1) {
+        const list = found.slice(0, 8).map((x) => `${x.profile?.real_name || x.real_name || x.name} (@${x.name}, ${x.id})`).join('; ');
+        throw new SlackError(`"${input}" matches ${found.length} people — name one: ${list}${found.length > 8 ? '; …' : ''}`);
+      }
+      u = found[0];
+    }
+    if (!u || u.deleted || u.is_bot || u.id === bot?.userId) throw new SlackError(`${input} is not a person the app can DM`);
+    const name = u.profile?.display_name || u.profile?.real_name || u.real_name || u.name || u.id;
+    names[u.id] = name;
+    return { user: u.id, name };
+  }
+
   async function nameOf(user) {
     if (!user || names[user]) return;
     try {
@@ -401,6 +468,7 @@ export function createSlackBridge({ settings = {}, call, socket = null, listSess
     channel: l.channel,
     threadTs: l.threadTs,
     permalink: l.permalink,
+    dm: l.dm ?? null,
     task: l.task,
     mode: l.mode ?? 'mention',
     createdAt: l.createdAt,
@@ -425,9 +493,10 @@ export function createSlackBridge({ settings = {}, call, socket = null, listSess
   const isPerson = (m) => DELIVERED_SUBTYPES.has(m.subtype) && !m.bot_id && m.user && m.user !== bot?.userId;
 
   /** POST link: the session (on this host) follows the Slack link for `minutes`. */
-  async function link({ session: sessionId, pane, url, minutes, task, mode, host }) {
+  async function link({ session: sessionId, pane, url, user, minutes, task, mode, host }) {
     await load();
-    const target = parseSlackUrl(url);
+    const person = user ?? (isPersonTarget(url) ? url : null);
+    const target = person != null ? null : parseSlackUrl(url);
     if (mode != null && !MODES.includes(mode)) throw new SlackError(`mode must be one of: ${MODES.join(', ')}`);
     const mins = parseMinutes(minutes);
     if (mins == null || mins < MIN_MINUTES || mins > MAX_MINUTES) throw new SlackError(`minutes must be ${MIN_MINUTES}–${MAX_MINUTES} (or like 30m, 2h)`);
@@ -436,14 +505,29 @@ export function createSlackBridge({ settings = {}, call, socket = null, listSess
     const session = await findLinkSession({ sessionId, pane });
     await whoami();
 
+    // A person: the app's DM with them (opened if new) is the conversation.
+    let dm = null;
+    let conv = target;
+    if (person != null) {
+      dm = await findPerson(person);
+      try {
+        const r = await call('conversations.open', { users: dm.user });
+        conv = { channel: r.channel?.id, threadTs: null };
+      } catch (err) {
+        if (err.slack === 'missing_scope') throw new SlackError('the Slack app needs the im:write scope to open a DM — add it and reinstall the app', 400);
+        throw err;
+      }
+      if (!conv.channel) throw new SlackError('Slack opened no DM', 502);
+    }
+
     // Read the thread first: it proves the bot can see it, and it is the session's context.
     let history = [];
     try {
-      if (target.threadTs) {
-        const r = await call('conversations.replies', { channel: target.channel, ts: target.threadTs, limit: HISTORY_LIMIT + 1 });
+      if (conv.threadTs) {
+        const r = await call('conversations.replies', { channel: conv.channel, ts: conv.threadTs, limit: HISTORY_LIMIT + 1 });
         history = r.messages ?? [];
       } else {
-        const r = await call('conversations.history', { channel: target.channel, limit: 10 });
+        const r = await call('conversations.history', { channel: conv.channel, limit: 10 });
         history = (r.messages ?? []).reverse();
       }
     } catch (err) {
@@ -457,16 +541,16 @@ export function createSlackBridge({ settings = {}, call, socket = null, listSess
       }
       throw err;
     }
-    let permalink = String(url).trim();
+    let permalink = dm ? (bot.url ? `${bot.url.replace(/\/?$/, '/')}team/${dm.user}` : `slack:${dm.user}`) : String(url).trim();
     try {
-      if (target.threadTs) permalink = (await call('chat.getPermalink', { channel: target.channel, message_ts: target.threadTs })).permalink ?? permalink;
+      if (conv.threadTs) permalink = (await call('chat.getPermalink', { channel: conv.channel, message_ts: conv.threadTs })).permalink ?? permalink;
     } catch {
       /* the link as given */
     }
 
     const until = now() + mins * 60 * 1000;
     // The same session on the same thread again: a new time limit and task, not a second link.
-    const same = links.find((l) => l.session === session.session_id && l.channel === target.channel && l.threadTs === target.threadTs);
+    const same = links.find((l) => l.session === session.session_id && l.channel === conv.channel && l.threadTs === conv.threadTs);
     if (same) {
       same.until = until;
       if (taskText) same.task = taskText;
@@ -482,9 +566,10 @@ export function createSlackBridge({ settings = {}, call, socket = null, listSess
       host,
       session: session.session_id,
       sessionName: session.name ?? null,
-      channel: target.channel,
-      threadTs: target.threadTs,
+      channel: conv.channel,
+      threadTs: conv.threadTs,
       permalink,
+      ...(dm ? { dm } : {}),
       task: taskText,
       mode: mode ?? 'mention',
       owner: settings.owner ?? null,

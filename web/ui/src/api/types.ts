@@ -219,6 +219,8 @@ export interface SlackLink {
   /** null: the whole channel / DM. */
   threadTs: string | null
   permalink: string
+  /** A DM link: the person it is with (the app's DM with them). */
+  dm: { user: string; name: string } | null
   task: string
   /** `mention`: woken when addressed (the rest goes along as context); `proactive`: sees every message. */
   mode: 'mention' | 'proactive'

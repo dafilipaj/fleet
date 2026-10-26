@@ -606,7 +606,8 @@ enum SlackCmd {
     },
     /// Link a session to a Slack thread, channel or DM for a while (default: this session)
     Link {
-        /// A Slack link: a message (its thread), or a channel / DM (all of it)
+        /// A Slack link: a message (its thread), or a channel / DM (all of it); or a person
+        /// (@name or their user id): the app's DM with them
         url: String,
         /// How long: minutes, or like 30m, 2h, 1h30m (max 24h)
         #[arg(long = "for", value_name = "DURATION")]
@@ -619,7 +620,8 @@ enum SlackCmd {
         #[arg(long)]
         task: Option<String>,
         /// See every message and step in when it should (default: woken only when someone
-        /// mentions the app, DMs it or answers it; the rest goes along as context)
+        /// mentions the app or DMs it, or writes in a thread it posted in; the rest goes along as
+        /// context)
         #[arg(long)]
         proactive: bool,
         #[arg(long)]
