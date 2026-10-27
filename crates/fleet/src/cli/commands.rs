@@ -1218,6 +1218,12 @@ pub fn spawn_resume(
         .and_then(|()| resume(id, prompt, from, &opts, json, &mut live));
     if json && let Err(e) = &out {
         let mut v = spawn_error_json(e, &host_label());
+        if e.kind() == "session_starting" {
+            v["starting"] = lock::resume_host(opts.harness, id).map_or(
+                serde_json::Value::Null,
+                |(session, pane)| serde_json::json!({ "tmux_session": session, "handle": pane }),
+            );
+        }
         if let Some(pid) = live {
             v["pid"] = pid.into();
         }

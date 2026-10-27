@@ -21,5 +21,6 @@ pub mod skill;
 pub mod stack;
 pub mod switch;
 pub mod tmux;
+pub mod trust;
 pub mod usage;
 pub mod web;

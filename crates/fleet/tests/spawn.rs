@@ -1082,6 +1082,12 @@ fn a_resume_holds_the_session_until_it_registers() {
         assert_eq!(v["kind"], "session_starting", "{v}");
     }
     assert_eq!(r.sessions(), ["fleet-test-h1"]);
+    let (_, waiting) = resume(&[]);
+    assert_eq!(
+        waiting["starting"]["tmux_session"], "fleet-test-h1",
+        "{waiting}"
+    );
+    assert_eq!(waiting["starting"]["handle"], v["handle"], "{waiting}");
     // Codex's session of the same id is another session.
     let (out, v) = resume(&["-n", "--harness", "codex"]);
     assert!(out.status.success(), "{v} / {}", stderr(&out));
@@ -1102,6 +1108,33 @@ fn a_resume_holds_the_session_until_it_registers() {
     let (out, v) = resume(&["--name", "fleet-test-h2"]);
     assert!(out.status.success(), "{v} / {}", stderr(&out));
     assert_eq!(r.sessions(), ["fleet-test-h2"]);
+}
+
+// C7: an iTerm reservation, or a pane which no longer exists, has no Session host to adopt.
+#[test]
+fn starting_without_a_live_pane_is_explicitly_null() {
+    let Some(r) = Rig::new() else { return };
+    let path = reservation(&r, "claude", RESUME_ID);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    for pane in [serde_json::Value::Null, serde_json::json!("%999999")] {
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        std::fs::write(
+            &path,
+            serde_json::json!({"at":at,"pane":pane,"shell":99999999}).to_string(),
+        )
+        .unwrap();
+        let (out, v) = r.spawn_json(&["--resume", RESUME_ID, "--dir", &r.s("work")]);
+        assert_eq!(out.status.code(), Some(1), "{v}");
+        assert_eq!(v["kind"], "session_starting", "{v}");
+        assert_eq!(
+            v.as_object().unwrap().get("starting"),
+            Some(&serde_json::Value::Null),
+            "{v}"
+        );
+    }
 }
 
 // The reservation is tied to the tmux pane the resume was typed into. A resume that never

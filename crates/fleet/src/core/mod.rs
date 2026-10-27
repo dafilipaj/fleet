@@ -27,5 +27,7 @@ pub mod title;
 pub mod tmux;
 pub mod tools;
 pub mod transcript;
+pub mod trust;
+pub mod trust_prompt;
 pub mod usage;
 pub mod usage_codex;

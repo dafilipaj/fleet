@@ -848,6 +848,23 @@ pub enum KillAlone {
 /// the id is gone from it. `Err` (as `io`) when tmux could not be asked, or answered
 /// something else.
 pub fn kill_if_alone(session: &str, pane: &str) -> Result<KillAlone> {
+    kill_if_alone_with(session, pane, None)
+}
+
+/// [`kill_if_alone`], each tmux call given at most `limit` (`io` past it).
+pub fn kill_if_alone_within(
+    session: &str,
+    pane: &str,
+    limit: std::time::Duration,
+) -> Result<KillAlone> {
+    kill_if_alone_with(session, pane, Some(limit))
+}
+
+fn kill_if_alone_with(
+    session: &str,
+    pane: &str,
+    limit: Option<std::time::Duration>,
+) -> Result<KillAlone> {
     let is_id = |s: &str, sigil: char| {
         s.strip_prefix(sigil)
             .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
@@ -858,24 +875,29 @@ pub fn kill_if_alone(session: &str, pane: &str) -> Result<KillAlone> {
             format!("not a tmux session / pane id: {session} / {pane}"),
         ));
     }
-    let out = tmux()
-        .args([
-            "if-shell",
-            "-F",
-            "-t",
-            session,
-            &alone_format(session, pane),
-            // The ids are digits behind a sigil, so they quote safely; the name is only
-            // expanded when printed, never parsed.
-            &format!(
-                "display-message -p -t '{session}' 'killed\t#{{session_name}}' ; kill-session -t '{session}'"
-            ),
-            &format!(
-                "display-message -p -t '{session}' 'refused\t#{{session_id}}\t#{{session_windows}}\t#{{window_panes}}\t#{{window_linked}}\t#{{pane_id}}'"
-            ),
-        ])
-        .output()
-        .map_err(|e| Error::tagged("io", format!("tmux: {e}")))?;
+    let alone = alone_format(session, pane);
+    let args = [
+        "if-shell",
+        "-F",
+        "-t",
+        session,
+        &alone,
+        // The ids are digits behind a sigil, so they quote safely; the name is only
+        // expanded when printed, never parsed.
+        &format!(
+            "display-message -p -t '{session}' 'killed\t#{{session_name}}' ; kill-session -t '{session}'"
+        ),
+        &format!(
+            "display-message -p -t '{session}' 'refused\t#{{session_id}}\t#{{session_windows}}\t#{{window_panes}}\t#{{window_linked}}\t#{{pane_id}}'"
+        ),
+    ];
+    let out = match limit {
+        Some(limit) => crate::core::backend::tmux_within(&args, limit)?,
+        None => tmux()
+            .args(args)
+            .output()
+            .map_err(|e| Error::tagged("io", format!("tmux: {e}")))?,
+    };
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
     if !out.status.success() {
@@ -887,7 +909,10 @@ pub fn kill_if_alone(session: &str, pane: &str) -> Result<KillAlone> {
             format!("tmux if-shell: {}", or_status(&stderr, out.status)),
         ));
     }
-    let exists = session_exists(session)?;
+    let exists = match limit {
+        Some(limit) => session_exists_within(session, limit)?,
+        None => session_exists(session)?,
+    };
     let f: Vec<&str> = stdout.lines().next().unwrap_or("").split('\t').collect();
     match f[0] {
         "killed" if !exists => Ok(KillAlone::Killed(f[1..].join("\t"))),
@@ -932,6 +957,12 @@ fn alone_format(session: &str, pane: &str) -> String {
 pub fn session_exists(id: &str) -> Result<bool> {
     Ok(query(&["list-sessions", "-F", "#{session_id}"])?
         .is_some_and(|l| l.lines().any(|s| s.trim() == id)))
+}
+
+fn session_exists_within(id: &str, limit: std::time::Duration) -> Result<bool> {
+    let args = ["list-sessions", "-F", "#{session_id}"];
+    let out = crate::core::backend::tmux_within(&args, limit)?;
+    Ok(answer(&args, out)?.is_some_and(|l| l.lines().any(|s| s.trim() == id)))
 }
 
 /// The terminal of pane `pane` (`/dev/ttys012`); `None` when the server has no such pane.
