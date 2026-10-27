@@ -489,8 +489,8 @@ src/
 Master–detail on the same hash routes as mobile (`#/` = nothing open, `#/s/<host>/<id>` = that
 session in the pane), so a link opens the same session on either layout.
 
-- **Top bar** (the same over List and Board): Fleet summary, List | Board, search (⌘F),
-  Sessions | Bots toggle with status and host pickers, modules, then the helpers — a ▣ per host
+- **Top bar** (the same over List and Board): Fleet summary, Sessions | Bots | Slack | Apps
+  toggle with status and host pickers, search (⌘F), List | Board, modules, then the helpers — a ▣ per host
   (`HostShellButtons`, the host's colour dot: Fleet.app opens an iTerm tab via `fleet://shell`, a
   browser copies `fleet -H <host> new`), Focus, Usage, Settings — and `+`.
 - **Sidebar** (left, List only): the session list (the open row is highlighted, the keyboard

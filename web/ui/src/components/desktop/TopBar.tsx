@@ -30,8 +30,8 @@ export interface TopBarProps {
 }
 
 /**
- * The desktop top bar, the same over the List and the Board: summary, List | Board, search,
- * session filters, modules, New. The desktop app's traffic lights sit over its left end.
+ * The desktop top bar, the same over the List and the Board: summary, session filters, search,
+ * List | Board, modules, New. The desktop app's traffic lights sit over its left end.
  */
 export function TopBar({ list, now, view, onView, searchRef, onSearchNav, onNew, groups }: TopBarProps) {
   const { fleet, query, setQuery, summary, note } = list
@@ -76,7 +76,7 @@ export function TopBar({ list, now, view, onView, searchRef, onSearchNav, onNew,
           </span>
         </div>
       ) : null}
-      <ViewToggle value={view} onChange={onView} />
+      <SessionFilters list={list} />
 
       <div className="relative w-64 min-w-40">
         <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-dimmer" />
@@ -109,7 +109,7 @@ export function TopBar({ list, now, view, onView, searchRef, onSearchNav, onNew,
         )}
       </div>
 
-      <SessionFilters list={list} />
+      <ViewToggle value={view} onChange={onView} />
 
       <div className="ml-auto flex min-w-0 items-center gap-2">
         {groups ? <GroupsStatus state={groups} now={now} quiet /> : null}
