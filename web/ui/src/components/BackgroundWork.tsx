@@ -9,7 +9,8 @@ import { cn } from '@/lib/utils'
 
 /**
  * What a session runs beside its main thread (`background`, core/background.rs): its subagents
- * and background shells. Nothing when none. Not a link — rows and cards are links already.
+ * and background shells, as icons and counts (the tooltip says what). Nothing when none. Not a link —
+ * rows and cards are links already.
  */
 export function BackgroundChip({ session: s, className }: { session: Pick<Session, 'background'>; className?: string }) {
   const label = backgroundLabel(s.background)
@@ -22,11 +23,24 @@ export function BackgroundChip({ session: s, className }: { session: Pick<Sessio
           aria-label={`Runs ${label}`}
           className={cn('inline-flex h-4.5 shrink-0 items-center gap-1 rounded-[5px] border border-status-busy/40 px-1 text-[0.6875rem] text-status-busy tabular-nums', className)}
         >
-          {agents.length ? <BotIcon className="size-3 shrink-0" /> : <TerminalIcon className="size-3 shrink-0" />}
-          {label}
+          {agents.length ? (
+            <>
+              <BotIcon className="size-3 shrink-0" />
+              {agents.length}
+            </>
+          ) : null}
+          {s.background?.shells ? (
+            <>
+              <TerminalIcon className="size-3 shrink-0" />
+              {s.background.shells}
+            </>
+          ) : null}
         </span>
       </TooltipTrigger>
-      <TooltipContent>{agents.length ? agents.map((a) => a.description || a.type || 'agent').join(' · ') : 'Background shells running'}</TooltipContent>
+      <TooltipContent>
+        Runs {label}
+        {agents.length ? `: ${agents.map((a) => a.description || a.type || 'agent').join(' · ')}` : ''}
+      </TooltipContent>
     </Tooltip>
   )
 }
