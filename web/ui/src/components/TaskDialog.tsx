@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { CheckIcon, ExternalLinkIcon, FolderIcon, ListChecksIcon, Loader2Icon, PlayIcon } from 'lucide-react'
+import { CalendarClockIcon, CheckIcon, ExternalLinkIcon, FolderIcon, ListChecksIcon, Loader2Icon, PlayIcon } from 'lucide-react'
 import { toast } from 'sonner'
 import { useLocation } from 'wouter'
 
@@ -8,6 +8,7 @@ import type { PullRequest, Session, Task, TasksResponse } from '@/api/types'
 import { watchForSpawned } from '@/api/spawnWatch'
 import { HostDot } from '@/components/HostBadge'
 import { ChecksIcon, PrSessionLink } from '@/components/PrChip'
+import { ScheduledList } from '@/components/ScheduledList'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -16,8 +17,10 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { useFleet } from '@/hooks/useFleet'
 import { useNow } from '@/hooks/useNow'
+import { useSchedule } from '@/hooks/useSchedule'
 import { shortCwd } from '@/lib/format'
 import { prHref } from '@/lib/prs'
+import { scheduleWhen } from '@/lib/schedule'
 import { sessionHref, spawnTargets } from '@/lib/sessions'
 import { isMacPlatform, isSubmitChord } from '@/lib/shortcuts'
 import { storage } from '@/lib/storage'
@@ -27,11 +30,12 @@ import { cn } from '@/lib/utils'
 // The directory last used for a project's tasks, else for a new session on that host.
 const projectDirKey = (host: string, project: string) => `fleet.taskDirLabel.${host}.${project}`
 const spawnDirKey = (host: string) => `fleet.spawnDirLabel.${host}`
+const SCHEDULE_TIME_KEY = 'fleet.taskScheduleTime'
 
 /**
  * One task's actions on `host`: move it to another status, start a session on it (in one of
- * the host's spawn directories, told what the task is and where it lives), or open it in
- * Productive. Key it by the task so a new task starts with a fresh form.
+ * the host's spawn directories, told what the task is and where it lives) now or on its start
+ * date (`fleet schedule --task`), or open it in Productive. Key it by the task so a new task starts with a fresh form.
  */
 export function TaskDialog({
   task: t,
@@ -59,6 +63,10 @@ export function TaskDialog({
   const now = useNow(60_000)
   const [prompt, setPrompt] = useState('')
   const [busy, setBusy] = useState<null | 'spawn' | 'status'>(null)
+  // Start now, or schedule it for the task's start date (following the date if it moves).
+  const [later, setLater] = useState(false)
+  const [time, setTime] = useState(() => storage.get(SCHEDULE_TIME_KEY) || '08:00')
+  const { pending, reload: reloadSchedule } = useSchedule(Boolean(t))
   const [error, setError] = useState<string | null>(null)
   const [dirLabel, setDirLabel] = useState<string | null>(null)
   if (!t || !host) return null
@@ -68,6 +76,7 @@ export function TaskDialog({
   const dir = dirs.find((d) => d.label === remembered) ?? dirs[0] ?? null
   const options = statusOptions(t, statuses)
   const due = dueInfo(t.dueDate, now)
+  const scheduled = pending.filter((e) => e.task?.id === t.id)
 
   const changeStatus = async (id: string) => {
     if (id === t.status.id || busy) return
@@ -82,6 +91,27 @@ export function TaskDialog({
       setBusy(null)
     }
   }
+
+  const schedule = async () => {
+    if (busy || !dir || !/^\d{1,2}:\d{2}$/.test(time)) return
+    setBusy('spawn')
+    setError(null)
+    try {
+      storage.set(projectDirKey(host, t.project.id), dir.label)
+      storage.set(SCHEDULE_TIME_KEY, time)
+      const res = await api.scheduleAdd(host, { task: t.id, time, dir: dir.path, prompt: prompt.trim() || undefined })
+      toast.success(`#${t.number} scheduled on ${res.host}`, { description: scheduleWhen(res.entry) })
+      reloadSchedule()
+      setPrompt('')
+      setLater(false)
+    } catch (err) {
+      setError((err as Error)?.message || 'Could not schedule it')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const submit = () => void (later ? schedule() : spawn())
 
   const spawn = async () => {
     if (busy || !dir) return
@@ -155,6 +185,12 @@ export function TaskDialog({
               </dd>
             </>
           ) : null}
+          {t.startDate ? (
+            <>
+              <dt className="text-muted-foreground">Start</dt>
+              <dd>{t.startDate}</dd>
+            </>
+          ) : null}
           {t.todos ? (
             <>
               <dt className="text-muted-foreground">Todos</dt>
@@ -212,8 +248,45 @@ export function TaskDialog({
           </div>
         ) : null}
 
+        {scheduled.length ? (
+          <div className="space-y-1">
+            <Label>Scheduled</Label>
+            <ScheduledList entries={scheduled} now={now} onChanged={reloadSchedule} />
+          </div>
+        ) : null}
+
         <div className="space-y-2">
-          <Label htmlFor="task-prompt">{sessions.length ? 'Start another session' : 'Start a session on it'}</Label>
+          <div className="flex flex-wrap items-center gap-2">
+            <Label htmlFor="task-prompt" className="mr-auto">
+              {sessions.length ? 'Start another session' : 'Start a session on it'}
+            </Label>
+            <div role="radiogroup" aria-label="When" className="inline-flex rounded-lg border p-0.5 text-xs">
+              {[
+                { on: false, label: 'Now' },
+                { on: true, label: 'On start date' },
+              ].map((o) => (
+                <button
+                  key={o.label}
+                  type="button"
+                  role="radio"
+                  aria-checked={later === o.on}
+                  onClick={() => setLater(o.on)}
+                  className={cn('rounded-md px-2 py-0.5', later === o.on ? 'bg-accent font-medium text-foreground' : 'text-muted-foreground hover:text-foreground')}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
+            {later ? (
+              <input
+                type="time"
+                value={time}
+                onChange={(e) => setTime(e.target.value)}
+                aria-label="Time on the start date"
+                className="h-7 rounded-lg border bg-card px-1.5 text-xs outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+              />
+            ) : null}
+          </div>
           {dirs.length ? (
             <div role="radiogroup" aria-label="Directory" className="grid grid-cols-1 gap-1 sm:grid-cols-2">
               {dirs.map((d) => {
@@ -260,7 +333,7 @@ export function TaskDialog({
             onKeyDown={(e) => {
               if (isSubmitChord(e)) {
                 e.preventDefault()
-                void spawn()
+                submit()
               }
             }}
             rows={3}
@@ -269,7 +342,10 @@ export function TaskDialog({
           <p className="flex items-center gap-1 text-xs text-dimmer">
             <HostDot host={host} />
             Runs on {host}
-            {dir ? ` in ${shortCwd(dir.path)}` : ''}; the session is told the task and its link.
+            {dir ? ` in ${shortCwd(dir.path)}` : ''}
+            {later
+              ? ` at ${time} on ${t.startDate ? `its start date (${t.startDate})` : 'its start date, once it has one'} — follows the date if it moves.`
+              : '; the session is told the task and its link.'}
           </p>
         </div>
 
@@ -285,8 +361,8 @@ export function TaskDialog({
               <ExternalLinkIcon /> Productive
             </a>
           </Button>
-          <Button size="sm" className="ml-auto" onClick={() => void spawn()} disabled={!!busy || !dir}>
-            {busy === 'spawn' ? <Loader2Icon className="animate-spin" /> : <PlayIcon />} Start session
+          <Button size="sm" className="ml-auto" onClick={submit} disabled={!!busy || !dir}>
+            {busy === 'spawn' ? <Loader2Icon className="animate-spin" /> : later ? <CalendarClockIcon /> : <PlayIcon />} {later ? 'Schedule' : 'Start session'}
             <Kbd className="ml-1 hidden bg-primary-foreground/20 text-primary-foreground sm:inline-flex">{isMacPlatform() ? '⌘↵' : 'Ctrl↵'}</Kbd>
           </Button>
         </div>

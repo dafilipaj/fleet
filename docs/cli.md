@@ -644,6 +644,13 @@ model, harness, ghIdentity, createdAt, state: "pending" | "started" | "skipped" 
 task has no start date). State: `${XDG_STATE_HOME:-~/.local/state}/fleet/schedule.json`
 (`FLEET_SCHEDULE_FILE`): every pending entry and the latest 50 finished ones.
 
+In the web UI: **New session → When: Later** schedules a session on the chosen host
+(`datetime-local`, that host's clock); a task's dialog has **Now / On start date** (+ the time)
+and lists the task's pending entries; the **Bots** screen lists every host's pending entries with
+Cancel. Web API: `GET /api/hosts/:host/schedule`, `POST /api/hosts/:host/schedule` `{ at | task
+(+ time), dir, prompt?, name?, model?, harness?, ghIdentity? }` → `{ host, entry }`,
+`POST /api/hosts/:host/schedule/:id/cancel`.
+
 ## Web
 
 | command | does |

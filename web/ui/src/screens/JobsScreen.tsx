@@ -6,6 +6,7 @@ import { Link, useLocation } from 'wouter'
 import { ApiError, api } from '@/api/client'
 import type { FleetResponse, Job, JobRun } from '@/api/types'
 import { HostBadge, HostDot } from '@/components/HostBadge'
+import { ScheduledList } from '@/components/ScheduledList'
 import { ScreenHeader } from '@/components/ScreenHeader'
 import { StatusDot } from '@/components/StatusDot'
 import { Button } from '@/components/ui/button'
@@ -15,6 +16,7 @@ import { Switch } from '@/components/ui/switch'
 import { useFleet } from '@/hooks/useFleet'
 import { useJobShow, useJobs } from '@/hooks/useJobs'
 import { useNow } from '@/hooks/useNow'
+import { useSchedule } from '@/hooks/useSchedule'
 import { useSwipeBack } from '@/hooks/useSwipeBack'
 import { relTime } from '@/lib/format'
 import { OUTCOME_TEXT, jobKey, keepLabel, liveSession, liveSummary, outcomeTone, promptLabel, runTree, whenLabel } from '@/lib/jobs'
@@ -36,6 +38,7 @@ export function JobsScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane' }
   const { jobs, errors, loading, reload, patch } = useJobs()
   const { fleet, refresh: refreshFleet } = useFleet()
   const now = useNow(30_000)
+  const { pending: scheduled, reload: reloadSchedule } = useSchedule()
   const [open, setOpen] = useState<Set<string>>(() => new Set())
   const [confirm, setConfirm] = useState<HostedJob | null>(null)
   // A run that started: bumps the expanded job's runs.
@@ -73,7 +76,10 @@ export function JobsScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane' }
       size="icon"
       aria-label="Refresh bots"
       title="Refresh"
-      onClick={() => reload()}
+      onClick={() => {
+        reload()
+        reloadSchedule()
+      }}
       className={cn('shrink-0', pane ? 'size-11 rounded-xl' : '-my-1.5 size-11 rounded-xl')}
     >
       <RefreshCwIcon className="size-5" />
@@ -86,6 +92,12 @@ export function JobsScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane' }
         <div className="space-y-2 rounded-xl border p-4">
           <Skeleton className="h-4 w-1/2" />
           <Skeleton className="h-3 w-full" />
+        </div>
+      ) : null}
+      {scheduled.length ? (
+        <div className="space-y-1.5">
+          <h2 className="px-1 text-xs font-medium tracking-wide text-muted-foreground uppercase">Scheduled sessions</h2>
+          <ScheduledList entries={scheduled} now={now} onChanged={reloadSchedule} />
         </div>
       ) : null}
       {jobs.map((j) => (
@@ -117,7 +129,8 @@ export function JobsScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane' }
         <p className="py-8 text-center text-sm text-muted-foreground">No bots. Add one under <span className="font-mono">bots</span> in a host’s fleet config.</p>
       ) : null}
       <p className="text-xs text-dimmer">
-        Bots live in each host’s fleet config; that host’s <span className="font-mono">fleet bots tick</span> service starts them on schedule.
+        Bots live in each host’s fleet config; that host’s <span className="font-mono">fleet bots tick</span> service starts them on schedule, and the
+        one-off sessions scheduled from New session or a task (<span className="font-mono">fleet schedule</span>).
       </p>
     </div>
   )

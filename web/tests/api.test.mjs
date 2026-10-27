@@ -84,6 +84,9 @@ function fakeHost(self, sessions) {
     if (id === '404') throw new Error('no task 404 among your open tasks');
     return { id, title: 'Fix it', contextLine: `Productive task #12 “Fix it”: https://app.productive.io/1-acme/tasks/${id}.` };
   };
+  cli.schedule = async () => (calls.push(['schedule']), { host: 'ignored', entries: [] });
+  cli.scheduleAdd = async (o) => (calls.push(['scheduleAdd', o]), { id: 'sabc', state: 'pending', ...o });
+  cli.scheduleCancel = async (id) => (calls.push(['scheduleCancel', id]), `cancelled ${id}`);
   cli.taskStatus = async (id, status) => {
     calls.push(['taskStatus', id, status]);
     return { task: { id, status: { id: '5', name: status, category: 'started' } } };
@@ -641,6 +644,60 @@ test('tasks/spawn: a session in a spawn dir whose first prompt is the task conte
   const gone = await post(`${urls.laptop}/api/hosts/laptop/tasks/spawn`, { task: '404', dir: os.tmpdir() });
   assert.equal(gone.status, 502);
   assert.equal(lap.calls.filter((c) => c[0] === 'spawn').length, 0);
+});
+
+test('schedule: add (a time, or a task + time) on the named host, list, cancel; bad input is a 400', async (t) => {
+  const { urls, lap, remote } = await startPair(t);
+  const list = await fetch(`${urls.laptop}/api/hosts/workstation/schedule`).then((r) => r.json());
+  assert.deepEqual([list.host, list.entries], ['workstation', []]);
+
+  const timed = await post(`${urls.laptop}/api/hosts/workstation/schedule`, { at: '2026-10-29T07:30', dir: os.tmpdir(), prompt: ' Triage. ', model: 'opus' });
+  assert.equal(timed.status, 200);
+  assert.equal(timed.body.host, 'workstation');
+  const [, o] = remote.calls.find((c) => c[0] === 'scheduleAdd');
+  assert.deepEqual([o.at, o.task, o.prompt, o.model, o.name], ['2026-10-29T07:30', null, 'Triage.', 'opus', null]);
+
+  const linked = await post(`${urls.laptop}/api/hosts/workstation/schedule`, { task: 'https://app.productive.io/1-acme/tasks/1001', time: '09:15', dir: os.tmpdir() });
+  assert.equal(linked.status, 200);
+  const [, o2] = remote.calls.filter((c) => c[0] === 'scheduleAdd')[1];
+  assert.deepEqual([o2.at, o2.task, o2.time], [null, '1001', '09:15']);
+
+  const cancel = await post(`${urls.laptop}/api/hosts/workstation/schedule/sabc/cancel`, {});
+  assert.equal(cancel.status, 200);
+  assert.deepEqual(remote.calls.find((c) => c[0] === 'scheduleCancel'), ['scheduleCancel', 'sabc']);
+
+  for (const body of [
+    { dir: os.tmpdir() }, // no when
+    { at: 'tomorrow 09:00', task: '1001', dir: os.tmpdir() }, // both
+    { at: '$(reboot)', dir: os.tmpdir() },
+    { at: 'in 2h', time: '09:00', dir: os.tmpdir() }, // time without a task
+    { task: 'x', dir: os.tmpdir() },
+    { at: 'in 2h', dir: os.tmpdir(), model: 'x y' },
+  ]) {
+    assert.equal((await post(`${urls.laptop}/api/hosts/laptop/schedule`, body)).status, 400, JSON.stringify(body));
+  }
+  const outside = await post(`${urls.laptop}/api/hosts/laptop/schedule`, { at: 'in 2h', dir: '/' });
+  assert.ok(outside.status >= 400, String(outside.status));
+  assert.equal(lap.calls.filter((c) => c[0] === 'scheduleAdd').length, 0);
+});
+
+test('fleet CLI schedule / add / cancel pass every value as one flag', async () => {
+  const calls = [];
+  const run = async (bin, args) => {
+    calls.push(args);
+    return { stdout: args.includes('add') ? JSON.stringify({ id: 's1' }) : JSON.stringify({ host: 'h', entries: [] }), stderr: '' };
+  };
+  const cli = createFleetCli({ run, bin: '/x/fleet' });
+  await cli.schedule();
+  await cli.scheduleAdd({ at: 'in 2h', dir: '/d', prompt: '-rf', harness: 'codex' });
+  await cli.scheduleAdd({ task: '1001', time: '09:00', dir: '/d', name: 'n', ghIdentity: 'bot' });
+  await cli.scheduleCancel('s1');
+  assert.deepEqual(calls, [
+    ['--local', 'schedule', '--json'],
+    ['--local', 'schedule', 'add', '--json', '--at=in 2h', '--dir=/d', '--harness=codex', '--', '-rf'],
+    ['--local', '--gh-identity=bot', 'schedule', 'add', '--json', '--task=1001', '--time=09:00', '--dir=/d', '--name=n'],
+    ['--local', 'schedule', 'cancel', '--', 's1'],
+  ]);
 });
 
 test('fleet CLI tasks / task show / task status run the CLI and flag a missing command', async () => {

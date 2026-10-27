@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowRightIcon, FolderIcon, GitForkIcon, LayersIcon, Loader2Icon, MicIcon, PaperclipIcon, PlayIcon, SquareIcon } from 'lucide-react'
+import { ArrowRightIcon, CalendarClockIcon, FolderIcon, GitForkIcon, LayersIcon, Loader2Icon, MicIcon, PaperclipIcon, PlayIcon, SquareIcon } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { api, ApiError } from '@/api/client'
@@ -25,6 +25,7 @@ import { copyText } from '@/lib/clipboard'
 import { shortCwd } from '@/lib/format'
 import { harnessLabel, modelKey, offeredHarnesses, pickHarness } from '@/lib/harness'
 import { pickModel } from '@/lib/models'
+import { localInputValue, scheduleWhen } from '@/lib/schedule'
 import { storage } from '@/lib/storage'
 import { sessionHref, spawnTargets } from '@/lib/sessions'
 import { isMacPlatform, isSubmitChord } from '@/lib/shortcuts'
@@ -57,6 +58,14 @@ function saveDraft(prompt: string) {
   else storage.remove(DRAFT_KEY)
 }
 /** A started session registered: drop the draft it came from (not a newer one typed since). */
+/** Tomorrow 08:00 local, in ms — the first suggestion for Later. */
+function tomorrowAt8(): number {
+  const d = new Date()
+  d.setDate(d.getDate() + 1)
+  d.setHours(8, 0, 0, 0)
+  return d.getTime()
+}
+
 function clearDraftIf(sent: string) {
   if (loadDraft() === sent) storage.remove(DRAFT_KEY)
 }
@@ -221,6 +230,8 @@ function NewSessionForm({
   }, [draftable, prompt])
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  // Later: a local `YYYY-MM-DDTHH:MM` the session is scheduled for (`fleet schedule`); null = now.
+  const [laterAt, setLaterAt] = useState<string | null>(null)
   // Files dropped on the form / pasted / picked: uploaded to the chosen host, paths go into the prompt.
   const promptRef = useRef<HTMLTextAreaElement>(null)
   const picker = useRef<HTMLInputElement>(null)
@@ -326,6 +337,7 @@ function NewSessionForm({
     if (!dir) return setError('This host advertises no directories.')
     setBusy(true)
     setError(null)
+    if (laterAt) return scheduleLater(host, dir.path, laterAt)
     try {
       const sent = withContinueTask(prompt)
       const res = await api.spawn(host, {
@@ -358,6 +370,60 @@ function NewSessionForm({
       setBusy(false)
     }
   }
+
+  const scheduleLater = async (host: string, dirPath: string, at: string) => {
+    try {
+      const sent = withContinueTask(prompt)
+      const res = await api.scheduleAdd(host, {
+        at,
+        dir: dirPath,
+        prompt: sent.trim() ? sent : undefined,
+        model: model || undefined,
+        harness: harness === 'claude' ? undefined : harness,
+        ghIdentity: ghIdentity || undefined,
+      })
+      clearDraftIf(sent)
+      onDone()
+      toast.success(`Scheduled on ${res.host}`, { description: `${scheduleWhen(res.entry)} — listed on the Bots screen` })
+    } catch (err) {
+      setError((err as Error)?.message || 'Could not schedule it')
+      setBusy(false)
+    }
+  }
+
+  const whenField = (
+    <Field label="When" hint={laterAt ? `starts on ${host} then, from its own clock` : undefined}>
+      <div className="flex flex-wrap items-center gap-2">
+        <ToggleGroup
+          type="single"
+          value={laterAt ? 'later' : 'now'}
+          onValueChange={(v) => v && setLaterAt(v === 'later' ? (laterAt ?? localInputValue(tomorrowAt8())) : null)}
+          spacing={0}
+          aria-label="When"
+          className="rounded-lg bg-muted p-1"
+        >
+          {(['now', 'later'] as const).map((v) => (
+            <ToggleGroupItem
+              key={v}
+              value={v}
+              className="h-8 rounded-md px-3 text-[0.8125rem] text-muted-foreground data-[state=on]:bg-background data-[state=on]:text-foreground data-[state=on]:shadow-sm dark:data-[state=on]:bg-accent"
+            >
+              {v === 'now' ? 'Now' : 'Later'}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+        {laterAt ? (
+          <input
+            type="datetime-local"
+            value={laterAt}
+            onChange={(e) => setLaterAt(e.target.value || laterAt)}
+            aria-label="Start at"
+            className="h-10 rounded-lg border bg-card px-2 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+          />
+        ) : null}
+      </div>
+    </Field>
+  )
 
   const harnessField =
     offered.length > 1 ? (
@@ -569,8 +635,8 @@ function NewSessionForm({
     ) : null
   const submitButton = (
     <Button type="submit" className="h-11 w-full rounded-xl text-[0.9375rem]" disabled={!canStart}>
-      {busy ? <Loader2Icon className="animate-spin" /> : sibling ? <GitForkIcon /> : <PlayIcon />}
-      {busy ? (sibling?.creates ? 'Creating stack…' : 'Starting…') : sibling ? 'Spawn sibling' : `Start on ${host}`}
+      {busy ? <Loader2Icon className="animate-spin" /> : sibling ? <GitForkIcon /> : laterAt ? <CalendarClockIcon /> : <PlayIcon />}
+      {busy ? (sibling?.creates ? 'Creating stack…' : 'Starting…') : sibling ? 'Spawn sibling' : laterAt ? `Schedule on ${host}` : `Start on ${host}`}
       {dialog && !busy ? (
         <Kbd aria-hidden className="ml-1 bg-primary-foreground/15 text-primary-foreground/80">
           {isMacPlatform() ? '⌘↵' : 'Ctrl↵'}
@@ -680,6 +746,8 @@ function NewSessionForm({
           {ghIdentityField}
 
           {promptField}
+
+          {fixed || prefill?.embed ? null : whenField}
 
           {errorBox}
 

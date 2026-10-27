@@ -45,6 +45,9 @@ import type {
   RenameResponse,
   ReposResponse,
   ReposSettings,
+  ScheduleAddBody,
+  ScheduleResponse,
+  ScheduledEntry,
   RepoSyncResult,
   RestoreResponse,
   SessionKey,
@@ -215,6 +218,14 @@ export const api = {
   /** Pause / resume a job (`jobs.<name>.enabled`). */
   setJobEnabled: (host: string, name: string, enabled: boolean, o: Opts = {}) =>
     request<JobEnabledResponse>(`${hostPath(host)}/jobs/${enc(name)}/enabled`, { ...o, method: 'POST', body: { enabled } }),
+  /** The host's scheduled sessions, pending and recent (`fleet schedule --json`). 404 / 501: an older server / CLI. */
+  schedule: (host: string, o: Opts = {}) => request<ScheduleResponse>(`${hostPath(host)}/schedule`, o),
+  /** Start a session later on `host` (an agent starts then, not now). */
+  scheduleAdd: (host: string, body: ScheduleAddBody, o: Opts = {}) =>
+    request<{ host: string; entry: ScheduledEntry }>(`${hostPath(host)}/schedule`, { ...o, method: 'POST', body }),
+  /** Cancel a pending scheduled session. */
+  cancelScheduled: (host: string, id: string, o: Opts = {}) =>
+    request<{ host: string; id: string; output: string }>(`${hostPath(host)}/schedule/${enc(id)}/cancel`, { ...o, method: 'POST', body: {} }),
   /** The host's git repos (`fleet repos --json --all`), its `repos` settings and its sync timer. */
   repos: (host: string, o: Opts = {}) => request<ReposResponse>(`${hostPath(host)}/repos`, o),
   /** Replace the host's `repos` settings (400 `{ error, errors }` when invalid). */

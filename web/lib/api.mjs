@@ -113,6 +113,11 @@ const PRS_PROXY_MS = 130 * 1000;
 const TASKS_ROUTE = /^\/api\/hosts\/([^/]+)\/tasks(?:\/(status|spawn))?$/;
 /** A Productive task: its numeric id. */
 const TASK_ID_RE = /^[1-9][0-9]{0,14}$/;
+/** Scheduled sessions: GET list, POST add, POST :id/cancel (`fleet schedule`). */
+const SCHEDULE_ROUTE = /^\/api\/hosts\/([^/]+)\/schedule(?:\/([a-z0-9]{1,24})\/(cancel))?$/;
+/** A `--at` as the UI sends it (`2026-10-29T07:30`, `tomorrow 09:00`, `in 2h`): passed to the CLI as one flag value. */
+const SCHEDULE_AT_RE = /^[A-Za-z0-9 :+-]{1,40}$/;
+const SCHEDULE_TIME_RE = /^\d{1,2}:\d{2}$/;
 /** A Productive task link: `https://app.productive.io/<org>-<slug>/tasks/<id>`. */
 const TASK_URL_RE = /^https?:\/\/app\.productive\.io\/\d+-[\w-]+\/tasks?\/([1-9][0-9]{0,14})(?:[/?#].*)?$/;
 /** A task fetch is a few API calls; status changes and spawns one more. */
@@ -146,7 +151,7 @@ export const DEFAULT_QUICK_REPLIES = [
  *   transcripts lib/transcript.mjs reader
  *   spawner     lib/spawn.mjs spawner
  *   killer      lib/kill.mjs killer (kill action; absent → 501)
- *   cli         lib/fleet-cli.mjs instance — `rename`, `nameOne`, `usage`, `prs`, `prCheckout`, `tasks`, `taskShow`, `taskStatus` (absent → 501)
+ *   cli         lib/fleet-cli.mjs instance — `rename`, `nameOne`, `usage`, `prs`, `prCheckout`, `tasks`, `taskShow`, `taskStatus`, `schedule`, `scheduleAdd`, `scheduleCancel` (absent → 501)
  *   autoNamer   lib/autoname.mjs instance (autoname route + health; absent → 501)
  *   spawnNamer  lib/autoname.mjs#createSpawnNamer — a targeted naming pass after an unnamed
  *               spawn with a first prompt (only when web.autoName is enabled; absent → none)
@@ -1028,6 +1033,19 @@ export function createApi({
       return withPrEditors(r, editorViewer(config, req), host);
     }
 
+    const sc = SCHEDULE_ROUTE.exec(url.pathname);
+    if (sc) {
+      const [, rawHost, id, action] = sc;
+      if (!(action ? ['POST'] : ['GET', 'POST']).includes(req.method)) throw new HttpError('method not allowed', 405);
+      return forHost({
+        req,
+        url,
+        host: decodeURIComponent(rawHost),
+        timeoutMs: TASKS_PROXY_MS,
+        local: () => (action ? localScheduleCancel(id) : req.method === 'POST' ? localScheduleAdd(req) : localSchedule()),
+      });
+    }
+
     const tk = TASKS_ROUTE.exec(url.pathname);
     if (tk) {
       const action = tk[2] ?? null;
@@ -1511,6 +1529,73 @@ export function createApi({
     refreshFleet();
     if (!nameGiven && spawnNamer && check.harness === 'claude') spawnNamer.schedule(result.tmuxSession).catch(() => {});
     return { status: 200, body: { host: config.self, task, spawn: { ok: true, host: config.self, ...result } } };
+  }
+
+  function scheduleError(err) {
+    if (err?.missing) return new HttpError('this host’s fleet CLI has no `schedule` command — update it', 501);
+    return new HttpError(String(err?.message ?? err), err?.timedOut ? 504 : 502);
+  }
+
+  /** GET schedule → `{ host, entries }` (pending and recent finished; docs/cli.md → Scheduled sessions). */
+  async function localSchedule() {
+    if (typeof cli?.schedule !== 'function') throw new HttpError('scheduled sessions are not available on this server', 501);
+    try {
+      return { status: 200, body: { ...(await cli.schedule()), host: config.self } };
+    } catch (err) {
+      throw scheduleError(err);
+    }
+  }
+
+  /**
+   * POST schedule `{ at | task (+ time), dir, prompt?, name?, model?, harness?, ghIdentity? }` →
+   * `{ host, entry }`: a session started later in `dir` (a spawn dir, like a plain spawn) — at `at`,
+   * or on the task's start date at `time`.
+   */
+  async function localScheduleAdd(req) {
+    if (typeof cli?.scheduleAdd !== 'function') throw new HttpError('scheduled sessions are not available on this server', 501);
+    const body = await readJsonBody(req);
+    const at = typeof body?.at === 'string' ? body.at.trim() : '';
+    const task = body?.task != null && body.task !== '' ? taskId(body.task) : null;
+    const time = typeof body?.time === 'string' ? body.time.trim() : '';
+    if (body?.task != null && body.task !== '' && !task) throw new HttpError('task must be a Productive task id or link', 400);
+    if (!at === !task) throw new HttpError('say when: at (a time) or task (its start date), not both', 400);
+    if (at && !SCHEDULE_AT_RE.test(at)) throw new HttpError('at must be like 2026-10-29T07:30, tomorrow 09:00 or in 2h', 400);
+    if (time && (!task || !SCHEDULE_TIME_RE.test(time))) throw new HttpError('time (HH:MM) goes with a task', 400);
+    const check = validateSpawnRequest(body, { spawnDirs: config.spawnDirs.map((d) => d.path) });
+    if (!check.ok) throw new HttpError(check.error, 400);
+    let dir;
+    try {
+      dir = await resolveAllowedDir(check.dir, spawnRoots(config));
+    } catch (err) {
+      if (err?.status) throw new HttpError(err.message, err.status);
+      throw err;
+    }
+    try {
+      const entry = await cli.scheduleAdd({
+        at: at || null,
+        task,
+        time: time || null,
+        dir,
+        prompt: check.prompt.trim(),
+        name: check.nameGiven ? check.name : null,
+        model: check.model || null,
+        harness: check.harness,
+        ghIdentity: check.ghIdentity,
+      });
+      return { status: 200, body: { host: config.self, entry } };
+    } catch (err) {
+      throw scheduleError(err);
+    }
+  }
+
+  /** POST schedule/:id/cancel → `{ host, id, output }`. */
+  async function localScheduleCancel(id) {
+    if (typeof cli?.scheduleCancel !== 'function') throw new HttpError('scheduled sessions are not available on this server', 501);
+    try {
+      return { status: 200, body: { host: config.self, id, output: await cli.scheduleCancel(id) } };
+    } catch (err) {
+      throw scheduleError(err);
+    }
   }
 
   /** A task id from `123` or its Productive link; null when it is neither. */

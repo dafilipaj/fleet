@@ -516,6 +516,53 @@ export function createFleetCli({ run, bin = 'fleet', timeoutMs = 8000 } = {}) {
     return out.trim();
   }
 
+  /**
+   * `fleet --local schedule …` (docs/cli.md → Scheduled sessions). Errors carry the CLI's reason,
+   * `missing` (no `schedule` command: an older CLI), `timedOut`.
+   */
+  async function scheduleRun(args, t, pre = []) {
+    let stdout;
+    try {
+      ({ stdout } = await run(bin, ['--local', ...pre, 'schedule', ...args], { timeout: t, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, NO_COLOR: '1' } }));
+    } catch (err) {
+      const e = wrap(err, `fleet schedule ${args[0] ?? ''}`.trim(), t);
+      const why = lastReason(err);
+      if (why && !e.timedOut) e.message = why;
+      e.missing = !e.timedOut && /unrecognized subcommand 'schedule'/i.test(String(err?.stderr ?? ''));
+      throw e;
+    }
+    return stdout ?? '';
+  }
+
+  /** Pending and recent scheduled sessions: `fleet --local schedule --json` → `{ host, entries }`. */
+  async function schedule({ timeoutMs: t = 30 * 1000 } = {}) {
+    const out = await scheduleRun(['--json'], t);
+    return parseJson(out, 'fleet schedule', (v) => v && Array.isArray(v.entries));
+  }
+
+  /**
+   * Schedule a session: `fleet --local schedule add --json` with `--at` (a time) or `--task`
+   * (+ `--time`) → the new entry. `--flag=value`: a value starting with "-" must not read as a flag.
+   */
+  async function scheduleAdd({ at, task, time, prompt, dir, name, model, harness, ghIdentity }, { timeoutMs: t = 60 * 1000 } = {}) {
+    const flags = [];
+    if (at) flags.push(`--at=${at}`);
+    if (task) flags.push(`--task=${task}`);
+    if (time) flags.push(`--time=${time}`);
+    if (dir) flags.push(`--dir=${dir}`);
+    if (name) flags.push(`--name=${name}`);
+    if (model) flags.push(`--model=${model}`);
+    if (harness && harness !== 'claude') flags.push(`--harness=${harness}`);
+    const pre = ghIdentity ? [`--gh-identity=${ghIdentity}`] : [];
+    const out = await scheduleRun(['add', '--json', ...flags, ...(prompt ? ['--', prompt] : [])], t, pre);
+    return parseJson(out, 'fleet schedule add', (v) => v && typeof v.id === 'string');
+  }
+
+  /** Cancel a pending entry: `fleet --local schedule cancel <id>` → its one-line report. */
+  async function scheduleCancel(id, { timeoutMs: t = 15 * 1000 } = {}) {
+    return (await scheduleRun(['cancel', '--', String(id)], t)).trim();
+  }
+
   // `--flag=value` everywhere: a value starting with "-" must not read as a flag.
   const stackList = () => stack(['list']);
   const stackShow = (id) => stack(['show', id]);
@@ -566,6 +613,9 @@ export function createFleetCli({ run, bin = 'fleet', timeoutMs = 8000 } = {}) {
     jobShow,
     jobRunNow,
     jobSetEnabled,
+    schedule,
+    scheduleAdd,
+    scheduleCancel,
     stackList,
     stackShow,
     stackSet,

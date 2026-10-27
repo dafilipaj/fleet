@@ -1168,6 +1168,45 @@ export interface TasksResponse {
 }
 
 /** POST /api/hosts/:host/tasks/spawn */
+/** A session started later (`fleet schedule --json`): at a time, or on a task's start date. */
+export interface ScheduledEntry {
+  id: string
+  /** ms epoch; null while a linked task has no start date. */
+  at: number | null
+  /** `HH:MM` on the task's start date (task-linked only). */
+  time?: string
+  task?: { id: string; number: string; title: string; url: string; startDate: string | null; checkedAt: number }
+  dir: string
+  prompt: string
+  name: string | null
+  model: string | null
+  harness: string
+  ghIdentity: string | null
+  createdAt: number
+  state: 'pending' | 'started' | 'skipped' | 'missed' | 'failed' | 'cancelled'
+  reason: string | null
+  firedAt: number | null
+  tmuxSession: string | null
+}
+
+export interface ScheduleResponse {
+  host: string
+  entries: ScheduledEntry[]
+}
+
+export interface ScheduleAddBody {
+  /** When: `2026-10-29T07:30`, `tomorrow 09:00`, `in 2h` — or `task` (+ `time`) instead. */
+  at?: string
+  task?: string
+  time?: string
+  dir: string
+  prompt?: string
+  name?: string
+  model?: string
+  harness?: string
+  ghIdentity?: string
+}
+
 export interface TaskSpawnResponse {
   host: string
   task: Task & { contextLine: string }
