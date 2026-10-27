@@ -96,8 +96,13 @@ export function OperatorScreen({ layout = 'screen' }: { layout?: 'screen' | 'pan
         setChat({ key: sessionKey(session), list: r.messages })
         setOpStatus(r.status)
       } catch (err) {
+        // Just started, nothing said yet: no transcript until the first prompt.
+        if (err instanceof ApiError && err.status === 404 && err.message.startsWith('transcript not found')) {
+          setChat({ key: sessionKey(session), list: [] })
+          setOpStatus(session.status ?? null)
+        }
         // Gone (closed, host restarted): look for the operator again.
-        if (err instanceof ApiError && err.status === 404) setStatus(null)
+        else if (err instanceof ApiError && err.status === 404) setStatus(null)
         else throw err
       }
     },
