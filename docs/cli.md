@@ -94,6 +94,7 @@ member (see [Stacks](#stacks)).
 | `fleet model <id:… \| pid:…> <model-id> [--json] [--expect-pid <n> --expect-start <t>] [--require-empty]` | switch a Claude Code session's model as `/model <id>` in its terminal does (the pick also becomes Claude Code's default for new sessions), answering only Claude Code's confirmation of that switch; typed only into an idle session's empty input box, under its typing lock; done once its transcript says `Set model to …`; exact targets only, `-n` types nothing — see [Switching the model](#switching-the-model) |
 | `fleet effort <id:… \| pid:…> <level> [--json] [--expect-pid <n> --expect-start <t>] [--require-empty]` | switch a Claude Code session's effort level as `/effort <level>` in its terminal does (`low` to `xhigh` also become Claude Code's default for new sessions on its model; `max` is for the session only), answering only Claude Code's confirmation of that switch; `model`'s checks, lock and wait; done once its transcript says `Set effort level to <level>` — see [Switching the effort](#switching-the-effort) |
 | `fleet answer <target> [--json] [--allow-attached] (--list \| --choice <n> [--prompt <id>] \| --question <tool_use_id> --answers <json>)` | answer the prompt the session waits on by typing what a human would — only while the terminal shows that very prompt, untouched; see [Answering prompts](#answering-prompts) |
+| `fleet trust <tmux_session> --json [--pane <handle>] [--allow-attached] [-n] (--list \| --accept --prompt <id> \| --decline --prompt <id> [--close])` | read or answer the folder-trust prompt in a tmux Session host before its harness registers (local only) — only while that very prompt is alone on screen and untouched; `--close` ends the host after a decline; see [Folder trust](#folder-trust-before-a-session-registers) |
 | `fleet rename <target> <title> [--no-tmux-sync] [--force] [--require-empty] [--json]` | rename the session's one title: Claude's `/rename` (the source of truth), then its tmux session follows as a slug of it (`Fix Login` → `fix-login`, `-2` on a collision) when the tmux session is that Claude session's own (one window, one pane). A session **waiting on a prompt** is held (exit 1; `--json`: exit 3) — typed keys would be its answer; busy sessions are fine (Claude runs `/rename` mid-turn without disturbing the turn). Codex gets `/rename`, pi `/name`; a busy Codex / pi session is held too (`held: "busy"`) — they would queue the text as a message. `--force` overrides the hold. It types under the session's typing lock (see [Answering prompts](#answering-prompts)): another fleet command typing into the session makes it fail at once (kind `busy`, nothing sent); and, unless forced, the input box is read under the lock, as `send` reads it ([Sending](#sending)) — a prompt that came up since the lookup holds it as waiting, and text in the box (a prompt Escape put back, a draft: `/rename` would go out with it as one prompt) holds it as `held: "input"`; a box fleet cannot find or read (a panel such as `/usage`, a dialog, the transcript view) holds nothing — unless `--require-empty`, which holds it as `send --require-empty` does, with `send`'s reasons: `held: "no_input_box"` or `"unreadable"` (see [Sending](#sending); `--force` skips the read, and so this). `--json` prints `{ ok, result: renamed\|sent\|held, session_id, pid, host, from, title, held, tmux: { renamed, from, to, note }, message }`; a failure before that report (`busy`, a target error, `target_changed` when the session's id changed between its lookup and its lock, `io` with `typed: false`) is `{ ok: false, host, kind, error }` (exit 1) |
 | `fleet name [<target> \| --all [--settled]] [--apply] [--refresh] [--no-tmux-sync]` | suggest a name from what the session is doing; only `--apply` sends it (through the same path as `rename`, tmux included). `--all` = every session with a derived (cwd+hash) name. A derived-name session alone in a tmux session somebody named (`fleet new fix-login`) adopts that name (`(tmux)`, no model call) instead of getting a generated one. `--settled` (with `--all`) skips sessions with one prompt and no brief yet — the model reads the brief's Summary and the first three prompts, and a lone first prompt is often just a link. `--refresh` ignores the cache |
 | `fleet group [-a, --all-hosts] [--json] [--apply] [--refresh] [--consolidate] [--input <file\|->] [--cached]` | sort sessions into work-stream groups (the web Board view) — see [Grouping](#grouping). Reads sessions and asks `claude -p`; never sends anything to a session |
@@ -475,6 +476,186 @@ its exit command only when the box holds neither, and kills the session otherwis
   stopped prompt back only once the turn has stopped, so `keys Escape` followed at once by
   `send` can read the box still empty and glue the text to the prompt that appears right after.
   A person typing into an attached terminal is not held either.
+
+### Folder trust before a Session registers
+
+`fleet trust` reads and answers the folder-trust prompt a harness shows in a tmux Session host
+before it registers with Fleet (Claude Code registers only once its "Yes, I trust this folder" /
+"No, exit" dialog is answered, so `answer`, `keys` and `peek` cannot name it yet). It targets
+the tmux session `spawn --json` printed, never a listed Session:
+
+```sh
+fleet trust <tmux_session> --json [--pane <handle>] [--allow-attached] [-n] \
+  (--list | --accept --prompt <id> | --decline --prompt <id> [--close])
+```
+
+- `<tmux_session>` is matched exactly (`=<name>`), never as a prefix. It must hold one window,
+  linked nowhere else, with one pane, as `spawn` makes it: anything else is `host_unsupported`,
+  nothing read. `--pane <handle>` (the `handle` `spawn --json` printed, `%12`) must be that
+  pane, else `target_changed`, nothing read: a Session host closed and another made under the
+  same name is never answered.
+- Local only: `-H` (or `FLEET_HOST`, unless `--local`) resolves as for other commands, and
+  another host, or a name that doesn't resolve, is `usage`. This machine by any name (`local`,
+  `self`, its configured `self`) is fine.
+- One mode: `--list`, `--accept --prompt <id>` or `--decline --prompt <id>`; `--close` only
+  with `--decline`. Anything else is a clap `usage` error (exit 2; one JSON object with
+  `--json`). A Fleet without the command fails with clap's `unrecognized subcommand 'trust'`.
+
+**`--list`** takes no lock, types nothing and checks no client: one `list-panes` (the pane, its
+size and foreground command) and one capture of the visible screen (`capture-pane -p -e -J`),
+followed in the same tmux command by the pane's foreground command, cursor, height and mode
+(`display-message`), so they are the screen's own instant. Every tmux command is given 5 s,
+else `backend_failed`.
+
+```json
+{ "ok": true, "host": "laptop", "tmux_session": "new-repo", "handle": "%12",
+  "prompt": { "kind": "trust", "harness": "claude", "id": "t1.9f2c01aa",
+    "lines": ["Accessing workspace:", "", "/work/example", "", "…", "Security guide"],
+    "choices": [{ "label": "No, exit", "accept": false },
+                { "label": "Yes, I trust this folder", "accept": true }],
+    "selected": 0, "untouched": true },
+  "answerable": true, "detail": null, "pane": { "cols": 200, "rows": 50 } }
+```
+
+- `lines`: the dialog's text from its top down to the line above its first answer, as drawn —
+  every warning it shows (pre-approved permissions, MCP servers, hooks), never interpreted. A
+  side frame, the frame's rules, the left padding every line has and trailing blanks are left
+  out, a run of blank lines is kept as one, and there is none first or last. Lines tmux wrapped
+  are joined (`-J`); lines Claude Code wraps itself stay as drawn, so the same dialog at another
+  width is other lines. At most 60 lines of 2,000 characters, else `clipped`.
+- `choices`: the answers in screen order; `accept` marks the one that trusts. `selected`: the
+  0-based index the `❯` cursor is on. `untouched`: the cursor still on the answer Claude Code
+  preselects, "No, exit".
+- `id`: `t1.` and 8 lowercase hex digits, FNV-1a of `claude`, the paragraphs of `lines` (the
+  lines between blank ones, trimmed and joined by a blank) and the labels, joined by `\n`: not the
+  cursor, the frame or the pane's width, so the same dialog at 80 and 200 columns has one id.
+  Another folder, other pre-approved permissions or other wording give another id. (A token
+  longer than the line, such as a long folder path, which Claude Code breaks mid-token, can still
+  give another id per width: the safe side, `different_prompt`.)
+- `prompt: null` when no trust prompt is on screen (`detail: "no_prompt"`, or `"shell"` when the
+  pane's foreground is its shell). One recognised but not read whole is
+  `{ kind: "trust", harness, incomplete: true, id: null, lines: null, choices: null,
+  selected: null, untouched: false }` with `detail` `clipped` or `layout_unsupported`. Codex's
+  trust prompt (`Trust and continue` among its answers) is `harness: "codex"`,
+  `layout_unsupported`, until its screens are recorded.
+- `answerable`: `--accept` / `--decline` would pass the screen checks now; not the lock or the
+  attached-client check. `detail`: why not, a code from the table below.
+
+**What counts.** A trust prompt is recognised by its accepting answer, "Yes, I trust this
+folder" (the web spawner's `❯ Yes, I trust`): "No, exit" alone is other dialogs' answer too.
+It is read only when it is the live screen and the only thing on it:
+
+- exactly the two answers, numbered (`1.`) or not, in either order, adjacent, the `❯` cursor on
+  one; an answer that only starts like one ("Yes, I trust this folder (recommended)") is
+  `layout_unsupported`;
+- the terminal's cursor where Claude Code keeps it while the dialog listens: on the selected
+  answer's `❯`. Claude Code draws on the main screen, so when it exits (Esc) the dialog's text
+  stays, with the shell's prompt and the cursor under it: a cursor under the dialog is
+  `no_prompt` even while the foreground isn't a shell fleet knows. Elsewhere on it,
+  `layout_unsupported`;
+- the dialog is the last thing on the screen: under its answers its footer, "Enter to confirm ·
+  Esc to cancel", then only blank rows. Anything else under it is `not_alone`; another single
+  line in the footer's place is `layout_unsupported`;
+- its top is the frame's rule right above its heading, "Accessing workspace:", or the heading
+  itself; without it, the last rule above its answers. Neither is `clipped`, as is a side frame
+  whose top is off screen. Between its top and its answers: no cursor, input marker or numbered
+  answer list (`not_alone`);
+- above its top, only blank lines and what the shell printed before the harness started: the
+  last line there must be the launch line — `spawn`'s `cd <dir> && <launcher> …`, or `claude` /
+  `cc` typed after a shell prompt, behind any `NAME=value` and `command`, `exec`, `env` or
+  `nohup` — else `not_alone`. A transcript line (`⏺`, `⎿`) never is one;
+- the pane isn't in a mode such as copy mode, where keys go to tmux (`not_alone`);
+- the pane's foreground command is not a shell (`zsh`, `bash`, `sh`, `fish`, …), as the web
+  spawner's `ensureStarted` checks it: else `shell`.
+
+Only the visible screen is read: the same words in the scrollback or quoted in a conversation
+never count.
+
+**`--accept` / `--decline`** run under a lock named after the tmux session (`flock` on
+`trust-<tmux_session>.lock` in `$FLEET_LOCK_DIR`, else `answer`'s lock directory; `/` and `%`
+in a name are written `%2f` and `%25`), held through read, type, verify and close, and failing
+at once when held (`busy`):
+
+1. The pane is checked against `--pane`; then, unless `--allow-attached`, no terminal client may
+   be attached to the tmux session (`human_attached`).
+2. The screen is read again: it must show a trust prompt whose `id` is `--prompt`, answerable.
+   Otherwise nothing is typed: `prompt_not_on_screen` or `prompt_incomplete` with its `detail`.
+3. Before **every** key the tmux session is bound again (same session id and pane), the
+   screen read again and, unless `--allow-attached`, the attached-client check made again
+   (`human_attached`, with `typed` and `steps` once a key went out). `Down` or `Up` until the
+   cursor is on the chosen answer ("Yes, I trust this folder" for `--accept`, "No, exit" for
+   `--decline`), then `Enter`, pressed only while the screen shows the cursor there. A key the dialog ignored (the screen unchanged: the dialog is drawn
+   before it listens for keys) is pressed again, at most 4 times, 400 ms apart. `Enter` is pressed
+   again only when it was the first key (a decline): once a `Down` landed the dialog listens, an
+   unchanged screen is a redraw still to come, and a second `Enter` could answer what Claude Code
+   draws next. Any other screen stops it: `prompt_changed`, with `keys_sent` and `steps`. No
+   other key is ever pressed: no number, no Esc.
+4. After `Enter` the prompt must leave the screen within 3 s: `answered: true`. Otherwise
+   `outcome_uncertain`, with `screen` (what `--list` reads now, or `null`). A decline exits
+   Claude Code, which leaves the dialog's text above the shell: no live prompt (`no_prompt` or
+   `shell`) is the decline answered. An accept keeps it running and clears the dialog: the shell
+   back (the harness exited, the folder not trusted) or the dialog's text left behind is
+   `outcome_uncertain`.
+
+```json
+{ "ok": true, "host": "laptop", "tmux_session": "new-repo", "handle": "%12",
+  "harness": "claude", "answered": true, "answer": "accept", "id": "t1.9f2c01aa",
+  "steps": [{ "key": "Down" }, { "key": "Enter" }], "closed": null }
+```
+
+`-n` runs every check, the lock and the client check included, and types nothing:
+`answered: false`, `dry_run: true` and the `steps` it would press. It never closes anything.
+
+**`--decline --close`**: after the decline is answered, Fleet waits up to 5 s for the harness to
+exit (the pane's foreground back to its shell, and the shell with no child process), then kills
+the tmux session in one tmux command that first checks it is still the session read (by id),
+with one window holding one pane, the one read: `closed: true`. If the harness hasn't exited by
+then, or the tmux session changed, it is left as it is: `closed: false` with `close_detail`
+`still_running` or `pane_changed`. Without `--close`, `closed: null`.
+
+**Failures** (exit 1; exit 2 for clap's `usage`) are
+`{ ok: false, host, kind, error, detail, pane, typed }`. `error` is a sentence made of the kind,
+the code and the count of keys: never the screen's text, nor tmux's. `detail` is a code from the
+fixed set below, or `null`. `pane` is `{ cols, rows }`, `null` before the pane is known. `typed`
+says whether any key went out (`keys_sent` and `steps` then say which); only a failure with
+`typed: false` is safe to retry as it is.
+
+| kind | `detail` | when |
+|---|---|---|
+| `usage` | `null` | flags as above, or `-H` |
+| `target_not_found` | `null` | no tmux session with exactly that name |
+| `target_invalid` | `null` | a name a tmux session can't have (empty, `.`, `:`, control characters) |
+| `target_changed` | `null` | its pane isn't `--pane` |
+| `host_unsupported` | `null` | not one unlinked window with one pane |
+| `busy` | `null` | another `fleet trust` holds the lock |
+| `human_attached` | `null` | a client is attached, without `--allow-attached` |
+| `prompt_not_on_screen` | `no_prompt` | no trust prompt on screen, or only the text of one Claude Code left when it exited |
+| | `shell` | the pane's foreground is its shell: the harness isn't running |
+| | `different_prompt` | a trust prompt with another `id` |
+| | `touched` | the cursor off the preselected answer |
+| | `not_alone` | something else on the visible screen with it, or the pane in copy mode |
+| `prompt_incomplete` | `clipped` | its top or an answer off screen, or over 60 lines |
+| | `layout_unsupported` | answers or a footer Fleet doesn't know (Codex's, for now), or the cursor not on the selected answer |
+| `prompt_changed` | what the screen showed instead | keys went out, then the screen wasn't what they lead to; `touched` after four ignored keys |
+| `outcome_uncertain` | `null` | `Enter` went out and the prompt didn't leave the screen within 3 s |
+| `backend_failed` | `null` | tmux refused, or the screen couldn't be read |
+| `io` | `null` | the lock couldn't be taken |
+
+A caller treats a kind or code it doesn't know as `other`: more may be added.
+
+Fleet answers a trust prompt only when `trust --accept` or `--decline` is run: `spawn`,
+`restore`, `handoff`, `stack spawn`, jobs and `list` never do, and `trust --list` types nothing.
+(The web spawner's own auto-accept is unchanged.) Whether a folder is trusted is the harness's
+record (Claude Code's `~/.claude.json`): Fleet never reads or writes it. As with `answer`, a
+terminal has no conditional key, so a writer outside the lock can still change the screen
+between the last read and a key.
+
+**`spawn --resume` while another start of it is pending.** Its `session_starting` failure carries
+`starting: { tmux_session, handle }` — the tmux session holding the pane that resume's stamp
+names, when that pane still exists (and still runs the shell it recorded) — else
+`starting: null` (an iTerm resume, or a pane that is gone). So a resume waiting at its trust
+prompt, started from the CLI or by a caller that has since restarted, can be found and answered
+with `trust`.
 
 ### Answering prompts
 

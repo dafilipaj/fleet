@@ -267,6 +267,17 @@ pub fn resume_starting(harness: Harness, id: &str) -> bool {
     stamp_holds(&stamp_path(&resume_path(harness, id)))
 }
 
+/// C7: a starting resume's extant tmux host, including while its harness has not registered.
+/// Match the recorded shell pid too when known: pane ids restart with a new tmux server.
+pub fn resume_host(harness: Harness, id: &str) -> Option<(String, String)> {
+    let stamp = read_stamp(&stamp_path(&resume_path(harness, id)))?;
+    let pane = stamp.pane?;
+    crate::core::tmux::panes()
+        .into_iter()
+        .find(|p| p.pane_id == pane && stamp.shell.is_none_or(|shell| shell == p.pid))
+        .map(|p| (p.session, p.pane_id))
+}
+
 /// The stamp at `path`, when there is a readable one.
 pub fn read_stamp(path: &Path) -> Option<Stamp> {
     serde_json::from_slice(&std::fs::read(path).ok()?).ok()
@@ -284,7 +295,7 @@ fn now_ms() -> u64 {
 }
 
 /// Take the lock in the file at `path`, creating it (and its directory) if needed.
-fn try_lock_at(path: &Path) -> Result<SessionLock, LockError> {
+pub(crate) fn try_lock_at(path: &Path) -> Result<SessionLock, LockError> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(LockError::Io)?;
     }

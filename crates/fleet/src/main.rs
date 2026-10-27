@@ -8,7 +8,7 @@ use fleet::cli::{
     effort as effort_cmd, group, hosts as host_cmds, init, jobs as jobs_cmd, mcp,
     messages as messages_cmd, model as model_cmd, prs as prs_cmd, repos as repos_cmd, restore,
     schedule as schedule_cmd, skill, slack as slack_cmd, stack as stack_cmds, tasks as tasks_cmd,
-    tmux as tmux_cmds, usage as usage_cmd, web,
+    tmux as tmux_cmds, trust as trust_cmd, usage as usage_cmd, web,
 };
 use fleet::core::config;
 use fleet::core::discovery::Backend;
@@ -179,6 +179,37 @@ enum Commands {
         #[arg(long, value_name = "JSON")]
         answers: Option<String>,
         /// Answer even with a terminal attached to the session (a human could be typing)
+        #[arg(long)]
+        allow_attached: bool,
+    },
+
+    /// Read or answer the untouched folder-trust prompt in an exact local tmux Session host
+    #[command(group(clap::ArgGroup::new("mode").required(true).args(["list", "accept", "decline"])))]
+    Trust {
+        /// Exact tmux session name returned by spawn
+        tmux_session: String,
+        /// One JSON object, including content-free failure codes
+        #[arg(long)]
+        json: bool,
+        /// Require the host still to hold this pane id (for example %12)
+        #[arg(long, value_name = "HANDLE")]
+        pane: Option<String>,
+        /// Read the dialog without typing or taking a lock
+        #[arg(long, conflicts_with = "prompt")]
+        list: bool,
+        /// Choose Yes, I trust this folder
+        #[arg(long, requires = "prompt")]
+        accept: bool,
+        /// Choose No, exit
+        #[arg(long, requires = "prompt")]
+        decline: bool,
+        /// Only answer this prompt id, returned by --list
+        #[arg(long, value_name = "ID")]
+        prompt: Option<String>,
+        /// After declining, close the unchanged host once its harness has exited
+        #[arg(long, requires = "decline", conflicts_with_all = ["list", "accept"])]
+        close: bool,
+        /// Answer even with a terminal client attached
         #[arg(long)]
         allow_attached: bool,
     },
@@ -1456,6 +1487,7 @@ enum Placement {
 
 fn placement(c: &Commands) -> Placement {
     match c {
+        Commands::Trust { .. } => Placement::Here,
         Commands::Tmux { .. } | Commands::Enter { .. } | Commands::Last | Commands::New(_) => {
             Placement::Dispatch(Scope::DefaultHost)
         }
@@ -1508,6 +1540,7 @@ fn refused(e: Error, command: &Commands) -> Error {
     match command {
         Commands::Spawn { .. } => commands::spawn_json_failure(e, &commands::host_label()),
         Commands::Answer { .. } => commands::json_failure_with(e, answer_cmd::early_failure_fields),
+        Commands::Trust { .. } => commands::json_failure_with(e, trust_cmd::early_failure_fields),
         _ => commands::json_failure(e),
     }
 }
@@ -1727,6 +1760,38 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
             before,
             limit,
         })?,
+        Commands::Trust {
+            tmux_session,
+            json,
+            pane,
+            list,
+            accept,
+            decline: _,
+            prompt,
+            close,
+            allow_attached,
+        } => {
+            // As other commands name a host: `-H local`, this machine's name or `--local` are
+            // here; anything else (another host, or a name that doesn't resolve) is refused.
+            let remote = !matches!(
+                target(cli.host.as_deref(), cli.local, Scope::SelfHost),
+                Ok(Target::Local { .. })
+            );
+            trust_cmd::run(
+                fleet::core::trust::Opts {
+                    session: tmux_session,
+                    pane,
+                    list,
+                    accept,
+                    prompt,
+                    close,
+                    allow_attached,
+                    dry_run: hosts::dry_run(),
+                },
+                json,
+                remote,
+            )?;
+        }
         Commands::Answer {
             target,
             json,
@@ -2404,6 +2469,7 @@ const JSON_FAILURE_COMMANDS: &[(&str, i32)] = &[
     ("messages", 2),
     ("send", 2),
     ("answer", 2),
+    ("trust", 2),
     ("peek", 2),
     ("keys", 2),
     ("spawn", 1),
@@ -2547,6 +2613,9 @@ fn parse_failure(e: clap::Error) -> ! {
                 serde_json::json!({ "ok": false, "host": host, "kind": "usage", "error": first });
             if cmd == "answer" {
                 answer_cmd::early_failure_fields(&mut v);
+            }
+            if cmd == "trust" {
+                trust_cmd::early_failure_fields(&mut v);
             }
             v
         };
