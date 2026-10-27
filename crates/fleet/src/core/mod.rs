@@ -2,6 +2,7 @@
 //! output aside) — rendering belongs to the UIs.
 
 pub mod backend;
+pub mod background;
 pub mod brief;
 pub mod config;
 pub mod context;

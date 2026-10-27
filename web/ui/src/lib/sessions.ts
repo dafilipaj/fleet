@@ -21,10 +21,19 @@ export function statusMeta(status: string | null | undefined): StatusMeta {
 }
 
 /** "needs you · permission" for a waiting session with a reason, else the plain label. */
-export function statusLabel(s: Pick<Session, 'status' | 'waiting_for'>): string {
+export function statusLabel(s: Pick<Session, 'status' | 'waiting_for' | 'background'>): string {
   const meta = statusMeta(s.status)
   const why = typeof s.waiting_for === 'string' ? s.waiting_for.trim() : ''
-  return meta.key === 'waiting' && why ? `${meta.label} · ${why}` : meta.label
+  if (meta.key === 'waiting' && why) return `${meta.label} · ${why}`
+  const bg = backgroundLabel(s.background)
+  return bg ? `${meta.label} · ${bg}` : meta.label
+}
+
+/** "2 agents", "1 agent, 1 shell" — what runs beside the main thread; '' for nothing. */
+export function backgroundLabel(bg: Session['background']): string {
+  if (!bg) return ''
+  const n = bg.agents?.length ?? 0
+  return [n ? `${n} agent${n === 1 ? '' : 's'}` : '', bg.shells ? `${bg.shells} shell${bg.shells === 1 ? '' : 's'}` : ''].filter(Boolean).join(', ')
 }
 
 export type StatusFilterId = 'all' | 'waiting' | 'busy' | 'idle' | 'scheduled' | 'embedded'

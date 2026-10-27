@@ -5,6 +5,7 @@ import type { Session } from '@/api/types'
 import { ContextMeter } from '@/components/ContextMeter'
 import { EditableTitle } from '@/components/EditableTitle'
 import { GhIdentityChip } from '@/components/GhIdentityChip'
+import { BackgroundChip } from '@/components/BackgroundWork'
 import { SlackChip } from '@/components/SlackLink'
 import { HostBadge } from '@/components/HostBadge'
 import { EmbedChip, JobChip } from '@/components/JobChip'
@@ -72,6 +73,7 @@ export function BoardCard({ session: s, now, selected, cursor, onOpen, drag }: B
       </div>
       {subtitle ? <p className="mt-1 line-clamp-2 text-xs break-words text-muted-foreground">{subtitle}</p> : null}
       <div className="mt-1.5 flex min-w-0 items-center gap-2 text-[0.6875rem] text-dimmer">
+        <BackgroundChip session={s} />
         <PrChip session={s} />
         <TaskChip session={s} />
         <JobChip session={s} />

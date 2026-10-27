@@ -6,6 +6,27 @@ export type SessionStatus = 'busy' | 'idle' | 'waiting' | 'unknown'
 export type Backend = 'iterm' | 'tmux' | 'unknown'
 
 /** One Claude Code session: a `fleet list --json` row plus the host it runs on. */
+/** A subagent of a session (`background.agents[]`). */
+export interface BackgroundAgent {
+  id: string
+  description: string | null
+  /** The subagent type: `general-purpose`, `Explore`, … */
+  type: string | null
+  model: string | null
+  /** false: a foreground agent — the main thread waits on it. */
+  background: boolean
+  started_at: number | null
+  /** Its transcript's last write. */
+  last_activity_at: number | null
+  /** Its last tool call: `Bash: run the tests`. */
+  activity: string | null
+}
+
+export interface SessionBackground {
+  agents: BackgroundAgent[]
+  shells: number
+}
+
 export interface Session {
   host: string
   session_id: string
@@ -37,6 +58,11 @@ export interface Session {
   display_title?: string | null
   /** Context-window usage from the transcript tail; null when unknown (older CLIs omit it). */
   context?: ContextUsage | null
+  /**
+   * Subagents and background shells it runs (`fleet list --json` → `background`); null / absent =
+   * none. With them a session whose main turn has ended is `idle`: it takes input.
+   */
+  background?: SessionBackground | null
   /** "Open in editor" link for the cwd (like Brief.editorUrl, without the git-root lookup). Older servers omit it. */
   editorUrl?: string | null
   /**

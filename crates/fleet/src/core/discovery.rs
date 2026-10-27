@@ -75,6 +75,9 @@ pub struct Session {
     /// caller knows it by). Stamped by `list`; `None` inside discovery.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
+    /// Subagents and background shells it runs ([`crate::core::background`]); `null` when
+    /// none (or unknown). With them, a session whose main turn has ended is `idle`.
+    pub background: Option<crate::core::background::Background>,
     /// Context-window usage from the transcript tail; `null` when unknown.
     pub context: Option<crate::core::context::ContextUsage>,
     /// The session stack it belongs to (`{ id, label }`, see [`crate::core::stack`]);
@@ -121,6 +124,7 @@ impl Default for Session {
             gen_title: None,
             display_title: None,
             host: None,
+            background: None,
             context: None,
             stack: None,
             harness: Harness::Claude,
@@ -223,6 +227,9 @@ struct Reg {
     updated_at: Option<i64>,
     #[serde(rename = "statusUpdatedAt")]
     status_updated_at: Option<i64>,
+    /// When this process started (ms): what it launched before is not running.
+    #[serde(rename = "startedAt")]
+    started_at: Option<i64>,
     #[serde(rename = "nameSource")]
     name_source: Option<String>,
     #[serde(rename = "waitingFor")]
@@ -331,10 +338,38 @@ pub fn discover_checked() -> Result<Vec<Session>, String> {
         let prompted_at = reg.session_id.as_deref().and_then(|sid| {
             crate::core::prompted::for_session(&claude_home(), reg.cwd.as_deref(), sid)
         });
+        let mut status = reg.status.unwrap_or_else(|| "unknown".into());
+        let mut updated_at = reg.status_updated_at.or(reg.updated_at);
+        // `busy` / `shell` also while only subagents or background shells run: the main
+        // thread may be free (see core::background).
+        let mut background = None;
+        if status == "busy" || status == "shell" {
+            if let Some(m) = reg.session_id.as_deref().and_then(|sid| {
+                crate::core::background::for_session(
+                    &claude_home(),
+                    reg.cwd.as_deref(),
+                    sid,
+                    reg.started_at,
+                )
+            }) {
+                if let Some(ended) = m.ended_at
+                    && (!m.background.is_empty() || status == "shell")
+                {
+                    status = "idle".into();
+                    updated_at = Some(ended);
+                }
+                background = (!m.background.is_empty()).then_some(m.background);
+            }
+            // `shell`: only background shells run — the main thread is free.
+            if status == "shell" {
+                status = "idle".into();
+            }
+        }
         out.push(Session {
             pid,
-            status: reg.status.unwrap_or_else(|| "unknown".into()),
-            updated_at: reg.status_updated_at.or(reg.updated_at),
+            status,
+            updated_at,
+            background,
             prompted_at,
             title,
             tty: Some(tty),

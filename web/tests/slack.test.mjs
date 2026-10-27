@@ -130,6 +130,7 @@ test('link: reads the thread, types the intro into the idle session, then messag
   assert.match(intro, new RegExp(`^\\[slack ${link.id}\\] You are linked to a Slack thread until`));
   assert.match(intro, /The owner's instructions for it: artifact testing/);
   assert.match(intro, /a thread you have posted in[^]*not necessarily for you/);
+  assert.match(fx.sent[0].text, /Stay free to talk[^]*background subagent/);
   assert.match(intro, new RegExp(`fleet slack reply ${link.id}`));
   assert.match(intro, /Owner \(UOWNER, the owner of this session\)/);
   assert.match(intro, /Alex \(U1\)[^\n]*\n\s*How does it work\?/);

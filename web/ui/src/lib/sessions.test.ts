@@ -50,6 +50,9 @@ test('statusMeta / statusLabel', () => {
   expect(statusMeta('weird').key).toBe('unknown')
   expect(statusMeta(null).label).toBe('unknown')
   expect(statusLabel({ status: 'waiting', waiting_for: ' permission ' })).toBe('needs you · permission')
+  const agent = { id: 'a1', description: 'x', type: null, model: null, background: true, started_at: 1, last_activity_at: null, activity: null }
+  expect(statusLabel({ status: 'idle', background: { agents: [agent, agent], shells: 1 } })).toBe('idle · 2 agents, 1 shell')
+  expect(statusLabel({ status: 'idle', background: { agents: [], shells: 0 } })).toBe('idle')
   expect(statusLabel({ status: 'waiting', waiting_for: null })).toBe('needs you')
   expect(statusLabel({ status: 'busy', waiting_for: 'x' })).toBe('working')
 })

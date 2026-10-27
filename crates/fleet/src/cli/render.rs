@@ -208,10 +208,26 @@ pub fn plain_table_titled(rows: &[Session], host: Option<&str>) -> String {
             column(&terminal_label(r), term_w).cyan(),
             where_.dimmed(),
         ));
-        let title = clean_text(r.title.as_deref().unwrap_or("(no prompt captured)"));
+        let mut title = clean_text(r.title.as_deref().unwrap_or("(no prompt captured)"));
+        if let Some(bg) = r.background.as_ref().filter(|b| !b.is_empty()) {
+            title = format!("[{}] {title}", background_words(bg));
+        }
         out.push(format!("  {}", fit(&title, width.saturating_sub(2))));
     }
     out.join("\n")
+}
+
+/// `2 agents, 1 shell` — what runs beside the main thread.
+pub fn background_words(bg: &crate::core::background::Background) -> String {
+    let plural = |n: usize, w: &str| format!("{n} {w}{}", if n == 1 { "" } else { "s" });
+    let mut parts = Vec::new();
+    if !bg.agents.is_empty() {
+        parts.push(plural(bg.agents.len(), "agent"));
+    }
+    if bg.shells > 0 {
+        parts.push(plural(bg.shells as usize, "shell"));
+    }
+    parts.join(", ")
 }
 
 #[cfg(test)]

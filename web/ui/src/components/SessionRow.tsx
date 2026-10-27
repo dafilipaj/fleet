@@ -4,6 +4,7 @@ import type { Session } from '@/api/types'
 import { ContextMeter } from '@/components/ContextMeter'
 import { EditableTitle } from '@/components/EditableTitle'
 import { GhIdentityChip } from '@/components/GhIdentityChip'
+import { BackgroundChip } from '@/components/BackgroundWork'
 import { SlackChip } from '@/components/SlackLink'
 import { HostBadge } from '@/components/HostBadge'
 import { EmbedChip, JobChip } from '@/components/JobChip'
@@ -73,6 +74,7 @@ export function SessionRow({ session: s, now, selected, cursor, inStack }: Sessi
       {subtitle ? <p className="mt-1 line-clamp-2 text-[0.8125rem] break-words text-muted-foreground">{subtitle}</p> : null}
       <div className="mt-1.5 flex min-w-0 items-center gap-1.5 text-[0.6875rem] text-dimmer">
         {inStack ? null : <StackChip session={s} />}
+        <BackgroundChip session={s} />
         <JobChip session={s} />
         <EmbedChip session={s} />
         <GhIdentityChip session={s} />
