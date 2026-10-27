@@ -66,6 +66,17 @@ Pure logic plus thin process wrappers; no printing. Everything a future front-en
 - **naming** — generates short kebab-case titles by asking `claude -p --model haiku` what a
   session is working on (falls back to git branch / first prompt); cached across runs.
 - **tmux** — tmux-*session* management inherited from `ws`: matching, sanitizing, stale detection.
+- **trust_prompt** / **trust** — `fleet trust`, the folder-trust prompt of a tmux Session host
+  before its harness registers. `trust_prompt` reads the visible screen only, with the web
+  spawner's signals (`❯ Yes, I trust`, `› 1. Trust and continue`), `answer`'s live-prompt
+  rule (nothing else on screen) and what Claude Code 2.1.311 was recorded doing (only blank rows
+  under its footer, the terminal's cursor on the selected `❯`; a dialog left above the shell
+  after Esc is no prompt): the dialog's lines, answers, cursor and FNV-1a id. `trust` binds the exact tmux session and pane, holds
+  `trust-<name>.lock`, re-reads before every key and verifies the outcome; `--decline --close`
+  kills the session with `tmux::kill_if_alone` once the harness has exited. No Session
+  registry, transcript or harness trust record is consulted. `spawn --resume`'s
+  `session_starting` names the pending start's Session host (`lock::resume_host`)
+  ([cli.md](cli.md#folder-trust-before-a-session-registers)).
 - **config** — reads and patches the shared config file.
 - **hosts** — resolves the target host and dispatches over ssh.
 - **tools** — binary lookup (`PATH` plus Homebrew fallbacks), `~` expansion.

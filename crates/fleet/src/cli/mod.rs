@@ -25,6 +25,7 @@ pub mod stack;
 pub mod switch;
 pub mod tasks;
 pub mod tmux;
+pub mod trust;
 pub mod usage;
 pub mod veranda;
 pub mod web;
