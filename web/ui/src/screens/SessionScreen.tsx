@@ -24,6 +24,7 @@ import { ChatView } from '@/components/session/ChatView'
 import { CompactHint } from '@/components/session/CompactHint'
 import { Composer, type ComposerApi } from '@/components/session/Composer'
 import { QueuePanel } from '@/components/session/QueuePanel'
+import { BackgroundPanel } from '@/components/BackgroundWork'
 import { FilePreview } from '@/components/session/FilePreview'
 import { OutboxBubbles } from '@/components/session/OutboxBubbles'
 import type { QuestionActions } from '@/components/session/QuestionCard'
@@ -599,6 +600,7 @@ export function SessionScreen({
         ) : null}
       </main>
 
+      <BackgroundPanel session={session} desktop={pane} />
       <QueuePanel
         queue={queue}
         agent={harnessLabel(session?.harness)}

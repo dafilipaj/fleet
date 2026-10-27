@@ -14,7 +14,6 @@ import { toast } from 'sonner'
 import { api, sessionErrorMessage } from '@/api/client'
 import type { Session } from '@/api/types'
 import { BriefSection, type BriefSectionProps } from '@/components/session/BriefSection'
-import { BackgroundSection } from '@/components/BackgroundWork'
 import { SlackLinkSection } from '@/components/SlackLink'
 import { Button } from '@/components/ui/button'
 import { Drawer, DrawerContent, DrawerDescription, DrawerHeader, DrawerTitle } from '@/components/ui/drawer'
@@ -234,8 +233,6 @@ export function DetailsPanel(p: DetailsPanelProps & { variant: 'drawer' | 'panel
           ) : null}
 
           <BriefSection {...p.brief} desktop={panel} cancelEditRef={p.cancelEditRef} />
-
-          <BackgroundSection session={s} />
 
           <SlackLinkSection host={p.host} session={s} />
 
