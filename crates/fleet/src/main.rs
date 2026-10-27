@@ -5,8 +5,9 @@ use colored::Colorize;
 
 use fleet::cli::{
     brief as brief_cmd, commands, config_cmd, group, hosts as host_cmds, init, jobs as jobs_cmd,
-    mcp, prs as prs_cmd, repos as repos_cmd, restore, skill, slack as slack_cmd,
-    stack as stack_cmds, tasks as tasks_cmd, tmux as tmux_cmds, usage as usage_cmd, web,
+    mcp, prs as prs_cmd, repos as repos_cmd, restore, schedule as schedule_cmd, skill,
+    slack as slack_cmd, stack as stack_cmds, tasks as tasks_cmd, tmux as tmux_cmds,
+    usage as usage_cmd, web,
 };
 use fleet::core::config;
 use fleet::core::discovery::Backend;
@@ -519,6 +520,15 @@ enum Commands {
         all: bool,
     },
 
+    /// One-off sessions started later on this host: at a set time, or on a Productive task's start date
+    Schedule {
+        #[command(subcommand)]
+        cmd: Option<ScheduleCmd>,
+        /// Machine-readable output
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Bots: agent sessions started from a recipe (prompt + schedule) on this host (config `bots`)
     #[command(visible_alias = "jobs")]
     Bots {
@@ -934,6 +944,18 @@ enum TaskCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Start a session on the task's start date (follows the date if it moves; = schedule add --task)
+    Schedule {
+        /// The task's id or its Productive URL
+        task: String,
+        /// The first prompt (after the task's context line)
+        prompt: Option<String>,
+        /// The time on the start date (HH:MM, default 08:00)
+        #[arg(long)]
+        time: Option<String>,
+        #[command(flatten)]
+        spawn: ScheduleSpawnArgs,
+    },
     /// Start a session that is told what the task is
     Spawn {
         /// The task's id or its Productive URL
@@ -962,6 +984,56 @@ enum TaskCmd {
         #[arg(long)]
         window: bool,
     },
+}
+
+#[derive(Subcommand, Clone)]
+enum ScheduleCmd {
+    /// Pending sessions, then the latest finished ones — the default
+    List {
+        #[arg(long)]
+        json: bool,
+        /// Every finished one kept, not just the latest 5
+        #[arg(long)]
+        all: bool,
+    },
+    /// Start a session later: at a time (`--at`), or on a task's start date (`--task`)
+    Add {
+        /// The first prompt (after the task's context line with --task)
+        prompt: Option<String>,
+        /// When: 'YYYY-MM-DD HH:MM', 'HH:MM' (the next one), 'tomorrow 09:00', 'mon 09:00', 'in 2h'
+        #[arg(long, required_unless_present = "task")]
+        at: Option<String>,
+        /// A Productive task (id or URL): start on its start date, following it if it moves
+        #[arg(long, conflicts_with = "at")]
+        task: Option<String>,
+        /// With --task: the time on the start date (HH:MM, default 08:00)
+        #[arg(long, requires = "task")]
+        time: Option<String>,
+        #[command(flatten)]
+        spawn: ScheduleSpawnArgs,
+    },
+    /// Cancel a pending session (id, or a unique prefix of one)
+    #[command(visible_alias = "rm")]
+    Cancel { id: String },
+}
+
+/// How a scheduled session starts — as for `fleet spawn` (always in tmux).
+#[derive(clap::Args, Clone)]
+struct ScheduleSpawnArgs {
+    /// Directory to start in (default: the current one)
+    #[arg(short = 'C', long)]
+    dir: Option<String>,
+    /// Display name for the new session (default with a task: task-<number>)
+    #[arg(long)]
+    name: Option<String>,
+    /// Model for the new session (`<harness> --model <id>`)
+    #[arg(long, value_name = "ID")]
+    model: Option<String>,
+    /// Coding agent to run: claude (default), codex or pi
+    #[arg(long, value_enum)]
+    harness: Option<HarnessArg>,
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Subcommand, Clone)]
@@ -1103,6 +1175,29 @@ fn default_command() -> Commands {
         Commands::List {
             json: false,
             all_hosts: false,
+        }
+    }
+}
+
+impl ScheduleSpawnArgs {
+    fn into_opts(
+        self,
+        at: Option<String>,
+        task: Option<String>,
+        time: Option<String>,
+        prompt: Option<String>,
+        json: bool,
+    ) -> schedule_cmd::AddOpts {
+        schedule_cmd::AddOpts {
+            at,
+            task,
+            time,
+            prompt,
+            dir: self.dir,
+            name: self.name,
+            model: self.model,
+            harness: self.harness.map(Into::into).unwrap_or_default(),
+            json: json || self.json,
         }
     }
 }
@@ -1662,6 +1757,12 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
             TaskCmd::Status { task, status, json } => {
                 tasks_cmd::status(&task, status.as_deref(), json)?
             }
+            TaskCmd::Schedule {
+                task,
+                prompt,
+                time,
+                spawn,
+            } => schedule_cmd::add(spawn.into_opts(None, Some(task), time, prompt, false))?,
             TaskCmd::Spawn {
                 task,
                 prompt,
@@ -1686,6 +1787,19 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
                 },
             )?,
         },
+        Commands::Schedule { cmd, json } => {
+            match cmd.unwrap_or(ScheduleCmd::List { json, all: false }) {
+                ScheduleCmd::List { json: j, all } => schedule_cmd::list(json || j, all)?,
+                ScheduleCmd::Add {
+                    prompt,
+                    at,
+                    task,
+                    time,
+                    spawn,
+                } => schedule_cmd::add(spawn.into_opts(at, task, time, prompt, json))?,
+                ScheduleCmd::Cancel { id } => schedule_cmd::cancel(&id)?,
+            }
+        }
         Commands::Repos { cmd, json, all } => match cmd.unwrap_or(ReposCmd::Status { json, all }) {
             ReposCmd::Status { json: j, all: a } => repos_cmd::status(json || j, all || a)?,
             ReposCmd::Sync {

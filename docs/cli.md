@@ -527,6 +527,7 @@ integrations). Config: `tasks`.
 | `fleet task show <task> [--json]` | one task: project, task list, status, due date, todos, description. `<task>` is its id (`1234`, `#1234`) or its Productive URL. From the cache, else fetched (any task, open or not). `--json`: the `Task` plus `contextLine` (the first prompt `task spawn` gives) and `statuses` (its workflow's) |
 | `fleet task status <task> [status] [--json]` | without `status`, its workflow's statuses (`●` the current one). With one — an id, a name (any case) or a unique prefix of one; ambiguous or unknown → exit 2 with the candidates — moves the task there and updates the cache (a closed task leaves it). `-n` changes nothing. `--json`: `{ task, applied }` (the task as it is now) |
 | `fleet task spawn <task> [prompt] [-C DIR] [--name] [--model] [--harness] [--backend] [--tmux-session] [--window]` | `spawn` in `DIR` (default: here) with the first prompt `contextLine` + `prompt`: `Productive task #<number> <url> — “<title>” (<project>, <status>).` (the URL early: the web UI links a session to a task by it, and sees only the first ~300 characters of a first prompt) Starts an agent — confirm like `spawn` |
+| `fleet task schedule <task> [prompt] [--time HH:MM] [-C DIR] [--name] [--model] [--harness] [--json]` | = `fleet schedule add --task <task>`: a session on the task's start date at `--time` (default `08:00`) that follows the date if it moves — see [Scheduled sessions](#scheduled-sessions) |
 
 `--json`: `{ user: { id, name }, organization: { id, name, slug }, scope, fetchedAt, stale, error,
 truncated, columns: [{ id, title, count }], tasks: [Task…], statuses: { <workflowId>: [Status…] } }`
@@ -619,6 +620,30 @@ In the web UI, the **Bots** screen (`#/bots`; `#/jobs` still opens it) lists eve
 Run now and the enabled switch, and each run's sessions as a tree; bot sessions wear a bot chip and
 stay out of the session list unless they need you — the **Bots** status filter (bot icon) lists only them ([Web API](architecture.md#web-api)).
 
+## Scheduled sessions
+
+One-off sessions started later on this host — at a set time, or on a Productive task's start date.
+No config: entries are state, added and cancelled with the commands below (or the web UI). The
+`fleet.jobs` launchd agent ([`bots install-service`](#bots)) fires them: every `bots tick` ends
+with the scheduled sessions, so a host needs that service for them to run.
+
+| command | does |
+| --- | --- |
+| `fleet schedule add [prompt] --at <when> [-C DIR] [--name] [--model] [--harness] [--json]` | a session in `DIR` (default: here; must exist) at `<when>`: `YYYY-MM-DD HH:MM` (or with a `T`), `YYYY-MM-DD` (08:00), `HH:MM` (the next one: today, else tomorrow), `today\|tomorrow\|<weekday> HH:MM`, `in 90m` / `in 2h` / `in 3d` (or `+2h`), local time. `--gh-identity` (global) is kept for the session. Starts an agent later — confirm like `spawn` |
+| `fleet schedule add [prompt] --task <task> [--time HH:MM] …` | task-linked: at `--time` (default `08:00`) on the task's start date. The tick re-reads the task every hour and right before firing: a moved start date moves the session, a closed task skips it (`skipped`), a task with no start date waits for one. The first prompt is `contextLine` + `prompt`, as with `task spawn`; the task's status is left alone. Session name default `task-<number>`. A closed task is refused; a start date already past fires on the next tick |
+| `fleet schedule [list] [--json] [--all]` | pending entries by time, then the latest 5 finished (`--all`: all kept) |
+| `fleet schedule cancel <id>` (`rm`) | cancel a pending entry (its id, or a unique prefix of a pending one) |
+
+An entry runs in tmux, like a bot. A timed entry more than 6 hours late when a tick sees it (the
+machine was off) is recorded as `missed`; a task-linked one fires late instead.
+
+`--json` of `schedule` is `{ host, entries: [Entry…] }`, of `schedule add` the new `Entry`:
+`{ id, at, time?, task?: { id, number, title, url, startDate, checkedAt }, dir, prompt, name,
+model, harness, ghIdentity, createdAt, state: "pending" | "started" | "skipped" | "missed" |
+"failed" | "cancelled", reason, firedAt, tmuxSession }` (times in ms epoch; `at` `null` while a
+task has no start date). State: `${XDG_STATE_HOME:-~/.local/state}/fleet/schedule.json`
+(`FLEET_SCHEDULE_FILE`): every pending entry and the latest 50 finished ones.
+
 ## Web
 
 | command | does |
@@ -703,6 +728,7 @@ fleet mcp --http [--bind 127.0.0.1] [--port 7778] --token-file ~/.config/fleet/m
 | `FLEET_CURL`, `FLEET_PRODUCTIVE_API` | `curl` binary and API base URL for [`fleet tasks`](#productive-tasks) (tests) |
 | `FLEET_GH_IDENTITY` | the [GitHub identity](#github-identities) a session acts as — set in its shell; spawns inherit it (and it is forwarded to `-H` hosts). Same as `--gh-identity` |
 | `FLEET_JOB_RUN` | `<bot>/<run>`: the [bot](#bots) run a session belongs to — set in bot sessions; a spawn with it set joins that run (and is forwarded to `-H` hosts) |
+| `FLEET_SCHEDULE_FILE` | [scheduled sessions](#scheduled-sessions) state (default `${XDG_STATE_HOME:-~/.local/state}/fleet/schedule.json`) |
 | `FLEET_JOBS_DIR` | [bot](#bots) state (default `${XDG_STATE_HOME:-~/.local/state}/fleet/jobs`) |
 | `FLEET_STACKS_DIR` | where [stacks](#stacks) live (default `${XDG_STATE_HOME:-~/.local/state}/fleet/stacks`) |
 | `VISUAL`, `EDITOR` | the editor for `fleet brief --edit`, `fleet stack edit` and `fleet config edit` (default `vi`) |

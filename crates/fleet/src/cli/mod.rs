@@ -12,6 +12,7 @@ pub mod prs;
 pub mod render;
 pub mod repos;
 pub mod restore;
+pub mod schedule;
 pub mod skill;
 pub mod slack;
 pub mod stack;

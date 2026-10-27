@@ -47,7 +47,7 @@ fn local(ms: i64) -> DateTime<Local> {
         .unwrap_or_else(Local::now)
 }
 
-fn when(t: DateTime<Local>) -> String {
+pub(crate) fn when(t: DateTime<Local>) -> String {
     let now = Local::now();
     if t.date_naive() == now.date_naive() {
         t.format("today %H:%M").to_string()
@@ -453,7 +453,8 @@ fn log(quiet: bool, line: &str) {
 }
 
 /// `fleet jobs tick`: what the launchd agent runs every minute — fire due jobs, record missed
-/// slots, close the idle sessions of runs past their `keep`.
+/// slots, close the idle sessions of runs past their `keep`; then the scheduled sessions
+/// (`fleet schedule`).
 pub fn tick(quiet: bool) -> Result<()> {
     let s = Settings::load();
     if !quiet {
@@ -528,8 +529,12 @@ pub fn tick(quiet: bool) -> Result<()> {
         }
         cleanup(j, now, quiet, &mut rows)?;
     }
+    failed += crate::cli::schedule::tick(quiet)?;
     if failed > 0 {
-        return Err(Error::exit(1, format!("{failed} bot(s) failed to start")));
+        return Err(Error::exit(
+            1,
+            format!("{failed} bot(s) or scheduled session(s) failed to start"),
+        ));
     }
     Ok(())
 }
