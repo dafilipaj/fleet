@@ -17,7 +17,7 @@ import { STATUS_FILTERS, visibleStatusFilters, type StatusFilterId } from '@/lib
 import { cn } from '@/lib/utils'
 
 /** The kinds of session the segmented toggle switches between; the rest are status filters. */
-const KINDS: StatusFilterId[] = ['scheduled', 'embedded']
+const KINDS: StatusFilterId[] = ['scheduled', 'slack', 'embedded']
 const SESSIONS = 'sessions'
 
 const segment = 'h-7 gap-1 rounded-md px-2.5 text-xs text-muted-foreground data-[state=on]:bg-accent data-[state=on]:text-accent-foreground'
@@ -34,7 +34,7 @@ const TOUCH = {
 }
 
 /**
- * Sessions | Bots (| Apps) toggle, then status and host pickers behind one icon each.
+ * Sessions | Bots (| Slack | Apps) toggle, then status and host pickers behind one icon each.
  * `spread`: the pickers sit at the row's right end. `touch`: phone-sized (the mobile list).
  */
 export function SessionFilters({ list, spread = false, touch = false }: { list: SessionListState; spread?: boolean; touch?: boolean }) {
@@ -44,7 +44,7 @@ export function SessionFilters({ list, spread = false, touch = false }: { list: 
   const { fleet, status, setStatus, setHostFilter, hosts, hostNames, host, view, hostCounts } = list
   const counts = fleet ? view.counts : null
   const kind = KINDS.includes(status) ? status : SESSIONS
-  // The status picked under Sessions, restored when coming back from Bots / Apps.
+  // The status picked under Sessions, restored when coming back from Bots / Slack / Apps.
   const lastStatus = useRef<StatusFilterId>('all')
   const pickKind = (v: string) => {
     if (!v || v === kind) return
@@ -53,7 +53,7 @@ export function SessionFilters({ list, spread = false, touch = false }: { list: 
   }
 
   const statusFilters = STATUS_FILTERS.filter((f) => !KINDS.includes(f.id))
-  const kinds = visibleStatusFilters(counts, status).filter((f) => f.id === 'embedded')
+  const kinds = visibleStatusFilters(counts, status).filter((f) => f.id === 'slack' || f.id === 'embedded')
   const current = statusFilters.find((f) => f.id === status)
   const statusActive = kind === SESSIONS && status !== 'all'
 

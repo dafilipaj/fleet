@@ -7,6 +7,8 @@ import {
   findSession,
   findSpawned,
   setAside,
+  isSlackSession,
+  slackLinked,
   isEmbedSession,
   isJobSession,
   keepOrder,
@@ -60,7 +62,7 @@ test('statusMeta / statusLabel', () => {
 test('listView: flat, sorted by last activity, counts per status', () => {
   const v = listView(fleet, {})
   expect(v.sessions.map((x) => x.session_id)).toEqual(['b', 'c', 'a'])
-  expect(v.counts).toEqual({ all: 3, waiting: 1, busy: 1, idle: 1, scheduled: 0, embedded: 0 })
+  expect(v.counts).toEqual({ all: 3, waiting: 1, busy: 1, idle: 1, scheduled: 0, slack: 0, embedded: 0 })
 })
 
 test('listView: a prompt moves a session, a turn ending does not', () => {
@@ -226,7 +228,7 @@ test('listView: job sessions only under Scheduled, except waiting ones', () => {
 
   const all = listView(f, {})
   expect(all.sessions.map((x) => x.session_id)).toEqual(['job-wait', 'mine'])
-  expect(all.counts).toEqual({ all: 2, waiting: 1, busy: 1, idle: 0, scheduled: 3, embedded: 0 })
+  expect(all.counts).toEqual({ all: 2, waiting: 1, busy: 1, idle: 0, scheduled: 3, slack: 0, embedded: 0 })
 
   // "Scheduled" shows only job sessions, waiting ones included.
   const sched = listView(f, { status: 'scheduled' })
@@ -265,6 +267,37 @@ test('embed sessions: set aside like bot sessions, in their own Apps filter', ()
   expect(all.counts.embedded).toBe(2)
   expect(listView(f, { status: 'embedded' }).sessions.map((x) => x.session_id)).toEqual(['app-wait', 'app-idle'])
   expect(visibleStatusFilters(all.counts, 'all').map((x) => x.id)).toEqual(['all', 'waiting', 'busy', 'idle', 'embedded'])
+})
+
+test('Slack-linked sessions: set aside like bot sessions, in their own Slack filter', () => {
+  const f: FleetResponse = {
+    self: 'laptop',
+    hosts: [
+      {
+        name: 'workstation',
+        ok: true,
+        sessions: [
+          s({ host: 'workstation', session_id: 'mine', status: 'busy', updated_at: 100 }),
+          s({ host: 'workstation', session_id: 'linked-idle', status: 'idle', updated_at: 200 }),
+          s({ host: 'workstation', session_id: 'linked-wait', status: 'waiting', updated_at: 300 }),
+        ],
+      },
+    ],
+  }
+  const slack = slackLinked([
+    { host: 'workstation', session: 'linked-idle' },
+    { host: 'workstation', session: 'linked-wait' },
+    { host: 'laptop', session: 'mine' },
+  ])
+  expect(isSlackSession(s({ host: 'workstation', session_id: 'linked-idle' }), slack)).toBe(true)
+  expect(isSlackSession(s({ host: 'workstation', session_id: 'mine' }), slack)).toBe(false)
+  // Without the links (Slack off, not loaded yet) nothing is set aside.
+  expect(listView(f, {}).sessions.map((x) => x.session_id)).toEqual(['linked-wait', 'linked-idle', 'mine'])
+  const all = listView(f, { slack })
+  expect(all.sessions.map((x) => x.session_id)).toEqual(['linked-wait', 'mine'])
+  expect(all.counts.slack).toBe(2)
+  expect(listView(f, { status: 'slack', slack }).sessions.map((x) => x.session_id)).toEqual(['linked-wait', 'linked-idle'])
+  expect(visibleStatusFilters(all.counts, 'all').map((x) => x.id)).toEqual(['all', 'waiting', 'busy', 'idle', 'slack'])
 })
 
 test('stackRuns: 2+ adjacent members of one stack form a group; a lone member stays a row', () => {

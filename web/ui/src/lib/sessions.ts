@@ -1,5 +1,5 @@
 // Session list logic: status metadata, filtering, search, sorting — pure, unit-tested.
-import type { FleetResponse, Session, SessionStatus } from '@/api/types'
+import type { FleetResponse, Session, SessionStatus, SlackLink } from '@/api/types'
 
 export type StatusKey = SessionStatus
 export interface StatusMeta {
@@ -36,26 +36,28 @@ export function backgroundLabel(bg: Session['background']): string {
   return [n ? `${n} agent${n === 1 ? '' : 's'}` : '', bg.shells ? `${bg.shells} shell${bg.shells === 1 ? '' : 's'}` : ''].filter(Boolean).join(', ')
 }
 
-export type StatusFilterId = 'all' | 'waiting' | 'busy' | 'idle' | 'scheduled' | 'embedded'
+export type StatusFilterId = 'all' | 'waiting' | 'busy' | 'idle' | 'scheduled' | 'slack' | 'embedded'
 export interface StatusFilter {
   id: StatusFilterId
   label: string
-  match: (s: Session) => boolean
+  /** `slack`: the `host/session_id` keys of the sessions linked to Slack (`slackLinked`). */
+  match: (s: Session, slack: ReadonlySet<string>) => boolean
   /** The chip's tooltip. */
   title?: string
 }
 
-/** The filters for sessions set aside from the rest (bots, app panels): a chip only when there are some. */
-const SET_ASIDE: StatusFilterId[] = ['scheduled', 'embedded']
+/** The filters for sessions set aside from the rest (bots, Slack, app panels): a chip only when there are some. */
+const SET_ASIDE: StatusFilterId[] = ['scheduled', 'slack', 'embedded']
 
 export const STATUS_FILTERS: StatusFilter[] = [
   { id: 'all', label: 'All', match: () => true },
   { id: 'waiting', label: 'Needs you', match: (s) => statusMeta(s.status).key === 'waiting' },
   { id: 'busy', label: 'Busy', match: (s) => statusMeta(s.status).key === 'busy' },
   { id: 'idle', label: 'Idle', match: (s) => statusMeta(s.status).key === 'idle' },
-  // Only the sessions bots started / an app's embedded panel started (every other filter leaves
-  // them out unless waiting).
+  // Only the sessions bots started / linked to Slack / an app's embedded panel started (every
+  // other filter leaves them out unless waiting).
   { id: 'scheduled', label: 'Bots', match: (s) => isJobSession(s), title: 'Sessions started by bots' },
+  { id: 'slack', label: 'Slack', match: (s, slack) => isSlackSession(s, slack), title: 'Sessions linked to Slack: people in a thread talk to them' },
   { id: 'embedded', label: 'Apps', match: (s) => isEmbedSession(s), title: "Sessions started from an app's Fleet panel (embed view)" },
 ]
 
@@ -128,25 +130,42 @@ export function isEmbedSession(s: Pick<Session, 'embed'>): boolean {
   return Boolean(s.embed)
 }
 
+/** The `host/session_id` keys of the sessions with an active Slack link. */
+export function slackLinked(links: readonly Pick<SlackLink, 'host' | 'session'>[] | null | undefined): ReadonlySet<string> {
+  return new Set((links ?? []).map((l) => `${l.host}/${l.session}`))
+}
+
+/** A session linked to Slack (web/lib/slack.mjs): people in a thread talk to it, not you. */
+export function isSlackSession(s: Pick<Session, 'host' | 'session_id'>, slack: ReadonlySet<string>): boolean {
+  return slack.has(`${s.host}/${s.session_id}`)
+}
+
+const NO_SLACK: ReadonlySet<string> = new Set()
+
 /**
- * Job and embed sessions stay out of every filter but their own (Bots / Apps) — except one
- * waiting on you, which always shows (and always counts).
+ * Job, Slack and embed sessions stay out of every filter but their own (Bots / Slack / Apps) —
+ * except one waiting on you, which always shows (and always counts).
  */
-export function setAside(s: Session): boolean {
-  return (isJobSession(s) || isEmbedSession(s)) && statusMeta(s.status).key !== 'waiting'
+export function setAside(s: Session, slack: ReadonlySet<string> = NO_SLACK): boolean {
+  return (isJobSession(s) || isSlackSession(s, slack) || isEmbedSession(s)) && statusMeta(s.status).key !== 'waiting'
 }
 
 /**
- * `host` null = every host. Bots / Apps show only job / embed sessions; the other filters show
- * the rest, plus those waiting on you.
+ * `host` null = every host. Bots / Slack / Apps show only job / Slack-linked / embed sessions;
+ * the other filters show the rest, plus those waiting on you.
  */
 export function listView(
   fleet: FleetResponse | null | undefined,
-  { query = '', host = null, status = 'all' }: { query?: string; host?: string | null; status?: StatusFilterId },
+  {
+    query = '',
+    host = null,
+    status = 'all',
+    slack = NO_SLACK,
+  }: { query?: string; host?: string | null; status?: StatusFilterId; slack?: ReadonlySet<string> },
 ): ListView {
   const matched = allSessions(fleet).filter((s) => (host == null || s.host === host) && matchesSearch(s, query))
-  const visible = matched.filter((s) => !setAside(s))
-  const scope = (f: StatusFilter) => (SET_ASIDE.includes(f.id) ? matched : visible).filter(f.match)
+  const visible = matched.filter((s) => !setAside(s, slack))
+  const scope = (f: StatusFilter) => (SET_ASIDE.includes(f.id) ? matched : visible).filter((s) => f.match(s, slack))
   const counts = Object.fromEntries(STATUS_FILTERS.map((f) => [f.id, scope(f).length])) as Record<StatusFilterId, number>
   return { sessions: clusterByStack(scope(findStatusFilter(status)).sort(byLastPrompt)), counts }
 }

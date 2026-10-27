@@ -1,4 +1,4 @@
-import { AppWindowIcon, BotIcon } from 'lucide-react'
+import { AppWindowIcon, BotIcon, MessagesSquareIcon } from 'lucide-react'
 
 import type { Session } from '@/api/types'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -54,11 +54,11 @@ export function EmbedChip({ session: s, className }: { session: Pick<Session, 'e
 }
 
 /**
- * A status filter chip's label: the Bots / Apps filters are just their icon (the chip row is
+ * A status filter chip's label: the Bots / Slack / Apps filters are just their icon (the chip row is
  * crowded), every other filter its name.
  */
 export function StatusFilterLabel({ filter }: { filter: StatusFilter }) {
-  const Icon = filter.id === 'scheduled' ? BotIcon : filter.id === 'embedded' ? AppWindowIcon : null
+  const Icon = filter.id === 'scheduled' ? BotIcon : filter.id === 'slack' ? MessagesSquareIcon : filter.id === 'embedded' ? AppWindowIcon : null
   if (!Icon) return <>{filter.label}</>
   return (
     <>
