@@ -25,7 +25,7 @@
 //! job's sessions *and* everything they spawn — it travels as `FLEET_CMD`. `harness` and
 //! `model` as for `fleet spawn`. `ghIdentity` names a GitHub identity (`ghIdentities`) the
 //! job's sessions act as on GitHub — see [`crate::core::gh_identity`]. `enabled: false` pauses
-//! the job. `keep` (default `24h`, `"never"` to keep forever): a run's sessions are closed once
+//! the job. `keep` (default `72h`, `"never"` to keep forever): a run's sessions are closed once
 //! they are idle and the run is older than this; a session waiting for input is never closed.
 //!
 //! The launchd agent runs `fleet jobs tick` every minute. A tick fires a job when its latest
@@ -60,7 +60,7 @@ pub const TICK_SECS: u64 = 60;
 pub const CATCH_UP_SECS: i64 = 6 * 3600;
 /// Runs kept per job in its state file.
 pub const KEEP_RUNS: usize = 50;
-pub const DEFAULT_KEEP: &str = "24h";
+pub const DEFAULT_KEEP: &str = "72h";
 /// How far back [`Cron::prev`] looks for a slot.
 const LOOKBACK_MINUTES: i64 = 8 * 24 * 60;
 /// How far ahead [`Cron::next`] looks.
@@ -930,7 +930,7 @@ mod tests {
         assert_eq!(s.problems.len(), 3);
         let t = s.get("triage").unwrap();
         assert_eq!(t.prompt, PromptSrc::File("~/notes/triage.md".into()));
-        assert_eq!(t.keep, Some(86_400));
+        assert_eq!(t.keep, Some(259_200));
         assert!(t.enabled);
         assert_eq!(t.model.as_deref(), Some("opus"));
         let p = s.get("paused").unwrap();
