@@ -195,38 +195,38 @@ export function DetailsPanel(p: DetailsPanelProps & { variant: 'drawer' | 'panel
             </Button>
           </Header>
 
-          {/* Actions first: Review, New (from here), Link (to a stack), Attach. One row of fixed-width buttons, left-aligned; a narrow pane drops the labels. */}
+          {/* Actions first: Review, New (from here), Link (to a stack), Attach. Standard small outline buttons, left-aligned; they wrap when the pane is narrow. */}
           {p.onReview || p.onNewFromHere || p.stack || attachCmd ? (
-            <div className="@container flex items-center gap-2 pt-1 pb-2">
+            <div className="flex flex-wrap items-center gap-1.5 pt-1 pb-2">
               {p.onReview ? (
-                <Button variant="outline" className={ACTION} aria-label="Review changes" title="Review changes (diff)" onClick={p.onReview}>
+                <Button variant="outline" size={panel ? 'xs' : 'sm'} aria-label="Review changes" title="Review changes (diff)" onClick={p.onReview}>
                   <FileDiffIcon />
-                  <span className={LABEL}>Review</span>
+                  Review
                 </Button>
               ) : null}
               {p.onNewFromHere ? (
-                <Button variant="outline" className={ACTION} aria-label="New session from here" title="New session from here… (hand off / sibling)" onClick={p.onNewFromHere}>
+                <Button variant="outline" size={panel ? 'xs' : 'sm'} aria-label="New session from here" title="New session from here… (hand off / sibling)" onClick={p.onNewFromHere}>
                   <GitForkIcon />
-                  <span className={LABEL}>New</span>
+                  New
                 </Button>
               ) : null}
               {p.stack ? (
-                <Button variant="outline" className={ACTION} aria-label="Link to a stack" title="Link to a stack: put another live session in this stack (or start one)" onClick={p.stack.onLink}>
+                <Button variant="outline" size={panel ? 'xs' : 'sm'} aria-label="Link to a stack" title="Link to a stack: put another live session in this stack (or start one)" onClick={p.stack.onLink}>
                   <Link2Icon />
-                  <span className={LABEL}>Link</span>
+                  Link
                 </Button>
               ) : null}
               {attachLink ? (
-                <Button asChild variant="outline" className={ACTION}>
+                <Button asChild variant="outline" size={panel ? 'xs' : 'sm'}>
                   <a href={attachLink} aria-label="Attach in iTerm" title={`Attach in iTerm: ${attachCmd}`}>
                     <SquareTerminalIcon />
-                    <span className={LABEL}>Attach</span>
+                    Attach
                   </a>
                 </Button>
               ) : attachCmd ? (
-                <Button variant="outline" className={ACTION} aria-label="Copy attach command" title={`Copy attach command: ${attachCmd}`} onClick={() => void copyWithToast(attachCmd)}>
+                <Button variant="outline" size={panel ? 'xs' : 'sm'} aria-label="Copy attach command" title={`Copy attach command: ${attachCmd}`} onClick={() => void copyWithToast(attachCmd)}>
                   <SquareTerminalIcon />
-                  <span className={LABEL}>Attach</span>
+                  Attach
                 </Button>
               ) : null}
             </div>
@@ -273,6 +273,3 @@ export function DetailsPanel(p: DetailsPanelProps & { variant: 'drawer' | 'panel
   )
 }
 
-const ACTION = 'h-9 w-9 shrink-0 gap-1 rounded-lg px-1 text-xs @[17.5rem]:w-16 [&_svg:not([class*=size-])]:size-3.5'
-/** The action's label: shown once the row has room for all four at full width. */
-const LABEL = 'hidden @[17.5rem]:inline'
