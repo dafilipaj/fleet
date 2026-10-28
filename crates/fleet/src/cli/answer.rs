@@ -42,7 +42,7 @@ use crate::core::backend;
 use crate::core::discovery::{self, Backend, Session};
 use crate::core::harness::Harness;
 use crate::core::lock::{self, LockError, SessionLock};
-use crate::core::prompt::{self, Detail, PromptRead, ScreenPrompt};
+use crate::core::prompt::{self, Detail, Layout, Notes, PromptRead, ScreenPrompt};
 use crate::core::questions::{self, At, Planned, Question, Step};
 use crate::core::transcript::{self, Kind};
 use crate::error::{Error, Result};
@@ -421,15 +421,10 @@ fn pending_questions(s: &Session) -> R<Vec<transcript::Entry>> {
         .collect())
 }
 
-/// Does any of the questions have options with previews? Claude Code draws those beside the
-/// options, a layout fleet does not read off the screen: never answered, never matched.
-fn has_previews(qs: &[Question]) -> bool {
-    qs.iter().any(|q| q.options.iter().any(|o| o.preview))
-}
-
-/// `--list`'s question form not all of which is on screen (`clipped`): which question it is
-/// is not told, even when what is visible reads as a pending one — the same object whichever
-/// check found it cut.
+/// `--list`'s question form not all of which is on screen (`clipped`), or one in the preview
+/// layout's footer that cannot be walked (`layout_unsupported`): which question it is is not
+/// told, even when what is visible reads as a pending one — the same object whichever check
+/// found it.
 fn clipped_question() -> Value {
     json!({
         "kind": "question", "incomplete": true, "id": null, "questions": null,
@@ -452,7 +447,8 @@ fn read_prompt(s: &Session, screen: &str) -> R<(Value, Option<Detail>)> {
         ),
         PromptRead::None => match prompt::read_form(screen) {
             Err(Detail::NoForm) => (Value::Null, Some(Detail::NoForm)),
-            // A form, but not all of it on screen: which question it is cannot be told.
+            // A form, but not all of it on screen, or not readable: which question it is
+            // cannot be told.
             Err(detail) => (clipped_question(), Some(detail)),
             Ok(form) => {
                 // Which question it is comes from the transcript (Claude Code only).
@@ -476,7 +472,7 @@ fn question_on_screen(
     pending: &[transcript::Entry],
 ) -> (Value, Option<Detail>) {
     let found = pending.iter().find_map(|e| {
-        let qs = e.questions.as_ref().filter(|qs| !has_previews(qs))?;
+        let qs = e.questions.as_ref()?;
         let active = form.shows(qs).ok()?;
         Some((e, qs, active))
     });
@@ -498,7 +494,6 @@ fn question_on_screen(
     }
     let why = match pending.first().and_then(|e| e.questions.as_deref()) {
         None => Detail::DifferentPrompt,
-        Some(qs) if has_previews(qs) => Detail::LayoutUnsupported,
         Some(qs) => form
             .check(qs)
             .err()
@@ -699,6 +694,18 @@ fn form_at(screen: &str, qs: &[Question], at: &At) -> std::result::Result<(), De
                 return Err(Detail::Touched);
             }
             let q = &qs[*question];
+            // The preview layout (the question on screen drawn so): no boxes, no "Type
+            // something"; the notes row must be untouched and its field closed.
+            if let Layout::Preview {
+                notes, notes_field, ..
+            } = &form.layout
+            {
+                return if typed.is_none() && *notes == Notes::Untouched && !notes_field {
+                    Ok(())
+                } else {
+                    Err(Detail::Touched)
+                };
+            }
             if q.multi_select {
                 let mut want = ticked.clone();
                 want.sort_unstable();
@@ -820,6 +827,12 @@ fn answer_question(
                 "the terminal is not showing a question form — answer it there; nothing typed",
             );
         }
+        Err(Detail::LayoutUnsupported) => {
+            return refuse(
+                Detail::LayoutUnsupported,
+                "the question form's options and previews cannot be read for sure — answer it there; nothing typed",
+            );
+        }
         Err(detail) => {
             return refuse(
                 detail,
@@ -827,12 +840,6 @@ fn answer_question(
             );
         }
     };
-    if has_previews(&qs) {
-        return refuse(
-            Detail::LayoutUnsupported,
-            "the question's options have previews, drawn beside them — fleet does not read that layout; answer it there; nothing typed",
-        );
-    }
     if let Err((detail, why)) = form.ready(&qs) {
         return refuse(detail, format!("{why} — answer it there; nothing typed"));
     }
@@ -969,6 +976,11 @@ fn print_text(v: &Value) {
     }
     if p.is_null() {
         println!("{}", "no prompt on screen".dimmed());
+    } else if p["incomplete"] == true
+        && p["kind"] == "question"
+        && v["detail"] == "layout_unsupported"
+    {
+        println!("a question form, but its options and previews cannot be read for sure");
     } else if p["incomplete"] == true && p["kind"] == "question" {
         println!("a question form, but not all of it is on screen");
     } else if p["incomplete"] == true {
@@ -1010,5 +1022,191 @@ fn print_text(v: &Value) {
             )
             .dimmed()
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::questions::{normalize_questions, validate_answer};
+
+    const LIVE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/screens/live");
+
+    /// A recorded screen (`testdata/screens/live/claude-question-preview-*`) as `fleet answer`
+    /// captures it: `capture-pane -p`, no SGR.
+    fn captured(name: &str) -> String {
+        let path = format!("{LIVE}/claude-question-preview-{name}");
+        let raw = std::fs::read_to_string(format!("{path}.ans"))
+            .or_else(|_| std::fs::read_to_string(format!("{path}.txt")))
+            .unwrap_or_else(|e| panic!("{path}: {e}"));
+        raw.lines()
+            .map(crate::core::backend::strip_ansi)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n"
+    }
+
+    fn asked(name: &str) -> Vec<Question> {
+        let text =
+            std::fs::read_to_string(format!("{LIVE}/claude-question-preview-{name}-input.json"))
+                .unwrap();
+        normalize_questions(&serde_json::from_str(&text).unwrap()).unwrap()
+    }
+
+    fn plan(qs: &[Question], answers: Value) -> Vec<Planned> {
+        questions::answer_plan(qs, &validate_answer(&answers, qs).unwrap())
+    }
+
+    /// Each screen, in order, against the state the plan expects before key `i`.
+    fn walk(qs: &[Question], plan: &[Planned], screens: &[(&str, usize)]) {
+        for (name, i) in screens {
+            assert_eq!(
+                form_at(&captured(name), qs, &plan[*i].at),
+                Ok(()),
+                "{name} before key {i}"
+            );
+        }
+    }
+
+    // C5: ↓ to the option, Enter — each key checked against the screen the keys so far lead
+    // to: the cursor's row, the tabs, the notes row untouched.
+    #[test]
+    fn c5_each_key_of_a_preview_answer_is_checked_against_the_screen() {
+        let a = asked("A");
+        let p = plan(&a, json!([{ "options": [2] }]));
+        assert_eq!(p.len(), 3);
+        walk(&a, &p, &[("A-initial", 0), ("A-down1", 1), ("A-down2", 2)]);
+        walk(&a, &p, &[("B-initial-80x24", 0), ("B-down1-80x24", 1)]);
+        let at = |name: &str, i: usize| form_at(&captured(name), &a, &p[i].at);
+        // Down past the last option: "Chat about this", never planned.
+        assert_eq!(at("A-down3", 2), Err(Detail::CursorMoved));
+        assert_eq!(at("A-down4", 2), Err(Detail::CursorMoved));
+        assert_eq!(at("A-down1", 0), Err(Detail::CursorMoved));
+        // Notes open or typed.
+        assert_eq!(at("A-notes-open", 0), Err(Detail::Touched));
+        assert_eq!(at("A-notes-typed", 0), Err(Detail::Touched));
+        // Answered: no form.
+        assert_eq!(at("A-after", 0), Err(Detail::NoForm));
+        // Its first key on another question's form.
+        assert_eq!(
+            form_at(&captured("A-initial"), &asked("C"), &p[0].at),
+            Err(Detail::Tabs)
+        );
+    }
+
+    // C5: forms with several questions mix layouts; each step reads the question on screen in
+    // its own layout, then the review — its items with C2a's gutter (N1, the live form's
+    // shape) or without (C), one wrapped (H4).
+    #[test]
+    fn c5_a_mixed_form_is_answered_layout_by_layout_up_to_the_review() {
+        let c = asked("C");
+        let p = plan(&c, json!([{ "options": [1] }, { "options": [0] }]));
+        walk(&c, &p, &[("C-initial", 0), ("C-q2", 2), ("C-review", 3)]);
+        let other = plan(&c, json!([{ "options": [0] }, { "options": [0] }]));
+        assert_eq!(
+            form_at(&captured("C-review"), &c, &other[2].at),
+            Err(Detail::Touched),
+            "the review lists another answer"
+        );
+
+        let live = asked("N1");
+        let first =
+            json!([{ "options": [0] }, { "options": [0] }, { "options": [0] }, { "options": [0] }]);
+        let p = plan(&live, first.clone());
+        assert_eq!(p.len(), 5);
+        walk(
+            &live,
+            &p,
+            &[
+                ("N1-q1", 0),
+                ("N1-q2", 1),
+                ("N1-q3", 2),
+                ("N1-q4", 3),
+                ("N1-review", 4),
+            ],
+        );
+
+        let mut h2 = asked("H2");
+        h2.truncate(3); // the capture asked the first three
+        let p = plan(
+            &h2,
+            json!([{ "options": [0] }, { "options": [0] }, { "options": [0] }]),
+        );
+        walk(
+            &h2,
+            &p,
+            &[("H2-q1", 0), ("H2-q2", 1), ("H2-q3", 2), ("H2-q4", 3)],
+        );
+        for set in ["H3", "H4"] {
+            let qs = asked(set);
+            let p = plan(&qs, first.clone());
+            let names: Vec<String> = ["q1", "q2", "q3", "q4", "review"]
+                .iter()
+                .map(|s| format!("{set}-{s}"))
+                .collect();
+            let screens: Vec<(&str, usize)> = names
+                .iter()
+                .enumerate()
+                .map(|(i, n)| (n.as_str(), i))
+                .collect();
+            walk(&qs, &p, &screens);
+        }
+    }
+
+    // C5 on real screens of a preview question after a plain one answered (P1: question 1
+    // plain, question 2 with previews), and of the same at 80 columns with the wrapped footer
+    // (P2): every key's check, the review after, and the cursor off the first option.
+    #[test]
+    fn c5_a_preview_question_after_an_answered_tab() {
+        let p1 = asked("P1");
+        let p = plan(&p1, json!([{ "options": [0] }, { "options": [0] }]));
+        assert_eq!(p.len(), 3);
+        walk(&p1, &p, &[("P1-q1", 0), ("P1-q2", 1), ("P1-review", 2)]);
+        // Down to option 2: the cursor off option 1 is not what key 1 expects, what key 2 does.
+        assert_eq!(
+            form_at(&captured("P1-q2-down1"), &p1, &p[1].at),
+            Err(Detail::CursorMoved)
+        );
+        let down = plan(&p1, json!([{ "options": [0] }, { "options": [1] }]));
+        assert_eq!(down.len(), 4);
+        walk(
+            &p1,
+            &down,
+            &[("P1-q1", 0), ("P1-q2", 1), ("P1-q2-down1", 2)],
+        );
+        // Question 2's form on key 0, or question 1's on key 1: the other question's.
+        assert_eq!(
+            form_at(&captured("P1-q2"), &p1, &p[0].at),
+            Err(Detail::CursorMoved)
+        );
+        assert_eq!(
+            form_at(&captured("P1-q1"), &p1, &p[1].at),
+            Err(Detail::CursorMoved)
+        );
+
+        // 80 columns: the footers wrap (P2, P3).
+        let p2 = asked("P2");
+        let p = plan(&p2, json!([{ "options": [0] }, { "options": [0] }]));
+        assert_eq!(p.len(), 3);
+        walk(&p2, &p, &[("P2-q1", 0), ("P2-q2", 1), ("P2-review", 2)]);
+        let p3 = asked("P3");
+        let p = plan(&p3, json!([{ "options": [0] }]));
+        walk(&p3, &p, &[("P3-initial", 0)]);
+        for name in ["P3-notes-open", "P3-notes-typed", "P3-after-esc"] {
+            assert_eq!(
+                form_at(&captured(name), &p3, &p[0].at),
+                Err(Detail::Touched),
+                "{name}"
+            );
+        }
+    }
+
+    // C4: a multi-select question with previews is drawn plainly and answered as a plain form.
+    #[test]
+    fn c4_a_multi_select_question_with_previews_is_answered_plainly() {
+        let mut e = asked("A");
+        e[0].multi_select = true;
+        let p = plan(&e, json!([{ "options": [1] }]));
+        walk(&e, &p, &[("E-initial", 0), ("E-down1", 1)]);
     }
 }

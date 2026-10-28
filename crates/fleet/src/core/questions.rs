@@ -10,11 +10,11 @@ pub const QUESTION_TOOL: &str = "AskUserQuestion";
 pub struct QuestionOption {
     pub label: String,
     pub description: String,
-    /// The option has a preview (`preview` in the tool input): Claude Code draws the options
-    /// with the focused one's preview beside them, a layout fleet does not read off the screen.
-    /// Not serialized: the question's JSON stays as it was.
-    #[serde(skip)]
-    pub preview: bool,
+    /// The option's preview (`preview` in the tool input: an ASCII mockup, a code snippet), as
+    /// the transcript has it — line breaks as `\n`, never trimmed, cut or rendered. Only a
+    /// non-blank string counts; without one the key is left out of the JSON.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -24,6 +24,16 @@ pub struct Question {
     #[serde(rename = "multiSelect")]
     pub multi_select: bool,
     pub options: Vec<QuestionOption>,
+}
+
+impl Question {
+    /// Does Claude Code draw this question in its preview layout — the options in a left
+    /// column, the focused one's preview in a box beside them, no descriptions, no "Type
+    /// something" row, `n` for notes? A single-select question with a preview on at least one
+    /// option. A multi-select one with previews is drawn plainly (`[ ]` rows, no box).
+    pub fn preview_layout(&self) -> bool {
+        !self.multi_select && self.options.iter().any(|o| o.preview.is_some())
+    }
 }
 
 fn str_of(v: Option<&Value>) -> String {
@@ -50,9 +60,11 @@ pub fn normalize_questions(input: &Value) -> Option<Vec<Question>> {
                     .map(|o| QuestionOption {
                         label: str_of(o.get("label")),
                         description: str_of(o.get("description")),
-                        preview: o.get("preview").is_some_and(|v| {
-                            !v.is_null() && v.as_str().is_none_or(|t| !t.trim().is_empty())
-                        }),
+                        preview: o
+                            .get("preview")
+                            .and_then(Value::as_str)
+                            .filter(|t| !t.trim().is_empty())
+                            .map(str::to_string),
                     })
                     .collect()
             })
@@ -234,7 +246,14 @@ pub fn validate_answer(answers: &Value, questions: &[Question]) -> Result<Vec<An
                 "answers[{i}].text too long (max {MAX_ANSWER_TEXT})"
             ));
         }
-        if q.multi_select {
+        if q.preview_layout() {
+            // Its form has no "Type something" row; notes are not typed (yet).
+            if options.len() != 1 || !text.is_empty() {
+                return Err(format!(
+                    "answers[{i}]: the question's options have previews — pick exactly one option, no text"
+                ));
+            }
+        } else if q.multi_select {
             if options.is_empty() && text.is_empty() {
                 return Err(format!(
                     "answers[{i}]: pick at least one option or type something"
@@ -349,6 +368,9 @@ pub struct Planned {
 /// it in, Enter picks it). Multi-select: Enter toggles the option under the cursor; typing on
 /// "Type something" fills and checks it; the row after it ("Next" / "Submit") + Enter moves
 /// on. Two or more questions end on a review screen with "Submit answers" focused → Enter.
+/// A question in the preview layout ([`Question::preview_layout`]) is answered like a
+/// single-select pick: ↓ to its one option, Enter (its answer has no text); ↓ past the last
+/// option would reach "Chat about this", which the plan never does.
 pub fn answer_plan(questions: &[Question], answers: &[Answer]) -> Vec<Planned> {
     /// The form's state while planning one question.
     struct Form<'a> {
@@ -477,18 +499,174 @@ mod tests {
         .unwrap()
     }
 
-    // An option with a preview is drawn beside it: kept as a flag (fleet does not read that
-    // layout), never in the question's JSON. A blank or null preview is none.
+    // C1: an option's preview is in the question's JSON as the tool input has it — line breaks
+    // as `\n`, never trimmed, cut or rendered. A blank, null or non-string preview is none: the
+    // key is left out.
     #[test]
-    fn an_options_preview_is_a_flag_left_out_of_the_json() {
+    fn c1_an_options_preview_is_passed_on_as_the_tool_input_has_it() {
         let q = normalize_questions(&json!({ "questions": [{ "question": "Which layout?", "header": "Layout",
-            "options": [{ "label": "Grid", "description": "Cards", "preview": "┌──┐\n│  │\n└──┘" },
-                        { "label": "List", "preview": "  " }, { "label": "Table", "preview": null }] }] }))
+            "options": [{ "label": "Grid", "description": "Cards", "preview": "  ┌──┐\n  │  │\n  └──┘\n" },
+                        { "label": "List", "preview": "  " }, { "label": "Table", "preview": null },
+                        { "label": "Board", "preview": 3 }, { "label": "Feed" }] }] }))
         .unwrap();
-        let flags: Vec<bool> = q[0].options.iter().map(|o| o.preview).collect();
-        assert_eq!(flags, [true, false, false]);
-        let v = serde_json::to_value(&q[0].options[0]).unwrap();
-        assert_eq!(v, json!({ "label": "Grid", "description": "Cards" }));
+        let previews: Vec<Option<&str>> =
+            q[0].options.iter().map(|o| o.preview.as_deref()).collect();
+        assert_eq!(
+            previews,
+            [Some("  ┌──┐\n  │  │\n  └──┘\n"), None, None, None, None]
+        );
+        let v = serde_json::to_value(&q[0]).unwrap();
+        assert_eq!(
+            v["options"][0],
+            json!({ "label": "Grid", "description": "Cards", "preview": "  ┌──┐\n  │  │\n  └──┘\n" })
+        );
+        for i in 1..5 {
+            assert_eq!(v["options"][i].get("preview"), None, "{i}");
+        }
+        // The question's other fields stay as they were.
+        assert_eq!(
+            v.as_object().unwrap().keys().collect::<Vec<_>>(),
+            ["question", "header", "multiSelect", "options"]
+        );
+    }
+
+    /// A recorded `AskUserQuestion` input (`testdata/screens/live/claude-question-preview-*`).
+    fn recorded(name: &str) -> Vec<Question> {
+        let path = format!(
+            "{}/../../testdata/screens/live/claude-question-preview-{name}-input.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        normalize_questions(&serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap())
+            .unwrap()
+    }
+
+    // C1 on the recorded inputs; C4: the preview layout is a single-select question's with a
+    // preview on any option, not a multi-select one's.
+    #[test]
+    fn c1_c4_recorded_previews_and_which_questions_take_the_preview_layout() {
+        let a = recorded("A");
+        assert!(a[0].options.iter().all(|o| o.preview.is_some()));
+        assert!(
+            a[0].options[0]
+                .preview
+                .as_deref()
+                .unwrap()
+                .contains("│ Team     │ Name   [__________] │\n")
+        );
+        assert!(a[0].preview_layout());
+        let c = recorded("C");
+        assert_eq!(
+            c.iter().map(Question::preview_layout).collect::<Vec<_>>(),
+            [true, false]
+        );
+        let live = recorded("N1");
+        assert_eq!(
+            live.iter()
+                .map(Question::preview_layout)
+                .collect::<Vec<_>>(),
+            [true, false, false, false]
+        );
+        // D: only option 1 has a preview — still the preview layout.
+        let mut d = a.clone();
+        d[0].options.truncate(2);
+        d[0].options[1].preview = None;
+        assert!(d[0].preview_layout());
+        // E: multi-select with previews is drawn plainly.
+        let mut e = a.clone();
+        e[0].multi_select = true;
+        assert!(!e[0].preview_layout());
+    }
+
+    // C5: a question in the preview layout takes exactly one option and no text.
+    #[test]
+    fn c5_a_preview_question_takes_exactly_one_option_and_no_text() {
+        let a = recorded("A");
+        for bad in [
+            json!([{ "text": "Something else" }]),
+            json!([{ "options": [0], "text": "and a note" }]),
+            json!([{ "options": [0, 1] }]),
+            json!([{ "options": [] }]),
+        ] {
+            let e = validate_answer(&bad, &a).unwrap_err();
+            assert!(e.contains("previews"), "{bad}: {e}");
+        }
+        assert_eq!(
+            validate_answer(&json!([{ "options": [2] }]), &a),
+            Ok(vec![Answer {
+                options: vec![2],
+                text: None
+            }])
+        );
+        // Its plainly drawn neighbours keep their own rules: text on question 2 is fine.
+        let c = recorded("C");
+        assert!(validate_answer(&json!([{ "options": [1] }, { "text": "Nightly" }]), &c).is_ok());
+        assert!(validate_answer(&json!([{ "text": "Wizard" }, { "options": [0] }]), &c).is_err());
+    }
+
+    // C5's plan: ↓ to the option, Enter — each checked before the next — for one question; for
+    // the live four-question form, the preview question first, then the plain ones, then the
+    // review screen.
+    #[test]
+    fn c5_the_plan_for_preview_questions() {
+        let a = recorded("A");
+        let plan = answer_plan(&a, &ans(json!([{ "options": [2] }]), &a));
+        assert_eq!(
+            plan.iter().map(|p| p.at.clone()).collect::<Vec<_>>(),
+            [0, 1, 2].map(|row| At::Form {
+                question: 0,
+                row,
+                ticked: vec![],
+                typed: None,
+                done: vec![false],
+            })
+        );
+        assert_eq!(
+            keys(&plan.into_iter().map(|p| p.step).collect::<Vec<_>>()),
+            "Down Down Enter"
+        );
+        assert_eq!(
+            keys(&answer_steps(&a, &ans(json!([{ "options": [0] }]), &a))),
+            "Enter"
+        );
+
+        let live = recorded("N1");
+        let answers = ans(
+            json!([{ "options": [1] }, { "options": [0] }, { "options": [1] }, { "text": "Ask first" }]),
+            &live,
+        );
+        let plan = answer_plan(&live, &answers);
+        assert_eq!(
+            keys(&plan.iter().map(|p| p.step.clone()).collect::<Vec<_>>()),
+            "Down Enter Enter Down Enter Down Down \"Ask first\" Enter Enter"
+        );
+        let form = |question: usize, row: usize| At::Form {
+            question,
+            row,
+            ticked: vec![],
+            typed: None,
+            done: (0..4).map(|j| j < question).collect(),
+        };
+        assert_eq!(plan[0].at, form(0, 0));
+        assert_eq!(plan[1].at, form(0, 1));
+        assert_eq!(plan[2].at, form(1, 0));
+        assert_eq!(plan[3].at, form(2, 0));
+        assert_eq!(
+            plan.last().unwrap().at,
+            At::Review {
+                expect: vec![
+                    (live[0].question.clone(), "Two steps".into()),
+                    (
+                        live[1].question.clone(),
+                        "All public books (Recommended)".into()
+                    ),
+                    (
+                        live[2].question.clone(),
+                        "Hide full books in the list".into()
+                    ),
+                    (live[3].question.clone(), "Ask first".into()),
+                ]
+            }
+        );
     }
 
     #[test]
@@ -500,7 +678,7 @@ mod tests {
             QuestionOption {
                 label: "Paris".into(),
                 description: "FR".into(),
-                preview: false,
+                preview: None,
             }
         );
         assert!(q[0].multi_select);
