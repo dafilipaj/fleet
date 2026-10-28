@@ -6,7 +6,7 @@ import {
   Link2Icon,
   Loader2Icon,
   PowerIcon,
-  TimerOffIcon,
+  CircleCheckBigIcon,
   RefreshCwIcon,
   SquareTerminalIcon,
 } from 'lucide-react'
@@ -143,13 +143,13 @@ export function DetailsPanel(p: DetailsPanelProps & { variant: 'drawer' | 'panel
     }
   }
 
-  // When done: tell the session to close itself once its work is finished (`fleet done`).
+  // Ask done: tell the session to report itself done once its work is finished (`fleet done`).
   const [asking, setAsking] = useState(false)
-  const closeWhenDone = async () => {
+  const askDone = async () => {
     setAsking(true)
     try {
-      await api.closeWhenDone(p.host, p.id)
-      toast.success('Closes itself when done', { description: 'after an hour of quiet once it runs fleet done' })
+      await api.askDone(p.host, p.id)
+      toast.success('Asked it to report done', { description: 'it shows as Done when finished; you close it' })
     } catch (err) {
       toast.error('Could not ask it', { description: sessionErrorMessage(err) })
     } finally {
@@ -210,7 +210,7 @@ export function DetailsPanel(p: DetailsPanelProps & { variant: 'drawer' | 'panel
             </Button>
           </Header>
 
-          {/* Actions first: Review, New (from here), Link (to a stack), When done, Attach. One row; a narrow pane drops the labels. */}
+          {/* Actions first: Review, New (from here), Link (to a stack), Ask done, Attach. One row; a narrow pane drops the labels. */}
           {p.onReview || p.onNewFromHere || p.stack || attachCmd || s?.backend === 'tmux' ? (
             <div className="@container flex items-center gap-2 pt-1 pb-2">
               {p.onReview ? (
@@ -232,9 +232,9 @@ export function DetailsPanel(p: DetailsPanelProps & { variant: 'drawer' | 'panel
                 </Button>
               ) : null}
               {s?.backend === 'tmux' ? (
-                <Button variant="outline" className={ACTION} aria-label="Close when done" title="Close when done: the session closes itself once its work is finished and nothing waits on you" disabled={asking} onClick={closeWhenDone}>
-                  {asking ? <Loader2Icon className="animate-spin" /> : <TimerOffIcon />}
-                  <span className={LABEL}>When done</span>
+                <Button variant="outline" className={ACTION} aria-label="Ask to report done" title="Ask done: the session marks itself Done once its work is finished and nothing waits on you; you close it" disabled={asking} onClick={askDone}>
+                  {asking ? <Loader2Icon className="animate-spin" /> : <CircleCheckBigIcon />}
+                  <span className={LABEL}>Ask done</span>
                 </Button>
               ) : null}
               {attachLink ? (

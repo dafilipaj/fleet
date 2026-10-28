@@ -94,8 +94,19 @@ export interface Session {
    * older CLIs omit it.
    */
   git?: { branch: string | null; root: string; linked: boolean; repo: string | null } | null
+  /**
+   * It reported its work finished (`fleet done`, `fleet list --json` → `done`) and was not
+   * prompted since; null / absent = not done. Older CLIs omit it.
+   */
+  done?: SessionDone | null
   /** The host's voice operator (web/lib/operator.mjs): kept out of session lists. Older servers omit it. */
   operator?: boolean
+}
+
+/** `done` on a session row: when it was marked (epoch ms) and its one-line note. */
+export interface SessionDone {
+  at: number
+  note?: string | null
 }
 
 /** `origin` on a session row: the job and the run id (`<job>/<run>` in its tmux environment). */

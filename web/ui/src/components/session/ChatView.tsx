@@ -1,7 +1,8 @@
 import { memo, useEffect, useLayoutEffect, useRef } from 'react'
 import { ChevronRightIcon, ChevronsUpIcon, ClipboardIcon, ClockIcon, HandIcon, Loader2Icon, MessageSquareDashedIcon, SquareSlashIcon, TerminalIcon } from 'lucide-react'
 
-import type { Message } from '@/api/types'
+import type { Message, SessionDone } from '@/api/types'
+import { DoneCard } from '@/components/session/DoneCard'
 import { LatestButton } from '@/components/session/LatestButton'
 import { QuestionCard, type QuestionActions } from '@/components/session/QuestionCard'
 import { Linkified, Markdown } from '@/components/Markdown'
@@ -42,6 +43,10 @@ export interface ChatViewProps {
   outboxKey?: string
   /** Answer / dismiss Claude's pending question from its card; absent = the card is read-only. */
   questionActions?: QuestionActions | null
+  /** It reported its work finished (`fleet done`, see sessionDone): a Done card ends the conversation. */
+  done?: SessionDone | null
+  /** Close the session from the Done card (the card arms it first); absent = no Close button. */
+  onCloseDone?: () => Promise<void>
 }
 
 /** Longer pastes start collapsed. */
@@ -225,7 +230,7 @@ export function ChatView(p: ChatViewProps) {
       setTop(el.scrollTop + (el.scrollHeight - lastHeight.current))
     } else stick()
     lastHeight.current = el.scrollHeight
-  }, [p.messages, p.hideNotes, p.status, p.loadingOlder, p.outboxKey, ref, setFollow, setTop, stick])
+  }, [p.messages, p.hideNotes, p.status, p.loadingOlder, p.outboxKey, p.done, ref, setFollow, setTop, stick])
 
   useEffect(() => {
     if (p.jumpSignal) jump()
@@ -299,6 +304,7 @@ export function ChatView(p: ChatViewProps) {
           {p.fileLinks ? <FileLinksContext.Provider value={p.fileLinks.api}>{body}</FileLinksContext.Provider> : body}
           {p.outbox}
           {p.messages ? <Typing status={p.status} waitingFor={p.waitingFor} asking={!!asking && !!p.questionActions} /> : null}
+          {p.messages && p.done ? <DoneCard done={p.done} now={now} onClose={p.onCloseDone} /> : null}
         </div>
       </div>
       <LatestButton show={!following} onClick={jump} />

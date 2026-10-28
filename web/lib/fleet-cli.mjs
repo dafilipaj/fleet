@@ -106,14 +106,14 @@ export function createFleetCli({ run, bin = 'fleet', timeoutMs = 8000 } = {}) {
   }
 
   /**
-   * Ask a session to close itself once finished: `fleet close-when-done <target>` (types the
+   * Ask a session to report itself done once finished: `fleet ask-done <target>` (types the
    * instruction into it). Throws FleetCliError on failure.
    */
-  async function closeWhenDone({ target, timeoutMs: t = 20 * 1000 } = {}) {
+  async function askDone({ target, timeoutMs: t = 20 * 1000 } = {}) {
     try {
-      await run(bin, ['close-when-done', String(target)], { timeout: t, env: { ...process.env, NO_COLOR: '1' } });
+      await run(bin, ['ask-done', String(target)], { timeout: t, env: { ...process.env, NO_COLOR: '1' } });
     } catch (err) {
-      throw wrap(err, 'fleet close-when-done', t);
+      throw wrap(err, 'fleet ask-done', t);
     }
   }
 
@@ -605,7 +605,7 @@ export function createFleetCli({ run, bin = 'fleet', timeoutMs = 8000 } = {}) {
     nameAll,
     nameOne,
     rename,
-    closeWhenDone,
+    askDone,
     groupRun,
     groupCached,
     groupEdit,

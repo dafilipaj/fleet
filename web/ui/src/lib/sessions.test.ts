@@ -5,6 +5,7 @@ import {
   clusterByStack,
   stackRuns,
   findSession,
+  sessionDone,
   findSpawned,
   setAside,
   isSlackSession,
@@ -306,4 +307,14 @@ test('stackRuns: 2+ adjacent members of one stack form a group; a lone member st
   const runs = stackRuns(rows)
   expect(runs.map((r) => (r.kind === 'stack' ? r.sessions.map((x) => x.session_id).join('+') : r.session.session_id))).toEqual(['a+b', 'c', 'd'])
   expect(runs[0]).toMatchObject({ kind: 'stack', key: 'laptop/st-1' })
+})
+
+test('sessionDone: the mark counts only while the session sits idle on it', () => {
+  const done = { at: 1, note: 'shipped it' }
+  expect(sessionDone({ status: 'idle', done })).toEqual(done)
+  expect(sessionDone({ status: 'busy', done })).toBeNull()
+  expect(sessionDone({ status: 'waiting', done })).toBeNull()
+  expect(sessionDone({ status: 'idle', done: null })).toBeNull()
+  expect(sessionDone({ status: 'idle' })).toBeNull()
+  expect(sessionDone(null)).toBeNull()
 })

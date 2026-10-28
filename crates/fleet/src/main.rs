@@ -138,19 +138,19 @@ enum Commands {
         text: String,
     },
 
-    /// Run by an agent inside its session: its work is finished and nothing waits on the user —
-    /// the session is closed after an hour of quiet (by `fleet bots tick`)
+    /// Run by an agent inside its session: its work is finished and nothing waits on the user.
+    /// Fleet shows the session as done (nothing closes it: the user does)
     Done {
         /// One line: what it did (kept with the mark)
         #[arg(long)]
         note: Option<String>,
-        /// Take the mark back (the session stays open)
+        /// Take the mark back
         #[arg(long)]
         cancel: bool,
     },
 
-    /// Tell a session to close itself once its work is finished (`fleet done`)
-    CloseWhenDone {
+    /// Ask a session to report itself done once its work is finished (`fleet done`)
+    AskDone {
         /// sessionId prefix, derived name, or pid
         target: String,
     },
@@ -301,9 +301,9 @@ enum Commands {
         /// Open a new window instead of a tab (iterm backend only)
         #[arg(long)]
         window: bool,
-        /// The session closes itself once its work is finished (`fleet done`; tmux only)
+        /// The session reports itself done once its work is finished (`fleet done`; tmux only)
         #[arg(long)]
-        close_when_done: bool,
+        ask_done: bool,
         /// Start linked to this Slack thread, channel or @person (tmux, on `slack.host` only):
         /// the prompt goes in with the link's intro, so nothing runs before it knows
         #[arg(long, value_name = "URL", conflicts_with = "from")]
@@ -1400,7 +1400,7 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
         },
         Commands::Send { target, text } => commands::send(&target, &text)?,
         Commands::Done { note, cancel } => commands::done(note, cancel)?,
-        Commands::CloseWhenDone { target } => commands::close_when_done(&target)?,
+        Commands::AskDone { target } => commands::ask_done(&target)?,
         Commands::Rename {
             target,
             name,
@@ -1512,7 +1512,7 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
             harness,
             tmux_session,
             window,
-            close_when_done,
+            ask_done,
             slack,
             slack_for,
             slack_task,
@@ -1528,7 +1528,7 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
                 harness: harness.map(Into::into).unwrap_or_default(),
                 tmux_session,
                 window,
-                close_when_done,
+                ask_done,
                 slack: slack.map(|url| slack_cmd::SpawnLink {
                     url,
                     duration: slack_for,
@@ -1590,7 +1590,7 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
                     harness: harness.map(Into::into).unwrap_or_default(),
                     tmux_session,
                     window,
-                    close_when_done: false,
+                    ask_done: false,
                     slack: None,
                 },
                 wait: !no_wait,
@@ -1644,7 +1644,7 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
                 tmux_session,
                 // A handoff means "over there, out of my way" — a window unless told otherwise.
                 window: !tab,
-                close_when_done: false,
+                ask_done: false,
                 slack: None,
             },
             !no_wait,
@@ -1790,7 +1790,7 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
                     harness: harness.map(Into::into).unwrap_or_default(),
                     tmux_session,
                     window,
-                    close_when_done: false,
+                    ask_done: false,
                     slack: None,
                 },
             )?,
@@ -1843,7 +1843,7 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
                     harness: harness.map(Into::into).unwrap_or_default(),
                     tmux_session,
                     window,
-                    close_when_done: false,
+                    ask_done: false,
                     slack: None,
                 },
             )?,

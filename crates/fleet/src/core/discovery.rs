@@ -101,6 +101,9 @@ pub struct Session {
     /// The git checkout its cwd is in (`{ branch, root, linked, repo }`, see
     /// [`crate::core::git`]); `null` outside one. Stamped by `list`; `None` inside discovery.
     pub git: Option<crate::core::git::GitHead>,
+    /// It reported its work finished (`fleet done`: `{ at, note }`) and was not prompted since;
+    /// `null` otherwise. Stamped by `list`; `None` inside discovery.
+    pub done: Option<crate::core::done::DoneRef>,
 }
 
 impl Default for Session {
@@ -134,6 +137,7 @@ impl Default for Session {
             gh_identity: None,
             embed: None,
             git: None,
+            done: None,
         }
     }
 }
@@ -396,6 +400,7 @@ pub fn discover_checked() -> Result<Vec<Session>, String> {
                 .filter(|g| !g.is_empty()),
             embed: pane.map(|p| p.embed.clone()).filter(|e| !e.is_empty()),
             git: None,
+            done: None,
         });
     }
     crate::core::context::apply_native_1m(out.iter_mut().filter_map(|s| s.context.as_mut()));

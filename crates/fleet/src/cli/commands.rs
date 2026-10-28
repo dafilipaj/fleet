@@ -198,6 +198,8 @@ pub fn list_rows() -> Vec<Session> {
     title::stamp_display_titles(&mut rows);
     // Which session stack each row is in (read-only: no sync, no writes).
     crate::core::stack::stamp_stacks(&mut rows);
+    // Which sessions reported themselves done (`fleet done`) and were not prompted since.
+    crate::core::done::stamp_done(&mut rows);
     // The branch + GitHub repo of each row's checkout (views link PRs by it, on any host).
     crate::core::git::stamp_git(&mut rows);
     // What runs now, for session recovery after a reboot (core::snapshot). Never fails the
@@ -270,20 +272,19 @@ pub fn done(note: Option<String>, cancel: bool) -> Result<()> {
         println!("{}: no longer marked done", m.tmux_session);
     } else {
         println!(
-            "{}: done — closed after {} min of quiet (fleet done --cancel to keep it)",
-            m.tmux_session,
-            crate::core::done::QUIET_MS / 60_000
+            "{}: marked done — Fleet shows it, the user closes it (fleet done --cancel to undo)",
+            m.tmux_session
         );
     }
     Ok(())
 }
 
-/// `fleet close-when-done <target>`: ask a session to close itself once finished.
-pub fn close_when_done(target: &str) -> Result<()> {
+/// `fleet ask-done <target>`: ask a session to report itself done once finished.
+pub fn ask_done(target: &str) -> Result<()> {
     let s = discovery::resolve(target).map_err(Error::Other)?;
     if s.backend != Backend::Tmux {
         return Err(Error::Other(format!(
-            "{} is not in tmux — only a tmux session can close itself",
+            "{} is not in tmux — only a tmux session can report itself done",
             s.headline()
         )));
     }
@@ -294,7 +295,10 @@ pub fn close_when_done(target: &str) -> Result<()> {
         )));
     }
     backend::send(&s, crate::core::done::INSTRUCTION)?;
-    println!("asked {} to close itself when done", s.headline().bold());
+    println!(
+        "asked {} to report itself done when finished",
+        s.headline().bold()
+    );
     Ok(())
 }
 
@@ -631,7 +635,7 @@ pub struct SpawnOpts {
     pub window: bool,
     /// The session closes itself once finished ([`crate::core::done`]): tmux, the instruction
     /// below the prompt.
-    pub close_when_done: bool,
+    pub ask_done: bool,
     /// Start linked to Slack: tmux, no prompt at launch — it goes in with the link's intro.
     pub slack: Option<crate::cli::slack::SpawnLink>,
 }
@@ -684,7 +688,7 @@ pub fn spawn(prompt: Option<String>, from: Option<String>, opts: SpawnOpts) -> R
         .transpose()?
         .flatten();
     let prompt = prompt.unwrap_or_default();
-    let (prompt, backend_kind) = if opts.close_when_done {
+    let (prompt, backend_kind) = if opts.ask_done {
         (crate::core::done::with_instruction(&prompt), Backend::Tmux)
     } else {
         (prompt, backend_kind)

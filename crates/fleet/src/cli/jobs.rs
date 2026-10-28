@@ -536,7 +536,7 @@ pub fn tick(quiet: bool) -> Result<()> {
         cleanup(j, now, quiet, &mut rows)?;
     }
     if !crate::core::done::load().marks.is_empty() {
-        for line in crate::core::done::sweep(&rows_now(&mut rows), now.timestamp_millis())? {
+        for line in crate::core::done::prune(&rows_now(&mut rows))? {
             log(quiet, &line);
         }
     }

@@ -40,8 +40,8 @@ import { MAX_FIRST, MAX_MINUTES, MAX_TASK, MIN_MINUTES, MODES, SlackError, isPer
 
 export const API_VERSION = 1;
 
-const SESSION_ROUTE = /^\/api\/hosts\/([^/]+)\/sessions\/([^/]+)\/(peek|messages|send|keys|answer|kill|rename|autoname|close-when-done)$/;
-const POST_ACTIONS = new Set(['send', 'keys', 'answer', 'kill', 'rename', 'autoname', 'close-when-done']);
+const SESSION_ROUTE = /^\/api\/hosts\/([^/]+)\/sessions\/([^/]+)\/(peek|messages|send|keys|answer|kill|rename|autoname|ask-done)$/;
+const POST_ACTIONS = new Set(['send', 'keys', 'answer', 'kill', 'rename', 'autoname', 'ask-done']);
 
 const GROUP_ID_RE = /^[A-Za-z0-9._:-]{1,120}$/;
 const MEMBER_HOST_RE = /^[^/\s]{1,128}$/;
@@ -357,16 +357,16 @@ export function createApi({
       };
     }
 
-    if (action === 'close-when-done') {
-      if (typeof cli?.closeWhenDone !== 'function') throw new HttpError('close-when-done is not available on this server', 501);
+    if (action === 'ask-done') {
+      if (typeof cli?.askDone !== 'function') throw new HttpError('ask-done is not available on this server', 501);
       const session = await resolveLocalSession(id);
-      if (session.backend !== 'tmux') throw new HttpError('only a tmux session can close itself', 400);
+      if (session.backend !== 'tmux') throw new HttpError('only a tmux session can report itself done', 400);
       // The session id, never a fuzzy name: this types into a live agent.
       const target = session.session_id && !session.session_id.startsWith('pid-') ? session.session_id : String(session.pid);
       try {
-        await cli.closeWhenDone({ target });
+        await cli.askDone({ target });
       } catch (err) {
-        throw new HttpError(`close-when-done failed: ${err?.message ?? err}`, err?.timedOut ? 504 : 502);
+        throw new HttpError(`ask-done failed: ${err?.message ?? err}`, err?.timedOut ? 504 : 502);
       }
       return { status: 200, body: { ok: true, host: config.self, id: session.session_id } };
     }

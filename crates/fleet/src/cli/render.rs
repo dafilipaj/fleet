@@ -186,8 +186,10 @@ pub fn plain_table_titled(rows: &[Session], host: Option<&str>) -> String {
         // Pad *before* colouring: `colored` writes raw escapes and ignores the
         // format width, so `{:<9}` on a ColoredString does nothing.
         let (dot, word) = status_words(&r.status);
-        let state = column(word, 9);
+        let done = r.done.is_some() && r.status == "idle";
+        let state = column(if done { "done" } else { word }, 9);
         let (dot, state) = match r.status.as_str() {
+            _ if done => ("✓".cyan(), state.cyan()),
             "busy" => (dot.green(), state.green()),
             "idle" => (dot.dimmed(), state.dimmed()),
             "waiting" => (dot.yellow(), state.yellow().bold()),
@@ -211,6 +213,14 @@ pub fn plain_table_titled(rows: &[Session], host: Option<&str>) -> String {
         let mut title = clean_text(r.title.as_deref().unwrap_or("(no prompt captured)"));
         if let Some(bg) = r.background.as_ref().filter(|b| !b.is_empty()) {
             title = format!("[{}] {title}", background_words(bg));
+        }
+        if let Some(note) = r
+            .done
+            .as_ref()
+            .filter(|_| done)
+            .and_then(|d| d.note.as_deref())
+        {
+            title = format!("[done: {}] {title}", clean_text(note));
         }
         out.push(format!("  {}", fit(&title, width.saturating_sub(2))));
     }

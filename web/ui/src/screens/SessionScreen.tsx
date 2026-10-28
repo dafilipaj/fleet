@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Pointer
 import {
   ChevronLeftIcon,
   CircleAlertIcon,
+  CircleCheckBigIcon,
   EllipsisIcon,
   WifiOffIcon,
   XIcon,
@@ -48,7 +49,7 @@ import { continueDraft } from '@/lib/brief'
 import { modelLabel, relTime, shortCwd } from '@/lib/format'
 import { harnessLabel } from '@/lib/harness'
 import { tailAnchor } from '@/lib/outbox'
-import { findSession, statusMeta } from '@/lib/sessions'
+import { findSession, sessionDone, statusMeta } from '@/lib/sessions'
 import { reviewHref } from '@/lib/review'
 import { stacksKnown } from '@/lib/stacks'
 import { isUndoBackspace } from '@/lib/shortcuts'
@@ -471,6 +472,19 @@ export function SessionScreen({
     },
   }
 
+  // Close from the Done card at the end of the chat: like Close in the details panel.
+  const done = gone ? null : sessionDone(session)
+  const closeDone = async () => {
+    try {
+      const res = await api.kill(host, id)
+      toast.success(`Closed ${res.name || id.slice(0, 8)}`, { description: String(res.terminal || 'done').replace(/-/g, ' ') })
+      menuProps.onClosed()
+    } catch (err) {
+      toast.error('Close failed', { description: sessionErrorMessage(err) })
+      throw err
+    }
+  }
+
   const NewSession = pane ? NewSessionDialog : NewSessionDrawer
   const continueForm = (
     <NewSession
@@ -504,8 +518,8 @@ export function SessionScreen({
               {session ? <EditableTitle session={session} scope="header" tapToEdit className="text-[0.9375rem] font-bold" /> : <span className="truncate">{name}</span>}
             </div>
             <div className="mt-0.5 flex min-w-0 items-center gap-1.5 overflow-hidden text-xs whitespace-nowrap">
-              <StatusDot status={status} className="size-2" />
-              <span className={cn('shrink-0', STATUS_TEXT[meta.key])}>{gone ? 'gone' : meta.label}</span>
+              {done ? <CircleCheckBigIcon className="size-3 shrink-0 text-primary" aria-hidden /> : <StatusDot status={status} className="size-2" />}
+              <span className={cn('shrink-0', done ? 'font-medium text-primary' : STATUS_TEXT[meta.key])}>{gone ? 'gone' : done ? 'done' : meta.label}</span>
               <HostBadge host={host} className="h-4 px-1 text-[0.625rem]" />
               {session?.session_id ? <PrChip session={{ host, session_id: session.session_id }} className="h-4" /> : null}
               {session?.session_id ? <TaskChip session={{ host, session_id: session.session_id }} className="h-4" /> : null}
@@ -586,6 +600,8 @@ export function SessionScreen({
             outbox={<OutboxBubbles items={outbox} desktop={pane} onUndo={undo} onRetry={retryFailed} onEdit={editFailed} />}
             outboxKey={outbox.map((it) => `${it.id}:${it.state}`).join(',')}
             questionActions={questionActions}
+            done={done}
+            onCloseDone={closeDone}
           />
         {(session?.harness || 'claude') === 'claude' && !lockedReason && !gone && !outbox.some((it) => it.state !== 'sent' && it.text.trim() === '/compact') ? (
           <CompactHint context={session?.context} onCompact={() => send('/compact')} />

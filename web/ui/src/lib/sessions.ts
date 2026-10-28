@@ -20,6 +20,14 @@ export function statusMeta(status: string | null | undefined): StatusMeta {
   return STATUS_META[k] ?? STATUS_META.unknown
 }
 
+/**
+ * Its `fleet done` mark, while it sits idle on it: a session that works or waits again is not
+ * done (the CLI already drops a mark the user prompted past). null = not done.
+ */
+export function sessionDone(s: Pick<Session, 'status' | 'done'> | null | undefined): Session['done'] {
+  return s?.done && statusMeta(s.status).key === 'idle' ? s.done : null
+}
+
 /** "needs you · permission" for a waiting session with a reason, else the plain label. */
 export function statusLabel(s: Pick<Session, 'status' | 'waiting_for' | 'background'>): string {
   const meta = statusMeta(s.status)

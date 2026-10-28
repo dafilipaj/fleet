@@ -1,12 +1,13 @@
-//! `fleet done`: a session says its work is finished and nothing waits on the user, and is
-//! closed once it has been quiet for [`QUIET_MS`]. The agent runs it from inside its own pane
-//! (`$TMUX_PANE`); `fleet bots tick` (the `fleet.jobs` service) does the closing.
+//! `fleet done`: a session says its work is finished and nothing waits on the user. Nothing is
+//! closed: `fleet list` stamps the mark on the row (`done: { at, note }`), the views show it (a
+//! Done chip in the list, a Done card at the end of the conversation) and the user closes it.
+//! The agent runs it from inside its own pane (`$TMUX_PANE`), right before its final message.
 //!
 //! Marks live in `$FLEET_DONE_STATE`, else `${XDG_STATE_HOME:-~/.local/state}/fleet/done.json`:
-//! `{ "marks": [{ sessionId, pane, tmuxSession, at, note }] }`. A mark is dropped when its session
-//! is gone, or when the user prompts it after the mark (the conversation went on: the agent runs
-//! `fleet done` again when it is finished again). A session waiting for input, working, or
-//! running background agents or shells is never closed.
+//! `{ "marks": [{ sessionId, pane, tmuxSession, at, note }] }`. A mark stops counting when the
+//! user prompts the session after it (the conversation went on: the agent runs `fleet done`
+//! again when it is finished again); `fleet bots tick` drops those and the ones whose session
+//! is gone.
 
 use std::path::PathBuf;
 
@@ -15,15 +16,13 @@ use serde::{Deserialize, Serialize};
 use crate::core::discovery::Session;
 use crate::error::{Error, Result};
 
-/// How long a done session must be quiet before it is closed.
-pub const QUIET_MS: i64 = 3600 * 1000;
-
-/// What a session is told when it should close itself once finished (bots, `spawn
-/// --close-when-done`, `fleet close-when-done`).
+/// What a session is told when it should report itself done once finished (bots, `spawn
+/// --ask-done`, `fleet ask-done`).
 pub const INSTRUCTION: &str = "When your work here is finished and nothing waits on the user \
-(no question, review or decision for them), run `fleet done --note \"<one line: what you did>\"` \
-as your last step: it closes this session after an hour of quiet. If anything needs the user, \
-do not run it — say what you need and stop.";
+(no question, review or decision for them), run `fleet done --note \"<one line: what you did>\"`, \
+then end with a short final message: what you did, and what the user may want to check. Fleet \
+then shows the session as done, and the user closes it. If anything needs the user, do not run \
+it: say what you need and stop.";
 
 /// `prompt` with [`INSTRUCTION`] below it (once).
 pub fn with_instruction(prompt: &str) -> String {
@@ -119,34 +118,43 @@ pub fn mark(rows: &[Session], pane: &str, note: Option<String>, cancel: bool) ->
     Ok(m)
 }
 
-/// What [`sweep`] decides for one mark.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Verdict {
-    /// Not yet: still busy, or not quiet long enough.
-    Wait,
-    /// Drop the mark (gone, or the user picked the conversation up again).
-    Drop(&'static str),
-    Close,
+/// The mark the user has not answered yet, as `list` shows it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct DoneRef {
+    /// When it was marked done (ms epoch).
+    pub at: i64,
+    pub note: Option<String>,
 }
 
-/// Pure: what to do with `m`, given its session (`None` = gone) at `now`.
-pub fn judge(m: &Mark, s: Option<&Session>, now: i64) -> Verdict {
-    let Some(s) = s else {
-        return Verdict::Drop("gone");
-    };
-    if s.prompted_at.is_some_and(|p| p > m.at) {
-        return Verdict::Drop("prompted again");
-    }
-    let busy = s.status != "idle" || s.background.as_ref().is_some_and(|b| !b.is_empty());
-    let last = s.updated_at.unwrap_or(m.at).max(m.at);
-    if busy || now - last < QUIET_MS {
-        return Verdict::Wait;
-    }
-    Verdict::Close
+/// Pure: `m` still stands for session `s` (`None` = gone): not prompted since.
+pub fn stands(m: &Mark, s: Option<&Session>) -> bool {
+    s.is_some_and(|s| s.prompted_at.is_none_or(|p| p <= m.at))
 }
 
-/// Close the done sessions that are quiet; drop stale marks. → one log line per action.
-pub fn sweep(rows: &[Session], now: i64) -> Result<Vec<String>> {
+/// Put `done` on every row whose mark still stands. Read-only.
+pub fn stamp_done(rows: &mut [Session]) {
+    let st = load();
+    if st.marks.is_empty() {
+        return;
+    }
+    for r in rows.iter_mut() {
+        let Some(id) = r.session_id.as_deref() else {
+            continue;
+        };
+        r.done = st
+            .marks
+            .iter()
+            .find(|m| m.session_id == id)
+            .filter(|m| stands(m, Some(r)))
+            .map(|m| DoneRef {
+                at: m.at,
+                note: m.note.clone(),
+            });
+    }
+}
+
+/// Drop the marks that no longer stand (session gone, or prompted again). → one log line each.
+pub fn prune(rows: &[Session]) -> Result<Vec<String>> {
     let mut st = load();
     if st.marks.is_empty() {
         return Ok(Vec::new());
@@ -157,23 +165,16 @@ pub fn sweep(rows: &[Session], now: i64) -> Result<Vec<String>> {
         let s = rows
             .iter()
             .find(|r| r.session_id.as_deref() == Some(m.session_id.as_str()));
-        match judge(m, s, now) {
-            Verdict::Wait => true,
-            Verdict::Drop(why) => {
-                log.push(format!("done: {} unmarked ({why})", m.tmux_session));
-                false
-            }
-            Verdict::Close => match close(s.and_then(|s| s.handle.as_deref()).unwrap_or(&m.pane)) {
-                Ok(what) => {
-                    log.push(format!("done: closed {what}"));
-                    false
-                }
-                Err(e) => {
-                    log.push(format!("done: could not close {}: {e}", m.tmux_session));
-                    true
-                }
-            },
+        let keep = stands(m, s);
+        if !keep {
+            let why = if s.is_some() {
+                "prompted again"
+            } else {
+                "gone"
+            };
+            log.push(format!("done: {} unmarked ({why})", m.tmux_session));
         }
+        keep
     });
     if st.marks.len() != before {
         save(&st)?;
@@ -181,36 +182,14 @@ pub fn sweep(rows: &[Session], now: i64) -> Result<Vec<String>> {
     Ok(log)
 }
 
-/// Close the pane `pane`: its whole tmux session when it is the only pane there.
-fn close(pane: &str) -> Result<String> {
-    let session =
-        crate::core::backend::tmux_query(pane, "#{session_name}").map_err(Error::Other)?;
-    let (_, panes) = crate::core::backend::tmux_shape(pane).map_err(Error::Other)?;
-    if panes <= 1 {
-        crate::core::tmux::kill_session(&session)?;
-        Ok(session)
-    } else {
-        let out = crate::core::tools::tmux_cmd()
-            .args(["kill-pane", "-t", pane])
-            .output()?;
-        if !out.status.success() {
-            return Err(Error::Other(
-                String::from_utf8_lossy(&out.stderr).trim().to_string(),
-            ));
-        }
-        Ok(format!("{session} (pane {pane})"))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn row(status: &str, updated: i64, prompted: Option<i64>) -> Session {
+    fn row(prompted: Option<i64>) -> Session {
         Session {
             session_id: Some("abc".into()),
-            status: status.into(),
-            updated_at: Some(updated),
+            status: "idle".into(),
             prompted_at: prompted,
             ..Default::default()
         }
@@ -225,53 +204,19 @@ mod tests {
     }
 
     #[test]
-    fn closes_only_when_idle_and_quiet() {
+    fn a_mark_stands_until_the_user_prompts_again() {
         let m = mark_at(1_000);
-        let h = QUIET_MS;
-        assert_eq!(judge(&m, None, 0), Verdict::Drop("gone"));
-        assert_eq!(
-            judge(&m, Some(&row("idle", 2_000, None)), 2_000 + h - 1),
-            Verdict::Wait
-        );
-        assert_eq!(
-            judge(&m, Some(&row("idle", 2_000, None)), 2_000 + h),
-            Verdict::Close
-        );
-        assert_eq!(
-            judge(&m, Some(&row("busy", 2_000, None)), 9 * h),
-            Verdict::Wait
-        );
-        assert_eq!(
-            judge(&m, Some(&row("waiting", 2_000, None)), 9 * h),
-            Verdict::Wait
-        );
-        // Quiet counts from the mark when the session's last update is older.
-        assert_eq!(
-            judge(&m, Some(&row("idle", 0, None)), 1_000 + h),
-            Verdict::Close
-        );
+        assert!(!stands(&m, None));
+        assert!(stands(&m, Some(&row(None))));
+        assert!(stands(&m, Some(&row(Some(900)))));
+        assert!(!stands(&m, Some(&row(Some(1_500)))));
     }
 
     #[test]
-    fn a_prompt_after_the_mark_drops_it() {
-        let m = mark_at(1_000);
-        assert_eq!(
-            judge(&m, Some(&row("idle", 0, Some(900))), 9 * QUIET_MS),
-            Verdict::Close
-        );
-        assert_eq!(
-            judge(&m, Some(&row("idle", 0, Some(1_500))), 9 * QUIET_MS),
-            Verdict::Drop("prompted again")
-        );
-    }
-
-    #[test]
-    fn background_work_holds_it_open() {
-        let mut s = row("idle", 0, None);
-        s.background = Some(crate::core::background::Background {
-            agents: Vec::new(),
-            shells: 1,
-        });
-        assert_eq!(judge(&mark_at(0), Some(&s), 9 * QUIET_MS), Verdict::Wait);
+    fn with_instruction_appends_once() {
+        let p = with_instruction("do x");
+        assert!(p.starts_with("do x\n\n"));
+        assert_eq!(with_instruction(&p), p);
+        assert_eq!(with_instruction(" "), INSTRUCTION);
     }
 }
