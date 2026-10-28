@@ -759,9 +759,15 @@ answered tabs; for the final Enter the whole review). `core::lock` is the per-se
   capture, and its head (tabs, question) is read up to the form's top rule or tab bar. Otherwise
   it is clipped (`prompt_incomplete`) — the form taller than the pane (Claude Code's fullscreen
   TUI keeps no scrollback, so its top is nowhere), or a long list drawn a window at a time. A
-  question whose options have previews (`preview` in the tool input, kept as a flag on
-  `core::questions::QuestionOption`, not serialized) is drawn side by side and never matched or
-  answered (`layout_unsupported`). **Assumption:** only synthetic layouts back the clipping rules;
+  single-select question with a preview on an option (`Question::preview_layout`; the option's
+  `preview` string is passed on in `messages` / `answer --list` JSON) is drawn in Claude Code's
+  preview layout, read by `core::prompt::read_preview_form` into a `Form` with
+  `Layout::Preview` (options left of the box's column, the box never read, the notes row,
+  "Chat about this" unnumbered) and matched on tabs, text and labels only — each question of a
+  form in its own layout; a footer over rows it cannot walk is `layout_unsupported`. Backed by
+  real Claude Code 2.1.312 captures (`testdata/screens/live/claude-question-preview-*`), as is
+  the `│ ` gutter before a question over 80 characters (dropped on the form and the review).
+  **Assumption:** only synthetic layouts back the clipping rules;
   how Claude Code 2.1.303 windows a long list (and whether a scroll marker sits in it) is not
   captured yet.
 - Every refusal by a screen check says which one as a `core::prompt::Detail` (`detail` in the

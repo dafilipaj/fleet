@@ -302,7 +302,10 @@ hook output, bookkeeping entries, subagent (sidechain) messages.
   `system` | `question` | `tool_call`), `ts` (RFC 3339 or `null`), `text` (Markdown for `assistant`).
   `assistant`: `final` (the turn ended on it). `user`: `queued: true` while still waiting in Claude's
   queue. `command`: `name`, `args`. `tool_call`: `id`, `tool`, `summary` (≤ 120 chars). `question`:
-  `id`, `questions` (`[{ question, header, multiSelect, options: [{ label, description }] }]`),
+  `id`, `questions` (`[{ question, header, multiSelect, options: [{ label, description, preview? }] }]`
+  — `preview`, a string, only when the tool input gives the option a non-blank one: as the
+  transcript has it, line breaks as `\n`, never trimmed, cut or rendered; the answer's
+  `annotations` are not passed on),
   `status` (`pending` | `answered` | `declined` | `abandoned` — a new prompt came before any
   result: the session was interrupted or restarted on it), `answer` — `null` while pending or
   abandoned,
@@ -675,9 +678,11 @@ with `trust`.
   in an input box are `null`), or a Claude Code **question** form
   `{ kind: "question", id: <tool_use id> | null, questions | null, active, untouched }` (the id comes
   from the transcript: the pending `AskUserQuestion` the form shows, checked whole — tabs, the active
-  question's full text, its options and descriptions; never a question whose options have
-  previews, see `layout_unsupported` below). A question form not all of which is on screen
-  (`detail: "clipped"`, whichever check finds it) is
+  question's full text, its options and descriptions; a question with previews in its own
+  layout, see [Questions with previews](#questions-with-previews); `questions` as in
+  [`messages`](#messages), `preview` included). A question form not all of which is on screen
+  (`detail: "clipped"`, whichever check finds it), or one with the preview layout's footer whose
+  rows cannot be walked (`detail: "layout_unsupported"`), is
   `{ kind: "question", incomplete: true, id: null, questions: null, active: null, untouched: false }`
   — no id even when what is visible reads as a pending question.
   Beside `prompt`: `answerable` — whether `--choice` / `--question` would pass the screen checks
@@ -702,7 +707,9 @@ with `trust`.
   `question_not_active`. `answers` has one element per question, in order:
   `{ "options": [index…], "text": "…" }` — 0-based option indexes; single-select takes exactly one
   option or a text, multi-select any options and/or a text, at least one; text is one line,
-  ≤ 2000 characters, with no control characters or escape sequences. The session must be `waiting`.
+  ≤ 2000 characters, with no control characters or escape sequences. A single-select question with
+  previews takes exactly one option and no text (its form has no "Type something" row; notes are
+  not typed): anything else is `answer_invalid`. The session must be `waiting`.
   With two or more questions the answer is checked on the review screen, which joins picks and
   text with `", "`; an answer it could not tell from another — an option labelled `A, B` against
   the options `A` and `B`, or text that reads as an option — is refused (`answer_invalid`, nothing
@@ -810,6 +817,55 @@ Sessions fleet creates start at 200x50 for this ([Spawning](#spawning)); a small
 session, a client that attached at a small size) can still clip a tall form: answer it there, or
 make the pane bigger.
 
+#### Questions with previews
+
+An `AskUserQuestion` option may carry a `preview` (an ASCII mockup, a code snippet). Claude Code
+2.1.312 draws a **single-select** question with a preview on any option in its preview layout:
+the options in a left column, the focused option's preview in a box beside them, no
+descriptions, no "Type something" row, a notes row, and `n` for notes. A multi-select question
+with previews is drawn plainly (`[ ]` rows, "Type something", "Submit", no box) and read and
+answered as any plain form. The layout is per question: a form with several questions mixes
+them, and each step of an answer reads the question on screen in its own layout.
+
+- **Recognised** by its footer — the last non-empty line, or the one above a rule from the left
+  edge (the input box's top, drawn under a live form when it carries a badge such as `PR #N`) —
+  holding both "Enter to select" and "n to add notes". At 80 columns the longer footers wrap
+  (`… · Tab to switch questions · ` / `Esc to cancel`; `… · ctrl+g to edit in Vim · Esc` /
+  `to cancel`): when the last line alone lacks the markers, the last two non-empty lines joined
+  with a space are the footer. From the bottom up: "Chat about this",
+  unnumbered (`❯ ` with the cursor on it — the option last focused then keeps its `❯` too, and
+  the cursor counts as on "Chat about this"), a solid rule, the notes row (`Notes: press n to add
+  notes`; `Notes: Add notes on this design…` while open, `Notes: <text>` once typed), then the
+  options and the box. The box's left edge is the column of the `┌` on option 1's row (read off
+  the screen, never assumed); every row from option 1's down to the notes row is cut there, and
+  the box right of it is never read — so a box cut short (`├─── ✂ ─── N lines hidden ───┤`)
+  clips nothing. Left of it: an option row (`❯ 1. <label>`), a label's wrapped line (four spaces
+  in, joined with one space), or nothing. Then the question and the tab bar (or a lone tab), as
+  for any form.
+- **Matched** by its tabs, the active question's text and its options' labels in order (wrapped
+  lines joined, compared squashed); the question must be one Claude Code draws so. Descriptions
+  are not drawn and the box (Markdown-rendered, maybe cut) is not compared, so two questions with
+  the same headers, text and labels but other descriptions or previews read as the same here.
+  A plain form never shows such a question (`layout_unsupported`: no capture shows Claude Code
+  drawing it so, so fleet cannot read it for sure), nor a preview form a question drawn plainly
+  (`options`).
+- **Untouched**: no tab answered, the cursor on option 1, the notes row untouched and the notes
+  field closed (its footer adds "ctrl+g to edit in Vim"). Notes typed or open are `touched`
+  (Esc closes only the field, the note stays, so it still reads `touched`); the cursor on another
+  option or on "Chat about this" is `cursor_moved`. Colours aren't read, so a note whose text is
+  exactly the placeholder ("press n to add notes"), with the field closed, reads as untouched.
+- **Answered** with ↓ to the option and Enter, each key checked as for any form (the cursor's row,
+  the tabs answered so far, the notes row untouched); fleet never types notes, never moves to
+  "Chat about this" and never switches tabs.
+- Option rows or a head off the captured screen are `clipped`; a footer over rows that cannot be
+  walked this way is `layout_unsupported` (never `no_form`).
+
+**A long question's gutter.** Claude Code 2.1.312 draws a `│ ` gutter before a question longer
+than 80 characters, in either layout: on every wrapped line of the question on the form, and on
+the review screen before the item's `●` (` │ ● …`) and its wrapped lines (` │   …`). Never on an
+option row, an `→` answer line, "Submit answers" or "Cancel". fleet drops it wherever it shows,
+and joins a review item's wrapped lines to its question with one space.
+
 **Why a refusal: `detail`.** Every failure object `answer --json` prints carries `detail` and
 `pane` beside `kind` and `error` — also a usage error clap catches and a
 [`FLEET_PATH_ONLY`](#path-only-mode) refusal, reported before `answer` runs (both `null` there). `error` is free text and may quote the screen (a label, a title); `detail` never does —
@@ -823,10 +879,10 @@ session's pane size when the failure was reported — `null` before the target i
 | --- | --- | --- |
 | `no_form` | `prompt_not_on_screen` | the screen does not end in a prompt of the kind asked about: no question form for `--question`, no permission prompt for `--choice` (an input box, a list quoted in the conversation, nothing) |
 | `clipped` | `prompt_incomplete` | it is there, but not all of it is on the captured screen: a form's top or first rows off it, or only some of its rows shown (above); a Claude Code permission prompt whose frame is out of reach, a Codex approval whose top is, answers that do not run up to answer 1 |
-| `layout_unsupported` | `prompt_incomplete` | it is there in a layout fleet does not read: a question whose options have previews (drawn beside them; fleet never reads or answers that layout), a permission frame that cannot be told from its command, a Codex approval with no title or two, answers it cannot walk (a blank or rule-like line among them) |
+| `layout_unsupported` | `prompt_incomplete` | it is there in a layout fleet does not read: a form with the preview layout's footer whose rows it cannot walk (no `┌` on option 1's row, option numbers with a gap, a row left of the box that is neither an option nor a wrapped label; see [Questions with previews](#questions-with-previews)), a permission frame that cannot be told from its command, a Codex approval with no title or two, answers it cannot walk (a blank or rule-like line among them), a plain form for a question Claude Code draws in the preview layout |
 | `tabs` | `prompt_not_on_screen` | the form's tabs are not the question's (another number, other headers), or no tabs for a question in several parts |
 | `question` | `prompt_not_on_screen` | the form asks another question |
-| `options` | `prompt_not_on_screen` | the form's answers are not the question's: a label or description, single vs. multi-select, the rows after the options |
+| `options` | `prompt_not_on_screen` | the form's answers are not the question's: a label or description, single vs. multi-select, the rows after the options, the layout (a preview form for a question Claude Code draws plainly) |
 | `touched` | `prompt_not_on_screen` | the form has a tab answered (☒), a box ticked or text typed |
 | `cursor_moved` | `prompt_not_on_screen` | the cursor is off the first answer, or the form shows another of the call's questions |
 | `different_prompt` | `prompt_not_on_screen` | another prompt: not the `--prompt` id, a question form for `--choice`, a permission prompt for `--question`; in `--list`, a form no pending question of the transcript accounts for |

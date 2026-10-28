@@ -316,3 +316,63 @@ fn text_output_is_one_line_per_entry() {
     assert!(lines[0].contains("you") && lines[0].contains("Hello there"));
     assert!(lines[1].contains("claude") && lines[1].contains("Line one …"));
 }
+
+// C1: a question's option carries its `preview` as the tool input has it (a recorded Claude
+// Code 2.1.312 input: box drawing, `\n` line breaks, inner blanks); an option without one has no
+// `preview` key. Nothing else about the entry changes.
+#[test]
+fn a_question_options_preview_is_in_its_entry() {
+    let t = T::new(json!([session(
+        101,
+        Some("cccc-1111"),
+        "/w",
+        "claude",
+        None
+    )]));
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/screens/live");
+    let input: Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.join("claude-question-preview-C-input.json")).unwrap(),
+    )
+    .unwrap();
+    t.write(
+        ".claude/projects/-w/cccc-1111.jsonl",
+        &[
+            user("Pick a layout"),
+            json!({ "type": "assistant", "timestamp": "2026-09-18T18:01:57.000Z",
+                    "message": { "id": "m1", "role": "assistant", "stop_reason": "tool_use",
+                    "content": [{ "type": "tool_use", "id": "toolu_q", "name": "AskUserQuestion", "input": input }] } }),
+        ],
+    );
+    let (code, v, err) = t.run(&["messages", "101", "--json"]);
+    assert_eq!(code, 0, "{err}");
+    let e = &v["entries"][1];
+    assert_eq!(
+        (&e["kind"], &e["id"], &e["status"], &e["answer"]),
+        (
+            &json!("question"),
+            &json!("toolu_q"),
+            &json!("pending"),
+            &Value::Null
+        )
+    );
+    let opts = &e["questions"][0]["options"];
+    for i in 0..3 {
+        let want = &input["questions"][0]["options"][i]["preview"];
+        assert!(want.as_str().unwrap().contains('\n'));
+        assert_eq!(&opts[i]["preview"], want, "{i}");
+        assert_eq!(
+            opts[i]["description"],
+            input["questions"][0]["options"][i]["description"]
+        );
+    }
+    // The second question has no previews: no `preview` key at all.
+    for o in e["questions"][1]["options"].as_array().unwrap() {
+        assert_eq!(o.get("preview"), None, "{o}");
+        assert_eq!(
+            o.as_object().unwrap().keys().collect::<Vec<_>>(),
+            ["label", "description"]
+        );
+    }
+    // The entry's text stays the plain markdown it was.
+    assert!(!e["text"].as_str().unwrap().contains('┌'));
+}
