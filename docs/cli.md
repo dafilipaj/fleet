@@ -637,8 +637,8 @@ tick` drops the marks of gone or re-prompted sessions.
 The agent is told so by one instruction (run `fleet done` when finished and nothing waits on the
 user, then the final message; otherwise say what it needs and stop). It goes below every
 [bot](#bots) prompt and the prompt of everything a bot session spawns, below `fleet spawn
---ask-done`'s prompt, and into a running session with `fleet ask-done <target>` (the web UI's **Ask
-done** button). Any session can also just be told "tell me when you're done" by the user.
+--ask-done`'s prompt, and into a running session with `fleet ask-done <target>`. A user-level
+`CLAUDE.md` / `AGENTS.md` can carry the same rule, so every agent reports itself done.
 
 Marks: `${XDG_STATE_HOME:-~/.local/state}/fleet/done.json` (`FLEET_DONE_STATE`),
 `{ marks: [{ sessionId, pane, tmuxSession, at, note }] }`.

@@ -105,18 +105,6 @@ export function createFleetCli({ run, bin = 'fleet', timeoutMs = 8000 } = {}) {
     return parseObject(stdout, 'fleet rename');
   }
 
-  /**
-   * Ask a session to report itself done once finished: `fleet ask-done <target>` (types the
-   * instruction into it). Throws FleetCliError on failure.
-   */
-  async function askDone({ target, timeoutMs: t = 20 * 1000 } = {}) {
-    try {
-      await run(bin, ['ask-done', String(target)], { timeout: t, env: { ...process.env, NO_COLOR: '1' } });
-    } catch (err) {
-      throw wrap(err, 'fleet ask-done', t);
-    }
-  }
-
   function tryObject(text) {
     try {
       const v = JSON.parse(String(text ?? '').trim());
@@ -605,7 +593,6 @@ export function createFleetCli({ run, bin = 'fleet', timeoutMs = 8000 } = {}) {
     nameAll,
     nameOne,
     rename,
-    askDone,
     groupRun,
     groupCached,
     groupEdit,
