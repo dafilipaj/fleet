@@ -96,6 +96,9 @@ pub struct ClaudeSnap {
     /// The GitHub identity it acted as ([`crate::core::gh_identity`]); a resume keeps it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gh_identity: Option<String>,
+    /// The [bot](crate::core::jobs) run it belonged to (`<bot>/<run>`); a resume rejoins it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job_run: Option<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -776,6 +779,7 @@ fn claude_of(s: &Session) -> Option<ClaudeSnap> {
         title: Some(s.display_title.clone().unwrap_or_else(|| s.headline())),
         harness: s.harness,
         gh_identity: s.gh_identity.clone(),
+        job_run: s.origin.as_ref().map(|o| format!("{}/{}", o.job, o.run)),
         ..Default::default()
     })
 }
@@ -1590,6 +1594,63 @@ fn tag_identity(ex: &mut Exec, pane: &str, c: &ClaudeSnap, warnings: &mut Vec<St
     }
 }
 
+/// A bot session (`job_run`) comes back in its run: the pane option `fleet list` reads as its
+/// `origin`, and the run's environment for the resumed agent and for what it spawns.
+fn tag_job(ex: &mut Exec, pane: &str, c: &ClaudeSnap, warnings: &mut Vec<String>) {
+    let Some(tag) = job_tag(c) else { return };
+    ex.soft(
+        vec![
+            s("set-option"),
+            s("-p"),
+            s("-t"),
+            pane.into(),
+            s(crate::core::jobs::PANE_OPTION),
+            tag.run.clone(),
+        ],
+        warnings,
+    );
+    for kv in tag.env() {
+        if let Some((k, v)) = kv.split_once('=') {
+            ex.soft(
+                vec![
+                    s("set-environment"),
+                    s("-t"),
+                    pane.into(),
+                    k.into(),
+                    v.into(),
+                ],
+                warnings,
+            );
+        }
+    }
+}
+
+/// The run tag of a bot session, with its bot's launcher (when the bot is still configured).
+fn job_tag(c: &ClaudeSnap) -> Option<crate::core::jobs::Tag> {
+    let run = c.job_run.clone()?;
+    let (job, _) = crate::core::jobs::split_run(&run)?;
+    let command = crate::core::jobs::Settings::load()
+        .get(job)
+        .and_then(|j| j.command.clone());
+    Some(crate::core::jobs::Tag { run, command })
+}
+
+/// [`resume_line`] for a pane of a restore: a bot session resumes under its bot's launcher,
+/// with its run's environment exported first (the shell is already running).
+fn restore_line(launcher: &str, dir: &str, c: &ClaudeSnap) -> Result<String> {
+    let Some(tag) = job_tag(c) else {
+        return resume_line(launcher, dir, c);
+    };
+    let line = resume_line(tag.command.as_deref().unwrap_or(launcher), dir, c)?;
+    let env: Vec<String> = tag
+        .env()
+        .iter()
+        .filter_map(|kv| kv.split_once('='))
+        .map(|(k, v)| format!("{k}={}", tools::shq_min(v)))
+        .collect();
+    Ok(format!("export {} && {line}", env.join(" ")))
+}
+
 /// Runs (or, dry, only renders) the tmux commands of one restore.
 struct Exec {
     dry: bool,
@@ -1804,7 +1865,8 @@ fn rebuild(
     }
     let mut launched = Vec::new();
     for (pane, dir, c) in pending {
-        let line = resume_line(launcher, &dir, c)?;
+        tag_job(ex, &pane, c, warnings);
+        let line = restore_line(launcher, &dir, c)?;
         ex.type_line(&pane, &line)?;
         tag_identity(ex, &pane, c, warnings);
         launched.push(Launched {
@@ -2079,23 +2141,47 @@ fn restore_from(snap: &Snapshot, pool: Pool, target: &Target, launcher: &str) ->
         }),
     };
     match built {
-        Ok((launched, windows, panes, renamed)) => Ok(Restored {
-            kind,
-            from: from.clone(),
-            renamed,
-            session: name,
-            windows,
-            panes,
-            launched,
-            warnings,
-            commands: ex.log,
-            dry_run: dry,
-        }),
+        Ok((launched, windows, panes, renamed)) => {
+            if !dry {
+                rejoin_runs(&entry, &name, &launched);
+            }
+            Ok(Restored {
+                kind,
+                from: from.clone(),
+                renamed,
+                session: name,
+                windows,
+                panes,
+                launched,
+                warnings,
+                commands: ex.log,
+                dry_run: dry,
+            })
+        }
         Err(e) => {
             if let Some(t) = taken {
                 put_back(pool, t);
             }
             Err(e)
+        }
+    }
+}
+
+/// Put the resumed bot sessions back in their runs' records, under the tmux session they now
+/// live in, so `fleet bots` shows them again and `keep` / `fleet done` can close them.
+fn rejoin_runs(entry: &Taken, session: &str, launched: &[Launched]) {
+    let back: HashSet<&str> = launched.iter().map(|l| l.session_id.as_str()).collect();
+    let (old, claudes): (String, Vec<&ClaudeSnap>) = match entry {
+        Taken::Tmux(t) => (t.name.clone(), t.claudes().collect()),
+        Taken::Claude(c) => (c.tmux_session.clone().unwrap_or_else(|| c.label()), vec![c]),
+    };
+    let mut done = HashSet::new();
+    for c in claudes {
+        if let Some(run) = &c.job_run
+            && back.contains(c.session_id.as_str())
+            && done.insert(run.clone())
+        {
+            crate::core::jobs::rejoin_session(run, &old, session);
         }
     }
 }
@@ -2133,7 +2219,8 @@ fn reopen_in(
         ],
         "%new",
     )?;
-    let line = resume_line(launcher, &dir, c)?;
+    tag_job(ex, &pane, c, warnings);
+    let line = restore_line(launcher, &dir, c)?;
     ex.type_line(&pane, &line)?;
     tag_identity(ex, &pane, c, warnings);
     Ok(vec![Launched {

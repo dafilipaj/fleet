@@ -7,6 +7,7 @@ pub mod brief;
 pub mod config;
 pub mod context;
 pub mod discovery;
+pub mod done;
 pub mod gh_identity;
 pub mod git;
 pub mod grouping;

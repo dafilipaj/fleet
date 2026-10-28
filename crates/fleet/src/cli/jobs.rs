@@ -347,6 +347,12 @@ fn start(j: &Job, trigger: &str, slot: Option<i64>) -> Result<Run> {
         Ok(t) => t,
         Err(e) => return fail(run, e),
     };
+    // A bot session closes itself once its work is done and nothing waits on the user.
+    let text = if text.trim().is_empty() {
+        text
+    } else {
+        crate::core::done::with_instruction(&text)
+    };
     let prompt_file = jobs::prompt_path(&j.name, &id);
     if !text.trim().is_empty() {
         if let Some(d) = prompt_file.parent() {
@@ -528,6 +534,11 @@ pub fn tick(quiet: bool) -> Result<()> {
             }
         }
         cleanup(j, now, quiet, &mut rows)?;
+    }
+    if !crate::core::done::load().marks.is_empty() {
+        for line in crate::core::done::sweep(&rows_now(&mut rows), now.timestamp_millis())? {
+            log(quiet, &line);
+        }
     }
     failed += crate::cli::schedule::tick(quiet)?;
     if failed > 0 {

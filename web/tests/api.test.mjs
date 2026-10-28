@@ -41,6 +41,7 @@ function fakeHost(self, sessions) {
     if (title === 'explode') throw new Error('tmux: boom');
     return { ok: true, result: 'renamed', title, from: 'app-9d', held: null, tmux: { renamed: true, from: 'fw-101010', to: 'fix-login', note: '⧉ fw-101010 → fix-login' }, message: `app-9d → ${title}` };
   };
+  cli.closeWhenDone = async ({ target }) => void calls.push(['closeWhenDone', target]);
   cli.nameOne = async ({ target, refresh }) => {
     calls.push(['nameOne', target, refresh]);
     if (self === 'workstation') return { stdout: '⏸ two  waiting on you — nothing sent\n', stderr: '' };
@@ -387,6 +388,20 @@ test('rename is POST-only, validated, served locally or proxied once, and a held
     assert.equal((await post(`${base}/laptop/sessions/aaaaaaaa/rename`, { title })).status, 400, String(title));
   }
   assert.equal((await post(`${base}/laptop/sessions/zzzzzzzzzz/rename`, { title: 'x' })).status, 404);
+});
+
+test('close-when-done is POST-only, by session id, proxied once', async (t) => {
+  const { lap, remote, urls } = await startPair(t);
+  const base = `${urls.laptop}/api/hosts`;
+  assert.equal((await get(`${base}/laptop/sessions/aaaaaaaa/close-when-done`)).status, 405);
+  const local = await post(`${base}/laptop/sessions/aaaaaaaa/close-when-done`, {});
+  assert.equal(local.status, 200);
+  assert.deepEqual(lap.calls.at(-1), ['closeWhenDone', 'aaaaaaaa-0000-0000-0000-000000000001']);
+  const proxied = await post(`${base}/workstation/sessions/bbbbbbbb/close-when-done`, {});
+  assert.equal(proxied.status, 200);
+  assert.deepEqual(remote.calls.at(-1), ['closeWhenDone', 'bbbbbbbb-0000-0000-0000-000000000002']);
+  assert.equal(lap.calls.filter((c) => c[0] === 'closeWhenDone').length, 1, 'proxied, not run on the laptop');
+  assert.equal((await post(`${base}/laptop/sessions/zzzzzzzzzz/close-when-done`, {})).status, 404);
 });
 
 test('autoname regenerates one session: POST-only, by session id with --refresh, proxied once, held is a 409', async (t) => {

@@ -105,6 +105,18 @@ export function createFleetCli({ run, bin = 'fleet', timeoutMs = 8000 } = {}) {
     return parseObject(stdout, 'fleet rename');
   }
 
+  /**
+   * Ask a session to close itself once finished: `fleet close-when-done <target>` (types the
+   * instruction into it). Throws FleetCliError on failure.
+   */
+  async function closeWhenDone({ target, timeoutMs: t = 20 * 1000 } = {}) {
+    try {
+      await run(bin, ['close-when-done', String(target)], { timeout: t, env: { ...process.env, NO_COLOR: '1' } });
+    } catch (err) {
+      throw wrap(err, 'fleet close-when-done', t);
+    }
+  }
+
   function tryObject(text) {
     try {
       const v = JSON.parse(String(text ?? '').trim());
@@ -593,6 +605,7 @@ export function createFleetCli({ run, bin = 'fleet', timeoutMs = 8000 } = {}) {
     nameAll,
     nameOne,
     rename,
+    closeWhenDone,
     groupRun,
     groupCached,
     groupEdit,

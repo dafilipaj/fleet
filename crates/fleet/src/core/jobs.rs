@@ -701,6 +701,45 @@ pub fn record_session(tag: &Tag, s: RunSession) {
     }
 }
 
+/// A closed session of run `run` (`<job>/<run>`) is back (`fleet restore`), now in the tmux
+/// session `now`: open its record again (or add one when the run never had it).
+pub fn rejoin_session(run: &str, was: &str, now: &str) {
+    let Some((job, id)) = split_run(run) else {
+        return;
+    };
+    let mut st = load_state(job);
+    let found = st.runs.iter_mut().rev().find(|r| r.id == id).and_then(|r| {
+        r.sessions
+            .iter_mut()
+            .find(|s| s.tmux_session == was || s.tmux_session == now)
+    });
+    match found {
+        Some(s) => {
+            s.tmux_session = now.into();
+            s.closed_at = None;
+        }
+        None => {
+            let tag = Tag {
+                run: run.into(),
+                command: None,
+            };
+            return record_session(
+                &tag,
+                RunSession {
+                    tmux_session: now.into(),
+                    name: None,
+                    parent: None,
+                    at: chrono::Local::now().timestamp_millis(),
+                    closed_at: None,
+                },
+            );
+        }
+    }
+    if let Err(e) = save_state(job, &st) {
+        crate::core::hosts::debug(&format!("jobs: could not reopen a session of {job}: {e}"));
+    }
+}
+
 // --- scheduling ----------------------------------------------------------------
 
 /// What a tick does with a job.

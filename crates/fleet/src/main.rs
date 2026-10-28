@@ -138,6 +138,23 @@ enum Commands {
         text: String,
     },
 
+    /// Run by an agent inside its session: its work is finished and nothing waits on the user —
+    /// the session is closed after an hour of quiet (by `fleet bots tick`)
+    Done {
+        /// One line: what it did (kept with the mark)
+        #[arg(long)]
+        note: Option<String>,
+        /// Take the mark back (the session stays open)
+        #[arg(long)]
+        cancel: bool,
+    },
+
+    /// Tell a session to close itself once its work is finished (`fleet done`)
+    CloseWhenDone {
+        /// sessionId prefix, derived name, or pid
+        target: String,
+    },
+
     /// Rename a session: Claude's own /rename (the title), then its tmux session follows
     Rename {
         /// sessionId prefix, derived name, or pid
@@ -284,6 +301,9 @@ enum Commands {
         /// Open a new window instead of a tab (iterm backend only)
         #[arg(long)]
         window: bool,
+        /// The session closes itself once its work is finished (`fleet done`; tmux only)
+        #[arg(long)]
+        close_when_done: bool,
     },
 
     /// Coding-agent harnesses on this host (claude, codex, pi): installed, command, models
@@ -1228,6 +1248,7 @@ fn placement(c: &Commands) -> Placement {
         | Commands::Exec { .. }
         | Commands::Ssh { .. }
         | Commands::Mcp { .. }
+        | Commands::Done { .. }
         | Commands::Probe => Placement::Here,
         _ => Placement::Dispatch(Scope::SelfHost),
     }
@@ -1360,6 +1381,8 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
             } => slack_cmd::reply(&link, &text, thread.as_deref(), json)?,
         },
         Commands::Send { target, text } => commands::send(&target, &text)?,
+        Commands::Done { note, cancel } => commands::done(note, cancel)?,
+        Commands::CloseWhenDone { target } => commands::close_when_done(&target)?,
         Commands::Rename {
             target,
             name,
@@ -1471,6 +1494,7 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
             harness,
             tmux_session,
             window,
+            close_when_done,
         } => commands::spawn(
             prompt,
             from,
@@ -1482,6 +1506,7 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
                 harness: harness.map(Into::into).unwrap_or_default(),
                 tmux_session,
                 window,
+                close_when_done,
             },
         )?,
         Commands::Harness { cmd } => match cmd {
@@ -1537,6 +1562,7 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
                     harness: harness.map(Into::into).unwrap_or_default(),
                     tmux_session,
                     window,
+                    close_when_done: false,
                 },
                 wait: !no_wait,
                 json,
@@ -1589,6 +1615,7 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
                 tmux_session,
                 // A handoff means "over there, out of my way" — a window unless told otherwise.
                 window: !tab,
+                close_when_done: false,
             },
             !no_wait,
         )?,
@@ -1733,6 +1760,7 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
                     harness: harness.map(Into::into).unwrap_or_default(),
                     tmux_session,
                     window,
+                    close_when_done: false,
                 },
             )?,
         },
@@ -1784,6 +1812,7 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
                     harness: harness.map(Into::into).unwrap_or_default(),
                     tmux_session,
                     window,
+                    close_when_done: false,
                 },
             )?,
         },

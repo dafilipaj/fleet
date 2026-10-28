@@ -393,7 +393,7 @@ pub(crate) fn tmux_session_names() -> Vec<String> {
 }
 
 /// One `tmux display-message -p -t <target> <format>`, or why it didn't answer.
-fn tmux_query(target: &str, format: &str) -> std::result::Result<String, String> {
+pub(crate) fn tmux_query(target: &str, format: &str) -> std::result::Result<String, String> {
     let out = crate::core::tools::tmux_cmd()
         .args(["display-message", "-p", "-t", target, format])
         .output()
@@ -689,6 +689,20 @@ pub fn spawn(
     harness: Harness,
 ) -> Result<String> {
     let tag = crate::core::jobs::Tag::from_env();
+    // What a bot session spawns closes itself when finished, like the bot session.
+    let file = match (&tag, prompt) {
+        (Some(_), Prompt::Inline(p)) if !p.trim().is_empty() => {
+            Some(write_prompt_file(&crate::core::done::with_instruction(p))?)
+        }
+        (Some(_), Prompt::File(f)) => Some(write_prompt_file(
+            &crate::core::done::with_instruction(&std::fs::read_to_string(f)?),
+        )?),
+        _ => None,
+    };
+    let prompt = match &file {
+        Some(f) => Prompt::File(f),
+        None => prompt,
+    };
     spawn_tagged(
         backend,
         dir,

@@ -15,6 +15,8 @@ A firstmate-style orchestrator for the many Claude Code sessions the user runs i
 | "open the fleet dashboard" | `fleet` — bare, no subcommand; tell the user to run it, don't run it inline |
 | "peek at / what is X doing" | `fleet peek <target> [--lines N]` |
 | "tell X to … / steer X" | `fleet send <target> "<text>"` |
+| "close X when it's done" | `fleet close-when-done <target>` — the session runs `fleet done` once finished |
+| "close yourself when done" (said to you) | finish, then `fleet done --note "<what you did>"` as your last step — only if nothing waits on the user; it closes your session after an hour of quiet |
 | "rename X / call it …" | `fleet rename <target> "<name>" [--no-tmux-sync] [--force]` |
 | "name X / what should this be called" | `fleet name <target>` — suggests; add `--apply` to send it |
 | "name all the unnamed ones" | `fleet name --all [--apply] [--no-tmux-sync]` |

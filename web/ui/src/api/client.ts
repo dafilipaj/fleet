@@ -197,6 +197,9 @@ export const api = {
     request<RenameResponse>(sessionPath(host, id, 'rename'), { ...o, method: 'POST', body: { title } }),
   regenerateName: (host: string, id: string, o: Opts = {}) =>
     request<RegenerateNameResponse>(sessionPath(host, id, 'autoname'), { ...o, method: 'POST', body: {} }),
+  /** Ask the session to close itself once finished (`fleet close-when-done`; tmux only). */
+  closeWhenDone: (host: string, id: string, o: Opts = {}) =>
+    request<OkResponse>(sessionPath(host, id, 'close-when-done'), { ...o, method: 'POST', body: {} }),
   kill: (host: string, id: string, o: Opts = {}) =>
     request<KillResponse>(sessionPath(host, id, 'kill'), { ...o, method: 'POST', body: {} }),
 

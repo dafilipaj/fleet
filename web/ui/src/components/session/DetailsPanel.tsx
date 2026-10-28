@@ -6,6 +6,7 @@ import {
   Link2Icon,
   Loader2Icon,
   PowerIcon,
+  TimerOffIcon,
   RefreshCwIcon,
   SquareTerminalIcon,
 } from 'lucide-react'
@@ -142,6 +143,20 @@ export function DetailsPanel(p: DetailsPanelProps & { variant: 'drawer' | 'panel
     }
   }
 
+  // When done: tell the session to close itself once its work is finished (`fleet done`).
+  const [asking, setAsking] = useState(false)
+  const closeWhenDone = async () => {
+    setAsking(true)
+    try {
+      await api.closeWhenDone(p.host, p.id)
+      toast.success('Closes itself when done', { description: 'after an hour of quiet once it runs fleet done' })
+    } catch (err) {
+      toast.error('Could not ask it', { description: sessionErrorMessage(err) })
+    } finally {
+      setAsking(false)
+    }
+  }
+
   const s = p.session
   const { title } = useSessionTitle(s, `${p.host}/${p.id}`)
   const attachCmd = sessionAttachCommand(s)
@@ -195,8 +210,8 @@ export function DetailsPanel(p: DetailsPanelProps & { variant: 'drawer' | 'panel
             </Button>
           </Header>
 
-          {/* Actions first: Review, New (from here), Link (to a stack), Attach. One row; a narrow pane drops the labels. */}
-          {p.onReview || p.onNewFromHere || p.stack || attachCmd ? (
+          {/* Actions first: Review, New (from here), Link (to a stack), When done, Attach. One row; a narrow pane drops the labels. */}
+          {p.onReview || p.onNewFromHere || p.stack || attachCmd || s?.backend === 'tmux' ? (
             <div className="@container flex items-center gap-2 pt-1 pb-2">
               {p.onReview ? (
                 <Button variant="outline" className={ACTION} aria-label="Review changes" title="Review changes (diff)" onClick={p.onReview}>
@@ -214,6 +229,12 @@ export function DetailsPanel(p: DetailsPanelProps & { variant: 'drawer' | 'panel
                 <Button variant="outline" className={ACTION} aria-label="Link to a stack" title="Link to a stack: put another live session in this stack (or start one)" onClick={p.stack.onLink}>
                   <Link2Icon />
                   <span className={LABEL}>Link</span>
+                </Button>
+              ) : null}
+              {s?.backend === 'tmux' ? (
+                <Button variant="outline" className={ACTION} aria-label="Close when done" title="Close when done: the session closes itself once its work is finished and nothing waits on you" disabled={asking} onClick={closeWhenDone}>
+                  {asking ? <Loader2Icon className="animate-spin" /> : <TimerOffIcon />}
+                  <span className={LABEL}>When done</span>
                 </Button>
               ) : null}
               {attachLink ? (

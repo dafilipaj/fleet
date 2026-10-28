@@ -258,6 +258,46 @@ pub fn send(target: &str, text: &str) -> Result<()> {
     Ok(())
 }
 
+/// `fleet done`: mark (or `--cancel`, unmark) the session this runs in as finished.
+pub fn done(note: Option<String>, cancel: bool) -> Result<()> {
+    let pane = std::env::var("TMUX_PANE").map_err(|_| {
+        Error::Other(
+            "fleet done runs inside the session's own tmux pane ($TMUX_PANE is not set)".into(),
+        )
+    })?;
+    let m = crate::core::done::mark(&discovery::discover(), &pane, note, cancel)?;
+    if cancel {
+        println!("{}: no longer marked done", m.tmux_session);
+    } else {
+        println!(
+            "{}: done — closed after {} min of quiet (fleet done --cancel to keep it)",
+            m.tmux_session,
+            crate::core::done::QUIET_MS / 60_000
+        );
+    }
+    Ok(())
+}
+
+/// `fleet close-when-done <target>`: ask a session to close itself once finished.
+pub fn close_when_done(target: &str) -> Result<()> {
+    let s = discovery::resolve(target).map_err(Error::Other)?;
+    if s.backend != Backend::Tmux {
+        return Err(Error::Other(format!(
+            "{} is not in tmux — only a tmux session can close itself",
+            s.headline()
+        )));
+    }
+    if s.status == "waiting" {
+        return Err(Error::Other(format!(
+            "{} is waiting on you — answer it first (the keys would land in its prompt)",
+            s.headline()
+        )));
+    }
+    backend::send(&s, crate::core::done::INSTRUCTION)?;
+    println!("asked {} to close itself when done", s.headline().bold());
+    Ok(())
+}
+
 pub use crate::core::title::{
     Hold, MAX_TITLE as MAX_RENAME, RenameOpts, RenameOutcome, apply_rename,
     clean_title as clean_name,
@@ -589,6 +629,9 @@ pub struct SpawnOpts {
     pub harness: Harness,
     pub tmux_session: Option<String>,
     pub window: bool,
+    /// The session closes itself once finished ([`crate::core::done`]): tmux, the instruction
+    /// below the prompt.
+    pub close_when_done: bool,
 }
 
 impl SpawnOpts {
@@ -639,6 +682,11 @@ pub fn spawn(prompt: Option<String>, from: Option<String>, opts: SpawnOpts) -> R
         .transpose()?
         .flatten();
     let prompt = prompt.unwrap_or_default();
+    let (prompt, backend_kind) = if opts.close_when_done {
+        (crate::core::done::with_instruction(&prompt), Backend::Tmux)
+    } else {
+        (prompt, backend_kind)
+    };
     let launcher = crate::core::gh_identity::wrap_current(
         &with_model(&opts.harness.command(), model.as_deref()),
         opts.harness,
