@@ -195,8 +195,8 @@ export function DetailsPanel(p: DetailsPanelProps & { variant: 'drawer' | 'panel
             </Button>
           </Header>
 
-          {/* Actions first: Review, New (from here), Link (to a stack), Attach. One row; a narrow pane drops the labels. */}
-          {p.onReview || p.onNewFromHere || p.stack || attachCmd || s?.backend === 'tmux' ? (
+          {/* Actions first: Review, New (from here), Link (to a stack), Attach. One row of fixed-width buttons, left-aligned; a narrow pane drops the labels. */}
+          {p.onReview || p.onNewFromHere || p.stack || attachCmd ? (
             <div className="@container flex items-center gap-2 pt-1 pb-2">
               {p.onReview ? (
                 <Button variant="outline" className={ACTION} aria-label="Review changes" title="Review changes (diff)" onClick={p.onReview}>
@@ -273,6 +273,6 @@ export function DetailsPanel(p: DetailsPanelProps & { variant: 'drawer' | 'panel
   )
 }
 
-const ACTION = 'h-9 min-w-0 flex-1 gap-1 rounded-lg px-2 text-xs [&_svg:not([class*=size-])]:size-3.5'
-/** The action's label: shown once the row has room for all four. */
-const LABEL = 'hidden @[15rem]:inline'
+const ACTION = 'h-9 w-9 shrink-0 gap-1 rounded-lg px-1 text-xs @[17.5rem]:w-16 [&_svg:not([class*=size-])]:size-3.5'
+/** The action's label: shown once the row has room for all four at full width. */
+const LABEL = 'hidden @[17.5rem]:inline'
