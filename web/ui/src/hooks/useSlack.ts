@@ -61,6 +61,17 @@ export function useSessionSlackLinks(host: string | null | undefined, sessionId:
 }
 const NONE: SlackLink[] = []
 
+/** How long a link lasts: the choices in Link to Slack and New session. */
+export const SLACK_DURATIONS = [
+  { label: '30m', minutes: 30 },
+  { label: '1h', minutes: 60 },
+  { label: '2h', minutes: 120 },
+  { label: '4h', minutes: 240 },
+  { label: '8h', minutes: 480 },
+  { label: '1d', minutes: 24 * 60 },
+  { label: '2d', minutes: 2 * 24 * 60 },
+]
+
 /** "42m" / "1h 5m" / "1d 3h" left. */
 export function slackLeft(until: number, now: number): string {
   const m = Math.max(1, Math.ceil((until - now) / 60000))

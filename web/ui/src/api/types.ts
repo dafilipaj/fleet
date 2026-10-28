@@ -527,6 +527,8 @@ export interface SpawnRequest {
   ghIdentity?: string
   /** Started from this app's embedded panel (the embed view's `app`): a label on the session. */
   embed?: string
+  /** Start linked to Slack (only on `slack.host`): the prompt goes in with the link's intro. */
+  slack?: { url: string; minutes: number; mode?: 'mention' | 'proactive'; task?: string }
 }
 
 export interface SpawnResponse {
@@ -537,6 +539,8 @@ export interface SpawnResponse {
   tmuxSession: string
   command: string
   trusted: boolean
+  /** The link, when the spawn asked for one. */
+  slack?: SlackLink
 }
 
 export interface KillResponse {

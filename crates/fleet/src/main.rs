@@ -304,6 +304,24 @@ enum Commands {
         /// The session closes itself once its work is finished (`fleet done`; tmux only)
         #[arg(long)]
         close_when_done: bool,
+        /// Start linked to this Slack thread, channel or @person (tmux, on `slack.host` only):
+        /// the prompt goes in with the link's intro, so nothing runs before it knows
+        #[arg(long, value_name = "URL", conflicts_with = "from")]
+        slack: Option<String>,
+        /// How long the --slack link lasts: minutes, or like 30m, 2h, 2d (max 2 days)
+        #[arg(
+            long,
+            value_name = "DURATION",
+            default_value = "2h",
+            requires = "slack"
+        )]
+        slack_for: String,
+        /// The --slack link's instructions: what it may help with (default: the work of this session)
+        #[arg(long, value_name = "TEXT", requires = "slack")]
+        slack_task: Option<String>,
+        /// The --slack link sees every message and steps in when it should (default: woken when mentioned)
+        #[arg(long, requires = "slack")]
+        slack_proactive: bool,
     },
 
     /// Coding-agent harnesses on this host (claude, codex, pi): installed, command, models
@@ -1495,6 +1513,10 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
             tmux_session,
             window,
             close_when_done,
+            slack,
+            slack_for,
+            slack_task,
+            slack_proactive,
         } => commands::spawn(
             prompt,
             from,
@@ -1507,6 +1529,12 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
                 tmux_session,
                 window,
                 close_when_done,
+                slack: slack.map(|url| slack_cmd::SpawnLink {
+                    url,
+                    duration: slack_for,
+                    task: slack_task,
+                    proactive: slack_proactive,
+                }),
             },
         )?,
         Commands::Harness { cmd } => match cmd {
@@ -1563,6 +1591,7 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
                     tmux_session,
                     window,
                     close_when_done: false,
+                    slack: None,
                 },
                 wait: !no_wait,
                 json,
@@ -1616,6 +1645,7 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
                 // A handoff means "over there, out of my way" — a window unless told otherwise.
                 window: !tab,
                 close_when_done: false,
+                slack: None,
             },
             !no_wait,
         )?,
@@ -1761,6 +1791,7 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
                     tmux_session,
                     window,
                     close_when_done: false,
+                    slack: None,
                 },
             )?,
         },
@@ -1813,6 +1844,7 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
                     tmux_session,
                     window,
                     close_when_done: false,
+                    slack: None,
                 },
             )?,
         },

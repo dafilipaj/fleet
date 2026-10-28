@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowRightIcon, CalendarClockIcon, FolderIcon, GitForkIcon, LayersIcon, Loader2Icon, MicIcon, PaperclipIcon, PlayIcon, SquareIcon } from 'lucide-react'
+import { ArrowRightIcon, CalendarClockIcon, FolderIcon, GitForkIcon, LayersIcon, Loader2Icon, MessagesSquareIcon, MicIcon, PaperclipIcon, PlayIcon, SquareIcon } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { api, ApiError } from '@/api/client'
@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Drawer, DrawerContent, DrawerDescription, DrawerHeader, DrawerTitle } from '@/components/ui/drawer'
+import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
@@ -18,6 +19,7 @@ import { useAttach, useFileDrop } from '@/hooks/useAttach'
 import { useFleet } from '@/hooks/useFleet'
 import { useGhIdentities, useHarnesses } from '@/hooks/useHarnesses'
 import { useSettings } from '@/hooks/useSettings'
+import { refreshSlack, SLACK_DURATIONS, useSlack } from '@/hooks/useSlack'
 import { useVoice } from '@/hooks/useVoice'
 import type { SiblingTarget } from '@/hooks/useStackUi'
 import { withContinueTask } from '@/lib/brief'
@@ -230,6 +232,12 @@ function NewSessionForm({
   }, [draftable, prompt])
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  // Start linked to Slack: offered on the bridge's host (`slack.host`) only. The prompt goes in
+  // with the link's intro, so the session never works on it before it knows it is in Slack.
+  const slack = useSlack()
+  const [slackUrl, setSlackUrl] = useState('')
+  const [slackMinutes, setSlackMinutes] = useState(120)
+  const [slackMode, setSlackMode] = useState<'mention' | 'proactive'>('mention')
   // Later: a local `YYYY-MM-DDTHH:MM` the session is scheduled for (`fleet schedule`); null = now.
   const [laterAt, setLaterAt] = useState<string | null>(null)
   // Files dropped on the form / pasted / picked: uploaded to the chosen host, paths go into the prompt.
@@ -340,6 +348,7 @@ function NewSessionForm({
     if (laterAt) return scheduleLater(host, dir.path, laterAt)
     try {
       const sent = withContinueTask(prompt)
+      const linkTo = slackOffered ? slackUrl.trim() : ''
       const res = await api.spawn(host, {
         dir: dir.path,
         prompt: sent.trim() ? sent : undefined,
@@ -347,10 +356,12 @@ function NewSessionForm({
         harness: harness === 'claude' ? undefined : harness,
         ghIdentity: ghIdentity || undefined,
         embed: prefill?.embed || undefined,
+        ...(linkTo ? { slack: { url: linkTo, minutes: slackMinutes, mode: slackMode } } : {}),
       })
+      if (res.slack) void refreshSlack()
       // The draft stays until the session registers: a spawn that never shows up must not lose the prompt.
       onDone()
-      const id = toast.loading(`Starting ${res.name} on ${host}…`, { description: `Waiting for ${who} to register` })
+      const id = toast.loading(`Starting ${res.name} on ${host}…`, { description: res.slack ? 'Linked to Slack' : `Waiting for ${who} to register` })
       watchForSpawned(
         { host, name: res.name, tmuxSession: res.tmuxSession },
         {
@@ -390,6 +401,51 @@ function NewSessionForm({
       setBusy(false)
     }
   }
+
+  const slackOffered = !!slack?.enabled && slack.host === host && !laterAt && !prefill?.embed
+  const slackField = slackOffered ? (
+    <Field label="Slack" hint={slackUrl.trim() ? 'starts linked: the prompt goes in with the link' : 'optional'}>
+      <Input
+        value={slackUrl}
+        onChange={(e) => setSlackUrl(e.target.value)}
+        placeholder="Slack link (a message's thread, a channel) or @person for a DM"
+        aria-label="Slack link"
+        className="h-10 text-sm"
+      />
+      {slackUrl.trim() ? (
+        <div className="flex flex-col gap-2 pt-1">
+          <ToggleGroup type="single" value={String(slackMinutes)} onValueChange={(v) => v && setSlackMinutes(Number(v))} aria-label="How long" className="no-scrollbar w-full justify-start overflow-x-auto">
+            {SLACK_DURATIONS.map((d) => (
+              <ToggleGroupItem
+                key={d.minutes}
+                value={String(d.minutes)}
+                className="h-8 shrink-0 rounded-full border border-border bg-card px-3 text-xs data-[state=on]:border-primary/50 data-[state=on]:bg-accent"
+              >
+                {d.label}
+              </ToggleGroupItem>
+            ))}
+          </ToggleGroup>
+          <ToggleGroup type="single" value={slackMode} onValueChange={(v) => v && setSlackMode(v as 'mention' | 'proactive')} aria-label="When it speaks" className="justify-start">
+            {(
+              [
+                ['mention', 'When mentioned', 'Woken when someone mentions the app or DMs it, and by messages in threads it has posted in'],
+                ['proactive', 'Proactive', 'Sees every message and steps in when it judges it should'],
+              ] as const
+            ).map(([v, label, hint]) => (
+              <ToggleGroupItem
+                key={v}
+                value={v}
+                title={hint}
+                className="h-8 rounded-full border border-border bg-card px-3 text-xs data-[state=on]:border-primary/50 data-[state=on]:bg-accent"
+              >
+                <MessagesSquareIcon className="size-3" /> {label}
+              </ToggleGroupItem>
+            ))}
+          </ToggleGroup>
+        </div>
+      ) : null}
+    </Field>
+  ) : null
 
   const whenField = (
     <Field label="When" hint={laterAt ? `starts on ${host} then, from its own clock` : undefined}>
@@ -746,6 +802,8 @@ function NewSessionForm({
           {ghIdentityField}
 
           {promptField}
+
+          {slackField}
 
           {fixed || prefill?.embed ? null : whenField}
 

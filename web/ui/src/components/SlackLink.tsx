@@ -10,18 +10,8 @@ import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useNow } from '@/hooks/useNow'
-import { refreshSlack, slackLeft, useSessionSlackLinks, useSlack } from '@/hooks/useSlack'
+import { refreshSlack, SLACK_DURATIONS, slackLeft, useSessionSlackLinks, useSlack } from '@/hooks/useSlack'
 import { cn } from '@/lib/utils'
-
-const DURATIONS = [
-  { label: '30m', minutes: 30 },
-  { label: '1h', minutes: 60 },
-  { label: '2h', minutes: 120 },
-  { label: '4h', minutes: 240 },
-  { label: '8h', minutes: 480 },
-  { label: '1d', minutes: 24 * 60 },
-  { label: '2d', minutes: 2 * 24 * 60 },
-]
 
 /**
  * A session linked to Slack (web/lib/slack.mjs): the time left. Nothing for an unlinked one. Not a
@@ -132,7 +122,7 @@ export function SlackLinkSection({ host, session: s }: { host: string; session: 
               className="h-9 text-sm"
             />
             <ToggleGroup type="single" value={String(minutes)} onValueChange={(v) => v && setMinutes(Number(v))} aria-label="How long" className="justify-start">
-              {DURATIONS.map((d) => (
+              {SLACK_DURATIONS.map((d) => (
                 <ToggleGroupItem
                   key={d.minutes}
                   value={String(d.minutes)}

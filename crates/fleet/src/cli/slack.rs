@@ -255,3 +255,70 @@ pub fn reply(id: &str, text: &str, thread: Option<&str>, json: bool) -> Result<(
     }
     Ok(())
 }
+
+/// `fleet spawn --slack <url> --slack-for <duration>`: the link a new session starts with.
+pub struct SpawnLink {
+    pub url: String,
+    pub duration: String,
+    pub task: Option<String>,
+    pub proactive: bool,
+}
+
+/// Before a linked spawn opens anything: this machine runs the bridge (only its own sessions
+/// can be linked).
+pub fn check_linkable() -> Result<()> {
+    let (status, v) = request("GET", "/api/slack", None)?;
+    ok_or_err(&status, &v)?;
+    let me = crate::core::config::get().self_name();
+    match v["host"].as_str() {
+        _ if v["enabled"].as_bool() != Some(true) => Err(Error::Other(format!(
+            "Slack links are off: {}",
+            v["error"]
+                .as_str()
+                .unwrap_or("set slack.host in the config")
+        ))),
+        Some(h) if h != me => Err(Error::Other(format!(
+            "only sessions on {h} can be linked to Slack — spawn there: fleet -H {h} spawn …"
+        ))),
+        _ => Ok(()),
+    }
+}
+
+/// Link the session just started in tmux session `tmux`, retrying until it has registered with a
+/// session id; `first` (its prompt) goes in with the link's intro.
+pub fn link_spawned(tmux: &str, link: &SpawnLink, first: &str) -> Result<()> {
+    let mode = if link.proactive {
+        "proactive"
+    } else {
+        "mention"
+    };
+    let mut body = json!({
+        "url": link.url,
+        "minutes": link.duration,
+        "mode": mode,
+        "tmuxSession": tmux,
+        "first": first,
+        "host": crate::core::config::get().self_name(),
+    });
+    if let Some(t) = &link.task {
+        body["task"] = json!(t);
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(45);
+    loop {
+        let (status, v) = request("POST", "/api/slack/link", Some(&body))?;
+        // 404: not listed yet, 409: no session id yet.
+        let pending =
+            (status == "404" || status == "409") && v["error"].as_str() != Some("not found");
+        if pending && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_secs(1));
+            continue;
+        }
+        ok_or_err(&status, &v).map_err(|e| {
+            Error::Other(format!(
+                "{tmux} started, but linking it to Slack failed: {e} — its prompt was not sent"
+            ))
+        })?;
+        println!("linked: {}", link_line(&v));
+        return Ok(());
+    }
+}

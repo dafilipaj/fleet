@@ -632,6 +632,8 @@ pub struct SpawnOpts {
     /// The session closes itself once finished ([`crate::core::done`]): tmux, the instruction
     /// below the prompt.
     pub close_when_done: bool,
+    /// Start linked to Slack: tmux, no prompt at launch — it goes in with the link's intro.
+    pub slack: Option<crate::cli::slack::SpawnLink>,
 }
 
 impl SpawnOpts {
@@ -687,6 +689,16 @@ pub fn spawn(prompt: Option<String>, from: Option<String>, opts: SpawnOpts) -> R
     } else {
         (prompt, backend_kind)
     };
+    if let Some(link) = &opts.slack {
+        return spawn_linked(
+            &dir,
+            name.as_deref(),
+            &prompt,
+            model.as_deref(),
+            &opts,
+            link,
+        );
+    }
     let launcher = crate::core::gh_identity::wrap_current(
         &with_model(&opts.harness.command(), model.as_deref()),
         opts.harness,
@@ -721,6 +733,48 @@ pub fn spawn(prompt: Option<String>, from: Option<String>, opts: SpawnOpts) -> R
         println!("{desc} in {} — \"{prompt}\"", home_rel(&dir));
     }
     Ok(())
+}
+
+/// `spawn --slack`: start in tmux with no prompt, link the session once it has registered, and
+/// let the link's intro carry the prompt — so it never works on it before it knows it is in Slack.
+fn spawn_linked(
+    dir: &str,
+    name: Option<&str>,
+    prompt: &str,
+    model: Option<&str>,
+    opts: &SpawnOpts,
+    link: &crate::cli::slack::SpawnLink,
+) -> Result<()> {
+    let launcher = crate::core::gh_identity::wrap_current(
+        &with_model(&opts.harness.command(), model),
+        opts.harness,
+    )?;
+    if crate::core::hosts::dry_run() {
+        let line = backend::launch_command(dir, Prompt::Inline(""), name, &launcher, opts.harness);
+        println!("dry-run: would spawn a tmux session: {line}");
+        println!(
+            "dry-run: then link it to {} for {}",
+            link.url, link.duration
+        );
+        return Ok(());
+    }
+    crate::cli::slack::check_linkable()?;
+    let tag = crate::core::jobs::Tag::from_env();
+    let (desc, tmux) = backend::spawn_tagged(
+        Backend::Tmux,
+        dir,
+        Prompt::Inline(""),
+        name,
+        opts.tmux_session.as_deref(),
+        false,
+        &launcher,
+        opts.harness,
+        tag.as_ref(),
+    )?;
+    println!("{desc} in {}", home_rel(dir));
+    let tmux =
+        tmux.ok_or_else(|| Error::Other("the session has no tmux session to link".into()))?;
+    crate::cli::slack::link_spawned(&tmux, link, prompt)
 }
 
 /// `spawn --from <session>`: a new session in the source's cwd (on this host — `-H` already

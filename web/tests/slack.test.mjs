@@ -477,3 +477,52 @@ test('HTTP: /api/slack on the bridge host, proxied elsewhere, off without slack.
   assert.equal((await call(`${servers.bridge}/api/slack/links/bad/unlink`, 'POST', {})).status, 400);
   assert.equal((await call(`${servers.bridge}/api/slack/reply`, 'GET')).status, 405);
 });
+
+test('a spawn linked to Slack: no prompt at launch, linked once it registers, the prompt ends the intro', async (t) => {
+  const fx = fixture(t);
+  const NEW = 'cccccccc-0000-0000-0000-000000000003';
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-spawn-slack-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const spawned = [];
+  const spawner = { spawn: async (o) => (spawned.push(o), { name: o.name, dir: o.dir, tmuxSession: o.name, command: 'claude', trusted: false }) };
+  const start = async (raw, slack) => {
+    const config = normalizeConfig({ spawnDirs: [dir], ...raw }, { env: {}, home: '/home/tester' });
+    const fleet = { localHost: async () => ({ name: raw.self, ok: true, sessions: fx.sessions }) };
+    // The session registers while the spawn waits: first unlisted, then listed without an id, then with one.
+    let waits = 0;
+    const sleep = async () => {
+      waits += 1;
+      if (waits === 1) fx.sessions.push({ session_id: null, name: 'job', status: 'idle', handle: '%7', backend: 'tmux', tmux_session: 'job' });
+      else fx.sessions.at(-1).session_id = NEW;
+    };
+    const api = createApi({ config, fleet, backend: {}, transcripts: {}, spawner, slack, warmFleet: false, sleep });
+    t.after(() => api.stop());
+    const server = createHttpServer({ handleApi: api, uiDir: null });
+    await new Promise((res) => server.listen(0, '127.0.0.1', res));
+    t.after(() => server.close());
+    return `http://127.0.0.1:${server.address().port}`;
+  };
+  const bridge = await start({ self: 'workstation', slack: { host: 'workstation' } }, fx.bridge);
+  const peer = await start({ self: 'laptop', slack: { host: 'workstation' } }, null);
+  const post = async (base, host, body) => {
+    const res = await fetch(`${base}/api/hosts/${host}/spawn`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    return { status: res.status, body: await res.json() };
+  };
+
+  // Refused before anything opens: another host, a bad link, a bad duration.
+  assert.equal((await post(peer, 'laptop', { name: 'job', dir, prompt: 'x', slack: { url: URL_, minutes: 30 } })).status, 400);
+  assert.equal((await post(bridge, 'workstation', { name: 'job', dir, prompt: 'x', slack: { url: 'https://x.test', minutes: 30 } })).status, 400);
+  assert.equal((await post(bridge, 'workstation', { name: 'job', dir, prompt: 'x', slack: { url: URL_, minutes: 0 } })).status, 400);
+  assert.equal(spawned.length, 0);
+
+  const r = await post(bridge, 'workstation', { name: 'job', dir, prompt: 'Help Alex with this', slack: { url: URL_, minutes: 60, mode: 'proactive' } });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(spawned[0].prompt, '');
+  assert.equal(r.body.slack.session, NEW);
+  assert.equal(r.body.slack.mode, 'proactive');
+
+  await fx.bridge.tick();
+  const intro = fx.sent.find((s) => s.id === NEW).text;
+  assert.match(intro, /^\[slack sl-[0-9a-f]{6}\] You are linked to a Slack thread/);
+  assert.match(intro, /How does it work\?[^]*Their request — start on it now[^]*\nHelp Alex with this$/);
+});

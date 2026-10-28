@@ -36,7 +36,7 @@ import {
 import { DEFAULT_STACKS_MODEL } from './config.mjs';
 import { validateDormantRequest } from './dormant.mjs';
 import { validJobName } from './jobs.mjs';
-import { SlackError, validLinkId } from './slack.mjs';
+import { MAX_FIRST, MAX_MINUTES, MAX_TASK, MIN_MINUTES, MODES, SlackError, isPersonTarget, parseMinutes, parseSlackUrl, validLinkId } from './slack.mjs';
 
 export const API_VERSION = 1;
 
@@ -233,6 +233,7 @@ export function createApi({
   logError = () => {},
   sleep = defaultSleep,
   answerKeyGapMs = 80,
+  spawnLinkWaitMs = 45 * 1000,
 }) {
   // Each host advertises its start directories: `spawnDirs` (the New session menu) and, when it
   // has any, `hiddenSpawnDirs` (allowed for spawns, e.g. an app's embedded panel, but not offered).
@@ -494,17 +495,70 @@ export function createApi({
     return { status: 200, body: { ok: true } };
   }
 
+  /**
+   * `slack` on a spawn: `{ url, minutes, mode?, task? }` — the session starts linked. Checked
+   * before anything opens; only the bridge's own host links its sessions.
+   */
+  function spawnSlackRequest(raw, prompt) {
+    if (raw == null) return null;
+    if (typeof raw !== 'object' || Array.isArray(raw)) throw new HttpError('slack must be { url, minutes, mode?, task? }', 400);
+    if (!slack) {
+      const host = config.slack?.host;
+      throw new HttpError(host && host !== config.self ? `only sessions on ${host} can be linked to Slack` : 'no server runs Slack links (slack.host)', 400);
+    }
+    const url = typeof raw.url === 'string' ? raw.url.trim() : '';
+    if (!url) throw new HttpError('slack.url is required: a Slack thread or channel link, or @person', 400);
+    if (!isPersonTarget(url)) {
+      try {
+        parseSlackUrl(url);
+      } catch (err) {
+        throw new HttpError(err.message, 400);
+      }
+    }
+    const minutes = parseMinutes(raw.minutes);
+    if (minutes == null || minutes < MIN_MINUTES || minutes > MAX_MINUTES) throw new HttpError(`slack.minutes must be ${MIN_MINUTES}–${MAX_MINUTES} min (or like 30m, 2h, 2d)`, 400);
+    if (raw.mode != null && !MODES.includes(raw.mode)) throw new HttpError(`slack.mode must be one of: ${MODES.join(', ')}`, 400);
+    if (raw.task != null && (typeof raw.task !== 'string' || raw.task.trim().length > MAX_TASK)) throw new HttpError(`slack.task must be a string of at most ${MAX_TASK} chars`, 400);
+    if (prompt.trim().length > MAX_FIRST) throw new HttpError(`the prompt is too long for a session linked to Slack (max ${MAX_FIRST} chars)`, 400);
+    return { url, minutes, mode: raw.mode ?? undefined, task: raw.task?.trim() || undefined };
+  }
+
+  /** Link a just-spawned session once it has a session id; its prompt goes in with the intro. */
+  async function linkSpawned(tmuxSession, link, first) {
+    const deadline = Date.now() + spawnLinkWaitMs;
+    for (;;) {
+      try {
+        return await slack.link({ ...link, tmuxSession, first, host: config.self });
+      } catch (err) {
+        // 404: not listed yet, 409: no session id yet.
+        if (!(err instanceof SlackError) || ![404, 409].includes(err.status) || Date.now() >= deadline) throw err;
+      }
+      await sleep(1000);
+    }
+  }
+
   async function localSpawn(req) {
     const body = await readJsonBody(req);
     const roots = spawnRoots(config); // hidden spawn dirs are allowed too
     const check = validateSpawnRequest(body, { spawnDirs: config.spawnDirs.map((d) => d.path) });
     if (!check.ok) throw new HttpError(check.error, 400);
+    const link = spawnSlackRequest(body?.slack, check.prompt);
     try {
       check.dir = await resolveAllowedDir(check.dir, roots);
       // No name typed → let Claude derive one and the auto-namer replace it (when it runs).
       const nameGiven = check.nameGiven !== false || !config.autoName?.enabled;
-      const result = await spawner.spawn({ ...check, nameGiven });
+      // Linked: it starts with no prompt, so nothing runs before it knows it is in Slack — the
+      // prompt goes in with the link's intro, as its first prompt.
+      const result = await spawner.spawn({ ...check, ...(link ? { prompt: '' } : {}), nameGiven });
       refreshFleet();
+      if (link) {
+        try {
+          result.slack = await linkSpawned(result.tmuxSession, link, check.prompt);
+        } catch (err) {
+          const why = err?.message ?? String(err);
+          throw new HttpError(`${result.name} started, but linking it to Slack failed: ${why} — its prompt was not sent`, err?.status === 400 ? 400 : 502);
+        }
+      }
       // Name it as soon as it has answered, not at the next periodic pass. Codex titles its
       // own threads and pi keeps the first prompt; the namer drives Claude's `/rename`.
       if (!nameGiven && check.prompt.trim() && spawnNamer && check.harness === 'claude') {
@@ -936,7 +990,9 @@ export function createApi({
     const s = SPAWN_ROUTE.exec(url.pathname);
     if (s) {
       if (req.method !== 'POST') throw new HttpError('method not allowed', 405);
-      return forHost({ req, url, host: decodeURIComponent(s[1]), local: () => localSpawn(req) });
+      // A spawn linked to Slack waits for the session to register before it answers.
+      const timeoutMs = Math.max(peerProxyTimeoutMs, spawnLinkWaitMs + 30 * 1000);
+      return forHost({ req, url, host: decodeURIComponent(s[1]), local: () => localSpawn(req), timeoutMs });
     }
 
     const a = AUTONAME_ROUTE.exec(url.pathname);
