@@ -1,0 +1,50 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[38;5;246m[49m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m←  ☒ Form shape [38;5;16m[48;5;153m ☐ Books [39m[49m ☐ Limit  ☐ Book change  ✔ Submit  →
+
+[1m[38;5;231mWhich cookbooks should the Cookbook picker on the Planner screens offer?[0m
+
+[38;5;153m❯[39m [38;5;246m1.[39m [38;5;153mAll public books (Recommended)[39m
+     [38;5;246mEvery public cookbook the cook can see, searched by the server, with no drafts and no templates. Same rule as the book page, which doesn't restrict by status, so no new rule is invented.[39m
+  [38;5;246m2.[39m Saved books only
+     [38;5;246mHides unsaved and archived books. A shorter list, but a new rule the book page doesn't have: an archived book could get a recipe from its page but not from the list.[39m
+  [38;5;246m3. Type something.[39m
+[38;5;246m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m  4. Chat about this
+
+[38;5;246mEnter to select · Tab/Arrow keys to navigate · Esc to cancel[39m
+
+
+
+
+
+
+
+
+
+
+
