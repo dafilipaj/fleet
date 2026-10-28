@@ -503,7 +503,7 @@ mod tests {
                 let folder = if kind == "plain" { "plain" } else { "perms" };
                 assert_eq!(
                     p.lines[2],
-                    format!("/Users/dariofilipaj/.trustcap-scratch/{folder}")
+                    format!("/Users/exampleuser1/.trustcap-scratch/{folder}")
                 );
                 assert_eq!(p.lines.last().unwrap(), "Security guide");
                 assert!(
@@ -562,12 +562,12 @@ mod tests {
         // are joined by a blank, so the id of such a dialog still changes with the width (the
         // safe side: `different_prompt`, never a wrong accept). Same width, same id.
         let long = format!(
-            "/Users/dariofilipaj/.trustcap-scratch/{}",
+            "/Users/exampleuser1/.trustcap-scratch/{}",
             "a-very-long-folder-name-".repeat(5)
         );
         assert!(long.len() > 100);
         let wide =
-            text("plain-200x50").replace("/Users/dariofilipaj/.trustcap-scratch/plain", &long);
+            text("plain-200x50").replace("/Users/exampleuser1/.trustcap-scratch/plain", &long);
         assert!(wide.contains(&long));
         let (head, tail) = long.split_at(79);
         let narrow = wide.replace(&long, &format!("{head}\n {tail}"));
