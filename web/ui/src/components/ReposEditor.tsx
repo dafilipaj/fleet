@@ -405,7 +405,7 @@ function RepoList({
                   size="sm"
                   aria-label={`${r.name} interval`}
                   title={v === 'default' ? 'The default interval' : v === 'off' ? 'Excluded: never synced' : 'Its own interval'}
-                  className={cn('h-8 w-[6.5rem] shrink-0 justify-between px-2 text-xs tabular-nums', v === 'default' ? 'font-normal text-muted-foreground' : 'font-semibold')}
+                  className={cn('w-[6.5rem] justify-between tabular-nums', v === 'default' ? 'font-normal text-muted-foreground' : 'font-semibold')}
                 >
                   {v === 'default' ? draft.every : v}
                   <ChevronDownIcon className="size-3.5 opacity-60" />

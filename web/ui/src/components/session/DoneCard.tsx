@@ -43,7 +43,7 @@ export function DoneCard({ done, now, onClose }: { done: SessionDone; now: numbe
         <p className="mt-0.5 text-[0.6875rem] text-dimmer">Nothing waits on you here. Close it when you have read it, or write to pick it up again.</p>
       </div>
       {onClose ? (
-        <Button variant={armed ? 'destructive' : 'outline'} size="sm" className="h-8 shrink-0 rounded-full px-3" disabled={closing} onClick={close}>
+        <Button variant={armed ? 'destructive' : 'outline'} size="sm" disabled={closing} onClick={close}>
           {closing ? <Loader2Icon className="animate-spin" /> : <XIcon />}
           {armed ? 'Tap again' : 'Close'}
         </Button>

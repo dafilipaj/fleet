@@ -59,10 +59,10 @@ export function StackBar({ session, pane = false }: { session: Session; pane?: b
         {/* Mobile: icon buttons, so the label keeps its room. */}
         <Button
           variant="ghost"
-          size="sm"
+          size={pane ? 'sm' : 'icon'}
           aria-label="StackBrief"
           title="StackBrief"
-          className={cn('shrink-0 rounded-lg text-xs', pane ? 'h-8 px-2' : '-my-1 size-11 px-0')}
+          className={pane ? undefined : '-my-1 size-11'}
           onClick={open}
         >
           <FileTextIcon />
@@ -70,10 +70,10 @@ export function StackBar({ session, pane = false }: { session: Session; pane?: b
         </Button>
         <Button
           variant="ghost"
-          size="sm"
+          size={pane ? 'sm' : 'icon'}
           aria-label="Spawn sibling"
           title="Spawn sibling"
-          className={cn('shrink-0 rounded-lg text-xs', pane ? 'h-8 px-2' : '-my-1 size-11 px-0')}
+          className={pane ? undefined : '-my-1 size-11'}
           onClick={() =>
             openSiblingSpawn({
               host: home,

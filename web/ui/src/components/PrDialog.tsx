@@ -165,7 +165,7 @@ export function PrDialog({
                 </button>
                 {/* A desktop editor link makes no sense on a phone: hidden on touch-first screens. */}
                 {editorText && editorUrl ? (
-                  <Button asChild variant="outline" size="sm" className="-my-1 ml-auto h-6 shrink-0 px-2 text-xs pointer-coarse:hidden">
+                  <Button asChild variant="outline" size="xs" className="-my-1 ml-auto pointer-coarse:hidden">
                     <a href={editorUrl} title={editorText}>
                       <CodeXmlIcon /> {editorText.replace(/^Open in /, '')}
                     </a>

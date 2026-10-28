@@ -120,7 +120,7 @@ export function BriefSection({ host, brief: st, fileLinks, desktop = false, canc
   const empty = !!b && !b.exists && !summary && !todos.length && !groups.length && !worktrees.length
 
   const regenerateButton = (label: string, className?: string) => (
-    <Button variant="outline" className={cn('h-9 px-3', className)} disabled={busy || !b} onClick={() => void st.regenerate()}>
+    <Button variant="outline" size="lg" className={className} disabled={busy || !b} onClick={() => void st.regenerate()}>
       {busy ? <Loader2Icon className="animate-spin" /> : <SparklesIcon />}
       {busy ? 'Generating…' : label}
     </Button>
@@ -154,10 +154,10 @@ export function BriefSection({ host, brief: st, fileLinks, desktop = false, canc
         />
         <div className="flex items-center gap-2">
           <span className="min-w-0 flex-1 truncate text-xs text-dimmer">{desktop ? '⌘/Ctrl+Enter saves · Esc cancels' : 'Sections: Summary, Resources, Todos'}</span>
-          <Button variant="ghost" className="h-9 px-3" onClick={() => setDraft(null)} disabled={st.saving}>
+          <Button variant="ghost" size="lg" onClick={() => setDraft(null)} disabled={st.saving}>
             Cancel
           </Button>
-          <Button className="h-9 px-4" onClick={() => void saveEdit()} disabled={st.saving}>
+          <Button size="lg" onClick={() => void saveEdit()} disabled={st.saving}>
             {st.saving ? <Loader2Icon className="animate-spin" /> : null}
             Save
           </Button>
@@ -384,7 +384,7 @@ function WorktreesGroup({ worktrees, editor }: { worktrees: BriefWorktree[]; edi
               <span className="text-muted-foreground select-all">{w.display}</span>
             </span>
             {w.editorUrl ? (
-              <Button asChild variant="outline" size="sm" className="h-7 shrink-0 rounded-md px-2 text-xs pointer-coarse:hidden">
+              <Button asChild variant="outline" size="xs" className="pointer-coarse:hidden">
                 <a href={w.editorUrl} title={`Open ${w.display} in ${editor === 'cursor' ? 'Cursor' : 'VS Code'}`}>
                   {label}
                 </a>

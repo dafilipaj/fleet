@@ -162,11 +162,11 @@ function AnswerForm({ id, questions, actions }: { id: string; questions: Questio
         </fieldset>
       ))}
       <div className="flex items-center justify-end gap-2 pt-0.5">
-        <Button variant="ghost" size="sm" className="h-9 rounded-full text-muted-foreground" disabled={!!busy} onClick={() => run('dismiss')}>
+        <Button variant="ghost" size="lg" className="text-muted-foreground" disabled={!!busy} onClick={() => run('dismiss')}>
           {busy === 'dismiss' ? <Loader2Icon className="animate-spin" /> : <XIcon />}
           Dismiss
         </Button>
-        <Button size="sm" className="h-9 rounded-full px-4" disabled={!ready || !!busy} onClick={() => run('answer')}>
+        <Button size="lg" disabled={!ready || !!busy} onClick={() => run('answer')}>
           {busy === 'answer' ? <Loader2Icon className="animate-spin" /> : <SendHorizontalIcon />}
           {questions.length > 1 ? 'Submit answers' : 'Answer'}
         </Button>

@@ -105,7 +105,7 @@ export function SlackLinkSection({ host, session: s }: { host: string; session: 
                 {[l.mode === 'proactive' ? 'Proactive' : 'When mentioned', l.task || 'the work of this session', `${l.delivered} in · ${l.replies} out`, l.pending ? `${l.pending} waiting` : null].filter(Boolean).join(' · ')}
               </div>
             </div>
-            <Button variant="outline" className="h-9 shrink-0 px-3" disabled={busy === l.id} onClick={() => void unlink(l.id)}>
+            <Button variant="outline" size="lg" disabled={busy === l.id} onClick={() => void unlink(l.id)}>
               {busy === l.id ? <Loader2Icon className="animate-spin" /> : <UnlinkIcon />}
               Unlink
             </Button>
@@ -164,10 +164,10 @@ export function SlackLinkSection({ host, session: s }: { host: string; session: 
               {url.trim().startsWith('http') ? 'Everyone there can talk to it until the link ends. Invite the app first.' : 'A person: the app DMs with them — tell them to write to the app, or ask it in the instructions to start.'}
             </p>
             <div className="flex justify-end gap-2">
-              <Button variant="ghost" className="h-9 px-3" onClick={() => setOpen(false)}>
+              <Button variant="ghost" size="lg" onClick={() => setOpen(false)}>
                 Cancel
               </Button>
-              <Button className="h-9 px-3" disabled={!url.trim() || busy === 'link'} onClick={() => void link()}>
+              <Button size="lg" disabled={!url.trim() || busy === 'link'} onClick={() => void link()}>
                 {busy === 'link' ? <Loader2Icon className="animate-spin" /> : <MessagesSquareIcon />}
                 Link
               </Button>
@@ -179,7 +179,7 @@ export function SlackLinkSection({ host, session: s }: { host: string; session: 
               <div className="text-sm">{links.length ? 'Another conversation' : 'Not linked'}</div>
               <div className="truncate text-xs text-dimmer">Let people in a Slack thread talk to this session for a while</div>
             </div>
-            <Button variant="outline" className="h-9 shrink-0 px-3" onClick={() => setOpen(true)}>
+            <Button variant="outline" size="lg" onClick={() => setOpen(true)}>
               <MessagesSquareIcon />
               Link to Slack
             </Button>

@@ -295,7 +295,7 @@ export function ChatView(p: ChatViewProps) {
         <div className={p.wide ? 'mx-auto w-full max-w-4xl px-4 pt-3 pb-4' : 'mx-auto w-full max-w-3xl px-2 pt-3 pb-4'}>
           {p.canLoadOlder || p.loadingOlder ? (
             <div className="flex justify-center pb-3">
-              <Button variant="outline" size="sm" className="h-8 rounded-full px-3.5" disabled={p.loadingOlder} onClick={p.onLoadOlder}>
+              <Button variant="outline" disabled={p.loadingOlder} onClick={p.onLoadOlder}>
                 {p.loadingOlder ? <Loader2Icon className="animate-spin" /> : <ChevronsUpIcon />}
                 {p.loadingOlder ? 'Loading…' : 'Load older'}
               </Button>

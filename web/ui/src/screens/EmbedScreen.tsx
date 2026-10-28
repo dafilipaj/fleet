@@ -81,7 +81,7 @@ function EmbedList({ params }: { params: EmbedParams }) {
               <span className="truncate font-mono text-[0.6875rem]">{dir?.ok ? shortCwd(dir.path, 60) : params.dir}</span>
             </div>
           </div>
-          <Button size="sm" className="h-9 shrink-0 rounded-xl" disabled={!dir?.ok} onClick={() => setSpawning(true)}>
+          <Button size="lg" disabled={!dir?.ok} onClick={() => setSpawning(true)}>
             <PlusIcon /> New session
           </Button>
         </div>
@@ -101,7 +101,7 @@ function EmbedList({ params }: { params: EmbedParams }) {
           ) : sessions.length === 0 ? (
             <div className="flex flex-col items-center gap-3 py-10 text-center text-sm text-dimmer">
               <p>No sessions in {shortCwd(dir.ok ? dir.path : params.dir, 60)} yet.</p>
-              <Button variant="outline" className="rounded-xl" onClick={() => setSpawning(true)}>
+              <Button variant="outline" size="lg" onClick={() => setSpawning(true)}>
                 <PlusIcon /> Start one
               </Button>
             </div>

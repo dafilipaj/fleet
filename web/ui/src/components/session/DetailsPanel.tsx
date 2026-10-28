@@ -240,7 +240,7 @@ export function DetailsPanel(p: DetailsPanelProps & { variant: 'drawer' | 'panel
             {p.stack ? (
               <Row label="Session stack" hint={p.stack.label ?? 'Not in a stack'}>
                 {p.stack.onOpen ? (
-                  <Button variant="outline" className="h-9 px-3" onClick={p.stack.onOpen}>
+                  <Button variant="outline" size="lg" onClick={p.stack.onOpen}>
                     <LayersIcon />
                     StackBrief
                   </Button>

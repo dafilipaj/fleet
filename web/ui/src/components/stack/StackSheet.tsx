@@ -243,10 +243,10 @@ function StackBody({
           <span className="min-w-0 flex-1 truncate text-xs text-dimmer">
             {desktop ? '⌘/Ctrl+Enter saves · Esc cancels · ' : ''}`label:` renames · Sessions is kept by fleet
           </span>
-          <Button variant="ghost" className="h-9 px-3" onClick={() => setEdit(null)} disabled={saving}>
+          <Button variant="ghost" size="lg" onClick={() => setEdit(null)} disabled={saving}>
             Cancel
           </Button>
-          <Button className="h-9 px-4" onClick={() => void save()} disabled={saving}>
+          <Button size="lg" onClick={() => void save()} disabled={saving}>
             {saving ? <Loader2Icon className="animate-spin" /> : null}
             Save
           </Button>
@@ -340,12 +340,12 @@ function StackBody({
       {s && !edit ? (
         <footer className="shrink-0 border-t px-safe">
           <div className="flex flex-wrap items-center gap-2 px-4 py-3">
-          <Button className="h-10 rounded-xl px-4" onClick={spawnSibling}>
+          <Button size="lg" onClick={spawnSibling}>
             <GitForkIcon />
             Spawn sibling
           </Button>
           {editorText && s.editorUrl ? (
-            <Button asChild variant="outline" className="h-10 rounded-xl px-3 pointer-coarse:hidden">
+            <Button asChild variant="outline" size="lg" className="pointer-coarse:hidden">
               <a href={s.editorUrl} title={s.editorUrl}>
                 <CodeXmlIcon />
                 {editorText}
@@ -354,7 +354,8 @@ function StackBody({
           ) : null}
           <Button
             variant="destructive"
-            className={cn('ml-auto h-10 rounded-xl px-3', armed && 'bg-destructive text-white hover:bg-destructive/90 dark:bg-destructive dark:hover:bg-destructive/90')}
+            size="lg"
+            className={cn('ml-auto', armed && 'bg-destructive text-white hover:bg-destructive/90 dark:bg-destructive dark:hover:bg-destructive/90')}
             disabled={deleting}
             onClick={() => void remove()}
           >

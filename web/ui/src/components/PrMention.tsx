@@ -40,7 +40,7 @@ export function PrMention({ pr, className }: { pr: PullRequest; className?: stri
         </span>
         <span className="mt-0.5 line-clamp-2 text-muted-foreground">{m.excerpt}</span>
       </a>
-      <Button variant="ghost" size="sm" className="-my-1 h-7 shrink-0 px-2 text-xs" onClick={() => void seen()} disabled={busy} title="Mark seen">
+      <Button variant="ghost" size="xs" className="-my-1" onClick={() => void seen()} disabled={busy} title="Mark seen">
         {busy ? <Loader2Icon className="animate-spin" /> : <CheckIcon />} Seen
       </Button>
     </div>
