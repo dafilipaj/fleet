@@ -1,0 +1,50 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[38;5;246m[49m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m←  ☒ Form shape  ☒ Books  ☒ Limit [38;5;16m[48;5;153m ☐ Book change [39m[49m ✔ Submit  →
+
+[2m│[0m [1m[38;5;231mIf the cook has typed into the form and later changes the Cookbook, what happens to what they typed?[0m
+
+[38;5;153m❯[39m [38;5;246m1.[39m [38;5;153mRe-fill everything (Recommended)[39m
+     [38;5;246mThe form starts over from the new book: title, servings, cuisine, note and source all come from it. Simple and predictable, since every field depends on the book, but typed text is lost.[39m
+  [38;5;246m2.[39m Keep typed title and note
+     [38;5;246mOnly fields the cook hasn't touched re-fill. Keeps work, but a title like 'Lemon pasta (1)' can end up in a different book, with a suffix that's now wrong.[39m
+  [38;5;246m3. Type something.[39m
+[38;5;246m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m  4. Chat about this
+
+[38;5;246mEnter to select · Tab/Arrow keys to navigate · Esc to cancel[39m
+
+
+
+
+
+
+
+
+
+
+

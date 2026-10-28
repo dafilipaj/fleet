@@ -1,0 +1,50 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[38;5;246m[49m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m←  ☒ Form shape  ☒ Books [38;5;16m[48;5;153m ☐ Limit [39m[49m ☐ Book change  ✔ Submit  →
+
+[2m│[0m [1m[38;5;231mWhen the cook picks a cookbook that's already at its plan's per-book recipe limit (50), what happens now?[0m
+
+[38;5;153m❯[39m [38;5;246m1.[39m [38;5;153mPick, then grey Save (Recommended)[39m
+     [38;5;246mThe book can be picked; the form reads its count and greys Save with 'Recipe limit reached' plus Upgrade / Contact owner, the same as the book page. No extra reads per row.[39m
+  [38;5;246m2.[39m Hide full books in the list
+     [38;5;246mBooks at the limit show greyed in the list. This needs a recipe count for every row in the list, so many extra reads, and the API has no count filter for it.[39m
+  [38;5;246m3. Type something.[39m
+[38;5;246m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m  4. Chat about this
+
+[38;5;246mEnter to select · Tab/Arrow keys to navigate · Esc to cancel[39m
+
+
+
+
+
+
+
+
+
+
+

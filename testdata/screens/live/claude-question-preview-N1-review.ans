@@ -1,0 +1,50 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[38;5;246m[49m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m←  ☒ Form shape  ☒ Books  ☒ Limit  ☒ Book change [38;5;16m[48;5;153m ✔ Submit [38;5;246m[49m →[39m
+
+[1m[38;5;231mReview your answers[0m
+
+ [2m│[0m ● New recipe on the Planner screen needs a cookbook before the form can fill in (title, servings, cuisine, note, source, per-book limit). How should the cook pick one?
+   [38;5;114m→ Cookbook field in form (Recommended)[39m
+ ● Which cookbooks should the Cookbook picker on the Planner screens offer?
+   [38;5;114m→ All public books (Recommended)[39m
+ [2m│[0m ● When the cook picks a cookbook that's already at its plan's per-book recipe limit (50), what happens now?
+   [38;5;114m→ Pick, then grey Save (Recommended)[39m
+ [2m│[0m ● If the cook has typed into the form and later changes the Cookbook, what happens to what they typed?
+   [38;5;114m→ Re-fill everything (Recommended)[39m
+
+[38;5;246mReady to submit your answers?[39m
+
+[38;5;153m❯[39m [38;5;246m1. [38;5;153mSubmit answers[39m
+  [38;5;246m2. [39mCancel
+
+
+
+
+
+

@@ -807,10 +807,11 @@ fn a_form_cut_off_by_the_pane_is_named_clipped() {
     }
 }
 
-// Options with previews are drawn beside them, a layout fleet does not read: never matched,
-// never answered — `layout_unsupported`, not a misreading.
+// A single-select question with previews is drawn in the preview layout (C2), never plainly:
+// a plain form showing its words is one fleet cannot read for sure (no capture shows it) —
+// `layout_unsupported`, never `options` or "another question"; nothing typed.
 #[test]
-fn a_question_with_previews_is_layout_unsupported() {
+fn a_question_with_previews_drawn_plainly_is_not_that_question() {
     let Some(s) = Server::new() else { return };
     let input = json!({ "questions": [{ "question": "Which city?", "header": "City",
         "options": [{ "label": "Paris", "description": "The French capital", "preview": "Seine, Louvre" },
@@ -850,8 +851,230 @@ fn a_question_with_previews_is_layout_unsupported() {
         (1, Some("prompt_incomplete"), Some("layout_unsupported")),
         "{v}"
     );
+    assert!(
+        !v["error"].as_str().unwrap().contains("another question"),
+        "{v}"
+    );
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(read(&log), "", "nothing typed");
+}
+
+/// `testdata/screens/live/claude-question-preview-<name>`: a recorded Claude Code 2.1.312
+/// screen (`.ans`, SGR kept) or `AskUserQuestion` input (`-input.json`).
+fn recorded(name: &str) -> String {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/screens/live");
+    std::fs::read_to_string(dir.join(format!("claude-question-preview-{name}"))).unwrap()
+}
+
+impl Server {
+    /// A `static` agent showing `screen`, its transcript's pending question `tq1` the recorded
+    /// input `input`: (pid, key log).
+    fn showing(&self, name: &str, screen: &str, input: &str) -> (String, PathBuf) {
+        let input: Value = serde_json::from_str(&recorded(&format!("{input}-input.json"))).unwrap();
+        let session = format!("s-{name}");
+        self.question_transcript_of(&session, input);
+        let (log, _) = self.files(name);
+        let file = self.env.path(&format!("{name}.screen"));
+        std::fs::write(&file, screen).unwrap();
+        let pid = self.agent(name, "static", &[&file, &log], &session, "Enter to select");
+        (pid, log)
+    }
+}
+
+// C4 / C5 end to end on recorded screens: `--list` reads a preview form as any question form
+// (answerable when untouched, `preview` in its questions: C1), `--question` plans ↓ and Enter
+// and takes exactly one option, no text. Dry runs only: a recorded screen does not react.
+#[test]
+fn a_recorded_preview_form_is_answerable() {
+    let Some(s) = Server::new() else { return };
+    let (pid, log) = s.showing("prev-a", &recorded("A-initial.ans"), "A");
+    let (code, v, err) = s.fleet(&["answer", &pid, "--list", "--json"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        (&v["answerable"], &v["detail"]),
+        (&json!(true), &Value::Null),
+        "{v}"
+    );
+    let p = &v["prompt"];
+    assert_eq!(
+        (&p["kind"], &p["id"], &p["active"], &p["untouched"]),
+        (&json!("question"), &json!("tq1"), &json!(0), &json!(true))
+    );
+    let input: Value = serde_json::from_str(&recorded("A-input.json")).unwrap();
+    for i in 0..3 {
+        assert_eq!(
+            p["questions"][0]["options"][i]["preview"],
+            input["questions"][0]["options"][i]["preview"],
+            "{i}"
+        );
+    }
+    let (code, v, err) = s.fleet(&[
+        "--dry-run",
+        "answer",
+        &pid,
+        "--question",
+        "tq1",
+        "--answers",
+        "[{\"options\":[2]}]",
+        "--json",
+    ]);
+    assert_eq!((code, &v["dry_run"]), (0, &json!(true)), "{err} {v}");
+    assert_eq!(
+        v["steps"],
+        json!([{ "key": "Down" }, { "key": "Down" }, { "key": "Enter" }])
+    );
+    for answers in [
+        "[{\"text\":\"A wizard\"}]",
+        "[{\"options\":[0],\"text\":\"a note\"}]",
+    ] {
+        let (code, v, _) = s.fleet(&[
+            "answer",
+            &pid,
+            "--question",
+            "tq1",
+            "--answers",
+            answers,
+            "--json",
+        ]);
+        assert_eq!(
+            (code, v["kind"].as_str()),
+            (1, Some("answer_invalid")),
+            "{v}"
+        );
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(read(&log), "", "nothing typed");
+}
+
+// C4 on the two-question scratch form and the live four-question form (its question in the
+// `│ ` gutter, C2a): answerable, and the live answer planned across both layouts.
+#[test]
+fn recorded_forms_with_several_questions_are_answerable() {
+    let Some(s) = Server::new() else { return };
+    for (name, screen, input) in [
+        ("prev-c", "C-initial.ans", "C"),
+        ("prev-live", "N1-q1.ans", "N1"),
+        ("prev-h4", "H4-q1.ans", "H4"),
+    ] {
+        let (pid, log) = s.showing(name, &recorded(screen), input);
+        let (code, v, err) = s.fleet(&["answer", &pid, "--list", "--json"]);
+        assert_eq!(code, 0, "{name}: {err}");
+        assert_eq!(
+            (&v["answerable"], &v["prompt"]["id"]),
+            (&json!(true), &json!("tq1")),
+            "{name}: {v}"
+        );
+        if name == "prev-live" {
+            let (code, v, _) = s.fleet(&[
+                "--dry-run",
+                "answer",
+                &pid,
+                "--question",
+                "tq1",
+                "--answers",
+                "[{\"options\":[1]},{\"options\":[0]},{\"options\":[1]},{\"text\":\"Ask first\"}]",
+                "--json",
+            ]);
+            assert_eq!(code, 0, "{v}");
+            let keys: Vec<String> = v["steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| {
+                    s["key"]
+                        .as_str()
+                        .map_or_else(|| format!("{}", s["text"]), str::to_string)
+                })
+                .collect();
+            assert_eq!(
+                keys.join(" "),
+                "Down Enter Enter Down Enter Down Down \"Ask first\" Enter Enter"
+            );
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(read(&log), "", "{name}: nothing typed");
+    }
+}
+
+// C2's last paragraph end to end: the preview layout's footer over rows fleet cannot walk (no
+// `┌` on option 1's row) is `layout_unsupported`, never `no_form`; nothing typed.
+#[test]
+fn a_preview_form_fleet_cannot_walk_is_layout_unsupported() {
+    let Some(s) = Server::new() else { return };
+    let plain: String = recorded("A-initial.ans")
+        .lines()
+        .map(|l| fleet::core::backend::strip_ansi(l) + "\n")
+        .collect();
+    let damaged = plain.replacen("with      ┌", "with       ", 1);
+    assert_ne!(damaged, plain);
+    let (pid, log) = s.showing("prev-bad", &damaged, "A");
+    let (code, v, err) = s.fleet(&["answer", &pid, "--list", "--json"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        (&v["answerable"], &v["detail"]),
+        (&json!(false), &json!("layout_unsupported")),
+        "{v}"
+    );
+    assert_eq!(
+        (
+            &v["prompt"]["kind"],
+            &v["prompt"]["incomplete"],
+            &v["prompt"]["id"]
+        ),
+        (&json!("question"), &json!(true), &Value::Null)
+    );
+    let (code, v, _) = s.fleet(&[
+        "answer",
+        &pid,
+        "--question",
+        "tq1",
+        "--answers",
+        "[{\"options\":[0]}]",
+        "--json",
+    ]);
+    assert_eq!(
+        (code, v["kind"].as_str(), v["detail"].as_str()),
+        (1, Some("prompt_incomplete"), Some("layout_unsupported")),
+        "{v}"
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(read(&log), "", "nothing typed");
+}
+
+// C4: a multi-select question with previews is drawn plainly (capture E) and answered as a
+// plain form, key by key.
+#[test]
+fn a_multi_select_question_with_previews_is_answered_as_a_plain_form() {
+    let Some(s) = Server::new() else { return };
+    let input = json!({ "questions": [{ "question": "Which city?", "header": "City", "multiSelect": true,
+        "options": [{ "label": "Paris", "description": "The French capital", "preview": "Seine, Louvre" },
+                    { "label": "Rome", "description": "The Italian capital", "preview": "Tiber, Forum" }] }] });
+    s.question_transcript_of("s-mprev", input);
+    let (log, out) = s.files("mprev");
+    let pid = s.agent_cmd(
+        "mprev",
+        &format!(
+            "'{}' multi '{}' '{}' 0",
+            s.env.path("bin/form").display(),
+            log.display(),
+            out.display()
+        ),
+        "s-mprev",
+        "Enter to select",
+    );
+    let (code, v, err) = s.fleet(&[
+        "answer",
+        &pid,
+        "--question",
+        "tq1",
+        "--answers",
+        "[{\"options\":[1]}]",
+        "--json",
+    ]);
+    assert_eq!(code, 0, "{err} {v}");
+    assert_eq!(v["answered"], true);
+    assert_eq!(keys(&log), format!("{DOWN}\n{DOWN}{DOWN}\n"));
+    assert_eq!(read(&out).trim(), "row=3 typed= ticked=01");
 }
 
 #[test]

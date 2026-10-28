@@ -8,6 +8,7 @@
 //! they never count.
 
 use serde::Serialize;
+use unicode_width::UnicodeWidthChar;
 
 use crate::core::harness::Harness;
 use crate::core::questions::Question;
@@ -86,8 +87,10 @@ pub enum Detail {
     /// One is there, but not all of it is on the captured screen: its top cut off, or only some
     /// of its answers shown (a list too tall for the pane, drawn a window at a time).
     Clipped,
-    /// One is there in a layout fleet cannot read for sure: options with previews beside them,
-    /// a frame or a title it cannot tell, answers it cannot walk.
+    /// One is there in a layout fleet cannot read for sure: a form with the preview layout's
+    /// footer it cannot walk (no box edge on option 1's row, numbers with a gap, a row left of
+    /// the box that is neither an option nor a wrapped label), a frame or a title it cannot
+    /// tell, answers it cannot walk.
     LayoutUnsupported,
     /// The form's tabs are not the question's.
     Tabs,
@@ -265,11 +268,12 @@ fn live_answers<'a>(lines: &[&'a str], visible_from: usize) -> Option<(usize, Ve
     Some((last, footer))
 }
 
-/// Claude Code's `AskUserQuestion` form (its footer says "Enter to select").
+/// Claude Code's `AskUserQuestion` form (its footer says "Enter to select"), in either layout.
 pub fn is_question_form(screen: &str) -> bool {
     let (lines, visible_from) = screen_lines(screen);
-    live_answers(&lines, visible_from)
-        .is_some_and(|(_, footer)| footer.iter().any(|c| c.contains("Enter to select")))
+    preview_footer(&lines).is_some_and(|f| f >= visible_from)
+        || live_answers(&lines, visible_from)
+            .is_some_and(|(_, footer)| footer.iter().any(|c| c.contains("Enter to select")))
 }
 
 /// The key a Codex answer's label names as its shortcut: `… (y)` → `y`, `… (esc)` → `Escape`.
@@ -566,7 +570,7 @@ pub struct FormRow {
 
 /// Claude Code's `AskUserQuestion` form as the screen shows it: one tab per question, the
 /// active question and its rows — the options, "Type something", (multi-select) "Submit" /
-/// "Next", "Chat about this".
+/// "Next", "Chat about this" (in the preview layout: the options, then "Chat about this").
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Form {
     /// (header, touched: ☒ — answered, or an option ticked).
@@ -578,6 +582,38 @@ pub struct Form {
     /// when the walk up from row 1 ran off the captured text (the form taller than the pane,
     /// which a fullscreen TUI keeps no scrollback for) or past [`MAX_FORM_HEAD_LINES`].
     pub head_whole: bool,
+    /// How the active question is drawn: each question of a form in its own layout.
+    pub layout: Layout,
+}
+
+/// How a question form draws its active question.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Layout {
+    /// Each option with its description, "Type something", (multi-select) "Submit" / "Next",
+    /// a numbered "Chat about this".
+    Plain,
+    /// Claude Code 2.1.312's layout for a single-select question whose options have previews
+    /// ([`Question::preview_layout`]): the options in a left column, the focused option's
+    /// preview in a box right of `column` (never read), no descriptions, no "Type something",
+    /// a notes row, "Chat about this" unnumbered — the last of [`Form::rows`].
+    Preview {
+        /// The box's left edge, in terminal cells: the `┌` on option 1's row.
+        column: usize,
+        notes: Notes,
+        /// The footer is the notes field's ("ctrl+g to edit in Vim"): the field is open.
+        notes_field: bool,
+    },
+}
+
+/// The preview layout's notes row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Notes {
+    /// `Notes: press n to add notes`.
+    Untouched,
+    /// `Notes: Add notes on this design…`: the field open, nothing typed.
+    Open,
+    /// `Notes: <text>`.
+    Typed(String),
 }
 
 /// "Submit" / "Next" in a multi-select form (no number), with or without the cursor.
@@ -627,8 +663,13 @@ pub fn parse_form(screen: &str) -> Option<Form> {
 /// The question form the screen ends in, or why there is none to read: [`Detail::NoForm`] (no
 /// live list with the form's footer, "Enter to select"), [`Detail::Clipped`] (the footer is
 /// there, but its numbered rows do not run whole up to row 1 on the captured text: row 1 above
-/// it, or rows left out — a list too tall for the pane is drawn a window at a time).
+/// it, or rows left out — a list too tall for the pane is drawn a window at a time),
+/// [`Detail::LayoutUnsupported`] (the preview layout's footer, but rows it cannot walk; see
+/// [`read_preview_form`]).
 pub fn read_form(screen: &str) -> Result<Form, Detail> {
+    if let Some(form) = read_preview_form(screen) {
+        return form;
+    }
     let (lines, visible_from) = screen_lines(screen);
     let (last, footer) = live_answers(&lines, visible_from).ok_or(Detail::NoForm)?;
     if !footer.iter().any(|c| c.contains("Enter to select")) {
@@ -654,27 +695,7 @@ pub fn read_form(screen: &str) -> Result<Form, Detail> {
         }
     }
     let first = first.ok_or(Detail::Clipped)?;
-    // The head: the tabs line and the question, up to the form's top rule.
-    let floor = first.saturating_sub(MAX_FORM_HEAD_LINES);
-    let mut tabs = Vec::new();
-    let mut question = Vec::new();
-    let mut head_whole = false;
-    for j in (floor..first).rev() {
-        let c = lines[j];
-        if is_solid_rule(c) {
-            head_whole = true;
-            break;
-        }
-        if let Some(t) = parse_tabs(c) {
-            tabs = t;
-            head_whole = true;
-            break;
-        }
-        if !c.is_empty() {
-            question.push(c);
-        }
-    }
-    question.reverse();
+    let (tabs, question, head_whole) = read_head(&lines, first);
     let mut rows: Vec<FormRow> = Vec::new();
     for c in &lines[first..=last] {
         if c.is_empty() || is_rule(c) {
@@ -707,9 +728,241 @@ pub fn read_form(screen: &str) -> Result<Form, Detail> {
     }
     Ok(Form {
         tabs,
-        question: squash(&question.join(" ")),
+        question,
         rows,
         head_whole,
+        layout: Layout::Plain,
+    })
+}
+
+/// A form's head above its row 1 (`first`): the tabs line and the question, up to the form's
+/// top rule or tab bar — (tabs, the question's lines joined, read up to the top). A question
+/// longer than 80 characters carries a `│ ` gutter on every line (Claude Code 2.1.312, in
+/// either layout; captures N1, H2–H4): [`content`] drops it with the frame.
+fn read_head(lines: &[&str], first: usize) -> (Vec<(String, bool)>, String, bool) {
+    let floor = first.saturating_sub(MAX_FORM_HEAD_LINES);
+    let mut tabs = Vec::new();
+    let mut question = Vec::new();
+    let mut head_whole = false;
+    for j in (floor..first).rev() {
+        let c = lines[j];
+        if is_solid_rule(c) {
+            head_whole = true;
+            break;
+        }
+        if let Some(t) = parse_tabs(c) {
+            tabs = t;
+            head_whole = true;
+            break;
+        }
+        if !c.is_empty() {
+            question.push(c);
+        }
+    }
+    question.reverse();
+    (tabs, squash(&question.join(" ")), head_whole)
+}
+
+// ------------------------------------------------------------------ the preview layout
+
+/// What the preview layout's footer holds, every variant: "Enter to select · ↑/↓ to navigate ·
+/// n to add notes · [Tab to switch questions · ][ctrl+g to edit in Vim · ]Esc to cancel".
+const PREVIEW_FOOTER: [&str; 2] = ["Enter to select", "n to add notes"];
+/// How far above "Chat about this"'s rule the notes row may be (a typed note wrapped under it).
+const MAX_NOTES_LINES: usize = 12;
+/// How far above the notes row option 1 may be (a box as tall as the pane, labels wrapped).
+const MAX_PREVIEW_ROWS: usize = 200;
+
+/// The preview layout's footer, if the screen ends in one: its index. It is the last non-empty
+/// line — or the one right above it when that is a rule from the left edge (the input box's
+/// top, which Claude Code 2.1.312 drew under a live form when it carried a badge: `─── PR #N
+/// ─`) — and holds both "Enter to select" and "n to add notes". At 80 columns the longer
+/// footers wrap (`… · Tab to switch questions · ` / `Esc to cancel`; `… · ctrl+g to edit in
+/// Vim · Esc` / `to cancel`, captures P2 and P3): when the last line alone doesn't hold the
+/// markers, the two last non-empty lines joined with a space do, and the index is the first's.
+fn preview_footer(lines: &[&str]) -> Option<usize> {
+    let mut filled = (0..lines.len()).rev().filter(|&i| !lines[i].is_empty());
+    let mut footer = filled.next()?;
+    if lines[footer].starts_with("────────") {
+        footer = filled.next()?;
+    }
+    let holds = |text: &str| PREVIEW_FOOTER.iter().all(|m| text.contains(m));
+    if holds(lines[footer]) {
+        return Some(footer);
+    }
+    let first = (0..footer).rev().find(|&i| !lines[i].is_empty())?;
+    let joined = format!("{} {}", lines[first].trim(), lines[footer].trim());
+    holds(&joined).then_some(first)
+}
+
+/// `❯ 1. Label` / `  2. Label` from the left edge (a line as drawn): (cursor, number, label).
+/// Never a box row (spaces up to the box) nor a wrapped label (four spaces).
+fn preview_option(line: &str) -> Option<(bool, usize, &str)> {
+    let (cursor, rest) = match line.strip_prefix("❯ ") {
+        Some(rest) => (true, rest),
+        None => (false, line.strip_prefix("  ")?),
+    };
+    if !rest.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+    let (_, n, label) = option_line(rest)?;
+    Some((cursor, n, label))
+}
+
+/// The terminal cell where the box's top-left corner (`┌` then `─`) starts on `line`.
+fn box_column(line: &str) -> Option<usize> {
+    let mut col = 0;
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '┌' && chars.peek() == Some(&'─') {
+            return Some(col);
+        }
+        col += c.width().unwrap_or(0);
+    }
+    None
+}
+
+/// `line` (as drawn) split at terminal cell `column`: (left of it, trailing blanks dropped; from
+/// it on).
+fn cut_at(line: &str, column: usize) -> (&str, &str) {
+    let mut col = 0;
+    for (i, c) in line.char_indices() {
+        if col >= column {
+            return (line[..i].trim_end(), &line[i..]);
+        }
+        col += c.width().unwrap_or(0);
+    }
+    (line.trim_end(), "")
+}
+
+/// The question form in Claude Code 2.1.312's preview layout the screen ends in (`None`: the
+/// screen does not end in its footer, see [`preview_footer`]). Read from the bottom up: the
+/// footer, "Chat about this" (`❯ ` when the cursor is on it), a solid rule, the notes row,
+/// then the options and the box — every row from option 1's down to the notes row cut at the
+/// column of the `┌` on option 1's row, what is right of it the box (never read), left of it
+/// an option row, a label's wrapped line (four spaces in, joined to the label with one space)
+/// or nothing — then the question and the tab bar as [`read_form`] reads them.
+///
+/// [`Detail::Clipped`] when option 1 is not on the captured text (the head is checked by
+/// [`Form::ready`], as for any form); [`Detail::LayoutUnsupported`] when the footer is there
+/// but the rest cannot be walked so — never [`Detail::NoForm`]. The box may be cut short
+/// (`├─── ✂ ─── N lines hidden ───┤`): it is not read, so that clips nothing.
+fn read_preview_form(screen: &str) -> Option<Result<Form, Detail>> {
+    let (lines, visible_from) = screen_lines(screen);
+    let footer = preview_footer(&lines)?;
+    if footer < visible_from {
+        return Some(Err(Detail::NoForm)); // only in the scrollback: no longer on screen
+    }
+    let drawn: Vec<&str> = screen
+        .lines()
+        .filter(|l| *l != VISIBLE_MARK)
+        .map(str::trim_end)
+        .collect();
+    Some(walk_preview_form(&lines, &drawn, footer))
+}
+
+fn walk_preview_form(lines: &[&str], drawn: &[&str], footer: usize) -> Result<Form, Detail> {
+    const UNREAD: Detail = Detail::LayoutUnsupported;
+    let above = |from: usize| (0..from).rev().find(|&j| !lines[j].is_empty());
+    // "Chat about this", unnumbered, then the rule above it.
+    let chat = above(footer).ok_or(UNREAD)?;
+    let chat_cursor = match lines[chat].strip_prefix(MARKERS) {
+        Some(rest) if rest.trim() == "Chat about this" => true,
+        None if lines[chat] == "Chat about this" => false,
+        _ => return Err(UNREAD),
+    };
+    let rule = above(chat)
+        .filter(|&j| is_solid_rule(lines[j]))
+        .ok_or(UNREAD)?;
+    // The notes row: the nearest "Notes:" above the rule; anything between them is a typed
+    // note's wrapped lines, checked against the box's column below.
+    let notes_row = (rule.saturating_sub(MAX_NOTES_LINES)..rule)
+        .rev()
+        .find(|&j| lines[j].starts_with("Notes:"))
+        .ok_or(UNREAD)?;
+    // Option 1's row, up over the options and the box: rows as drawn, from the left edge. A
+    // line that starts there and is no option (the question, the tab bar, the form's top rule)
+    // is above the options: option 1 is not under it.
+    let floor = notes_row.saturating_sub(MAX_PREVIEW_ROWS);
+    let mut first = None;
+    for j in (floor..notes_row).rev() {
+        match preview_option(drawn[j]) {
+            Some((_, 1, _)) => {
+                first = Some(j);
+                break;
+            }
+            Some(_) => {}
+            None if drawn[j].starts_with(|c: char| !c.is_whitespace()) => return Err(UNREAD),
+            None => {}
+        }
+    }
+    let first = first.ok_or(Detail::Clipped)?;
+    let column = box_column(drawn[first]).ok_or(UNREAD)?;
+    let mut rows: Vec<FormRow> = Vec::new();
+    // A label's wrapped line may follow its option row or another wrapped line only.
+    let mut wraps = false;
+    for line in &drawn[first..notes_row] {
+        let (left, _box) = cut_at(line, column);
+        if let Some((cursor, n, label)) = preview_option(left) {
+            if n != rows.len() + 1 {
+                return Err(UNREAD);
+            }
+            rows.push(FormRow {
+                n: Some(n),
+                label: label.to_string(),
+                checked: None,
+                description: String::new(),
+                // With the cursor on "Chat about this", the option last focused keeps its `❯`
+                // (the box still shows its preview; captures A-down3, A-down4, G-step2–5):
+                // the cursor is on "Chat about this".
+                cursor: cursor && !chat_cursor,
+            });
+            wraps = true;
+        } else if left.is_empty() {
+            wraps = false;
+        } else if wraps && left.starts_with("    ") {
+            let row = rows.last_mut().ok_or(UNREAD)?;
+            row.label.push(' ');
+            row.label.push_str(left.trim());
+        } else {
+            return Err(UNREAD);
+        }
+    }
+    // The notes row and what lies under it: nothing left of the box's column.
+    for line in &drawn[notes_row..rule] {
+        if !cut_at(line, column).0.is_empty() {
+            return Err(UNREAD);
+        }
+    }
+    let note = std::iter::once(&lines[notes_row]["Notes:".len()..])
+        .chain(lines[notes_row + 1..rule].iter().copied())
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let notes = match note.as_str() {
+        "press n to add notes" => Notes::Untouched,
+        "Add notes on this design…" => Notes::Open,
+        _ => Notes::Typed(note),
+    };
+    rows.push(FormRow {
+        n: None,
+        label: "Chat about this".into(),
+        checked: None,
+        description: String::new(),
+        cursor: chat_cursor,
+    });
+    let (tabs, question, head_whole) = read_head(lines, first);
+    Ok(Form {
+        tabs,
+        question,
+        rows,
+        head_whole,
+        layout: Layout::Preview {
+            column,
+            notes,
+            notes_field: lines[footer].contains("ctrl+g"),
+        },
     })
 }
 
@@ -769,6 +1022,18 @@ impl Form {
             ));
         };
         let q = &questions[active];
+        if let Layout::Preview { .. } = self.layout {
+            return self.check_preview(q).map(|()| active);
+        }
+        // Claude Code draws such a question in the preview layout, never plainly: a plain form
+        // is one fleet cannot read for sure here (no capture shows it), not another question's.
+        if q.preview_layout() {
+            return Err((
+                Detail::LayoutUnsupported,
+                "the question's options have previews; the form draws them in no layout fleet reads"
+                    .into(),
+            ));
+        }
         let k = q.options.len();
         if self.rows.len() < k + 2 {
             // The question's first options and nothing after them: a list drawn a window at
@@ -824,9 +1089,55 @@ impl Form {
         self.fresh(q).is_ok()
     }
 
+    /// The preview layout's part of [`Form::check`] for the active question `q`: a question
+    /// Claude Code draws so (single-select, a preview on an option), its options exactly the
+    /// rows, in order, by label (wrapped lines joined, compared squashed). Descriptions are not
+    /// drawn, and the box is not compared: it renders the preview as Markdown and may be cut.
+    /// So two questions with the same headers, text and labels but other descriptions or
+    /// previews read as the same here — knowingly weaker than the plain layout's check.
+    fn check_preview(&self, q: &Question) -> Result<(), (Detail, String)> {
+        if !q.preview_layout() {
+            return Err((
+                Detail::Options,
+                "the form draws previews beside its answers; this question is not drawn so".into(),
+            ));
+        }
+        let numbered: Vec<&FormRow> = self.rows.iter().filter(|r| r.n.is_some()).collect();
+        let k = q.options.len();
+        let same = numbered
+            .iter()
+            .zip(&q.options)
+            .all(|(r, o)| squash(&r.label) == squash(&o.label));
+        match (numbered.len(), same) {
+            (n, true) if n == k => Ok(()),
+            (n, true) if n < k => Err((
+                Detail::Clipped,
+                "the form shows only some of its answers".into(),
+            )),
+            _ => Err((Detail::Options, "the form has other answers".into())),
+        }
+    }
+
     /// [`Form::untouched`], or what was done to it: [`Detail::Touched`] (a tab answered, a box
-    /// ticked, text typed), else [`Detail::CursorMoved`] (the cursor off the first answer).
+    /// ticked, text typed; in the preview layout, notes typed or their field open), else
+    /// [`Detail::CursorMoved`] (the cursor off the first answer — in the preview layout on
+    /// another option or on "Chat about this").
     pub fn fresh(&self, q: &Question) -> Result<(), Detail> {
+        if let Layout::Preview {
+            notes, notes_field, ..
+        } = &self.layout
+        {
+            if *notes != Notes::Untouched
+                || *notes_field
+                || self.tabs.iter().any(|(_, touched)| *touched)
+            {
+                return Err(Detail::Touched);
+            }
+            return match self.cursor() {
+                Some(0) => Ok(()),
+                _ => Err(Detail::CursorMoved),
+            };
+        }
         let k = q.options.len();
         let typed = !self
             .rows
@@ -903,6 +1214,11 @@ pub struct Review {
 /// ❯ 1. Submit answers
 ///   2. Cancel
 /// ```
+///
+/// A question longer than 80 characters carries a `│ ` gutter (Claude Code 2.1.312, captures
+/// N1, H2–H4): its item reads ` │ ● <question>`, its wrapped lines ` │   …`. [`content`] drops it
+/// with the frame; the wrapped lines are joined to the item's question with one space, as an
+/// answer's are. It never stands before a `→` answer line, "Submit answers" or "Cancel".
 pub fn parse_review(screen: &str) -> Option<Review> {
     let (lines, visible_from) = screen_lines(screen);
     let (last, _) = live_answers(&lines, visible_from)?;
@@ -919,24 +1235,37 @@ pub fn parse_review(screen: &str) -> Option<Review> {
         .and_then(|i| parse_tabs(lines[i]))
         .unwrap_or_default();
     let mut items: Vec<(String, String)> = Vec::new();
-    let mut answer_open = false;
+    // What a line that is neither an item nor an answer continues: the item's question (until
+    // its answer), its answer, or nothing (after a blank line).
+    #[derive(PartialEq)]
+    enum Open {
+        Nothing,
+        Question,
+        Answer,
+    }
+    let mut open = Open::Nothing;
     for c in &lines[head + 1..submit] {
         if c.is_empty() || c.starts_with("Ready to submit") {
-            answer_open = false;
+            open = Open::Nothing;
             continue;
         }
         if let Some(q) = c.strip_prefix("● ") {
             items.push((q.to_string(), String::new()));
-            answer_open = false;
+            open = Open::Question;
         } else if let Some(a) = c.strip_prefix("→ ") {
             let item = items.last_mut()?;
             item.1 = a.to_string();
-            answer_open = true;
-        } else if answer_open {
-            // A long answer wraps: the TUI breaks it at a space.
+            open = Open::Answer;
+        } else if open != Open::Nothing {
+            // A long question or answer wraps: the TUI breaks it at a space.
             let item = items.last_mut()?;
-            item.1.push(' ');
-            item.1.push_str(c);
+            let text = if open == Open::Question {
+                &mut item.0
+            } else {
+                &mut item.1
+            };
+            text.push(' ');
+            text.push_str(c);
         } else {
             return None;
         }
@@ -2287,5 +2616,474 @@ Ready to submit your answers?
             &format!("  $ bash -lc '\n{body}  ls'\n"),
         );
         assert_eq!(detail(&far, Harness::Codex), Detail::Clipped);
+    }
+
+    // --- the preview layout and the long question's gutter, on real captures --------------
+    //
+    // Claude Code 2.1.312, 2026-10-28: testdata/screens/live/claude-question-preview-*
+    // (see claude-question-preview-README.md). Point numbers (C2, C2a, C3, C4, C5) are the
+    // contract's: docs/cli.md, "Answering prompts".
+
+    const LIVE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/screens/live");
+
+    /// A recorded screen as `fleet answer` captures it (`capture-pane -p`: no SGR).
+    fn captured(name: &str) -> String {
+        let path = format!("{LIVE}/claude-question-preview-{name}");
+        let raw = std::fs::read_to_string(format!("{path}.ans"))
+            .or_else(|_| std::fs::read_to_string(format!("{path}.txt")))
+            .unwrap_or_else(|e| panic!("{path}: {e}"));
+        raw.lines()
+            .map(crate::core::backend::strip_ansi)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n"
+    }
+
+    /// A recorded `AskUserQuestion` input.
+    fn asked(name: &str) -> Vec<Question> {
+        let text =
+            std::fs::read_to_string(format!("{LIVE}/claude-question-preview-{name}-input.json"))
+                .unwrap();
+        normalize_questions(&serde_json::from_str(&text).unwrap()).unwrap()
+    }
+
+    /// The questions a capture's call asked. A's for B and G (the same input). D, E and F are
+    /// A's as their prompts on screen show them: only option 1 with a preview; multi-select;
+    /// option 1's preview 45 lines (its text is never compared). N1 is the four-question input
+    /// of the live form's shape; H2's capture asked the first three of its file's four
+    /// questions (its tab bar).
+    fn scenario(name: &str) -> Vec<Question> {
+        let mut q = asked("A");
+        match name.split('-').next().unwrap() {
+            "A" | "B" | "G" => {}
+            "C" => return asked("C"),
+            "D" => {
+                q[0].options.truncate(2);
+                q[0].options[1].preview = None;
+            }
+            "E" => q[0].multi_select = true,
+            "F" => {
+                q[0].options.truncate(2);
+                q[0].options[0].preview = Some(
+                    (1..=43)
+                        .map(|i| format!("line {i:02}"))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                );
+            }
+            "H2" => {
+                let mut h = asked("H2");
+                h.truncate(3);
+                return h;
+            }
+            h => return asked(h),
+        }
+        q
+    }
+
+    fn preview_of(f: &Form) -> (usize, &Notes, bool) {
+        match &f.layout {
+            Layout::Preview {
+                column,
+                notes,
+                notes_field,
+            } => (*column, notes, *notes_field),
+            Layout::Plain => panic!("read in the plain layout: {f:?}"),
+        }
+    }
+
+    fn labels(f: &Form) -> Vec<&str> {
+        f.rows.iter().map(|r| r.label.as_str()).collect()
+    }
+
+    /// (screen, the row the cursor is on: the option's index, or the options' count for "Chat
+    /// about this").
+    const PREVIEW_SCREENS: [(&str, usize); 27] = [
+        ("A-initial", 0),
+        ("A-down1", 1),
+        ("A-down2", 2),
+        ("A-down3", 3),
+        ("A-down4", 3),
+        ("A-notes-open", 0),
+        ("A-notes-typed", 0),
+        ("B-initial-80x24", 0),
+        ("B-down1-80x24", 1),
+        ("C-initial", 0),
+        ("D-initial", 0),
+        ("D-down1", 1),
+        ("F-initial", 0),
+        ("G-step1", 2),
+        ("G-step2", 3),
+        ("G-step3", 3),
+        ("G-step4", 3),
+        ("G-step5", 3),
+        ("G-tab", 1),
+        ("G-right", 1),
+        ("G-down1", 1),
+        ("N1-q1", 0),
+        ("P2-q1", 0),
+        ("P3-initial", 0),
+        ("P3-notes-open", 0),
+        ("P3-notes-typed", 0),
+        ("P3-after-esc", 0),
+    ];
+
+    // C2 on every capture of the layout: the box's column (34 at 200 and at 80 columns),
+    // labels wrapped over two or three lines and joined, the box never read (cut by
+    // `✂ … lines hidden` at 80x24 and in the 45-line preview at 200x50: not clipped),
+    // "Chat about this" with the cursor, the notes row's three states, the live `│ ` question.
+    #[test]
+    fn c2_every_recorded_preview_form_is_read() {
+        for (name, cursor) in PREVIEW_SCREENS {
+            let screen = captured(name);
+            let f = read_form(&screen).unwrap_or_else(|d| panic!("{name}: {d:?}"));
+            assert!(is_question_form(&screen), "{name}");
+            let qs = scenario(name);
+            let q = &qs[0];
+            let (column, notes, notes_field) = preview_of(&f);
+            assert_eq!(column, 34, "{name}");
+            // The notes row's state, and whether the notes field is open (its footer says so).
+            let (want, field) = match name {
+                "A-notes-open" | "P3-notes-open" => (Notes::Open, true),
+                "A-notes-typed" => (Notes::Typed("my note here".into()), true),
+                "P3-notes-typed" => (Notes::Typed("a note".into()), true),
+                // Esc closed only the field; the note stays.
+                "P3-after-esc" => (Notes::Typed("a note".into()), false),
+                _ => (Notes::Untouched, false),
+            };
+            assert_eq!((notes, notes_field), (&want, field), "{name}");
+            assert!(f.head_whole, "{name}");
+            assert_eq!(
+                f.tabs,
+                qs.iter()
+                    .map(|q| (q.header.clone(), false))
+                    .collect::<Vec<_>>(),
+                "{name}"
+            );
+            assert_eq!(f.question, q.question, "{name}");
+            let mut want: Vec<&str> = q.options.iter().map(|o| o.label.as_str()).collect();
+            want.push("Chat about this");
+            assert_eq!(labels(&f), want, "{name}");
+            assert_eq!(
+                f.rows.iter().map(|r| r.n).collect::<Vec<_>>(),
+                (1..=q.options.len())
+                    .map(Some)
+                    .chain([None])
+                    .collect::<Vec<_>>(),
+                "{name}"
+            );
+            assert!(
+                f.rows
+                    .iter()
+                    .all(|r| r.description.is_empty() && r.checked.is_none())
+            );
+            assert_eq!(f.cursor(), Some(cursor), "{name}");
+        }
+        // The live-shaped question carries the gutter; it is dropped (C2.4, C2a).
+        assert!(captured("N1-q1").contains("\n│ New recipe on the Planner"));
+        // At 80 columns the longer footers wrap (P2, P3): read from the last two lines.
+        assert!(captured("P2-q1").contains("Tab to switch questions · \nEsc to cancel"));
+        assert!(captured("P3-notes-open").contains("in Vim · Esc\nto cancel"));
+        // At 80 columns the box is cut (`✂`) beside option 1's wrapped label, and option 3 is
+        // drawn under the box: all of it read, nothing clipped.
+        let narrow = captured("B-initial-80x24");
+        assert!(narrow.contains("(Recommended)                 ├─── ✂ ─── 7 lines hidden"));
+        assert!(captured("F-initial").contains("├─── ✂ ─── 21 lines hidden"));
+    }
+
+    // C2: the column is read off option 1's row, never assumed.
+    #[test]
+    fn c2_the_box_column_is_read_not_assumed() {
+        let lines: Vec<String> = captured("A-initial").lines().map(String::from).collect();
+        let first = lines.iter().position(|l| l.starts_with("❯ 1. ")).unwrap();
+        let notes = lines.iter().position(|l| l.contains("Notes:")).unwrap();
+        let moved: String = lines
+            .iter()
+            .enumerate()
+            .map(|(i, l)| {
+                let at = l.char_indices().nth(34).map(|(b, _)| b);
+                match at {
+                    Some(b) if (first..=notes).contains(&i) => {
+                        format!("{}    {}\n", &l[..b], &l[b..])
+                    }
+                    _ => format!("{l}\n"),
+                }
+            })
+            .collect();
+        let f = read_form(&moved).unwrap();
+        assert_eq!(preview_of(&f).0, 38);
+        assert_eq!(f.ready(&scenario("A")), Ok(()));
+    }
+
+    // C2's last paragraph: the footer is there, the rest cannot be walked — never `no_form`.
+    #[test]
+    fn c2_a_preview_footer_it_cannot_walk_is_layout_unsupported() {
+        let a = captured("A-initial");
+        for (why, screen) in [
+            (
+                "no ┌ on option 1's row",
+                a.replacen("with      ┌", "with       ", 1),
+            ),
+            (
+                "numbers with a gap",
+                a.replace("  3. Single scrolling page", "  4. Single scrolling page"),
+            ),
+            (
+                "a row left of the box neither an option nor a wrapped label",
+                a.replace("    grouped sections  ", "  x grouped sections"),
+            ),
+            (
+                "a wrapped label after a blank row",
+                a.replacen(
+                    "                                  │ │          │      [Save changes]",
+                    "    more label                    │ │          │      [Save changes]",
+                    1,
+                ),
+            ),
+            (
+                "no Chat about this",
+                a.replace("  Chat about this", "  Chat about that"),
+            ),
+            (
+                "no notes row",
+                a.replace("Notes: press n", "Nodes: press n"),
+            ),
+            (
+                "the notes row not at the box's column",
+                a.replace("                                  Notes:", "Notes:"),
+            ),
+        ] {
+            assert_ne!(screen, a, "{why}: the screen must change");
+            assert_eq!(read_form(&screen), Err(Detail::LayoutUnsupported), "{why}");
+            assert!(is_question_form(&screen), "{why}");
+        }
+    }
+
+    // C2: a preview form whose option rows or head run off the captured screen is clipped;
+    // one left in the scrollback is no form.
+    #[test]
+    fn c2_a_preview_form_cut_off_is_clipped() {
+        let a = captured("A-initial");
+        let lines: Vec<&str> = a.lines().collect();
+        let first = lines.iter().position(|l| l.starts_with("❯ 1. ")).unwrap();
+        let from = |i: usize| format!("{VISIBLE_MARK}\n{}\n", lines[i..].join("\n"));
+        // Option 1's row off screen.
+        assert_eq!(read_form(&from(first + 1)), Err(Detail::Clipped));
+        // The tab bar off screen: read, but not whole.
+        let headless = from(first - 2);
+        let f = read_form(&headless).unwrap();
+        assert!(!f.head_whole);
+        assert_eq!(why(&headless, &scenario("A")), Some(Detail::Clipped));
+        // In the scrollback, the screen now showing something else.
+        assert_eq!(
+            read_form(&format!("{a}{VISIBLE_MARK}\n● done\n")),
+            Err(Detail::NoForm)
+        );
+    }
+
+    // C3: which question it shows, and untouched, against each capture's question.
+    #[test]
+    fn c3_shows_and_untouched_on_every_capture() {
+        for (name, _) in PREVIEW_SCREENS {
+            let screen = captured(name);
+            let qs = scenario(name);
+            let f = read_form(&screen).unwrap();
+            assert_eq!(f.shows(&qs), Ok(0), "{name}");
+            let want = match name {
+                "A-notes-open" | "A-notes-typed" | "P3-notes-open" | "P3-notes-typed"
+                | "P3-after-esc" => Some(Detail::Touched),
+                _ if f.cursor() != Some(0) => Some(Detail::CursorMoved),
+                _ => None,
+            };
+            assert_eq!(why(&screen, &qs), want, "{name}");
+            assert_eq!(f.untouched(&qs[0]), want.is_none(), "{name}");
+            assert_eq!(
+                screen_shows_question(&screen, &qs),
+                want.is_none(),
+                "{name}"
+            );
+        }
+        let a = captured("A-initial");
+        let qa = scenario("A");
+        // A tab answered (☒) is touched: P1's question 2, a preview question after a plain one
+        // answered (P1-q1 is the plain question 1, its form not in this layout).
+        let p1 = asked("P1");
+        let q2 = captured("P1-q2");
+        let f = read_form(&q2).unwrap();
+        assert_eq!(preview_of(&f).0, 34);
+        assert_eq!(
+            f.tabs,
+            [("Fruit".to_string(), true), ("Layout".to_string(), false)]
+        );
+        assert_eq!(f.shows(&p1), Ok(1));
+        assert_eq!(why(&q2, &p1), Some(Detail::Touched));
+        assert_eq!(why(&captured("P1-q1"), &p1), None);
+        assert_eq!(
+            why(&captured("P1-q2-down1"), &p1),
+            Some(Detail::Touched),
+            "the tab answered comes first"
+        );
+        // The notes field open with the plain notes row: its footer says so — touched.
+        assert_eq!(
+            why(
+                &a.replace(
+                    "n to add notes · Esc",
+                    "n to add notes · ctrl+g to edit in Vim · Esc"
+                ),
+                &qa
+            ),
+            Some(Detail::Touched)
+        );
+    }
+
+    // C3: what the preview layout's check compares, and what it knowingly does not.
+    #[test]
+    fn c3_the_preview_check_compares_tabs_question_and_labels_only() {
+        let a = captured("A-initial");
+        let f = read_form(&a).unwrap();
+        let qa = scenario("A");
+        // Other descriptions and previews, the same labels: the same question here.
+        let mut other = qa.clone();
+        for o in &mut other[0].options {
+            o.description = "something else".into();
+            o.preview = Some("another mockup".into());
+        }
+        assert_eq!(f.ready(&other), Ok(()));
+        let check = |qs: &[Question]| f.check(qs).map_err(|(d, _)| d);
+        let mut renamed = qa.clone();
+        renamed[0].options[1].label = "Side tabs".into();
+        assert_eq!(check(&renamed), Err(Detail::Options));
+        let mut more = qa.clone();
+        let mut wizard = more[0].options[2].clone();
+        wizard.label = "Wizard".into();
+        more[0].options.push(wizard);
+        assert_eq!(check(&more), Err(Detail::Clipped), "its first options only");
+        let mut fewer = qa.clone();
+        fewer[0].options.truncate(2);
+        assert_eq!(check(&fewer), Err(Detail::Options));
+        // Not drawn in this layout: without previews, or multi-select (capture E).
+        let mut plain = qa.clone();
+        for o in &mut plain[0].options {
+            o.preview = None;
+        }
+        assert_eq!(check(&plain), Err(Detail::Options));
+        assert_eq!(check(&scenario("E")), Err(Detail::Options));
+        let mut asked_other = qa.clone();
+        asked_other[0].question = "Which layout should the profile page use?".into();
+        assert_eq!(check(&asked_other), Err(Detail::Question));
+        assert_eq!(check(&scenario("C")), Err(Detail::Tabs));
+        // And the plain layout never shows a question Claude Code draws with previews.
+        let mut color = two();
+        color[0].options[0].preview = Some("red".into());
+        // — a form fleet cannot read for sure (no capture shows it), not another question's.
+        let (detail, reason) = parse_form(&color_form())
+            .unwrap()
+            .check(&color)
+            .unwrap_err();
+        assert_eq!(detail, Detail::LayoutUnsupported);
+        assert!(!reason.contains("another question"), "{reason}");
+    }
+
+    // C4: E, a multi-select question with previews, is drawn plainly and read as a plain form.
+    #[test]
+    fn c4_a_multi_select_question_with_previews_is_a_plain_form() {
+        let qs = scenario("E");
+        let screen = captured("E-initial");
+        assert!(!screen.contains("n to add notes"));
+        let f = read_form(&screen).unwrap();
+        assert_eq!(f.layout, Layout::Plain);
+        assert_eq!(f.rows[0].checked, Some(false));
+        assert_eq!(f.rows[0].label, qs[0].options[0].label);
+        assert_eq!(why(&screen, &qs), None);
+        assert_eq!(why(&captured("E-down1"), &qs), Some(Detail::CursorMoved));
+    }
+
+    // C2a: a question longer than 80 characters carries a `│ ` gutter on every line, in either
+    // layout; it is dropped. H2–H4 at 60, 73, 80 (none) and 81 to 230 (always), N1 the live
+    // form's shape (a preview question, then three plain ones; 165, 72, 105 and 100 characters).
+    #[test]
+    fn c2a_the_long_questions_gutter_is_dropped_in_both_layouts() {
+        for (set, n) in [("N1", 4), ("H2", 3), ("H3", 4), ("H4", 4)] {
+            let qs = scenario(set);
+            assert_eq!(qs.len(), n);
+            for (i, q) in qs.iter().enumerate() {
+                let name = format!("{set}-q{}", i + 1);
+                let screen = captured(&name);
+                let head = q.question.split(' ').take(3).collect::<Vec<_>>().join(" ");
+                assert_eq!(
+                    screen.contains(&format!("\n│ {head}")),
+                    q.question.chars().count() > 80,
+                    "{name}: the gutter stands before every question over 80 characters"
+                );
+                let f = read_form(&screen).unwrap_or_else(|d| panic!("{name}: {d:?}"));
+                assert_eq!(f.question, q.question, "{name}");
+                assert_eq!(f.shows(&qs), Ok(i), "{name}");
+                assert_eq!(
+                    f.layout != Layout::Plain,
+                    q.preview_layout(),
+                    "{name}: each question in its own layout"
+                );
+                // The first question untouched; later ones show the earlier tabs answered.
+                let want = (i > 0).then_some(Detail::Touched);
+                assert_eq!(why(&screen, &qs), want, "{name}");
+            }
+        }
+        // 230 characters wrap: both lines carry the gutter, joined without it.
+        let long = captured("H4-q4");
+        assert!(long.contains("\n│ foxtrot golf hotel india juliet ki?"));
+    }
+
+    /// Every pending answer as the review lists it: `(question, answer)`.
+    fn listed(qs: &[Question], answers: &[&str]) -> Vec<(String, String)> {
+        qs.iter()
+            .zip(answers)
+            .map(|(q, a)| (q.question.clone(), a.to_string()))
+            .collect()
+    }
+
+    // C5 / C2a: the review screen, with and without the gutter, a gutter-carrying item
+    // wrapped over two lines.
+    #[test]
+    fn c5_the_review_is_read_with_and_without_the_gutter() {
+        let recommended = [
+            "Cookbook field in form (Recommended)",
+            "All public books (Recommended)",
+            "Pick, then grey Save (Recommended)",
+            "Re-fill everything (Recommended)",
+        ];
+        let live = scenario("N1");
+        let screen = captured("N1-review");
+        assert!(screen.contains(" │ ● New recipe"));
+        let r = parse_review(&screen).unwrap();
+        assert_eq!(r.items, listed(&live, &recommended));
+        assert!(r.submit_focused);
+        assert!(r.tabs.iter().all(|(_, done)| *done));
+        // After a plain question 1, a preview question 2 (P1, P2): the review as drawn.
+        let p1 = parse_review(&captured("P1-review")).unwrap();
+        assert_eq!(p1.items, listed(&scenario("P1"), &["Apple", "Sidebar"]));
+        let p2 = parse_review(&captured("P2-review")).unwrap();
+        assert_eq!(
+            p2.items,
+            listed(
+                &scenario("P2"),
+                &[
+                    "Sidebar navigation with grouped sections (Recommended)",
+                    "Beta"
+                ]
+            )
+        );
+        let c = parse_review(&captured("C-review")).unwrap();
+        assert_eq!(c.items, listed(&scenario("C"), &["Top tabs", "Beta"]));
+        for (name, set, n) in [
+            ("H2-q4", "H2", 3),
+            ("H3-review", "H3", 4),
+            ("H4-review", "H4", 4),
+        ] {
+            let screen = captured(name);
+            let r = parse_review(&screen).unwrap_or_else(|| panic!("{name}"));
+            assert_eq!(r.items, listed(&scenario(set), &["Yes"; 4][..n]), "{name}");
+        }
+        // The 230-character question wraps on the review: ` │   …` continues the item.
+        assert!(captured("H4-review").contains("\n │   foxtrot golf hotel india juliet ki?"));
     }
 }

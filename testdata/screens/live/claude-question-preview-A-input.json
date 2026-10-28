@@ -1,0 +1,26 @@
+{
+  "questions": [
+    {
+      "question": "Which layout should the settings page use?",
+      "header": "Layout",
+      "multiSelect": false,
+      "options": [
+        {
+          "label": "Sidebar navigation with grouped sections (Recommended)",
+          "description": "Left rail with sections",
+          "preview": "┌──────────┬─────────────────────┐\n│ General  │ Settings / General  │\n│ Billing  │                     │\n│ Team     │ Name   [__________] │\n│ Security │ Email  [__________] │\n│          │                     │\n│          │      [Save changes] │\n└──────────┴─────────────────────┘"
+        },
+        {
+          "label": "Top tabs",
+          "description": "Horizontal tabs",
+          "preview": "┌────────────────────────────────┐\n│ General | Billing | Team       │\n├────────────────────────────────┤\n│ Name   [__________]            │\n│ Email  [__________]            │\n│                                │\n│            [Save changes]      │\n└────────────────────────────────┘"
+        },
+        {
+          "label": "Single scrolling page",
+          "description": "All on one page",
+          "preview": "┌────────────────────────────────┐\n│ General                        │\n│ Name [______]                  │\n│ ──────────────────────         │\n│ Billing                        │\n│ Plan [Pro v]                   │\n│ ──────────────────────         │\n│ Team                           │\n└────────────────────────────────┘"
+        }
+      ]
+    }
+  ]
+}
