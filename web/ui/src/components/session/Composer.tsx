@@ -186,12 +186,19 @@ export function Composer({
     else if (intent === 'tap' && onHandle) setChipsOpen((o) => !o)
   }
 
-  // Auto-grow up to ~5 rows, then scroll inside.
+  // Auto-grow up to ~5 rows, then scroll inside. Measuring needs `height: auto`, which collapses the
+  // textarea for a moment: hold its row's height meanwhile, or the chat above grows, clamps its
+  // scrollTop and reads that as the user scrolling up (follow lost); keep the textarea's own scroll too.
   useLayoutEffect(() => {
     const el = ta.current
     if (!el) return
+    const row = el.parentElement
+    const top = el.scrollTop
+    if (row) row.style.minHeight = `${row.offsetHeight}px`
     el.style.height = 'auto'
     el.style.height = `${Math.min(MAX_TEXTAREA_PX, Math.max(44, el.scrollHeight))}px`
+    if (row) row.style.minHeight = ''
+    el.scrollTop = top
     if (caretToEnd.current) {
       caretToEnd.current = false
       el.focus()
