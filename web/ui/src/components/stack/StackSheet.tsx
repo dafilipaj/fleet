@@ -401,7 +401,7 @@ function Members({ stack, onOpen, now }: { stack: StackView; onOpen: (m: StackMe
                     </span>
                   ) : null}
                   <span className={cn('shrink-0 text-xs', live ? STATUS_TEXT[statusMeta(status).key] : 'text-dimmer')}>
-                    {live ? (session ? statusLabel(session) : statusMeta(status).label) : m.dormant ? 'dormant' : closed ? `closed ${relTime(closed, now)} ago` : 'closed'}
+                    {live ? (session ? statusLabel(session) : statusMeta(status).label) : m.dormant ? 'inactive' : closed ? `closed ${relTime(closed, now)} ago` : 'closed'}
                   </span>
                 </button>
               </li>

@@ -109,7 +109,8 @@ export function DetailsPanel(p: DetailsPanelProps & { variant: 'drawer' | 'panel
     }
   }
 
-  // Close: two taps. The first arms (for 5s), the second kills Claude + its terminal.
+  // Close: two taps. The first arms (for 5s) and offers Deactivate beside Close; Close kills
+  // Claude + its terminal, Deactivate does the same but keeps it under Inactive to resume.
   const [armed, setArmed] = useState(false)
   const [closing, setClosing] = useState(false)
   const armTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
@@ -123,7 +124,7 @@ export function DetailsPanel(p: DetailsPanelProps & { variant: 'drawer' | 'panel
   }
 
   const closeSession = async () => {
-    if (closing) return
+    if (closing || sleeping) return
     if (!armed) {
       setArmed(true)
       clearTimeout(armTimer.current)
@@ -144,21 +145,22 @@ export function DetailsPanel(p: DetailsPanelProps & { variant: 'drawer' | 'panel
     }
   }
 
-  // Sleep: one tap — it ends Claude + its terminal but stays in Dormant, so nothing is lost.
   const dormant = useDormant()
   const [sleeping, setSleeping] = useState(false)
-  const sleepSession = async () => {
+  const deactivateSession = async () => {
     if (sleeping || closing) return
+    clearTimeout(armTimer.current)
     setSleeping(true)
     try {
       const res = await api.sleep(p.host, p.id)
-      toast.success(`${res.name || res.title || p.id.slice(0, 8)} is dormant`, { description: 'Resume it from Dormant' })
+      toast.success(`Deactivated ${res.name || res.title || p.id.slice(0, 8)}`, { description: 'Resume it from Inactive' })
       dormant.refresh()
       onOpenChange(false)
       p.onClosed()
     } catch (err) {
-      toast.error('Sleep failed', { description: sessionErrorMessage(err) })
+      toast.error('Deactivate failed', { description: sessionErrorMessage(err) })
       setSleeping(false)
+      setArmed(false)
     }
   }
 
@@ -198,25 +200,41 @@ export function DetailsPanel(p: DetailsPanelProps & { variant: 'drawer' | 'panel
                 </p>
               ) : null}
             </div>
-            <Button
-              variant="destructive"
-              size={armed ? 'sm' : 'icon'}
-              aria-label={armed ? 'Confirm close session' : 'Close session'}
-              title={`Close session: ends ${harnessLabel(s?.harness)} and its ${s?.backend === 'iterm' ? 'iTerm tab' : 'tmux window'}${armed ? '' : ` (${panel ? 'click' : 'tap'} twice)`}`}
-              disabled={closing}
-              onClick={closeSession}
-              className={cn(
-                'h-8 shrink-0 rounded-lg',
-                armed ? 'bg-destructive px-2.5 text-white hover:bg-destructive/90 dark:bg-destructive dark:hover:bg-destructive/90' : 'w-8',
-              )}
-            >
-              {closing ? <Loader2Icon className="animate-spin" /> : <PowerIcon />}
-              {armed ? (panel ? 'Click to close' : 'Tap to close') : null}
-            </Button>
+            <div className="flex shrink-0 items-center gap-1.5">
+              {armed || sleeping ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  aria-label="Deactivate session"
+                  title={`Deactivate: ends ${harnessLabel(s?.harness)} and its ${s?.backend === 'iterm' ? 'iTerm tab' : 'tmux window'}, keeps it under Inactive to resume later`}
+                  disabled={closing || sleeping}
+                  onClick={() => void deactivateSession()}
+                  className="h-8 rounded-lg px-2.5"
+                >
+                  {sleeping ? <Loader2Icon className="animate-spin" /> : <MoonIcon />}
+                  Deactivate
+                </Button>
+              ) : null}
+              <Button
+                variant="destructive"
+                size={armed ? 'sm' : 'icon'}
+                aria-label={armed ? 'Confirm close session' : 'Close session'}
+                title={`Close session: ends ${harnessLabel(s?.harness)} and its ${s?.backend === 'iterm' ? 'iTerm tab' : 'tmux window'}${armed ? '' : ` (${panel ? 'click' : 'tap'} twice; or Deactivate to keep it)`}`}
+                disabled={closing || sleeping}
+                onClick={closeSession}
+                className={cn(
+                  'h-8 shrink-0 rounded-lg',
+                  armed ? 'bg-destructive px-2.5 text-white hover:bg-destructive/90 dark:bg-destructive dark:hover:bg-destructive/90' : 'w-8',
+                )}
+              >
+                {closing ? <Loader2Icon className="animate-spin" /> : <PowerIcon />}
+                {armed ? 'Close' : null}
+              </Button>
+            </div>
           </Header>
 
           {/* Actions first: Review, New (from here), Link (to a stack), Attach. Standard small outline buttons, left-aligned; they wrap when the pane is narrow. */}
-          {p.onReview || p.onNewFromHere || p.stack || attachCmd || s ? (
+          {p.onReview || p.onNewFromHere || p.stack || attachCmd ? (
             <div className="flex flex-wrap items-center gap-1.5 pt-1 pb-2">
               {p.onReview ? (
                 <Button variant="outline" size={panel ? 'xs' : 'sm'} aria-label="Review changes" title="Review changes (diff)" onClick={p.onReview}>
@@ -247,19 +265,6 @@ export function DetailsPanel(p: DetailsPanelProps & { variant: 'drawer' | 'panel
                 <Button variant="outline" size={panel ? 'xs' : 'sm'} aria-label="Copy attach command" title={`Copy attach command: ${attachCmd}`} onClick={() => void copyWithToast(attachCmd)}>
                   <SquareTerminalIcon />
                   Attach
-                </Button>
-              ) : null}
-              {s ? (
-                <Button
-                  variant="outline"
-                  size={panel ? 'xs' : 'sm'}
-                  aria-label="Make dormant"
-                  title={`Make dormant: ends ${harnessLabel(s.harness)} and its ${s.backend === 'iterm' ? 'iTerm tab' : 'tmux window'}, keeps it in Dormant to resume later`}
-                  disabled={sleeping || closing}
-                  onClick={() => void sleepSession()}
-                >
-                  {sleeping ? <Loader2Icon className="animate-spin" /> : <MoonIcon />}
-                  Dormant
                 </Button>
               ) : null}
             </div>

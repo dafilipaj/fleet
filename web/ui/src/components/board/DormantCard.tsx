@@ -19,11 +19,11 @@ export function DormantCard({ member: m, now, desktop = false }: { member: Dorma
     <div className={cn('flex items-center gap-2 rounded-lg border border-dashed border-border/70 px-3', desktop ? 'py-2' : 'min-h-14 py-2')}>
       <div className="min-w-0 flex-1 opacity-60">
         <div className="flex min-w-0 items-center gap-2">
-          <MoonIcon aria-label="dormant" className="size-3 shrink-0 text-dimmer" />
+          <MoonIcon aria-label="inactive" className="size-3 shrink-0 text-dimmer" />
           <span className="min-w-0 truncate text-sm font-semibold">{m.title}</span>
           <HostBadge host={m.host} className="h-4.5 px-1 text-[0.625rem]" />
         </div>
-        <p className="mt-0.5 text-[0.6875rem] text-dimmer">{since ? `dormant · down ${since}` : 'dormant'}</p>
+        <p className="mt-0.5 text-[0.6875rem] text-dimmer">{since ? `inactive · down ${since}` : 'inactive'}</p>
       </div>
       <Button
         type="button"

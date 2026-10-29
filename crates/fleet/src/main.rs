@@ -156,7 +156,9 @@ enum Commands {
     },
 
     /// Close a session but keep it dormant: its agent ends (and its tmux window, or the tmux
-    /// session when that was its only window), and `fleet restore <target>` resumes it later
+    /// session when that was its only window), and `fleet restore <target>` resumes it later.
+    /// The app calls this Deactivate, and the dormant list Inactive
+    #[command(visible_alias = "deactivate")]
     Sleep {
         /// sessionId prefix, derived name, or pid
         target: String,

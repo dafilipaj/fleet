@@ -119,7 +119,7 @@ export function dormantMeta(v: DormantView, now = Date.now()): string {
   const lone = v.slept ? (v.sessions?.[0]?.cwd ?? 'claude') : 'not in tmux'
   const parts = v.kind === 'tmux' ? ['tmux', plural(v.windows ?? 0, 'window'), plural(v.panes ?? 0, 'pane')] : [lone]
   const since = relTime(sinceMs(v.since), now)
-  if (since) parts.push(`${v.slept ? 'asleep' : 'down'} ${since}`)
+  if (since) parts.push(`${v.slept ? 'deactivated' : 'down'} ${since}`)
   return parts.join(' · ')
 }
 

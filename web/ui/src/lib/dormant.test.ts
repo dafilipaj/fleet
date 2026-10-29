@@ -38,7 +38,7 @@ describe('dormant helpers', () => {
     expect(dormantTitles({ ...tmux, sessions: [] })).toBe('no Claude panes')
     expect(dormantMeta(tmux, NOW)).toBe('tmux · 1 window · 2 panes · down 3h')
     expect(dormantMeta(lone, NOW)).toBe('not in tmux')
-    expect(dormantMeta({ ...tmux, slept: true }, NOW)).toBe('tmux · 1 window · 2 panes · asleep 3h')
+    expect(dormantMeta({ ...tmux, slept: true }, NOW)).toBe('tmux · 1 window · 2 panes · deactivated 3h')
   })
 
   it('errors: old servers are missing, ambiguity lists candidates', () => {

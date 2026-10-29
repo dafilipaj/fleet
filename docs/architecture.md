@@ -1070,7 +1070,7 @@ grouping](#smart-grouping)); stack sync doesn't close it and StackView members c
 
 ### Slept sessions
 
-`fleet sleep` (Dormant in the app; `core::sleep`) is a Close that keeps the session dormant. It
+`fleet sleep` (Deactivate in the app, whose dormant list is called Inactive; `core::sleep`) is a Close that keeps the session dormant. It
 records the snapshot, ends the agent and its tmux window/session, records again (the session now
 lingers as just ended) and `snapshot::put_to_sleep` moves that entry — the whole tmux session when
 it went with it, else the lone Claude session — into `dormant`, `since` = now, `slept: true`. From

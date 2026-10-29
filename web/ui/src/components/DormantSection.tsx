@@ -79,17 +79,17 @@ export function DormantSection({ now, host = null, query = '', desktop = false, 
   // A search shows its matches without having to expand the section.
   const expanded = open || !!query.trim()
   return (
-    <section aria-label="Dormant sessions" className={cn('flex flex-col gap-2', className)}>
+    <section aria-label="Inactive sessions" className={cn('flex flex-col gap-2', className)}>
       <button
         type="button"
         aria-expanded={expanded}
         onClick={() => setOpen((o) => !o)}
-        title="Stopped by a reboot, or put to sleep"
+        title="Stopped by a reboot, or deactivated"
         className="flex min-h-8 items-center gap-1.5 rounded-md px-1 text-left text-xs font-semibold text-muted-foreground outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
       >
         <ChevronRightIcon className={cn('size-3.5 transition-transform', expanded && 'rotate-90')} />
         <MoonIcon className="size-3.5" />
-        Dormant
+        Inactive
         <span className="font-normal text-dimmer tabular-nums">· {total}</span>
       </button>
       {expanded ? (
@@ -106,7 +106,7 @@ export function DormantSection({ now, host = null, query = '', desktop = false, 
                   busy={busy.has(`${h.host}/*`)}
                   size={size}
                   className="ml-auto text-muted-foreground"
-                  title={`Bring back every dormant session on ${h.host}`}
+                  title={`Bring back every session a reboot stopped on ${h.host}`}
                 >
                   <PlayIcon /> Resume all
                 </ArmButton>
