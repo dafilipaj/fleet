@@ -13,6 +13,7 @@ import { PrsProvider } from '@/providers/PrsProvider'
 import { SettingsProvider } from '@/providers/SettingsProvider'
 import { SpeechProvider } from '@/providers/SpeechProvider'
 import { TasksProvider } from '@/providers/TasksProvider'
+import { useAppErrors } from '@/hooks/useAppErrors'
 import { usePreventFileNavigation } from '@/hooks/useAttach'
 import { useIsDesktop } from '@/hooks/useMediaQuery'
 import { ThemeProvider } from '@/providers/ThemeProvider'
@@ -51,6 +52,8 @@ function FleetApp() {
   const desktop = useIsDesktop()
   // A file dropped outside a drop zone must not navigate the app away.
   usePreventFileNavigation()
+  // Fleet.app's native actions (the iTerm buttons) report failures as toasts.
+  useAppErrors()
   return (
     <ThemeProvider>
       <PrefsProvider>

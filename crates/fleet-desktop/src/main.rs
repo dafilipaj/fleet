@@ -182,33 +182,44 @@ fn open_external(target: &str) {
 }
 
 /// Open an iTerm tab running `fleet -H <host> enter <session>`.
-fn attach(host: &str, session: &str) {
-    run_in_iterm(fleet::core::backend::attach_command(host, session));
+fn attach(app: &AppHandle, host: &str, session: &str) {
+    run_in_iterm(app, fleet::core::backend::attach_command(host, session));
 }
 
 /// Open an iTerm tab in the host's tmux: `fleet -H <host> new` (attach to, or create, `main`).
 /// This machine gets a plain iTerm tab.
-fn shell(host: &str) {
+fn shell(app: &AppHandle, host: &str) {
     use fleet::core::hosts::{Scope, Target, resolve};
     let cfg = fleet::core::config::get();
     if let Ok(Target::Local { .. }) = resolve(cfg, Some(host), false, Scope::DefaultHost) {
-        std::thread::spawn(|| {
+        let app = app.clone();
+        std::thread::spawn(move || {
             if let Err(e) = fleet::core::backend::iterm_open() {
-                eprintln!("fleet-desktop: iTerm: {e}");
+                report_error(&app, "Could not open iTerm", &e.to_string(), None);
             }
         });
         return;
     }
-    run_in_iterm(fleet::core::backend::host_shell_command(host));
+    run_in_iterm(app, fleet::core::backend::host_shell_command(host));
 }
 
 /// Run `line` in a new iTerm tab, off the UI thread (the AppleScript waits for the tab's shell).
-fn run_in_iterm(line: String) {
+/// A failure reaches the page as a toast that offers the command to copy.
+fn run_in_iterm(app: &AppHandle, line: String) {
+    let app = app.clone();
     std::thread::spawn(move || {
         if let Err(e) = fleet::core::backend::iterm_run(&line, false) {
-            eprintln!("fleet-desktop: iTerm ({line}): {e}");
+            report_error(&app, "Could not open iTerm", &e.to_string(), Some(&line));
         }
     });
+}
+
+/// Log a failed native action and show it in the window (`shell::error`).
+fn report_error(app: &AppHandle, title: &str, message: &str, command: Option<&str>) {
+    eprintln!("fleet-desktop: {title}: {message}");
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.eval(shell::error(title, message, command));
+    }
 }
 
 /// The menu bar. File → New Session (a `fleet:command`) is Fleet's only.
@@ -331,6 +342,7 @@ fn build_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
         .unwrap_or_else(|_| start_page());
     let frames = st.profile.frame_origins();
     let dl = app.clone();
+    let nav = app.clone();
     let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
         .title(&name)
         .inner_size(1280.0, 820.0)
@@ -347,13 +359,13 @@ fn build_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
             // `fleet://` links are Fleet.app's only.
             Action::Attach { host, session } => {
                 if fleet {
-                    attach(&host, &session);
+                    attach(&nav, &host, &session);
                 }
                 false
             }
             Action::Shell { host } => {
                 if fleet {
-                    shell(&host);
+                    shell(&nav, &host);
                 }
                 false
             }

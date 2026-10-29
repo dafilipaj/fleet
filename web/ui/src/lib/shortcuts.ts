@@ -325,6 +325,14 @@ export const APP_COMMAND_EVENT = 'fleet:command'
 /** Actions the app's menu may ask for. */
 export const APP_COMMANDS: readonly ShortcutAction[] = ['new']
 
+/** Fleet.app → the page: a native action failed (opening iTerm, …). `command`: what to copy instead. */
+export const APP_ERROR_EVENT = 'fleet:error'
+export interface AppError {
+  title: string
+  message: string
+  command?: string | null
+}
+
 /** Opens the keyboard shortcuts dialog from anywhere (the Settings screen); the desktop shell listens. */
 export const SHOW_SHORTCUTS_EVENT = 'fleet:show-shortcuts'
 export const showShortcuts = () => window.dispatchEvent(new Event(SHOW_SHORTCUTS_EVENT))

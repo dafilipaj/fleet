@@ -133,6 +133,13 @@ pub fn command(action: &'static str) -> String {
     format!("window.dispatchEvent(new CustomEvent('fleet:command',{{detail:'{action}'}}));")
 }
 
+/// The script that tells the page a native action failed (`fleet:error`, the UI's
+/// `APP_ERROR_EVENT`): the page shows it as a toast, with `command` to copy when there is one.
+pub fn error(title: &str, message: &str, command: Option<&str>) -> String {
+    let detail = serde_json::json!({ "title": title, "message": message, "command": command });
+    format!("window.dispatchEvent(new CustomEvent('fleet:error',{{detail:{detail}}}));")
+}
+
 /// The `remote.urls` pattern granting window dragging to the server's pages:
 /// the server's origin, any path. `None` for an opaque origin.
 pub fn drag_pattern(server: &Url) -> Option<String> {
@@ -156,6 +163,15 @@ mod tests {
         assert!(s.contains("'--titlebar-inset-left','88px'"));
         assert!(s.contains("'--titlebar-height','56px'"));
         assert!(s.contains("fullscreen='false'"));
+    }
+
+    #[test]
+    fn error_is_a_json_event() {
+        let s = error("iTerm", "it's \"down\"\n</script>", Some("fleet -H h new"));
+        assert!(s.starts_with("window.dispatchEvent(new CustomEvent('fleet:error',{detail:{"));
+        assert!(s.contains(r#""message":"it's \"down\"\n</script>""#));
+        assert!(s.contains(r#""command":"fleet -H h new""#));
+        assert!(error("x", "y", None).contains(r#""command":null"#));
     }
 
     #[test]

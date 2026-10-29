@@ -38,7 +38,7 @@ export class BackendError extends Error {
 }
 
 export const ITERM_SCRIPT = `on findSession(theId)
-  tell application "iTerm2"
+  tell application id "com.googlecode.iterm2"
     repeat with w in windows
       repeat with t in tabs of w
         repeat with s in sessions of t
@@ -58,45 +58,45 @@ on run argv
     error "iterm session not found: " & theId number 1001
   end if
   if theMode is "peek" then
-    tell application "iTerm2"
+    tell application id "com.googlecode.iterm2"
       return text of theSession
     end tell
   else if theMode is "send" then
-    tell application "iTerm2"
+    tell application id "com.googlecode.iterm2"
       tell theSession to write text (item 3 of argv) without newline
     end tell
     delay 0.2
-    tell application "iTerm2"
+    tell application id "com.googlecode.iterm2"
       tell theSession to write text ""
     end tell
     return "ok"
   else if theMode is "type" then
-    tell application "iTerm2"
+    tell application id "com.googlecode.iterm2"
       tell theSession to write text (item 3 of argv) without newline
     end tell
     return "ok"
   else if theMode is "enter" then
-    tell application "iTerm2"
+    tell application id "com.googlecode.iterm2"
       tell theSession to write text ""
     end tell
     return "ok"
   else if theMode is "escape" then
-    tell application "iTerm2"
+    tell application id "com.googlecode.iterm2"
       tell theSession to write text (ASCII character 27) without newline
     end tell
     return "ok"
   else if theMode is "up" then
-    tell application "iTerm2"
+    tell application id "com.googlecode.iterm2"
       tell theSession to write text ((ASCII character 27) & "[A") without newline
     end tell
     return "ok"
   else if theMode is "down" then
-    tell application "iTerm2"
+    tell application id "com.googlecode.iterm2"
       tell theSession to write text ((ASCII character 27) & "[B") without newline
     end tell
     return "ok"
   else if theMode is "close" then
-    tell application "iTerm2"
+    tell application id "com.googlecode.iterm2"
       tell theSession to close
     end tell
     return "ok"

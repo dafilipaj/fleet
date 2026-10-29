@@ -10,7 +10,7 @@ use crate::error::{Error, Result};
 /// AppleScript helper: locate an iTerm session by its `id` (the GUID that also
 /// appears in ITERM_SESSION_ID).
 const ITERM_FIND: &str = r#"on findSession(theId)
-  tell application "iTerm2"
+  tell application id "com.googlecode.iterm2"
     repeat with w in windows
       repeat with t in tabs of w
         repeat with s in sessions of t
@@ -24,14 +24,19 @@ end findSession"#;
 
 /// Run a static AppleScript, passing dynamic values as argv (injection-safe).
 fn osa(script: &str, args: &[&str]) -> Result<String> {
-    let file = std::env::temp_dir().join(format!("fleet-{}.applescript", std::process::id()));
+    // One file per call: Fleet.app runs several scripts at once from one process.
+    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let file = std::env::temp_dir().join(format!("fleet-{}-{seq}.applescript", std::process::id()));
     std::fs::write(&file, script)?;
     let mut cmd = Command::new("osascript");
     cmd.arg(&file);
     for a in args {
         cmd.arg(a);
     }
-    let out = cmd.output()?;
+    let out = cmd.output();
+    let _ = std::fs::remove_file(&file);
+    let out = out?;
     if !out.status.success() {
         return Err(Error::Other(format!(
             "osascript: {}",
@@ -76,7 +81,7 @@ pub fn peek(s: &Session) -> Result<String> {
 on run argv
   set s to findSession(item 1 of argv)
   if s is missing value then error "session not found"
-  tell application "iTerm2" to return text of s
+  tell application id "com.googlecode.iterm2" to return text of s
 end run"#
             ),
             &[handle],
@@ -184,7 +189,7 @@ pub fn send(s: &Session, text: &str) -> Result<()> {
 on run argv
   set s to findSession(item 1 of argv)
   if s is missing value then error "session not found"
-  tell application "iTerm2" to tell s
+  tell application id "com.googlecode.iterm2" to tell s
     write text (item 2 of argv) without newline
     delay 0.2
     write text ""
@@ -228,7 +233,7 @@ pub fn focus(s: &Session) -> Result<()> {
             osa(
                 r#"on run argv
   set theId to item 1 of argv
-  tell application "iTerm2"
+  tell application id "com.googlecode.iterm2"
     activate
     repeat with w in windows
       repeat with t in tabs of w
@@ -611,7 +616,7 @@ pub fn iterm_open() -> Result<()> {
     deny_fixture()?;
     osa(
         r#"on run argv
-  tell application "iTerm2"
+  tell application id "com.googlecode.iterm2"
     activate
     if (count of windows) is 0 then
       create window with default profile
@@ -637,7 +642,7 @@ pub fn iterm_run(line: &str, window: bool) -> Result<()> {
         r#"on run argv
   set theCmd to item 1 of argv
   set makeWindow to (item 2 of argv is "1")
-  tell application "iTerm2"
+  tell application id "com.googlecode.iterm2"
     activate
     if makeWindow or (count of windows) is 0 then
       create window with default profile

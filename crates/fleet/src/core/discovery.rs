@@ -782,7 +782,7 @@ pub fn enrich_iterm_tabs(rows: &mut [Session]) {
     // defines a `tab` class that shadows AppleScript's tab-character constant, so
     // `& tab &` concatenates the literal text "tab" and the separator disappears.
     let script = r#"set sep to ASCII character 9
-tell application "iTerm2"
+tell application id "com.googlecode.iterm2"
   set out to ""
   repeat with w in windows
     repeat with t in tabs of w
