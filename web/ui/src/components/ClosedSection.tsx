@@ -27,7 +27,7 @@ export function ClosedSection({ now, host = null, query = '', desktop = false, c
   // A search shows its matches without having to expand the section.
   const expanded = open || !!query.trim()
   return (
-    <section aria-label="Recently closed sessions" className={cn('flex flex-col gap-2', className)}>
+    <section aria-label="Closed sessions" className={cn('flex flex-col gap-2', className)}>
       <button
         type="button"
         aria-expanded={expanded}
@@ -36,7 +36,7 @@ export function ClosedSection({ now, host = null, query = '', desktop = false, c
       >
         <ChevronRightIcon className={cn('size-3.5 transition-transform', expanded && 'rotate-90')} />
         <HistoryIcon className="size-3.5" />
-        Recently closed
+        Closed
         <span className="font-normal text-dimmer tabular-nums">· {total}</span>
       </button>
       {expanded
