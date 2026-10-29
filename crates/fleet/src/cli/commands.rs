@@ -302,6 +302,29 @@ pub fn ask_done(target: &str) -> Result<()> {
     Ok(())
 }
 
+/// `fleet sleep`: end a session but keep it dormant (see [`crate::core::sleep`]).
+pub fn sleep(target: &str, json: bool) -> Result<()> {
+    let s = discovery::resolve(target).map_err(Error::Other)?;
+    let r = crate::core::sleep::sleep(&s)?;
+    if json {
+        let mut v = serde_json::to_value(&r)?;
+        v["host"] = serde_json::Value::String(host_label());
+        println!("{}", serde_json::to_string_pretty(&v)?);
+        return Ok(());
+    }
+    if r.dry_run {
+        return Ok(());
+    }
+    let target = r.dormant.as_ref().map(|d| d.target.as_str()).unwrap_or("");
+    println!(
+        "{} is dormant ({}) — bring it back: fleet restore {}",
+        r.title.bold(),
+        r.terminal.replace('-', " "),
+        crate::core::tools::shq_min(target)
+    );
+    Ok(())
+}
+
 pub use crate::core::title::{
     Hold, MAX_TITLE as MAX_RENAME, RenameOpts, RenameOutcome, apply_rename,
     clean_title as clean_name,

@@ -563,6 +563,18 @@ export interface KillResponse {
   terminal: string
 }
 
+/** POST /api/hosts/:host/sessions/:id/sleep → `fleet sleep`: ended, kept dormant until resumed. */
+export interface SleepResponse {
+  ok: true
+  host: string
+  id: string
+  name?: string | null
+  title?: string
+  process: string
+  terminal: string
+  dormant?: DormantView | null
+}
+
 /** POST /api/hosts/:host/sessions/:id/autoname → `fleet name <id> --apply --refresh` (409 when held). */
 export interface RegenerateNameResponse {
   ok: boolean
@@ -970,6 +982,8 @@ export interface DormantView {
   windows: number
   panes: number
   sessions: DormantSession[]
+  /** Put to sleep on purpose (Sleep in the app, `fleet sleep`), not left by a reboot: Resume all skips it. */
+  slept?: boolean
 }
 
 /**

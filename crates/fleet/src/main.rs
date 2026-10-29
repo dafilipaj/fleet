@@ -155,6 +155,16 @@ enum Commands {
         target: String,
     },
 
+    /// Close a session but keep it dormant: its agent ends (and its tmux window, or the tmux
+    /// session when that was its only window), and `fleet restore <target>` resumes it later
+    Sleep {
+        /// sessionId prefix, derived name, or pid
+        target: String,
+        /// `{ host, sessionId, title, process, terminal, dormant: DormantView, dryRun }`
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Rename a session: Claude's own /rename (the title), then its tmux session follows
     Rename {
         /// sessionId prefix, derived name, or pid
@@ -1401,6 +1411,7 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
         Commands::Send { target, text } => commands::send(&target, &text)?,
         Commands::Done { note, cancel } => commands::done(note, cancel)?,
         Commands::AskDone { target } => commands::ask_done(&target)?,
+        Commands::Sleep { target, json } => commands::sleep(&target, json)?,
         Commands::Rename {
             target,
             name,

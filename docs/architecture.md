@@ -439,6 +439,7 @@ JSON over HTTP, errors as `{ "error": "..." }`. At a high level:
 | POST | `/api/hosts/:host/schedule` | `{ at \| task (+ time), dir, prompt?, name?, model?, harness?, ghIdentity? }` → `{ host, entry }`: `fleet --local schedule add`. `dir` must be in the host's spawn dirs, like a spawn; starts an agent later |
 | POST | `/api/hosts/:host/schedule/:id/cancel` | → `{ host, id, output }`: `fleet --local schedule cancel <id>` |
 | POST | `/api/hosts/:host/repos/sync` · `/repos/service` | `{ names? }` → `fleet --local repos sync --json` (409 while one runs); `{ install }` → `fleet --local repos install-service [--uninstall]` |
+| POST | `/api/hosts/:host/sessions/:id/sleep` | `{}` → `fleet --local sleep <id> --json` (ends it, keeps it dormant), then closes its iTerm tab if it had one |
 | POST | `/api/hosts/:host/sessions/:id/kill` | `{}` → SIGTERM (then SIGKILL) Claude, then kill its tmux session (or just its window when the session has others) / close its iTerm tab |
 | GET | `/api/groups` | the Board view's groups: `{ enabled, host, intervalMinutes, running, updatedAt, lastRun, groups: [{ id, label, description, source, members: [{ host, id, dormant? }] }] }` (`dormant: true` only on a member that is dormant on its host; never set from stored groups, so the UI also cross-references `GET …/dormant`); served by the grouping host, proxied by every other server (`enabled: false` when nobody runs it) |
 | GET | `/api/inbox` | the [inbox](#inbox): `{ enabled, host, error?, updatedAt, brief: { text, at, model } \| null, sources: { github?, productive?, sessions?, comms? : { at, ok, error, count, nextAt?, running? } }, items: [{ id, source, kind, section, title, ask, url, href, from, at, firstSeen, effort, meta }] }` — served by `inbox.host`, proxied by every other server (`enabled: false` when none is set) |
@@ -1066,6 +1067,15 @@ set of this machine's dormant session ids; for another host, `fleet -H <host> re
 the `sessionId`s under `dormant[].sessions`. A dormant session counts as *present*, not gone:
 grouping keeps its assignment and flags the member `dormant: true` ([Smart
 grouping](#smart-grouping)); stack sync doesn't close it and StackView members carry `dormant`.
+
+### Slept sessions
+
+`fleet sleep` (Dormant in the app; `core::sleep`) is a Close that keeps the session dormant. It
+records the snapshot, ends the agent and its tmux window/session, records again (the session now
+lingers as just ended) and `snapshot::put_to_sleep` moves that entry — the whole tmux session when
+it went with it, else the lone Claude session — into `dormant`, `since` = now, `slept: true`. From
+there it is like any dormant entry (restore, `enter`, forget, groups, stacks), except that
+`restore --all` (and so `restore.onBoot`) skips it.
 
 ### Recently closed
 

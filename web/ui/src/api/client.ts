@@ -32,6 +32,7 @@ import type {
   JobsResponse,
   Health,
   KillResponse,
+  SleepResponse,
   MessagesResponse,
   NoteFile,
   NotesSearch,
@@ -199,6 +200,8 @@ export const api = {
     request<RegenerateNameResponse>(sessionPath(host, id, 'autoname'), { ...o, method: 'POST', body: {} }),
   kill: (host: string, id: string, o: Opts = {}) =>
     request<KillResponse>(sessionPath(host, id, 'kill'), { ...o, method: 'POST', body: {} }),
+  sleep: (host: string, id: string, o: Opts = {}) =>
+    request<SleepResponse>(sessionPath(host, id, 'sleep'), { ...o, method: 'POST', body: {} }),
 
   spawn: (host: string, body: SpawnRequest, o: Opts = {}) =>
     request<SpawnResponse>(`${hostPath(host)}/spawn`, { ...o, method: 'POST', body }),

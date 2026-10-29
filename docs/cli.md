@@ -45,6 +45,7 @@ the first rung with hits wins. Two hits on the same rung is an error that lists 
 | `fleet peek <target> [--lines N]` | what the session's terminal shows now (default 40 lines) |
 | `fleet send <target> <text>` | type text into the session and press Enter |
 | `fleet done [--note <text>] [--cancel]` | run by an agent **inside its own session** (by `$TMUX_PANE`; never sent over ssh): its work is finished and nothing waits on the user. Fleet shows the session as done (nothing closes it) — see [Ask done](#ask-done). `--cancel` takes the mark back |
+| `fleet sleep <target> [--json]` | close a session but keep it [dormant](#session-recovery): SIGTERM (then SIGKILL) its agent, kill its tmux window (or its tmux session when that was the only window; an iTerm tab is left — the app closes it), and put it in the dormant list, marked `slept`, instead of recently closed. `fleet restore <target>` (or `enter`, or Resume in the app) brings it back with `--resume`; `--all` and `restore.onBoot` leave it be. `--json`: `{ host, sessionId, title, process, terminal, dormant: DormantView, dryRun }` |
 | `fleet ask-done <target>` | ask a tmux session to report itself done once finished: types the [instruction](#ask-done) into it. A session waiting on a prompt is refused |
 | `fleet rename <target> <title> [--no-tmux-sync] [--force] [--json]` | rename the session's one title: Claude's `/rename` (the source of truth), then its tmux session follows as a slug of it (`Fix Login` → `fix-login`, `-2` on a collision) when the tmux session is that Claude session's own (one window, one pane). A session **waiting on a prompt** is held (exit 1; `--json`: exit 3) — typed keys would be its answer; busy sessions are fine (Claude runs `/rename` mid-turn without disturbing the turn). Codex gets `/rename`, pi `/name`; a busy Codex / pi session is held too (`held: "busy"`) — they would queue the text as a message. `--force` overrides the hold. `--json` prints `{ ok, result: renamed\|sent\|held, session_id, pid, host, from, title, held, tmux: { renamed, from, to, note }, message }` |
 | `fleet name [<target> \| --all [--settled]] [--apply] [--refresh] [--no-tmux-sync]` | suggest a name from what the session is doing; only `--apply` sends it (through the same path as `rename`, tmux included). `--all` = every session with a derived (cwd+hash) name. A derived-name session alone in a tmux session somebody named (`fleet new fix-login`) adopts that name (`(tmux)`, no model call) instead of getting a generated one. `--settled` (with `--all`) skips sessions with one prompt and no brief yet — the model reads the brief's Summary and the first three prompts, and a lone first prompt is often just a link. `--refresh` ignores the cache |
@@ -382,7 +383,10 @@ Claude sessions outside tmux — recorded by every local `fleet list` (the web s
 it is always fresh). After a reboot (a new boot id), whatever the old boot ran is **dormant** until
 you bring it back or forget it. Within one boot, a session you close is closed — never dormant
 (except in the last 5 minutes before a reboot: a restart quits the terminals before the daemons,
-and those sessions must survive that). The `watch` header shows `· N dormant` while there are any.
+and those sessions must survive that) — unless you put it to sleep: `fleet sleep <target>` (Dormant
+in the app) ends it and keeps it dormant, marked `slept`, until you restore or forget it. A slept
+session is restored only by name (never by `--all` / `restore.onBoot`) and keeps its group and stack
+membership meanwhile. The `watch` header shows `· N dormant` while there are any.
 
 Sessions closed within a boot are kept separately as **recently closed** (`--closed`) for config
 `restore.keepClosedDays` (default 7, `0` = off; newest 50): a closed tmux session (one that had a
@@ -395,7 +399,7 @@ makes them dormant instead.
 | --- | --- |
 | `fleet restore [--list] [--json]` | the dormant sessions on this host: tmux name (or the Claude title), windows/panes, Claude sessions, how long ago |
 | `fleet restore <target> [-n] [--json]` | bring one back. `<target>`: a dormant tmux name (exact > prefix > substring, like `enter`), a session id (whole, or a prefix of 4+ characters — a session inside a dormant tmux session restores that tmux session) or a Claude title (exact > prefix > substring) |
-| `fleet restore --all [-n] [--json]` | bring every dormant session back (a failure is reported and the rest still go) |
+| `fleet restore --all [-n] [--json]` | bring every dormant session a reboot left back (a failure is reported and the rest still go); slept ones stay |
 | `fleet restore --forget <target> \| --forget-all [--json]` | drop dormant entries without restoring them |
 | `fleet restore --closed [--json]` | the recently closed sessions, newest first: title, cwd, `closed 2h ago` (text `fleet restore` ends with `N recently closed (fleet restore --closed)` when there are any) |
 | `fleet restore --closed <target> [-n] [--json]` | bring one closed session back (same targets and rules as above). A Claude session whose tmux session still exists comes back in a new window of it; otherwise as below. No `--closed --all` |
@@ -433,7 +437,7 @@ JSON shapes:
   `closedAt` (ISO; `since` is the same) + `tmuxSession?` (a Claude session's tmux session that
   outlived it), newest first, and DormantView =
   `{ kind: "tmux"|"claude", target, name, since, windows, panes, sessions: [{ sessionId, name,
-  title, cwd }] }`. `target` is what `fleet restore <target>` takes (the tmux name, or the full
+  title, cwd }], slept }` (`slept`: put to sleep with `fleet sleep`, not left by a reboot). `target` is what `fleet restore <target>` takes (the tmux name, or the full
   session id); `name` is the tmux name or the Claude title; `since` is when it went down (ISO).
 - `restore <target>|--all --json` — `{ host, restored: [{ kind, from, session, renamed, windows,
   panes, launched: [{ sessionId, title, line }], warnings, commands, dryRun }], failed: [{ target,

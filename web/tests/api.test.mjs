@@ -35,6 +35,10 @@ function fakeHost(self, sessions) {
       return autoNamer.lastRun;
     },
   };
+  cli.sleep = async ({ target }) => (
+    calls.push(['sleep', target]),
+    { sessionId: target, title: 'one', process: 'terminated', terminal: 'tmux-session-killed', dormant: { kind: 'tmux', target: 'one', slept: true }, dryRun: false }
+  );
   cli.rename = async ({ target, title }) => {
     calls.push(['rename', target, title]);
     if (title === 'while waiting') return { ok: false, result: 'held', held: 'waiting', title, message: `${target} is waiting on you — nothing sent (--force overrides)` };
@@ -261,6 +265,22 @@ test('kill is POST-only, served locally or proxied once, and reports what happen
   assert.equal(proxied.body.host, 'workstation');
   assert.deepEqual(remote.calls.at(-1), ['kill', 'bbbbbbbb-0000-0000-0000-000000000002']);
   assert.equal((await post(`${urls.laptop}/api/hosts/laptop/sessions/zzzzzzzzzz/kill`, {})).status, 404);
+});
+
+test('sleep is POST-only, runs fleet sleep on the session id and reports the dormant entry', async (t) => {
+  const { urls, lap, remote } = await startPair(t);
+  assert.equal((await get(`${urls.laptop}/api/hosts/laptop/sessions/aaaaaaaa/sleep`)).status, 405);
+  const local = await post(`${urls.laptop}/api/hosts/laptop/sessions/aaaaaaaa/sleep`, {});
+  assert.equal(local.status, 200);
+  assert.equal(local.body.ok, true);
+  assert.equal(local.body.id, 'aaaaaaaa-0000-0000-0000-000000000001');
+  assert.equal(local.body.terminal, 'tmux-session-killed');
+  assert.deepEqual(local.body.dormant, { kind: 'tmux', target: 'one', slept: true });
+  assert.deepEqual(lap.calls.at(-1), ['sleep', 'aaaaaaaa-0000-0000-0000-000000000001']);
+  const proxied = await post(`${urls.laptop}/api/hosts/workstation/sessions/bbbbbbbb/sleep`, {});
+  assert.equal(proxied.body.host, 'workstation');
+  assert.deepEqual(remote.calls.at(-1), ['sleep', 'bbbbbbbb-0000-0000-0000-000000000002']);
+  assert.equal((await post(`${urls.laptop}/api/hosts/laptop/sessions/zzzzzzzzzz/sleep`, {})).status, 404);
 });
 
 test('autoname runs on the target host and shows up in /api/health', async (t) => {

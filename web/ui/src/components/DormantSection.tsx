@@ -84,7 +84,7 @@ export function DormantSection({ now, host = null, query = '', desktop = false, 
         type="button"
         aria-expanded={expanded}
         onClick={() => setOpen((o) => !o)}
-        title="Stopped by a reboot"
+        title="Stopped by a reboot, or put to sleep"
         className="flex min-h-8 items-center gap-1.5 rounded-md px-1 text-left text-xs font-semibold text-muted-foreground outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
       >
         <ChevronRightIcon className={cn('size-3.5 transition-transform', expanded && 'rotate-90')} />
@@ -95,7 +95,7 @@ export function DormantSection({ now, host = null, query = '', desktop = false, 
       {expanded ? (
         <>
           {shown
-            .filter((h) => h.views.length > 1)
+            .filter((h) => h.views.filter((v) => !v.slept).length > 1)
             .map((h) => (
               <div key={h.host} className="flex items-center gap-2 px-1">
                 <HostBadge host={h.host} />

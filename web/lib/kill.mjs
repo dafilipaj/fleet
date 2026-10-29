@@ -118,5 +118,16 @@ export function createKiller({ run, tmux = 'tmux', killProcess = process.kill.bi
     return { process: processResult, terminal };
   }
 
-  return { kill, terminate };
+  /** Close an iTerm tab whose process already ended (a sleep): what `kill` reports for it. */
+  async function closeTab(session) {
+    if (String(session.backend) !== 'iterm' || !session.handle || !closeIterm) return 'left';
+    try {
+      await closeIterm(session);
+      return 'iterm-tab-closed';
+    } catch {
+      return 'iterm-tab-left';
+    }
+  }
+
+  return { kill, terminate, closeTab };
 }

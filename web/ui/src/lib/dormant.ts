@@ -116,9 +116,10 @@ export function dormantTitles(v: DormantView): string {
 /** "tmux · 2 windows · 3 panes · down 3h" (lone Claude sessions: "iTerm · down 3h"). */
 export function dormantMeta(v: DormantView, now = Date.now()): string {
   const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
-  const parts = v.kind === 'tmux' ? ['tmux', plural(v.windows ?? 0, 'window'), plural(v.panes ?? 0, 'pane')] : ['not in tmux']
+  const lone = v.slept ? (v.sessions?.[0]?.cwd ?? 'claude') : 'not in tmux'
+  const parts = v.kind === 'tmux' ? ['tmux', plural(v.windows ?? 0, 'window'), plural(v.panes ?? 0, 'pane')] : [lone]
   const since = relTime(sinceMs(v.since), now)
-  if (since) parts.push(`down ${since}`)
+  if (since) parts.push(`${v.slept ? 'asleep' : 'down'} ${since}`)
   return parts.join(' · ')
 }
 

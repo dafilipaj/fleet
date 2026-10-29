@@ -110,6 +110,7 @@ A firstmate-style orchestrator for the many Claude Code sessions the user runs i
 | "attach to X" | `fleet enter <query>` — exact > prefix > substring, case-insensitive; ambiguous = exit 2 with the candidates. Without `-H` it tries `defaultHost` first, then every other ssh host (prints `→ <host>: <name>`) |
 | "back to the previous one" | `fleet last` |
 | "I rebooted / bring my sessions back" | `fleet restore` lists what the reboot left **dormant** (read-only); `fleet restore <name>` (or `--all`) recreates the tmux session(s) and resumes each Claude session with `--resume <id>` and its original flags; `-n` shows the plan; `--forget <name>` drops one. `fleet enter <name>` restores a dormant match by itself |
+| "put this session to sleep / make it dormant" | `fleet sleep <target>` ends it (and its tmux window) but keeps it in the dormant list; `fleet restore <name>` resumes it later. Never woken by `--all` |
 | "bring back the session I just closed" | `fleet restore --closed` lists sessions closed within this boot (Close, kill, `/exit`; kept a week); `fleet restore --closed <name>` brings one back (a Claude session whose tmux session lives on gets a new window there); `--closed --forget <name>` drops one. Never part of `--all` |
 | "make a session for X" | `fleet new <name> [-d] [-C <dir>] [-- <cmd…>]` — names are sanitised to `[A-Za-z0-9_-]`; without `-d` it attaches |
 | "kill X" | `fleet tmux kill <query>` (asks; `-f` doesn't) |
@@ -122,7 +123,7 @@ Rules:
 
 1. `tmux list`, `tmux stale` (without `--kill`), `list --all-hosts`, `doctor` are read-only — run them freely.
 2. `enter`, `last`, `new` (without `-d`) and `ssh` take over the terminal. **Don't run them inline**; tell the user the exact command to run.
-3. `tmux kill`, `tmux rename`, `tmux stale --kill`, `new -d` and `restore [--closed] <target>|--all|--forget` change state (a restore starts agents) — draft the command and confirm with the user first. Never pass `-f` to a kill the user hasn't explicitly asked to be unattended.
+3. `sleep`, `tmux kill`, `tmux rename`, `tmux stale --kill`, `new -d` and `restore [--closed] <target>|--all|--forget` change state (a restore starts agents) — draft the command and confirm with the user first. Never pass `-f` to a kill the user hasn't explicitly asked to be unattended.
 4. **`stale` is conservative on purpose.** A session is only a candidate when nobody is attached, it isn't the caller's own, it isn't named `fleet`, no live Claude session sits in it, every pane is an idle shell with no child process, nothing is in copy-mode, and it has been idle past the threshold on both clocks (last attached *and* last activity). The live-Claude cross-check must be trustworthy — a stale pane/tty map makes it refuse `--kill` and `-q` rather than guess. Each kill re-checks, at the moment of the kill, that the session still exists, is still detached and has started no work. `--no-fleet-check` skips the Claude check (and then refuses `-f`).
 5. Exit codes: 1 usage/refusal, 2 ambiguous match, 3 nothing to act on (no sessions / no match / no terminal), 4 host unreachable, 127 tool missing.
 

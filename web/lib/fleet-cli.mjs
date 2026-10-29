@@ -105,6 +105,27 @@ export function createFleetCli({ run, bin = 'fleet', timeoutMs = 8000 } = {}) {
     return parseObject(stdout, 'fleet rename');
   }
 
+  /**
+   * Put one session to sleep: `fleet --local sleep <target> --json` — its agent ends, its tmux
+   * window (or session) goes, and it stays in the dormant list until restored. Resolves
+   * { sessionId, title, process, terminal, dormant: DormantView, … }; throws FleetCliError
+   * (`missing` when the binary predates `sleep`).
+   */
+  async function sleep({ target, timeoutMs: t = 30 * 1000 } = {}) {
+    const argv = ['--local', 'sleep', String(target), '--json'];
+    let stdout;
+    try {
+      ({ stdout } = await run(bin, argv, { timeout: t, env: { ...process.env, NO_COLOR: '1' } }));
+    } catch (err) {
+      const e = wrap(err, 'fleet sleep', t);
+      const why = String(err?.stderr ?? '').replace(/^Error:\s*/, '').trim();
+      if (why && !e.timedOut) e.message = why.split('\n')[0];
+      e.missing = !e.timedOut && /unrecognized subcommand|invalid subcommand/i.test(why);
+      throw e;
+    }
+    return parseObject(stdout, 'fleet sleep');
+  }
+
   function tryObject(text) {
     try {
       const v = JSON.parse(String(text ?? '').trim());
@@ -625,5 +646,6 @@ export function createFleetCli({ run, bin = 'fleet', timeoutMs = 8000 } = {}) {
     stackAdd,
     stackSync,
     restore,
+    sleep,
   };
 }

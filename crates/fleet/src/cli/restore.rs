@@ -64,10 +64,12 @@ fn print(v: &serde_json::Value) -> Result<()> {
     Ok(())
 }
 
-/// Every dormant entry as a restore target, in [`snapshot::dormant_views`] order.
+/// Every dormant entry a reboot left as a restore target, in [`snapshot::dormant_views`]
+/// order. Sessions put to sleep on purpose (`fleet sleep`) wait to be restored by name.
 fn dormant_targets(snap: &Snapshot) -> Vec<Target> {
     snapshot::dormant_views(snap)
         .into_iter()
+        .filter(|v| !v.slept)
         .map(|v| match v.kind {
             "tmux" => Target::Tmux(v.target),
             _ => Target::Claude(v.target),
@@ -107,7 +109,12 @@ pub fn render(views: &[DormantView]) -> String {
             crate::cli::tmux::pad(&v.name, w),
             crate::cli::tmux::pad(&shape, 7),
             crate::cli::tmux::pad(&claude, 9),
-            format!("since {}", ago(v.since.as_deref())).dimmed()
+            format!(
+                "{} {}",
+                if v.slept { "asleep" } else { "since" },
+                ago(v.since.as_deref())
+            )
+            .dimmed()
         ));
         if v.kind == "tmux" {
             for s in &v.sessions {
@@ -164,7 +171,7 @@ fn list(snap: &Snapshot, json: bool) -> Result<()> {
         return Ok(());
     }
     println!(
-        "dormant on {} — running before the last reboot:",
+        "dormant on {} — running before the last reboot, or put to sleep:",
         host_label()
     );
     println!("{}", render(&views));

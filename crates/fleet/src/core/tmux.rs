@@ -226,6 +226,56 @@ fn run(args: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// Where a pane lives: its session's and window's stable ids (`$3`, `@7`) and how many
+/// windows that session has. `None` when the pane is gone.
+pub fn pane_home(pane: &str) -> Option<(String, String, usize)> {
+    let out = tmux()
+        .args([
+            "display-message",
+            "-p",
+            "-t",
+            pane,
+            "#{session_id} #{window_id} #{session_windows}",
+        ])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut it = text.split_whitespace();
+    let (sid, wid, n) = (it.next()?, it.next()?, it.next()?.parse().ok()?);
+    (sid.starts_with('$') && wid.starts_with('@')).then(|| (sid.to_string(), wid.to_string(), n))
+}
+
+/// Take down what hosted a pane whose process ended ([`pane_home`], resolved before): the
+/// whole session when that was its only window, else just the window. Already gone (it
+/// closed itself with the process) is fine. → `tmux-session-killed` / `tmux-window-killed`.
+pub fn close_home(home: &(String, String, usize)) -> Result<&'static str> {
+    let (what, target, done) = if home.2 <= 1 {
+        ("kill-session", &home.0, "tmux-session-killed")
+    } else {
+        ("kill-window", &home.1, "tmux-window-killed")
+    };
+    match run(&[what, "-t", target]) {
+        Ok(()) => Ok(done),
+        Err(e) if is_gone(&e.to_string()) => Ok(done),
+        Err(e) => Err(e),
+    }
+}
+
+fn is_gone(why: &str) -> bool {
+    let why = why.to_lowercase();
+    [
+        "can't find",
+        "no such",
+        "not found",
+        "no server running",
+        "no current",
+    ]
+    .iter()
+    .any(|m| why.contains(m))
+}
+
 /// Create a detached session, optionally in `dir` and running `cmd`.
 pub fn new_session(name: &str, dir: Option<&str>, cmd: &[String]) -> Result<()> {
     require()?;

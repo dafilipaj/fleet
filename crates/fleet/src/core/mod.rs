@@ -19,6 +19,7 @@ pub mod prompted;
 pub mod prs;
 pub mod repos;
 pub mod schedule;
+pub mod sleep;
 pub mod snapshot;
 pub mod stack;
 pub mod tasks;

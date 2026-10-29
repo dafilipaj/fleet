@@ -99,6 +99,10 @@ pub struct ClaudeSnap {
     /// The [bot](crate::core::jobs) run it belonged to (`<bot>/<run>`); a resume rejoins it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub job_run: Option<String>,
+    /// Dormant entries only: put to sleep on purpose ([`put_to_sleep`]), not left by a
+    /// reboot — `restore --all` (and so `restore.onBoot`) leaves it be.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub slept: bool,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -157,6 +161,9 @@ pub struct TmuxSnap {
     /// Closed entries only: when it ended.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub closed_at: Option<String>,
+    /// Dormant entries only: put to sleep on purpose (see [`ClaudeSnap::slept`]).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub slept: bool,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -1221,6 +1228,8 @@ pub struct DormantView {
     pub windows: usize,
     pub panes: usize,
     pub sessions: Vec<DormantSession>,
+    /// Put to sleep on purpose (`fleet sleep`) rather than left by a reboot; `--all` skips it.
+    pub slept: bool,
 }
 
 fn session_view(c: &ClaudeSnap) -> DormantSession {
@@ -1246,6 +1255,7 @@ pub fn dormant_views(s: &Snapshot) -> Vec<DormantView> {
             windows: t.windows.len(),
             panes: t.pane_count(),
             sessions: t.claudes().map(session_view).collect(),
+            slept: t.slept,
         })
         .collect();
     let mut claude: Vec<DormantView> = s
@@ -1260,6 +1270,7 @@ pub fn dormant_views(s: &Snapshot) -> Vec<DormantView> {
             windows: 1,
             panes: 1,
             sessions: vec![session_view(c)],
+            slept: c.slept,
         })
         .collect();
     let newest = |a: &DormantView, b: &DormantView| b.since.cmp(&a.since);
@@ -1360,6 +1371,7 @@ pub fn closed_views(s: &Snapshot) -> Vec<ClosedView> {
                 windows: t.windows.len(),
                 panes: t.pane_count(),
                 sessions: t.claudes().map(session_view).collect(),
+                slept: false,
             },
             closed_at: t.closed_at.clone(),
             tmux_session: None,
@@ -1373,6 +1385,7 @@ pub fn closed_views(s: &Snapshot) -> Vec<ClosedView> {
                 windows: 1,
                 panes: 1,
                 sessions: vec![session_view(c)],
+                slept: false,
             },
             closed_at: c.closed_at.clone(),
             tmux_session: c.tmux_session.clone(),
@@ -2002,6 +2015,97 @@ fn remove_closed(snap: &mut Snapshot, target: &Target) -> bool {
     }
 }
 
+/// Move a session that just ended (`fleet sleep` ended it) from where the snapshot keeps it —
+/// still lingering (`goneAt`) or already closed — into `dormant`, marked `slept`: a whole
+/// tmux session when it went down with it, else the lone Claude session. A session id that
+/// is live again is never put to sleep (exit 3 then, like a missing one).
+pub fn put_to_sleep(session_id: &str) -> Result<DormantView> {
+    let now = iso(Utc::now());
+    update(|snap| sleep_in(snap, session_id, &now))?
+}
+
+/// The body of [`put_to_sleep`] on a loaded snapshot, `now` stamped as `since`.
+fn sleep_in(
+    snap: &mut Snapshot,
+    session_id: &str,
+    now: &str,
+) -> Result<(bool, Result<DormantView>)> {
+    {
+        let entries = closed_entries(snap);
+        let target = if let Some(t) = entries
+            .tmux
+            .iter()
+            .find(|t| t.claudes().any(|c| c.session_id == session_id))
+        {
+            Target::Tmux(t.name.clone())
+        } else if entries.claude.iter().any(|c| c.session_id == session_id) {
+            Target::Claude(session_id.to_string())
+        } else {
+            return Ok((
+                false,
+                Err(Error::exit(
+                    EXIT_NOTHING,
+                    format!(
+                        "{session_id} is not in the snapshot as ended — nothing to keep dormant"
+                    ),
+                )),
+            ));
+        };
+        if !remove_closed(snap, &target) {
+            return Ok((
+                false,
+                Err(Error::Other("snapshot changed meanwhile".into())),
+            ));
+        }
+        let fresh = |c: &mut ClaudeSnap| {
+            c.gone_at = None;
+            c.closed_at = None;
+            c.since = None;
+        };
+        match target {
+            Target::Tmux(n) => {
+                let mut t = entries
+                    .tmux
+                    .into_iter()
+                    .find(|t| t.name == n)
+                    .unwrap_or_default();
+                for p in t.windows.iter_mut().flat_map(|w| w.panes.iter_mut()) {
+                    if let Some(c) = p.claude.as_mut() {
+                        fresh(c);
+                    }
+                }
+                t.gone_at = None;
+                t.closed_at = None;
+                t.since = Some(now.to_string());
+                t.slept = true;
+                let ids: HashSet<String> = t.claudes().map(|c| c.session_id.clone()).collect();
+                snap.dormant.iterm.retain(|c| !ids.contains(&c.session_id));
+                snap.dormant.tmux.retain(|d| d.name != t.name);
+                snap.closed.drop_ids(&ids);
+                snap.dormant.tmux.push(t);
+            }
+            Target::Claude(id) => {
+                let mut c = entries
+                    .claude
+                    .into_iter()
+                    .find(|c| c.session_id == id)
+                    .unwrap_or_default();
+                fresh(&mut c);
+                c.since = Some(now.to_string());
+                c.slept = true;
+                snap.dormant.iterm.retain(|d| d.session_id != id);
+                snap.closed.drop_ids(&HashSet::from([id]));
+                snap.dormant.iterm.push(c);
+            }
+        }
+        let view = dormant_views(snap)
+            .into_iter()
+            .find(|v| v.sessions.iter().any(|s| s.session_id == session_id))
+            .ok_or_else(|| Error::Other("not dormant after all".into()));
+        Ok((true, view))
+    }
+}
+
 #[derive(Debug, Clone)]
 enum Taken {
     Tmux(TmuxSnap),
@@ -2384,6 +2488,87 @@ mod tests {
 
     fn live(t: Vec<TmuxSnap>, i: Vec<ClaudeSnap>) -> Live {
         Live { tmux: t, iterm: i }
+    }
+
+    #[test]
+    fn sleep_keeps_a_whole_tmux_session_dormant_until_restored() {
+        let s = transition(
+            Snapshot::default(),
+            live(vec![tmux("api", &["aaaa1111"])], vec![]),
+            Some("boot1"),
+            "laptop",
+            at(0),
+        );
+        // `fleet sleep` killed it: the tmux session went with it and lingers.
+        let mut s = transition(s, Live::default(), Some("boot1"), "laptop", at(5));
+        let (changed, view) = sleep_in(&mut s, "aaaa1111", &iso(at(6))).unwrap();
+        let view = view.unwrap();
+        assert!(changed);
+        assert_eq!(
+            (view.kind, view.target.as_str(), view.slept),
+            ("tmux", "api", true)
+        );
+        assert!(s.tmux.is_empty() && closed_entries(&s).is_empty());
+        let t = &s.dormant.tmux[0];
+        assert!(t.slept && t.gone_at.is_none());
+        assert!(t.claudes().all(|c| c.gone_at.is_none()));
+        // Long past the grace period, and across a reboot, it stays dormant — never closed.
+        let s = transition(s, Live::default(), Some("boot1"), "laptop", at(3600));
+        let s = transition(s, Live::default(), Some("boot2"), "laptop", at(7200));
+        assert_eq!(dormant_ids(&s), HashSet::from(["aaaa1111".to_string()]));
+        assert!(s.dormant.tmux[0].slept && closed_entries(&s).is_empty());
+    }
+
+    #[test]
+    fn sleep_takes_a_lone_session_out_of_a_tmux_session_that_lives_on() {
+        let s = transition(
+            Snapshot::default(),
+            live(vec![tmux("work", &["aaaa1111", "bbbb2222"])], vec![]),
+            Some("boot1"),
+            "laptop",
+            at(0),
+        );
+        let mut rest = tmux("work", &["bbbb2222"]);
+        rest.windows[0].panes[0].claude = None;
+        rest.windows[0].panes.push(PaneSnap {
+            index: 1,
+            cwd: "/tmp".into(),
+            claude: Some(claude("bbbb2222")),
+            ..Default::default()
+        });
+        let mut s = transition(
+            s,
+            live(vec![rest.clone()], vec![]),
+            Some("boot1"),
+            "laptop",
+            at(5),
+        );
+        let (_, view) = sleep_in(&mut s, "aaaa1111", &iso(at(6))).unwrap();
+        let view = view.unwrap();
+        assert_eq!((view.kind, view.target.as_str()), ("claude", "aaaa1111"));
+        assert_eq!(s.dormant.iterm[0].tmux_session.as_deref(), Some("work"));
+        assert!(s.tmux[0].claudes().all(|c| c.session_id == "bbbb2222"));
+        let s = transition(
+            s,
+            live(vec![rest], vec![]),
+            Some("boot1"),
+            "laptop",
+            at(3600),
+        );
+        assert!(s.dormant.iterm[0].slept && closed_entries(&s).is_empty());
+    }
+
+    #[test]
+    fn sleep_refuses_a_session_that_has_not_ended() {
+        let mut s = transition(
+            Snapshot::default(),
+            live(vec![tmux("api", &["aaaa1111"])], vec![]),
+            Some("boot1"),
+            "laptop",
+            at(0),
+        );
+        let (changed, view) = sleep_in(&mut s, "aaaa1111", &iso(at(1))).unwrap();
+        assert!(!changed && view.is_err() && s.dormant.is_empty());
     }
 
     #[test]

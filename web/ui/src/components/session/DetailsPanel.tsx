@@ -5,6 +5,7 @@ import {
   LayersIcon,
   Link2Icon,
   Loader2Icon,
+  MoonIcon,
   PowerIcon,
   RefreshCwIcon,
   SquareTerminalIcon,
@@ -17,6 +18,7 @@ import { BriefSection, type BriefSectionProps } from '@/components/session/Brief
 import { SlackLinkSection } from '@/components/SlackLink'
 import { Button } from '@/components/ui/button'
 import { Drawer, DrawerContent, DrawerDescription, DrawerHeader, DrawerTitle } from '@/components/ui/drawer'
+import { useDormant } from '@/hooks/useDormant'
 import { useSessionTitle } from '@/hooks/useTitles'
 import { canAttachInApp, copyWithToast, sessionAttachCommand, sessionAttachLink } from '@/lib/clipboard'
 import { ctxLevel, ctxSummary, shortCwd } from '@/lib/format'
@@ -142,6 +144,24 @@ export function DetailsPanel(p: DetailsPanelProps & { variant: 'drawer' | 'panel
     }
   }
 
+  // Sleep: one tap — it ends Claude + its terminal but stays in Dormant, so nothing is lost.
+  const dormant = useDormant()
+  const [sleeping, setSleeping] = useState(false)
+  const sleepSession = async () => {
+    if (sleeping || closing) return
+    setSleeping(true)
+    try {
+      const res = await api.sleep(p.host, p.id)
+      toast.success(`${res.name || res.title || p.id.slice(0, 8)} is dormant`, { description: 'Resume it from Dormant' })
+      dormant.refresh()
+      onOpenChange(false)
+      p.onClosed()
+    } catch (err) {
+      toast.error('Sleep failed', { description: sessionErrorMessage(err) })
+      setSleeping(false)
+    }
+  }
+
   const s = p.session
   const { title } = useSessionTitle(s, `${p.host}/${p.id}`)
   const attachCmd = sessionAttachCommand(s)
@@ -196,7 +216,7 @@ export function DetailsPanel(p: DetailsPanelProps & { variant: 'drawer' | 'panel
           </Header>
 
           {/* Actions first: Review, New (from here), Link (to a stack), Attach. Standard small outline buttons, left-aligned; they wrap when the pane is narrow. */}
-          {p.onReview || p.onNewFromHere || p.stack || attachCmd ? (
+          {p.onReview || p.onNewFromHere || p.stack || attachCmd || s ? (
             <div className="flex flex-wrap items-center gap-1.5 pt-1 pb-2">
               {p.onReview ? (
                 <Button variant="outline" size={panel ? 'xs' : 'sm'} aria-label="Review changes" title="Review changes (diff)" onClick={p.onReview}>
@@ -227,6 +247,19 @@ export function DetailsPanel(p: DetailsPanelProps & { variant: 'drawer' | 'panel
                 <Button variant="outline" size={panel ? 'xs' : 'sm'} aria-label="Copy attach command" title={`Copy attach command: ${attachCmd}`} onClick={() => void copyWithToast(attachCmd)}>
                   <SquareTerminalIcon />
                   Attach
+                </Button>
+              ) : null}
+              {s ? (
+                <Button
+                  variant="outline"
+                  size={panel ? 'xs' : 'sm'}
+                  aria-label="Make dormant"
+                  title={`Make dormant: ends ${harnessLabel(s.harness)} and its ${s.backend === 'iterm' ? 'iTerm tab' : 'tmux window'}, keeps it in Dormant to resume later`}
+                  disabled={sleeping || closing}
+                  onClick={() => void sleepSession()}
+                >
+                  {sleeping ? <Loader2Icon className="animate-spin" /> : <MoonIcon />}
+                  Dormant
                 </Button>
               ) : null}
             </div>

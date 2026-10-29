@@ -40,8 +40,8 @@ import { MAX_FIRST, MAX_MINUTES, MAX_TASK, MIN_MINUTES, MODES, SlackError, isPer
 
 export const API_VERSION = 1;
 
-const SESSION_ROUTE = /^\/api\/hosts\/([^/]+)\/sessions\/([^/]+)\/(peek|messages|send|keys|answer|kill|rename|autoname)$/;
-const POST_ACTIONS = new Set(['send', 'keys', 'answer', 'kill', 'rename', 'autoname']);
+const SESSION_ROUTE = /^\/api\/hosts\/([^/]+)\/sessions\/([^/]+)\/(peek|messages|send|keys|answer|kill|sleep|rename|autoname)$/;
+const POST_ACTIONS = new Set(['send', 'keys', 'answer', 'kill', 'sleep', 'rename', 'autoname']);
 
 const GROUP_ID_RE = /^[A-Za-z0-9._:-]{1,120}$/;
 const MEMBER_HOST_RE = /^[^/\s]{1,128}$/;
@@ -354,6 +354,28 @@ export function createApi({
       return {
         status: 200,
         body: { ok: true, host: config.self, id: session.session_id, name: session.name ?? null, ...result },
+      };
+    }
+
+    if (action === 'sleep') {
+      // Close, but keep it dormant: `fleet sleep` ends it and records it; restore brings it back.
+      if (typeof cli?.sleep !== 'function') throw new HttpError('sleep is not available on this server', 501);
+      const session = await resolveLocalSession(id);
+      if (!session.session_id || session.session_id.startsWith('pid-')) {
+        throw new HttpError('this session has no session id yet — nothing to resume it from', 409);
+      }
+      let report;
+      try {
+        report = await cli.sleep({ target: session.session_id });
+      } catch (err) {
+        if (err?.missing) throw new HttpError("this host's fleet CLI has no `sleep` command — update fleet there", 501);
+        throw new HttpError(`sleep failed: ${err?.message ?? err}`, err?.timedOut ? 504 : 502);
+      }
+      const terminal = session.backend === 'iterm' && killer?.closeTab ? await killer.closeTab(session) : report.terminal;
+      refreshFleet();
+      return {
+        status: 200,
+        body: { ...report, ok: true, host: config.self, id: session.session_id, name: session.name ?? null, terminal },
       };
     }
 
