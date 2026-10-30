@@ -326,7 +326,7 @@ export function createFleetCli({ run, bin = 'fleet', timeoutMs = 8000 } = {}) {
 
   /**
    * The harnesses this machine can spawn (claude, codex, pi) and their model pickers:
-   * `fleet --local harness list --json` → `[{ id, label, command, installed, models }]`.
+   * `fleet --local harness list --json` → `[{ id, label, command, installed, path, version, models }]`.
    */
   async function harnesses({ timeoutMs: t = 30 * 1000 } = {}) {
     let stdout;

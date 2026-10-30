@@ -22,7 +22,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -544,35 +544,140 @@ fn parse_pi_models(text: &str) -> Vec<ModelOption> {
         .collect()
 }
 
-/// stdout of `cmd`, or `None` when it fails or outlives `timeout` (then it is killed).
-fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<String> {
-    let mut child = cmd
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()?;
+/// How much of a probe's stdout is kept (the rest is read and dropped, so the child never blocks).
+const PROBE_OUTPUT_CAP: usize = 64 * 1024;
+
+/// What a probe printed (up to [`PROBE_OUTPUT_CAP`] bytes, invalid UTF-8 replaced) and whether it
+/// finished in time: it saw its end marker, or exited successfully with its stdout closed.
+struct Captured {
+    out: String,
+    done: bool,
+}
+
+/// Whether `text` has a complete line that is exactly `marker`.
+fn has_marker_line(text: &str, marker: &str) -> bool {
+    let mut lines = text.split('\n');
+    lines.next_back(); // the unfinished last line
+    lines.any(|l| l.trim_end_matches('\r') == marker)
+}
+
+/// Run `cmd` (no input, stderr dropped) in its own session (its own process group, and no
+/// controlling terminal: an interactive zsh in a background group would stop on SIGTTOU) until
+/// `deadline`, collecting its stdout. It ends the moment a line `marker` shows up, when given: a
+/// profile's background job that keeps stdout open does not delay the answer. A child still
+/// running, or one that left a job holding stdout open, is killed with its whole group (the shell
+/// is reaped only after, so its pgid is still ours), so a `sleep` does not outlive it. At the deadline what was
+/// printed so far is returned, not `done`. `None` only when the command can't start.
+fn capture(cmd: &mut Command, deadline: Instant, marker: Option<&str>) -> Option<Captured> {
+    use std::os::unix::process::CommandExt;
+    use std::sync::{Arc, Mutex, mpsc};
+    let mut child = unsafe {
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            })
+            .spawn()
+            .ok()?
+    };
+    let pgid = child.id() as libc::pid_t;
     let mut stdout = child.stdout.take()?;
-    let reader = std::thread::spawn(move || {
-        let mut s = String::new();
-        let _ = stdout.read_to_string(&mut s);
-        s
+    let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let (tx, rx) = mpsc::channel::<()>();
+    let sink = Arc::clone(&buf);
+    std::thread::spawn(move || {
+        let mut chunk = [0u8; 4096];
+        while let Ok(n) = stdout.read(&mut chunk) {
+            if n == 0 {
+                break;
+            }
+            {
+                let mut b = sink.lock().unwrap_or_else(|e| e.into_inner());
+                let room = PROBE_OUTPUT_CAP.saturating_sub(b.len());
+                b.extend_from_slice(&chunk[..n.min(room)]);
+            }
+            let _ = tx.send(());
+        }
+        // `tx` drops here: the receiver sees the end of the stream.
     });
-    let start = std::time::Instant::now();
+    let text =
+        || String::from_utf8_lossy(&buf.lock().unwrap_or_else(|e| e.into_inner())).into_owned();
+    let (mut exited, mut eof, mut marked) = (false, false, false);
     loop {
-        match child.try_wait() {
-            Ok(Some(st)) => {
-                let out = reader.join().ok()?;
-                return st.success().then_some(out);
-            }
-            Ok(None) if start.elapsed() < timeout => std::thread::sleep(Duration::from_millis(50)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
+        if let Some(m) = marker
+            && has_marker_line(&text(), m)
+        {
+            marked = true;
+            break;
+        }
+        if !exited {
+            exited = has_exited(pgid);
+        }
+        if exited && eof {
+            break;
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        let tick = left.min(Duration::from_millis(10));
+        if eof {
+            std::thread::sleep(tick);
+        } else if let Err(mpsc::RecvTimeoutError::Disconnected) = rx.recv_timeout(tick) {
+            eof = true;
         }
     }
+    if !(exited && eof) {
+        // Not a clean end: the whole group goes, including a job that kept stdout open after
+        // the shell exited. The shell is still unreaped (a zombie keeps its pid and pgid ours),
+        // so the pgid cannot belong to anyone else yet. ESRCH (nothing left) is fine.
+        unsafe { libc::killpg(pgid, libc::SIGKILL) };
+        // The shell may have been mid-`fork` when the signal went out, and a child born then
+        // can be missed. Once the shell is dead it forks no more: a second pass takes whatever
+        // that left (still before the reap, so the pgid is still ours).
+        let gone = Instant::now() + Duration::from_secs(1);
+        while !has_exited(pgid) && Instant::now() < gone {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        unsafe { libc::killpg(pgid, libc::SIGKILL) };
+    }
+    let status = child.wait().ok();
+    Some(Captured {
+        out: text(),
+        done: marked || status.is_some_and(|s| s.success()) && eof,
+    })
+}
+
+/// Whether the child `pid` has exited, without reaping it (`WNOWAIT`): it stays a zombie, so
+/// its pid, and the process group of that id, cannot be reused until `Child::wait`.
+fn has_exited(pid: libc::pid_t) -> bool {
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let rc = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    // With WNOHANG, 0 and an untouched `info` (si_pid 0) mean "still running".
+    #[cfg(target_vendor = "apple")]
+    let reported = info.si_pid;
+    #[cfg(not(target_vendor = "apple"))]
+    let reported = unsafe { info.si_pid() };
+    rc == 0 && reported == pid
+}
+
+/// stdout of `cmd`, or `None` when it fails or outlives `timeout` (then it is killed, with
+/// whatever it started). A child it leaves behind holding stdout open is waited for only until
+/// the same deadline.
+fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<String> {
+    let got = capture(cmd, Instant::now() + timeout, None)?;
+    got.done.then_some(got.out)
 }
 
 /// `fleet harness list --json`: one row per harness.
@@ -584,11 +689,72 @@ pub struct HarnessInfo {
     pub command: String,
     /// Its first word resolves to an executable (PATH, the usual install dirs).
     pub installed: bool,
+    /// The absolute path of the executable its launcher runs ([`launcher_paths`]: the login
+    /// shell's, a function or alias of that name skipped), or `null`.
+    pub path: Option<String>,
+    /// The first line of `<path> --version` ([`version_line`]), or `null`: not found, failed,
+    /// or no answer before the lookup's deadline ([`LOOKUP_WITHIN`]).
+    pub version: Option<String>,
     pub models: Vec<ModelOption>,
 }
 
-pub fn info(h: Harness, with_models: bool) -> HarnessInfo {
-    let command = h.command();
+/// The whole executable lookup (login shell, then every `--version`) shares this one deadline;
+/// what is not answered by then is `null`.
+const LOOKUP_WITHIN: Duration = Duration::from_secs(3);
+
+/// Every harness's row. The executables are looked up together (one login shell for all of
+/// them), then each one's `--version` runs in its own thread, all while the models are read.
+/// The lookup and the versions together get [`LOOKUP_WITHIN`]: the list takes no longer than
+/// that, or its slowest model read.
+pub fn infos(with_models: bool) -> Vec<HarnessInfo> {
+    let commands: Vec<String> = Harness::ALL.iter().map(|h| h.command()).collect();
+    let here = std::env::current_dir()
+        .ok()
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("/"));
+    let deadline = Instant::now() + LOOKUP_WITHIN;
+    std::thread::scope(|s| {
+        let models: Vec<_> = Harness::ALL
+            .iter()
+            .zip(&commands)
+            .map(|(h, command)| s.spawn(move || installed_and_models(*h, command, with_models)))
+            .collect();
+        let paths = launcher_paths(&commands, &here, deadline);
+        let versions: Vec<_> = paths
+            .iter()
+            .map(|p| {
+                let p = p.clone();
+                s.spawn(move || p.as_deref().and_then(|p| version_line(p, deadline)))
+            })
+            .collect();
+        Harness::ALL
+            .iter()
+            .zip(commands.iter().cloned())
+            .zip(paths)
+            .zip(models.into_iter().zip(versions))
+            .map(|(((h, command), path), (models, version))| {
+                let (installed, models) = joined(models);
+                HarnessInfo {
+                    id: h.id(),
+                    label: h.label(),
+                    command,
+                    installed,
+                    path: path.map(|p| p.display().to_string()),
+                    version: joined(version),
+                    models,
+                }
+            })
+            .collect()
+    })
+}
+
+fn joined<T>(h: std::thread::ScopedJoinHandle<'_, T>) -> T {
+    h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))
+}
+
+/// Whether the launcher's first word resolves to an executable (PATH, the usual install dirs),
+/// and, when it does and `with_models`, the models for the picker.
+fn installed_and_models(h: Harness, command: &str, with_models: bool) -> (bool, Vec<ModelOption>) {
     let bin = command.split_whitespace().next().unwrap_or(h.id());
     let installed = if bin.contains('/') {
         crate::core::tools::is_executable(Path::new(&crate::core::tools::expand_tilde(bin)))
@@ -606,15 +772,9 @@ pub fn info(h: Harness, with_models: bool) -> HarnessInfo {
             claude_models_saved(default.as_deref(), &saved)
         }
         (true, Harness::Codex) => codex_models(&codex_home()),
-        (true, Harness::Pi) => pi_models(&pi_home(), &command),
+        (true, Harness::Pi) => pi_models(&pi_home(), command),
     };
-    HarnessInfo {
-        id: h.id(),
-        label: h.label(),
-        command,
-        installed,
-        models,
-    }
+    (installed, models)
 }
 
 /// Whether a spawn's launcher can start, asked before it is typed into a shell.
@@ -635,21 +795,11 @@ pub enum LauncherCheck {
 /// Everything is judged from `dir`, where the spawned shell will run the launcher: a relative
 /// path (`./agent`, `bin/agent`) is resolved there, and the login shell starts there.
 pub fn check_launcher(launcher: &str, dir: &Path) -> LauncherCheck {
-    let Some(word) = launcher.split_whitespace().next() else {
+    let Some(word) = launcher_word(launcher) else {
         return LauncherCheck::Unknown;
     };
-    if word.starts_with('-')
-        || !word
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "._/~+-".contains(c))
-    {
-        return LauncherCheck::Unknown;
-    }
     if word.contains('/') {
-        let p = PathBuf::from(crate::core::tools::expand_tilde(word));
-        // Relative to where the shell will be, not to where fleet runs.
-        let p = if p.is_absolute() { p } else { dir.join(p) };
-        return if crate::core::tools::is_executable(&p) {
+        return if crate::core::tools::is_executable(&launcher_file(word, dir)) {
             LauncherCheck::Found
         } else {
             LauncherCheck::Missing
@@ -667,8 +817,74 @@ pub fn check_launcher(launcher: &str, dir: &Path) -> LauncherCheck {
     login_shell_has(word, dir)
 }
 
-/// `command -v <word>` in an interactive login shell of `$SHELL` (sh-family shells only).
-fn login_shell_has(word: &str, dir: &Path) -> LauncherCheck {
+/// The launcher's first word, when it is one fleet can look up: a name or a path, not a flag,
+/// an assignment (`VAR=… cmd`) or anything a shell would expand.
+fn launcher_word(launcher: &str) -> Option<&str> {
+    let word = launcher.split_whitespace().next()?;
+    let plain = word
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "._/~+-".contains(c));
+    (plain && !word.starts_with('-')).then_some(word)
+}
+
+/// A launcher word with a `/`: `~` expanded, a relative one taken from `dir` (where the shell
+/// will be, not where fleet runs).
+fn launcher_file(word: &str, dir: &Path) -> PathBuf {
+    let p = PathBuf::from(crate::core::tools::expand_tilde(word));
+    if p.is_absolute() { p } else { dir.join(p) }
+}
+
+/// The executable file each launcher's first word runs, looked for where [`check_launcher`]
+/// looks, but asking for the file: a path as it is (when executable); a bare name first in a
+/// login shell of `$SHELL`, where a spawn types it, as its `command -v` with any function or
+/// alias of that name set aside (a wrapper function runs the file of that name the same way),
+/// then on `PATH` and the usual install dirs. Under `FLEET_PATH_ONLY`, `PATH` alone. One
+/// login shell answers for all the names. `None` for one found nowhere, or a launcher that is
+/// not a word fleet looks up (`VAR=… cmd`), and for a relative one (`./agent`): it means
+/// something only where a spawn runs it, not here. Paths come back normalized (no `.`
+/// components). The login shell is given until `deadline`.
+pub fn launcher_paths(launchers: &[String], dir: &Path, deadline: Instant) -> Vec<Option<PathBuf>> {
+    use crate::core::tools;
+    let words: Vec<Option<&str>> = launchers.iter().map(|l| launcher_word(l)).collect();
+    let mut names: Vec<&str> = words.iter().flatten().copied().collect();
+    names.retain(|w| !w.contains('/'));
+    names.sort_unstable();
+    names.dedup();
+    let in_shell = if names.is_empty() || tools::path_only() {
+        HashMap::new()
+    } else {
+        login_shell_paths(&names, dir, deadline)
+    };
+    words
+        .into_iter()
+        .map(|word| {
+            let word = word?;
+            if word.contains('/') {
+                let p = launcher_file(word, dir);
+                // Not absolute once `~` is resolved: where it points depends on the spawn's dir.
+                if !PathBuf::from(tools::expand_tilde(word)).is_absolute() {
+                    return None;
+                }
+                return Some(p).filter(|p| tools::is_executable(p));
+            }
+            in_shell
+                .get(word)
+                .cloned()
+                .or_else(|| tools::find_binary(word))
+                .or_else(|| {
+                    (word == "claude")
+                        .then(tools::claude)
+                        .flatten()
+                        .map(PathBuf::from)
+                })
+        })
+        .map(|p| p.map(|p| p.components().collect()))
+        .collect()
+}
+
+/// An interactive login shell of `$SHELL` running `script` with `words` as `$1`, `$2`, …, in
+/// `dir`; `None` for a shell that is not sh-family.
+fn login_shell(script: &str, words: &[&str], dir: &Path) -> Option<Command> {
     let shell = std::env::var("SHELL")
         .ok()
         .filter(|s| !s.is_empty())
@@ -678,28 +894,108 @@ fn login_shell_has(word: &str, dir: &Path) -> LauncherCheck {
         .map(|b| b.to_string_lossy().into_owned())
         .unwrap_or_default();
     if !matches!(base.as_str(), "sh" | "bash" | "zsh" | "dash" | "ksh") {
-        return LauncherCheck::Unknown;
+        return None;
     }
     let mut cmd = Command::new(&shell);
-    cmd.args([
-        "-l",
-        "-i",
-        "-c",
+    cmd.args(["-l", "-i", "-c", script, "fleet"])
+        .args(words)
+        .env("DISABLE_AUTO_UPDATE", "true")
+        .current_dir(dir);
+    Some(cmd)
+}
+
+/// The last line of `out` that starts with `fleet:` — a profile may print too.
+fn shell_answer(out: &str) -> Option<&str> {
+    out.lines().rev().find(|l| l.starts_with("fleet:"))
+}
+
+/// `command -v <word>` in an interactive login shell of `$SHELL` (sh-family shells only).
+fn login_shell_has(word: &str, dir: &Path) -> LauncherCheck {
+    let Some(mut cmd) = login_shell(
         r#"if command -v "$1" >/dev/null 2>&1; then echo fleet:found; else echo fleet:missing; fi"#,
-        "fleet",
-        word,
-    ])
-    .env("DISABLE_AUTO_UPDATE", "true")
-    .current_dir(dir);
-    // A profile may print too; only the line that starts with `fleet:` is ours.
+        &[word],
+        dir,
+    ) else {
+        return LauncherCheck::Unknown;
+    };
     match run_with_timeout(&mut cmd, Duration::from_secs(15))
         .as_deref()
-        .and_then(|out| out.lines().rev().find(|l| l.starts_with("fleet:")))
+        .and_then(shell_answer)
     {
         Some("fleet:found") => LauncherCheck::Found,
         Some("fleet:missing") => LauncherCheck::Missing,
         _ => LauncherCheck::Unknown,
     }
+}
+
+/// For each name, the file `command -v` finds in one interactive login shell of `$SHELL`, with
+/// a function or alias of that name removed first (in that shell only), so the answer is the
+/// file on its `PATH`, never the wrapper. Names it finds no file for are left out. The shell
+/// gets until `deadline`; it is not waited for once it has printed [`SHELL_END`] (a profile's
+/// background job may hold its stdout open), and answers it gave before the deadline are kept.
+fn login_shell_paths(names: &[&str], dir: &Path, deadline: Instant) -> HashMap<String, PathBuf> {
+    // Each line starts on a fresh line: a profile that prints without a newline (iTerm2's
+    // shell integration) must not swallow the first answer.
+    let end = shell_end();
+    let script = format!(
+        r#"for w in "$@"; do unset -f "$w" 2>/dev/null; unalias "$w" 2>/dev/null; printf '\nfleet:path:%s:%s\n' "$w" "$(command -v "$w" 2>/dev/null)"; done; printf '\n%s\n' '{end}'"#
+    );
+    let Some(got) = login_shell(&script, names, dir)
+        .and_then(|mut cmd| capture(&mut cmd, deadline, Some(&end)))
+    else {
+        return HashMap::new();
+    };
+    parse_shell_paths(&got.out, names)
+}
+
+/// The line that ends the login shell's answer (this process's id keeps a profile from printing it).
+fn shell_end() -> String {
+    format!("fleet:end:{}", std::process::id())
+}
+
+/// `fleet:path:<name>:<what command -v said>` lines → the names answered with an executable
+/// file (a builtin or keyword answers with its bare name, a missing one with nothing). A profile
+/// may print too; only complete lines that start with these, for the names asked, count.
+fn parse_shell_paths(out: &str, names: &[&str]) -> HashMap<String, PathBuf> {
+    out.split_inclusive('\n')
+        .filter(|l| l.ends_with('\n'))
+        .filter_map(|l| {
+            l.trim_end_matches(['\r', '\n'])
+                .strip_prefix("fleet:path:")?
+                .split_once(':')
+        })
+        .filter(|(name, _)| names.contains(name))
+        .map(|(name, p)| (name.to_string(), PathBuf::from(p)))
+        .filter(|(_, p)| p.is_absolute() && crate::core::tools::is_executable(p))
+        .collect()
+}
+
+/// The first line of `<path> --version`, run as argv (no shell) with no input: trimmed, at most
+/// 200 characters. `None` when it fails, prints nothing, is not an absolute path (a relative one
+/// would run from fleet's directory, not the spawn's) or takes past `deadline` (then it is
+/// killed, with whatever it started).
+pub fn version_line(path: &Path, deadline: Instant) -> Option<String> {
+    if !path.is_absolute() {
+        return None;
+    }
+    let mut cmd = Command::new(path);
+    cmd.arg("--version");
+    // A script's interpreter (`#!/usr/bin/env node`) is looked for next to it first: npm under
+    // nvm installs `codex` beside the node that runs it, on a PATH fleet itself may not have.
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if !crate::core::tools::path_only()
+        && let Some(parent) = path.parent().filter(|p| p.is_absolute())
+    {
+        dirs.push(parent.to_path_buf());
+    }
+    let search = crate::core::tools::search_path();
+    dirs.extend(std::env::split_paths(&search));
+    if let Ok(p) = std::env::join_paths(dirs) {
+        cmd.env("PATH", p);
+    }
+    let got = capture(&mut cmd, deadline, None).filter(|g| g.done)?;
+    let line = got.out.lines().next()?.trim();
+    (!line.is_empty()).then(|| line.chars().take(200).collect())
 }
 
 // --- processes ----------------------------------------------------------------
@@ -2516,6 +2812,218 @@ mod tests {
         assert_eq!(check("FOO=1 claude"), LauncherCheck::Unknown);
         assert_eq!(check("$HOME/bin/x"), LauncherCheck::Unknown);
         assert_eq!(check(""), LauncherCheck::Unknown);
+    }
+
+    fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let p = dir.join(name);
+        std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    }
+
+    #[test]
+    fn a_launcher_path_is_its_executable_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = script(dir.path(), "agent", "");
+        let shown = exe.display().to_string();
+        let launchers = [
+            format!("{shown} --model 'x'"),
+            "./agent".into(),
+            dir.path().join("nope").display().to_string(),
+            "FOO=1 claude".into(),
+            String::new(),
+            format!("{}/./agent", dir.path().display()),
+        ];
+        // Path-shaped launchers only: nothing is asked of a shell or PATH. A relative one has no
+        // meaning here (a spawn runs it elsewhere): null, though `./agent` exists in `dir`. A
+        // `.` component is dropped.
+        let far = Instant::now() + Duration::from_secs(5);
+        assert_eq!(
+            launcher_paths(&launchers, dir.path(), far),
+            [Some(exe.clone()), None, None, None, None, Some(exe.clone())]
+        );
+        // And a relative path is not run for its version either.
+        assert_eq!(version_line(Path::new("agent"), far), None);
+    }
+
+    #[test]
+    fn a_login_shell_answer_is_cut_at_its_end_and_loses_nothing_before_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let start = Instant::now();
+        // The answers, the end marker, then a job that holds stdout open for 30 s.
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args([
+            "-c",
+            "printf 'noise'; printf '\\nfleet:path:a:/bin/sh\\n'; printf '\\nfleet:end:1\\n'; sleep 30 &",
+        ])
+        .current_dir(dir.path());
+        let got = capture(
+            &mut cmd,
+            start + Duration::from_secs(3),
+            Some("fleet:end:1"),
+        )
+        .unwrap();
+        assert!(got.done);
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            start.elapsed()
+        );
+        assert_eq!(
+            parse_shell_paths(&got.out, &["a"]),
+            HashMap::from([("a".to_string(), PathBuf::from("/bin/sh"))])
+        );
+        // No end marker: at the deadline, what was answered by then is kept, not done.
+        let start = Instant::now();
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args([
+            "-c",
+            "printf '\\nfleet:path:a:/bin/sh\\nfleet:path:b:/bi'; sleep 30",
+        ]);
+        let got = capture(
+            &mut cmd,
+            start + Duration::from_millis(400),
+            Some("fleet:end:1"),
+        )
+        .unwrap();
+        assert!(!got.done);
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            start.elapsed()
+        );
+        // A line cut short by the deadline does not count.
+        assert_eq!(
+            parse_shell_paths(&got.out, &["a", "b"]),
+            HashMap::from([("a".to_string(), PathBuf::from("/bin/sh"))])
+        );
+    }
+
+    #[test]
+    fn a_probe_reads_at_most_64_kib_and_survives_bad_utf8() {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args([
+            "-c",
+            "printf 'a\\377b\\n'; head -c 200000 /dev/zero | tr '\\0' x",
+        ]);
+        let got = capture(&mut cmd, Instant::now() + Duration::from_secs(5), None).unwrap();
+        assert!(got.done);
+        assert!(got.out.starts_with("a\u{fffd}b\n"), "{:?}", &got.out[..10]);
+        assert_eq!(got.out.len(), PROBE_OUTPUT_CAP + 2); // U+FFFD is 3 bytes for 1
+    }
+
+    #[test]
+    fn a_job_left_holding_stdout_after_the_shell_exits_is_killed_at_the_deadline() {
+        // The shell exits (and is not the marker's printer) while its background job keeps
+        // stdout open: no EOF, so the deadline ends it, and the job must go with the group.
+        let arg = "37.123";
+        let start = Instant::now();
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", &format!("sleep {arg} & exit 0")]);
+        let got = capture(
+            &mut cmd,
+            start + Duration::from_millis(600),
+            Some("fleet:end:1"),
+        )
+        .unwrap();
+        assert!(!got.done);
+        assert!(start.elapsed() < Duration::from_secs(5));
+        let left = std::process::Command::new("pgrep")
+            .args(["-f", &format!("sleep {arg}")])
+            .output()
+            .unwrap();
+        assert!(
+            left.stdout.is_empty(),
+            "orphan left: {}",
+            String::from_utf8_lossy(&left.stdout)
+        );
+    }
+
+    fn alive(pid: i32) -> bool {
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    #[test]
+    fn a_timed_out_probe_takes_its_grandchildren_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("pid");
+        let wrapper = script(
+            dir.path(),
+            "wrapper",
+            &format!("sleep 30 &\necho $! > '{}'\nwait", pidfile.display()),
+        );
+        let got = version_line(&wrapper, Instant::now() + Duration::from_millis(500));
+        assert_eq!(got, None);
+        let pid: i32 = std::fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        // Gone (not just orphaned): the group was killed.
+        let until = Instant::now() + Duration::from_secs(2);
+        while alive(pid) && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!alive(pid), "the wrapper's sleep outlived its probe");
+    }
+
+    #[test]
+    fn the_login_shell_answer_counts_only_for_files_asked_about() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = script(dir.path(), "agent", "");
+        let plain = dir.path().join("plain");
+        std::fs::write(&plain, "").unwrap();
+        let out = format!(
+            "Welcome back\nfleet:path:agent:{}\nfleet:path:cd:cd\nfleet:path:gone:\n\
+             fleet:path:other:{}\nfleet:path:plain:{}\n",
+            exe.display(),
+            exe.display(),
+            plain.display()
+        );
+        let got = parse_shell_paths(&out, &["agent", "cd", "gone", "plain"]);
+        // A builtin's bare name, nothing found, a file that does not execute, a name not asked.
+        assert_eq!(got, HashMap::from([("agent".to_string(), exe)]));
+    }
+
+    #[test]
+    fn a_version_is_the_first_line_of_its_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        let far = Instant::now() + Duration::from_secs(5);
+        let v = |body: &str| version_line(&script(dir.path(), "tool", body), far);
+        assert_eq!(
+            v("printf '  2.1.400 (Claude Code) \\nmore\\n'").as_deref(),
+            Some("2.1.400 (Claude Code)")
+        );
+        // Its arguments are `--version` alone.
+        assert_eq!(v(r#"echo "$# $1""#).as_deref(), Some("1 --version"));
+        let long = v("printf 'é%.0s' $(seq 300)").unwrap();
+        assert_eq!(long.chars().count(), 200);
+        assert_eq!(v("echo 1.0; exit 3"), None);
+        assert_eq!(v("printf '\\n'"), None);
+        assert_eq!(v("echo 1.0 >&2"), None);
+        assert_eq!(version_line(&dir.path().join("none"), far), None);
+    }
+
+    #[test]
+    fn a_version_that_does_not_come_in_time_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = Instant::now() + Duration::from_millis(300);
+        let start = Instant::now();
+        assert_eq!(
+            version_line(&script(dir.path(), "slow", "sleep 5; echo 1.0"), t),
+            None
+        );
+        // Exits at once, but a child it left behind keeps its stdout open.
+        assert_eq!(
+            version_line(&script(dir.path(), "bg", "sleep 5 & echo 1.0"), t),
+            None
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            start.elapsed()
+        );
     }
 
     #[test]

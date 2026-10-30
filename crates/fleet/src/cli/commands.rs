@@ -106,10 +106,7 @@ pub(crate) fn with_model(launcher: &str, model: Option<&str>) -> String {
 
 /// `fleet harness list`: what this host can spawn, and the models each one offers.
 pub fn harness_list(json: bool, with_models: bool) -> Result<()> {
-    let rows: Vec<harness::HarnessInfo> = Harness::ALL
-        .iter()
-        .map(|h| harness::info(*h, with_models))
-        .collect();
+    let rows = harness::infos(with_models);
     if json {
         println!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(());
@@ -128,11 +125,17 @@ pub fn harness_list(json: bool, with_models: bool) -> Result<()> {
         } else {
             String::new()
         };
+        let version = r
+            .version
+            .as_deref()
+            .map(|v| format!("  {v}"))
+            .unwrap_or_default();
         println!(
-            "{:<7} {:<10} {}{}",
+            "{:<7} {:<10} {}{}{}",
             r.id.bold(),
             state,
             r.command.dimmed(),
+            version.dimmed(),
             models.dimmed()
         );
     }
