@@ -20,3 +20,7 @@ pub mod tui;
 
 /// This binary's version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// [`VERSION`] and the commit it was built from, `0.1.0 (5e2afd8)`, or [`VERSION`] alone when
+/// built where git could not say (build.rs): what `fleet --version` prints after the name.
+pub const BUILD_VERSION: &str = env!("FLEET_BUILD_VERSION");
