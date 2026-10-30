@@ -865,6 +865,20 @@ fn a_session_idle_with_a_background_shell_switches() {
     assert_eq!(a.received(), "");
 }
 
+// `shell` says a background shell runs, even when the Transcript shows none: `background`
+// counts it, so a reader of `idle` never takes the session for one with nothing running.
+#[test]
+fn a_shell_session_counts_its_background_shell() {
+    let a = agent("cold", "live/claude-empty");
+    a.status("shell");
+    let v = a.listed();
+    assert_eq!(v["status"], "idle", "{v}");
+    assert_eq!(v["background"]["shells"], 1, "{v}");
+    assert_eq!(v["background"]["agents"], serde_json::json!([]), "{v}");
+    a.status("idle");
+    assert!(a.listed()["background"].is_null());
+}
+
 // The box read as `send --require-empty` reads it: text in it, a prompt in its place, or no
 // box found hold the switch — `send_held`, exit 3, `send`'s reason; the box's text only in
 // `input`.
