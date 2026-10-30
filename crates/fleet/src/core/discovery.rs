@@ -1803,6 +1803,7 @@ mod tests {
                     cwd: "/work/project".into(),
                     created_ms: 0,
                     mtime_ms: 0,
+                    child: false,
                 });
                 let s = harness_session(&proc, transcript.as_ref(), &HashMap::new());
                 let row = serde_json::to_value(&s).unwrap();
