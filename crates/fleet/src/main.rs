@@ -19,7 +19,7 @@ use fleet::tui::watch;
 #[derive(Parser)]
 #[command(
     name = "fleet",
-    version,
+    version = fleet::BUILD_VERSION,
     about = "See, steer and spawn Claude Code sessions and tmux sessions — on this machine or any host you can ssh to",
     after_help = "Bare `fleet` opens the dashboard on a terminal (a one-shot `list` when piped).\n\
 Host: -H <name> runs the command on that host over ssh (it needs fleet installed there).\n\

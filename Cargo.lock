@@ -1207,6 +1207,7 @@ dependencies = [
  "colored",
  "crossterm",
  "dirs 6.0.0",
+ "libc",
  "predicates",
  "ratatui",
  "serde",
