@@ -431,7 +431,8 @@ fn claude_session(
     // `busy` / `shell` also while only subagents or background shells run: the main
     // thread may be free (see core::background).
     let mut background = None;
-    if status == "busy" || status == "shell" {
+    let shell = status == SHELL;
+    if status == "busy" || shell {
         if let Some(m) = reg.session_id.as_deref().and_then(|sid| {
             crate::core::background::for_session(
                 &claude_home(),
@@ -448,9 +449,12 @@ fn claude_session(
             }
             background = (!m.background.is_empty()).then_some(m.background);
         }
-        // `shell`: only background shells run — the main thread is free.
-        if status == "shell" {
+        // `shell`: only background shells run — the main thread is free. Claude Code says
+        // one runs even when the transcript shows none, so `background` counts at least one.
+        if shell {
             status = "idle".into();
+            let b = background.get_or_insert_with(Default::default);
+            b.shells = b.shells.max(1);
         }
     }
     // What the main thread is doing: only while it is Busy as reported, not while only
