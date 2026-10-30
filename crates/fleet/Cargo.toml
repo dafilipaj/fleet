@@ -26,6 +26,7 @@ ratatui.workspace = true
 crossterm.workspace = true
 unicode-width.workspace = true
 dirs = "6"
+libc = "0.2"
 
 [dev-dependencies]
 assert_cmd.workspace = true

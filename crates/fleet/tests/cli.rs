@@ -1516,3 +1516,334 @@ fn harness_list_gives_each_model_its_effort_levels() {
         "{claude_models:?}"
     );
 }
+
+fn agent_script(p: &std::path::Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(p, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// `fleet harness list --json` run by `cmd`: each row's id → (path, version), and its keys.
+fn harness_paths(
+    mut cmd: assert_cmd::Command,
+) -> (
+    Vec<(String, serde_json::Value, serde_json::Value)>,
+    Vec<String>,
+) {
+    let out = cmd.args(["harness", "list", "--json"]).output().unwrap();
+    assert!(out.status.success(), "{}", common::stderr(&out));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let rows = v.as_array().unwrap();
+    let keys = rows[0].as_object().unwrap().keys().cloned().collect();
+    let rows = rows
+        .iter()
+        .map(|h| {
+            (
+                h["id"].as_str().unwrap().to_string(),
+                h["path"].clone(),
+                h["version"].clone(),
+            )
+        })
+        .collect();
+    (rows, keys)
+}
+
+// `harness list --json` gives each harness the executable its launcher runs (`path`) and the
+// first line of its `--version`, run with that one argument (`version`); null for a harness
+// that is not there or whose `--version` fails. The harnesses are asked at the same time.
+// FLEET_PATH_ONLY: found on PATH alone, no login shell.
+#[test]
+fn harness_list_gives_each_harness_its_executable_and_version() {
+    let env = common::Env::new();
+    let (bin, tools) = (env.path("bin"), env.path("tools"));
+    agent_script(
+        &bin.join("claude"),
+        "sleep 2; echo ' 2.1.400 (Claude Code) '",
+    );
+    let codex = tools.join("codex");
+    agent_script(
+        &codex,
+        r#"sleep 2; echo "codex-cli 0.170.0 ($# $1)"; echo second"#,
+    );
+    let pi = tools.join("pi");
+    agent_script(&pi, "sleep 2; echo 0.9.0; exit 3");
+    let list = |pi_command: &str| {
+        env.write_config(&serde_json::json!({
+            "version": 1,
+            "harnesses": {
+                "codex": { "command": format!("{} --profile fast", codex.display()) },
+                "pi": { "command": pi_command }
+            }
+        }));
+        let mut cmd = env.cmd();
+        cmd.env("FLEET_PATH_ONLY", "1")
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()));
+        let start = std::time::Instant::now();
+        let got = harness_paths(cmd);
+        (got, start.elapsed())
+    };
+    let s = |p: &std::path::Path| serde_json::json!(p.display().to_string());
+
+    let ((rows, keys), took) = list("fleet-test-no-such-agent");
+    assert_eq!(
+        rows,
+        [
+            (
+                "claude".into(),
+                s(&bin.join("claude")),
+                "2.1.400 (Claude Code)".into()
+            ),
+            (
+                "codex".into(),
+                s(&codex),
+                "codex-cli 0.170.0 (1 --version)".into()
+            ),
+            (
+                "pi".into(),
+                serde_json::Value::Null,
+                serde_json::Value::Null
+            ),
+        ]
+    );
+    // Two `--version`s of 2 s each, side by side: not one after the other.
+    assert!(took < std::time::Duration::from_secs(4), "{took:?}");
+    // Every field it had is still there.
+    assert_eq!(
+        keys,
+        [
+            "id",
+            "label",
+            "command",
+            "installed",
+            "path",
+            "version",
+            "models"
+        ]
+    );
+
+    // Found, but its `--version` fails.
+    let ((rows, _), _) = list(&pi.display().to_string());
+    assert_eq!(
+        rows[2],
+        ("pi".into(), s(&pi), serde_json::Value::Null),
+        "{rows:?}"
+    );
+}
+
+// A bare launcher name is looked up in a login shell of `$SHELL`, where a spawn types it: its
+// profile may put it on PATH, and a function or an alias of that name is passed over for the
+// file it wraps. The shell is asked before PATH: a same-named decoy on PATH (found first by a
+// PATH-first lookup) loses to what the profile's PATH gives.
+#[test]
+fn harness_list_finds_the_launcher_in_the_login_shell() {
+    let env = common::Env::new();
+    let agent = env.path("home/agentbin/fleettestagent");
+    agent_script(&agent, "echo 'agent 1.2.3'");
+    agent_script(&env.path("decoy/fleettestagent"), "echo 'decoy 0.0.1'");
+    let other = env.path("home/agentbin/fleettestother");
+    agent_script(&other, "echo 'other 4.5.6'");
+    std::fs::write(
+        env.path("home/.profile"),
+        "PATH=\"$HOME/agentbin:$PATH\"; export PATH\n\
+         echo 'profile noise'\n\
+         fleettestagent() { echo function; }\n\
+         alias fleettestother='echo alias'\n",
+    )
+    .unwrap();
+    let claude = env.path("bin/claude");
+    agent_script(&claude, "echo 2.1.400");
+    env.write_config(&serde_json::json!({
+        "version": 1,
+        "harnesses": {
+            "codex": { "command": "fleettestagent --flag" },
+            "pi": { "command": "fleettestother" }
+        }
+    }));
+    let mut cmd = env.cmd();
+    cmd.env("SHELL", "/bin/sh")
+        .env(
+            "PATH",
+            format!("{}:/usr/bin:/bin", env.path("decoy").display()),
+        )
+        .env("FLEET_CMD", &claude);
+    let (rows, _) = harness_paths(cmd);
+    let s = |p: &std::path::Path| serde_json::json!(p.display().to_string());
+    assert_eq!(rows[0], ("claude".into(), s(&claude), "2.1.400".into()));
+    assert_eq!(rows[1], ("codex".into(), s(&agent), "agent 1.2.3".into()));
+    assert_eq!(rows[2], ("pi".into(), s(&other), "other 4.5.6".into()));
+}
+
+// A profile that keeps the login shell's stdout open (a background job), or prints without a
+// newline (iTerm2's shell integration), costs nothing: the answers are read up to the end marker
+// and the list is back within about 3 s whatever the profile does. A profile that blocks the
+// shell outright loses the lookup at the deadline: those answers are null.
+#[test]
+fn harness_list_does_not_wait_on_the_profile() {
+    let env = common::Env::new();
+    let agent = env.path("home/agentbin/fleettestagent");
+    agent_script(&agent, "echo 'agent 1.2.3'");
+    let profile = env.path("home/.profile");
+    std::fs::write(
+        &profile,
+        "PATH=\"$HOME/agentbin:$PATH\"; export PATH\n\
+         printf 'no newline\\033]1337;ShellIntegration\\007'\n\
+         (sleep 7 &)\n",
+    )
+    .unwrap();
+    let claude = env.path("bin/claude");
+    agent_script(&claude, "echo 2.1.400");
+    env.write_config(&serde_json::json!({
+        "version": 1,
+        "harnesses": { "codex": { "command": "fleettestagent" } }
+    }));
+    let list = || {
+        let mut cmd = env.cmd();
+        cmd.env("SHELL", "/bin/sh")
+            .env("PATH", "/usr/bin:/bin")
+            .env("FLEET_CMD", &claude);
+        let start = std::time::Instant::now();
+        let out = cmd
+            .args(["harness", "list", "--json", "--no-models"])
+            .output()
+            .unwrap();
+        let took = start.elapsed();
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        (v, took)
+    };
+    let (v, took) = list();
+    let s = |p: &std::path::Path| serde_json::json!(p.display().to_string());
+    assert_eq!(v[1]["path"], s(&agent), "{v}");
+    assert_eq!(v[1]["version"], "agent 1.2.3", "{v}");
+    assert!(took < std::time::Duration::from_millis(3500), "{took:?}");
+
+    // The shell never answers: it is waited for until the deadline, no longer.
+    std::fs::write(&profile, "sleep 7\n").unwrap();
+    let (v, took) = list();
+    assert_eq!(v[1]["path"], serde_json::Value::Null, "{v}");
+    assert_eq!(v[1]["version"], serde_json::Value::Null, "{v}");
+    assert!(took < std::time::Duration::from_millis(3500), "{took:?}");
+}
+
+// `fleet --version` names the commit it was built from, its first 7 hex digits, when built in a
+// git checkout (build.rs); elsewhere the version alone.
+#[test]
+fn version_names_the_commit_it_was_built_from() {
+    let out = fleet().arg("--version").output().unwrap();
+    assert!(out.status.success(), "{}", common::stderr(&out));
+    let head = std::process::Command::new("git")
+        .args(["rev-parse", "--verify", "HEAD"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout)[..7].to_string());
+    let version = env!("CARGO_PKG_VERSION");
+    let want = match head {
+        Some(rev) => format!("fleet {version} ({rev})\n"),
+        None => format!("fleet {version}\n"),
+    };
+    assert_eq!(String::from_utf8_lossy(&out.stdout), want);
+}
+
+// With a controlling terminal (`fleet` run from a shell prompt), the login shell the lookup
+// starts must not be in a background process group: an interactive zsh there tries to take the
+// terminal, is stopped by SIGTTOU, and every version comes back null at the deadline. `fleet`
+// runs here on a pseudo-terminal that is its controlling terminal.
+#[test]
+fn harness_list_finds_versions_with_a_controlling_terminal() {
+    use std::io::Read;
+    use std::os::fd::{FromRawFd, OwnedFd};
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+
+    if !std::path::Path::new("/bin/zsh").exists() {
+        eprintln!("skipped: no /bin/zsh");
+        return;
+    }
+    let env = common::Env::new();
+    let agent = env.path("home/agentbin/fleettestagent");
+    agent_script(&agent, "echo 'agent 1.2.3'");
+    let zdot = env.path("zdot");
+    std::fs::create_dir_all(&zdot).unwrap();
+    std::fs::write(
+        zdot.join(".zshrc"),
+        "PATH=\"$HOME/agentbin:$PATH\"; export PATH\n",
+    )
+    .unwrap();
+    let claude = env.path("bin/claude");
+    agent_script(&claude, "echo 2.1.400");
+    env.write_config(&serde_json::json!({
+        "version": 1,
+        "harnesses": { "codex": { "command": "fleettestagent" } }
+    }));
+
+    let (mut master, mut slave) = (-1, -1);
+    let rc = unsafe {
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    assert_eq!(rc, 0, "openpty failed");
+    // Neither end leaks into the child across exec; the slave reaches stdio through the dups.
+    for fd in [master, slave] {
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFD);
+            assert_ne!(flags, -1);
+            assert_ne!(libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC), -1);
+        }
+    }
+    let (master, slave) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+    let dup = |fd: &OwnedFd| Stdio::from(fd.try_clone().unwrap());
+
+    let mut cmd = env.std_cmd();
+    cmd.args(["harness", "list", "--json", "--no-models"])
+        .env("SHELL", "/bin/zsh")
+        .env("ZDOTDIR", &zdot)
+        .env("PATH", "/usr/bin:/bin")
+        .env("FLEET_CMD", &claude)
+        .stdin(dup(&slave))
+        .stdout(dup(&slave))
+        .stderr(dup(&slave));
+    let slave_fd = std::os::fd::AsRawFd::as_raw_fd(&slave);
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::ioctl(slave_fd, libc::TIOCSCTTY as _, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let start = std::time::Instant::now();
+    let mut child = cmd.spawn().unwrap();
+    drop(cmd);
+    drop(slave);
+    // The pty master reports EIO, not EOF, once the last slave end is closed. Read it on a
+    // thread, so a leftover child holding the slave cannot hang the test.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut text = Vec::new();
+        let _ = std::fs::File::from(master).read_to_end(&mut text);
+        let _ = tx.send(text);
+    });
+    let text = rx.recv_timeout(std::time::Duration::from_secs(10));
+    let took = start.elapsed();
+    if text.is_err() {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+    let text = text.expect("no end of output from the pty within 10 s");
+    let text = String::from_utf8_lossy(&text);
+    let json = &text[text.find('[').expect(&text)..];
+    let v: serde_json::Value = serde_json::from_str(json.trim()).expect(&text);
+    assert_eq!(v[0]["version"], "2.1.400", "{v}");
+    assert_eq!(v[1]["version"], "agent 1.2.3", "{v}");
+    assert!(took < std::time::Duration::from_millis(2000), "{took:?}");
+}
