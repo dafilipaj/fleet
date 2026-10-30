@@ -53,7 +53,7 @@ export function useVoice({ onText, hint }: { onText: (text: string) => void; hin
     setStartedAt(null)
   }, [])
 
-  const send = useCallback(async (audio: Blob) => {
+  const send = useCallback(async function transcribe(audio: Blob): Promise<void> {
     const controller = new AbortController()
     inflight.current = controller
     setState('transcribing')
@@ -63,7 +63,12 @@ export function useVoice({ onText, hint }: { onText: (text: string) => void; hin
       else toast.message('Nothing to transcribe', { description: 'No speech was recognized.' })
     } catch (err) {
       if (controller.signal.aborted) return
-      toast.error("Couldn't transcribe", { description: err instanceof ApiError ? err.message || `HTTP ${err.status}` : String(err) })
+      // The recording stays retryable: a long dictation is not lost to one failed request.
+      toast.error("Couldn't transcribe", {
+        description: err instanceof ApiError ? err.message || `HTTP ${err.status}` : String(err),
+        action: { label: 'Retry', onClick: () => void transcribe(audio) },
+        duration: 60_000,
+      })
     } finally {
       if (inflight.current === controller) {
         inflight.current = null

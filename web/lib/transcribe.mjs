@@ -2,6 +2,9 @@
 // endpoint and answers with the text, which the UI appends to the prompt. The key comes from
 // $OPENAI_SPEECH_TO_TEXT_API_KEY, else (macOS) the Keychain item of that name — never from
 // the config file. No key → the feature is off (/api/settings says so, the mic is hidden).
+import fs from 'node:fs/promises';
+import path from 'node:path';
+
 import { HttpError } from './http.mjs';
 
 export const KEY_NAME = 'OPENAI_SPEECH_TO_TEXT_API_KEY';
@@ -121,9 +124,10 @@ export function createKeySource({ name = KEY_NAME, env = process.env, platform =
  *   getKey    async () => key | null (createKeySource)
  *   model     OpenAI transcription model
  *   fetch     injectable for tests
+ *   keepDir   a recording that fails to transcribe is saved here, so a long dictation is not lost
  * @returns {{ enabled(), transcribe(req, hint): Promise<{ text, model }>, transcribeAudio(audio, type, prompt): Promise<{ text, model }> }}
  */
-export function createTranscriber({ getKey, model = DEFAULT_TRANSCRIBE_MODEL, maxBytes = TRANSCRIBE_MAX_BYTES, fetch = globalThis.fetch, timeoutMs = 60 * 1000, log = () => {} }) {
+export function createTranscriber({ getKey, keepDir = null, now = () => new Date(), model = DEFAULT_TRANSCRIBE_MODEL, maxBytes = TRANSCRIBE_MAX_BYTES, fetch = globalThis.fetch, timeoutMs = 60 * 1000, log = () => {} }) {
   async function enabled() {
     return Boolean(await getKey());
   }
@@ -134,7 +138,30 @@ export function createTranscriber({ getKey, model = DEFAULT_TRANSCRIBE_MODEL, ma
     if (!type) throw new HttpError('expected an audio body (webm, ogg, mp4, mp3 or wav)', 415);
     const audio = await readAudio(req, maxBytes);
     if (!audio.length) throw new HttpError('empty recording', 400);
-    return transcribeAudio(audio, type, buildPrompt(hint));
+    try {
+      return await transcribeAudio(audio, type, buildPrompt(hint));
+    } catch (err) {
+      const kept = await keep(audio, type);
+      if (kept) {
+        log(`transcribe: kept the failed recording (${audio.length} bytes, ${type}) as ${kept}`);
+        err.message += ' (the recording is kept on the server)';
+      }
+      throw err;
+    }
+  }
+
+  /** Save a recording that failed; its path, or null. */
+  async function keep(audio, type) {
+    if (!keepDir) return null;
+    const file = path.join(keepDir, `${now().toISOString().replace(/[:.]/g, '-')}.${EXT[type]}`);
+    try {
+      await fs.mkdir(keepDir, { recursive: true });
+      await fs.writeFile(file, audio);
+      return file;
+    } catch (err) {
+      log(`transcribe: could not keep the failed recording: ${err.message}`);
+      return null;
+    }
   }
 
   /** Audio bytes of a known `type` (audioType) → text; `prompt` steers the model. */

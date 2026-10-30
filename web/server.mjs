@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { configPath, fleetStateDir, loadConfig, ensurePath, ensureUtf8Locale, resolveBinary } from './lib/config.mjs';
+import { DEFAULT_VOICE_FAILED_DIR, configPath, expandHome, fleetStateDir, loadConfig, ensurePath, ensureUtf8Locale, resolveBinary } from './lib/config.mjs';
 import { run } from './lib/run.mjs';
 import { createFleetCli } from './lib/fleet-cli.mjs';
 import { createFocus } from './lib/focus.mjs';
@@ -182,7 +182,7 @@ const dormant = createDormant({ cli, log });
 const transcribeKey = createKeySource({ run });
 const ttsKey = createKeySource({ name: SPEECH_KEY_NAME, run });
 const speechKey = async () => (await ttsKey()) ?? (await transcribeKey());
-const transcriber = createTranscriber({ getKey: transcribeKey, log });
+const transcriber = createTranscriber({ getKey: transcribeKey, keepDir: expandHome(DEFAULT_VOICE_FAILED_DIR), log });
 // Voice memos: segments transcribed with the same key, titled by `claude -p`.
 const memos = createMemos({ ...config.memos, transcriber, ask: createClaudeAsk({ bin: claudeBin, run }), log });
 const spawner = createSpawner({

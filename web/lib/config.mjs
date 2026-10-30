@@ -32,6 +32,8 @@ export const DEFAULT_UPLOADS_DIR = '~/.local/share/fleet/uploads';
 export const DEFAULT_UPLOAD_MAX_MB = 100;
 export const DEFAULT_MEMOS_DIR = '~/.local/share/fleet/memos';
 export const DEFAULT_MEMO_AUDIO_DIR = '~/.local/share/fleet/memo-audio';
+// Voice prompts that failed to transcribe (lib/transcribe.mjs keepDir).
+export const DEFAULT_VOICE_FAILED_DIR = '~/.local/share/fleet/voice-failed';
 export const DEFAULT_UPLOAD_RETENTION_DAYS = 14;
 export const DEFAULT_STACKS_SYNC_MINUTES = 2;
 export const DEFAULT_STACKS_MODEL = 'sonnet';

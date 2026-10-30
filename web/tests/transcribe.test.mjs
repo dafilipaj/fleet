@@ -1,6 +1,9 @@
 // Voice prompts: key lookup (env → Keychain), request validation and the OpenAI call (fetch mocked).
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { Readable } from 'node:stream';
 
 import { KEY_NAME, audioType, buildPrompt, createKeySource, createTranscriber, promptEcho } from '../lib/transcribe.mjs';
@@ -95,6 +98,15 @@ test('transcribe returns no text for a prompt echo', async () => {
   const tr = createTranscriber({ getKey: async () => 'sk-test', fetch: okFetch([], echo), log: (m) => logs.push(m) });
   assert.deepEqual(await tr.transcribe(audioReq('RIFFfake'), 'my-session, other-session'), { text: '', model: 'gpt-4o-transcribe' });
   assert.match(logs[0], /prompt echo/);
+});
+
+test('a recording that fails to transcribe is kept in keepDir', async () => {
+  const keepDir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-voice-')), 'failed');
+  const fail = async () => new Response(JSON.stringify({ error: { message: 'Audio file might be corrupted or unsupported' } }), { status: 400 });
+  const tr = createTranscriber({ getKey: async () => 'sk-test', fetch: fail, keepDir, now: () => new Date('2026-10-30T08:30:00Z') });
+  await assert.rejects(tr.transcribe(audioReq('RIFFlong'), ''), (err) => err.status === 502 && /kept on the server/.test(err.message));
+  assert.deepEqual(fs.readdirSync(keepDir), ['2026-10-30T08-30-00-000Z.webm']);
+  assert.equal(fs.readFileSync(path.join(keepDir, '2026-10-30T08-30-00-000Z.webm'), 'utf8'), 'RIFFlong');
 });
 
 test('transcribe refuses without a key, non-audio, empty and oversized bodies', async () => {
