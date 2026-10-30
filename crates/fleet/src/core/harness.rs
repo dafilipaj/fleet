@@ -15,8 +15,10 @@
 //!
 //! A process is matched to a transcript by an id on its command line (`codex resume <id>`,
 //! `pi --session <id>`), else by cwd and start time: the newest transcript in its cwd that
-//! was created after it started, then the newest one written to since. A fresh Codex
-//! session has no transcript until its first prompt — it is listed without a session id.
+//! was created after it started, then the newest one written to since; a Codex child
+//! thread's rollout (`spawn_agent`, `/review`) shares its parent's cwd and is skipped. A
+//! fresh Codex session has no transcript until its first prompt — it is listed without a
+//! session id.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, Read, Seek, SeekFrom};
@@ -1242,6 +1244,9 @@ pub struct TranscriptRef {
     pub cwd: String,
     pub created_ms: i64,
     pub mtime_ms: i64,
+    /// Codex: a child thread's rollout (`session_meta.source.subagent`: `spawn_agent`,
+    /// `/review`), written by its parent's process, never a process's own by cwd.
+    pub child: bool,
 }
 
 fn mtime_ms(p: &Path) -> Option<i64> {
@@ -1285,12 +1290,14 @@ fn transcript_ref(h: Harness, path: &Path) -> Option<TranscriptRef> {
     let created = iso_ms(meta.get("timestamp"))
         .or_else(|| iso_ms(head.get("timestamp")))
         .unwrap_or(mtime);
+    let child = h == Harness::Codex && meta.get("source").and_then(|s| s.get("subagent")).is_some();
     Some(TranscriptRef {
         path: path.to_path_buf(),
         session_id,
         cwd,
         created_ms: created,
         mtime_ms: mtime,
+        child,
     })
 }
 
@@ -1432,7 +1439,7 @@ pub fn assign(procs: &[&Proc], ts: &[TranscriptRef]) -> HashMap<i64, TranscriptR
             };
             let pick = ts
                 .iter()
-                .filter(|t| t.cwd == cwd && !taken.contains(t.path.as_path()))
+                .filter(|t| t.cwd == cwd && !t.child && !taken.contains(t.path.as_path()))
                 .filter(|t| {
                     if pass == 0 {
                         t.created_ms >= p.start_ms - 3000
@@ -2133,7 +2140,34 @@ mod tests {
             cwd: cwd.into(),
             created_ms: created,
             mtime_ms: mtime,
+            child: false,
         }
+    }
+
+    #[test]
+    fn a_codex_session_is_never_paired_with_its_child_agents_rollouts() {
+        // `spawn_agent` and `/review` write child rollouts in the parent's cwd, created
+        // after it and written to while the parent waits on them.
+        let mut p = proc_(1, "/w", 1_000_000);
+        p.harness = Harness::Codex;
+        p.argv = argv("codex");
+        let child = |id: &str, mtime: i64| TranscriptRef {
+            child: true,
+            ..tref(id, "/w", 1_200_000, mtime)
+        };
+        let ts = vec![
+            tref("parent", "/w", 1_000_500, 1_300_000),
+            child("spawned", 1_900_000),
+            child("review", 1_800_000),
+        ];
+        assert_eq!(assign(&[&p], &ts)[&1].session_id, "parent");
+        // Before the parent's first prompt there's no rollout of its own: it stays unpaired.
+        assert!(assign(&[&p], &ts[1..]).is_empty());
+        // Resumed by its id, a child's rollout is still that process's own.
+        let mut resumed = proc_(2, "/w", 2_000_000);
+        resumed.harness = Harness::Codex;
+        resumed.argv = argv("codex resume spawned");
+        assert_eq!(assign(&[&resumed], &ts)[&2].session_id, "spawned");
     }
 
     #[test]
@@ -2800,6 +2834,31 @@ mod tests {
         let ts = transcripts(Harness::Codex, &root.join("codex"), &[&cp]);
         assert_eq!(ts.len(), 1);
         assert_eq!(ts[0].session_id, "c1");
+        assert!(!ts[0].child);
+        for (id, source) in [
+            (
+                "c2",
+                r#"{"subagent":{"thread_spawn":{"parent_thread_id":"c1","depth":1}}}"#,
+            ),
+            ("c3", r#"{"subagent":"review"}"#),
+            ("c4", r#""cli""#),
+        ] {
+            std::fs::write(
+                cdir.join(format!("rollout-2026-10-11T21-51-00-{id}.jsonl")),
+                format!(
+                    r#"{{"type":"session_meta","payload":{{"id":"{id}","timestamp":"2026-10-11T19:51:00.000Z","cwd":"/w/app","source":{source}}}}}"#
+                ) + "\n",
+            )
+            .unwrap();
+        }
+        let children: Vec<(String, bool)> =
+            transcripts(Harness::Codex, &root.join("codex"), &[&cp])
+                .into_iter()
+                .map(|t| (t.session_id, t.child))
+                .collect();
+        for (id, child) in [("c1", false), ("c2", true), ("c3", true), ("c4", false)] {
+            assert!(children.contains(&(id.into(), child)), "{id}: {children:?}");
+        }
         assert_eq!(
             first_prompt(Harness::Codex, &cf).as_deref(),
             Some("reply pong")
