@@ -1,4 +1,5 @@
-//! Claude Code subagent sidecars. Codex and pi counts are not supported yet.
+//! Subagent counts: Claude Code's sidecars ([`scan`]) and Codex's child rollouts
+//! ([`codex`]). pi counts are not supported yet.
 
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -232,6 +233,122 @@ impl Scan {
         };
         Counts { running, finished }
     }
+}
+
+/// How much of a Codex child's rollout is read for its last turn event. A turn that ended
+/// wrote its end last, so only one still running can start before this.
+const CODEX_CHILD_TAIL: u64 = 256 * 1024;
+
+/// A Codex child's last turn.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ChildTurn {
+    /// Its last turn event is `task_started`, or a cut tail holds none: a turn that has
+    /// written more than the tail since it started.
+    running: bool,
+    /// When that turn started: its `task_started`, or, once that has left the tail, the
+    /// `started_at` its end carries (whole seconds).
+    started: Option<SystemTime>,
+}
+
+/// A Codex session's subagents from `children`, the rollouts of its descendant threads
+/// (`thread_spawn.parent_thread_id`, at any depth) that its process wrote. A child runs
+/// while its last turn does; one open between turns runs nothing, as the session's own Idle
+/// says. `finished`: the ones not running whose last turn started at or after `turn_start`,
+/// the last turn you started; `None` when that isn't known and one has ended.
+pub(crate) fn codex(children: &[&Path], turn_start: Option<&str>) -> Counts {
+    let mut running = 0;
+    let mut settled = Vec::new();
+    for path in children {
+        let Some(turn) = tail(path, CODEX_CHILD_TAIL).map(|(text, cut)| child_turn(&text, cut))
+        else {
+            continue;
+        };
+        if turn.running {
+            running += 1;
+        } else {
+            settled.push(turn.started);
+        }
+    }
+    let finished = if settled.is_empty() {
+        Some(0)
+    } else {
+        turn_start.and_then(timestamp).map(|turn| {
+            settled
+                .iter()
+                .filter(|started| started.is_some_and(|s| s >= turn))
+                .count() as u64
+        })
+    };
+    Counts { running, finished }
+}
+
+/// The last turn in a child rollout's tail, `cut` when it starts mid-file. A child opens
+/// with a zero-length copy of its parent's turn (`task_started`, then `turn_aborted`, in
+/// one millisecond) before its own, so only the last turn event decides.
+fn child_turn(text: &str, cut: bool) -> ChildTurn {
+    let mut ended: Option<Option<SystemTime>> = None;
+    for line in text.lines().rev() {
+        if !["task_started", "task_complete", "turn_aborted"]
+            .iter()
+            .any(|kind| line.contains(kind))
+        {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if v["type"] != "event_msg" {
+            continue;
+        }
+        match v["payload"]["type"].as_str() {
+            Some("task_started") => {
+                return ChildTurn {
+                    running: ended.is_none(),
+                    started: v["timestamp"].as_str().and_then(timestamp),
+                };
+            }
+            Some("task_complete" | "turn_aborted") if ended.is_none() => {
+                let at = v["payload"]["started_at"].as_u64();
+                ended = Some(at.map(|s| UNIX_EPOCH + Duration::from_secs(s)));
+            }
+            _ => {}
+        }
+    }
+    match ended {
+        Some(started) => ChildTurn {
+            running: false,
+            started,
+        },
+        // No turn event: a turn that outgrew the tail, or a child yet to start one.
+        None => ChildTurn {
+            running: cut,
+            started: None,
+        },
+    }
+}
+
+/// The last `max` bytes of a regular file, from its first whole line, and whether that
+/// cut anything off.
+fn tail(path: &Path, max: u64) -> Option<(String, bool)> {
+    if !fs::metadata(path).is_ok_and(|m| m.is_file()) {
+        return None;
+    }
+    let mut file = open(path).ok()?;
+    let size = file.metadata().ok()?.len();
+    let start = size.saturating_sub(max);
+    let mut buf = Vec::new();
+    file.seek(SeekFrom::Start(start)).ok()?;
+    file.take(max).read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf);
+    Some(if start > 0 {
+        // The first line is almost certainly cut in half.
+        (
+            text[text.find('\n').map_or(text.len(), |i| i + 1)..].to_owned(),
+            true,
+        )
+    } else {
+        (text.into_owned(), false)
+    })
 }
 
 /// The latest lifecycle evidence per subagent id in one transcript tail: its task
@@ -468,28 +585,8 @@ fn children(mut rest: &str) -> (Notification<'_>, &str) {
 /// regular-file rules as every other sidecar read.
 fn owner_tail(path: &Path) -> Lifecycle {
     let mut lifecycle = Lifecycle::default();
-    if !fs::metadata(path).is_ok_and(|m| m.is_file()) {
+    let Some((text, _)) = tail(path, OWNER_TAIL) else {
         return lifecycle;
-    }
-    let Ok(mut file) = open(path) else {
-        return lifecycle;
-    };
-    let Ok(size) = file.metadata().map(|m| m.len()) else {
-        return lifecycle;
-    };
-    let start = size.saturating_sub(OWNER_TAIL);
-    let mut buf = Vec::new();
-    if file.seek(SeekFrom::Start(start)).is_err()
-        || file.take(OWNER_TAIL).read_to_end(&mut buf).is_err()
-    {
-        return lifecycle;
-    }
-    let text = String::from_utf8_lossy(&buf);
-    let text = if start > 0 {
-        // The first line is almost certainly cut in half.
-        &text[text.find('\n').map_or(text.len(), |i| i + 1)..]
-    } else {
-        &text
     };
     for line in text.lines().rev().filter(|l| Lifecycle::candidate(l)) {
         if let Ok(v) = serde_json::from_str(line) {
@@ -1029,6 +1126,129 @@ mod tests {
             serde_json::json!({"stoppedByUser": true, "revivedAt": at(1)}),
         );
         assert_eq!(poll(&path).running, base.running - 1);
+    }
+
+    #[test]
+    fn a_codex_childs_last_turn_event_decides_and_its_own_start_places_it() {
+        let ev = |at: &str, kind: &str| {
+            format!(r#"{{"timestamp":"{at}","type":"event_msg","payload":{{"type":"{kind}"}}}}"#)
+        };
+        let at = |t: &str| timestamp(t);
+        // Spawned: its parent's turn, copied and aborted in one millisecond, then its own.
+        let copy = [
+            ev("2026-01-01T00:01:00.100Z", "task_started"),
+            ev("2026-01-01T00:01:00.100Z", "turn_aborted"),
+        ]
+        .join("\n");
+        let own = format!("{copy}\n{}", ev("2026-01-01T00:01:00.110Z", "task_started"));
+        let ran = ChildTurn {
+            running: true,
+            started: at("2026-01-01T00:01:00.110Z"),
+        };
+        assert_eq!(child_turn(&own, false), ran);
+        for end in ["task_complete", "turn_aborted"] {
+            let ended = format!("{own}\n{}", ev("2026-01-01T00:01:47Z", end));
+            assert_eq!(
+                child_turn(&ended, false),
+                ChildTurn {
+                    running: false,
+                    ..ran
+                },
+                "{end}"
+            );
+            // Its start has left the tail: the end says when it started.
+            let alone = format!(
+                r#"{{"timestamp":"2026-01-01T00:01:47Z","type":"event_msg","payload":{{"type":"{end}","started_at":1767225660}}}}"#
+            );
+            assert_eq!(
+                child_turn(&alone, true),
+                ChildTurn {
+                    running: false,
+                    started: at("2026-01-01T00:01:00Z")
+                },
+                "{end}"
+            );
+        }
+        // Between its copy and its own turn, it runs nothing yet.
+        assert!(!child_turn(&copy, false).running);
+        // No turn event in a cut tail: a turn that outgrew it. A record merely naming one
+        // isn't one, and a whole rollout without one hasn't started.
+        let quiet =
+            r#"{"type":"response_item","payload":{"type":"message","text":"task_complete"}}"#;
+        assert_eq!(
+            child_turn(quiet, true),
+            ChildTurn {
+                running: true,
+                started: None
+            }
+        );
+        assert!(!child_turn(quiet, false).running);
+    }
+
+    #[test]
+    fn codex_counts_running_children_and_the_ones_that_ended_in_the_turn() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/subagents/codex");
+        let path = |name: &str| root.join(format!("{name}.jsonl"));
+        let (running, finished, prior) = (path("running"), path("finished"), path("prior"));
+        let all = [running.as_path(), finished.as_path(), prior.as_path()];
+        let turn = Some("2026-01-01T00:01:00Z");
+        assert_eq!(
+            codex(&all, turn),
+            Counts {
+                running: 1,
+                finished: Some(1)
+            }
+        );
+        // An ended child can't be placed without the Turn's start; a running one can.
+        assert_eq!(
+            codex(&all, None),
+            Counts {
+                running: 1,
+                finished: None
+            }
+        );
+        assert_eq!(
+            codex(&[running.as_path()], None),
+            Counts {
+                running: 1,
+                finished: Some(0)
+            }
+        );
+        // One that wrote more than the tail in its turn still counts as done; one with no
+        // turn yet doesn't run.
+        let dir = tempfile::tempdir().unwrap();
+        let big = dir.path().join("big.jsonl");
+        let filler = format!(
+            "{}\n",
+            r#"{"type":"response_item","payload":{"type":"message","text":"x"}}"#
+        );
+        let mut text = fs::read_to_string(&finished).unwrap();
+        let end = text.lines().last().unwrap().to_owned();
+        text.truncate(text.len() - end.len() - 1);
+        text += &filler.repeat(CODEX_CHILD_TAIL as usize / filler.len() + 1);
+        text += &end.replace(
+            r#""task_complete""#,
+            r#""task_complete","started_at":1767225660"#,
+        );
+        fs::write(&big, text + "\n").unwrap();
+        let unstarted = dir.path().join("unstarted.jsonl");
+        let meta = fs::read_to_string(&running).unwrap();
+        fs::write(&unstarted, meta.lines().next().unwrap()).unwrap();
+        assert_eq!(
+            codex(&[big.as_path(), unstarted.as_path()], turn),
+            Counts {
+                running: 0,
+                finished: Some(1)
+            }
+        );
+        // A rollout that's gone, or isn't a regular file, counts for nothing.
+        assert_eq!(
+            codex(&[path("missing").as_path(), root.as_path()], turn),
+            Counts {
+                running: 0,
+                finished: Some(0)
+            }
+        );
     }
 
     #[test]
