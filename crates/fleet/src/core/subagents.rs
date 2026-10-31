@@ -252,8 +252,12 @@ struct Latest {
 impl Lifecycle {
     /// Cheap prefilter for a reverse pass: only these lines are parsed for evidence.
     pub(crate) fn candidate(line: &str) -> bool {
-        // Unquoted: a `TaskStop` result may carry it only inside an escaped JSON string.
-        line.contains("task-notification") || line.contains("local_agent")
+        // Unquoted: a `TaskStop` or `SendMessage` result may carry it only inside an escaped
+        // JSON string.
+        line.contains("task-notification")
+            || line.contains("local_agent")
+            || line.contains("resumedAgentId")
+            || line.contains("revivedAgentId")
     }
 
     /// Record `entry` unless a later one (seen earlier in the reverse pass) decided its id.
@@ -284,7 +288,8 @@ impl Lifecycle {
 }
 
 /// `(agent id, still running)` ([`Latest::running`]), in entry order, for each task
-/// notification with a `<status>` in `v`, or for a successful `TaskStop` of a subagent.
+/// notification with a `<status>` in `v`, or for a successful `TaskStop` (ended) or
+/// `SendMessage` revive (running) of a subagent.
 /// Anything else, routing notices included, decides nothing.
 fn evidence(v: &serde_json::Value) -> Vec<(String, Option<bool>)> {
     let attachment = &v["attachment"];
@@ -296,7 +301,16 @@ fn evidence(v: &serde_json::Value) -> Vec<(String, Option<bool>)> {
         {
             &attachment["prompt"]
         }
-        Some("user") => return stopped(v).map(|id| (id, Some(false))).into_iter().collect(),
+        Some("user") => {
+            let results = tool_results(v);
+            return results
+                .iter()
+                .find_map(stopped)
+                .map(|id| (id, Some(false)))
+                .into_iter()
+                .chain(results.iter().find_map(revived).map(|id| (id, Some(true))))
+                .collect();
+        }
         _ => return Vec::new(),
     };
     let texts: Vec<&str> = match content {
@@ -328,26 +342,22 @@ fn evidence(v: &serde_json::Value) -> Vec<(String, Option<bool>)> {
         .collect()
 }
 
-/// A subagent's id from a `TaskStop` result that is not an error. `TaskStop` also stops
-/// shells, so the result must name a `local_agent`. Read from the structured
-/// `toolUseResult` when the entry has one, else from the `tool_result` content: a JSON
-/// string, or text blocks holding one.
-fn stopped(v: &serde_json::Value) -> Option<String> {
-    let results: Vec<_> = v["message"]["content"]
-        .as_array()?
+/// The structured results of a tool call that is not an error: the entry's
+/// `toolUseResult` when it has one, else each JSON in the `tool_result` content (a string,
+/// or text blocks holding one).
+fn tool_results(v: &serde_json::Value) -> Vec<serde_json::Value> {
+    let Some(content) = v["message"]["content"].as_array() else {
+        return Vec::new();
+    };
+    let results: Vec<_> = content
         .iter()
         .filter(|b| b["type"] == "tool_result")
         .collect();
     if results.is_empty() || results.iter().any(|b| b["is_error"] == true) {
-        return None;
+        return Vec::new();
     }
-    let agent = |r: &serde_json::Value| {
-        (r["task_type"] == "local_agent")
-            .then(|| r["task_id"].as_str().map(str::to_owned))
-            .flatten()
-    };
     if v["toolUseResult"].is_object() {
-        return agent(&v["toolUseResult"]);
+        return vec![v["toolUseResult"].clone()];
     }
     results
         .iter()
@@ -360,7 +370,30 @@ fn stopped(v: &serde_json::Value) -> Option<String> {
                 .collect(),
             _ => Vec::new(),
         })
-        .find_map(|text| agent(&serde_json::from_str(text).ok()?))
+        .filter_map(|text| serde_json::from_str(text).ok())
+        .collect()
+}
+
+/// A subagent's id from a `TaskStop` result. `TaskStop` also stops shells, so the result
+/// must name a `local_agent`.
+fn stopped(result: &serde_json::Value) -> Option<String> {
+    (result["task_type"] == "local_agent")
+        .then(|| result["task_id"].as_str().map(str::to_owned))
+        .flatten()
+}
+
+/// The subagent a `SendMessage` started a new run of. Claude Code 2.1.316 rewrites the
+/// meta without `finished` and without `revivedAt` while that run goes, so the revive's
+/// result is the only evidence newer than the earlier run's notification.
+fn revived(result: &serde_json::Value) -> Option<String> {
+    (result["success"] != false)
+        .then(|| {
+            result["revivedAgentId"]
+                .as_str()
+                .or_else(|| result["resumedAgentId"].as_str())
+                .map(str::to_owned)
+        })
+        .flatten()
 }
 
 #[derive(Default)]
@@ -999,6 +1032,102 @@ mod tests {
     }
 
     #[test]
+    fn a_send_message_revive_runs_a_finished_sidecar_until_its_next_notification() {
+        let (_dir, path) = lifecycle_fixture();
+        let base = poll(&path);
+        // Claude Code 2.1.316 rewrites a revived subagent's meta without `finished` and
+        // without `revivedAt` while the new run goes.
+        let meta = path
+            .with_extension("")
+            .join("subagents/agent-settled.meta.json");
+        fs::write(&meta, r#"{"spawnDepth":1}"#).unwrap();
+        set_mtime(&meta, 200);
+        // Alone, that reads as the earlier run's settled notice (00:01:20) ending it.
+        assert_eq!(poll(&path), base);
+        let append = |entry: serde_json::Value| {
+            let mut file = File::options().append(true).open(&path).unwrap();
+            std::io::Write::write_all(&mut file, format!("{entry}\n").as_bytes()).unwrap();
+        };
+        let revive = |at: &str, result: serde_json::Value, error: bool| {
+            let mut entry = serde_json::json!({"type": "user", "timestamp": at, "message": {
+                "role": "user", "content": [{"type": "tool_result", "tool_use_id": "tool-send",
+                    "is_error": error, "content": [{"type": "text", "text": result.to_string()}]}]}});
+            entry["toolUseResult"] = result;
+            entry
+        };
+        let resumed = serde_json::json!({"success": true, "message": "Resuming agent settled",
+            "resumedAgentId": "settled", "revivedAgentId": "settled"});
+        // A failed send revives nothing.
+        append(revive("2026-01-01T00:01:30Z", resumed.clone(), true));
+        assert_eq!(poll(&path), base);
+        append(revive(
+            "2026-01-01T00:01:40Z",
+            serde_json::json!({"success": false, "resumedAgentId": "settled"}),
+            false,
+        ));
+        assert_eq!(poll(&path), base);
+        append(revive("2026-01-01T00:01:50Z", resumed, false));
+        let revived = Counts {
+            running: base.running + 1,
+            finished: base.finished.map(|n| n - 1),
+        };
+        assert_eq!(poll(&path), revived);
+        // The revived run's own notice settles it again, finished in this Turn.
+        append(
+            serde_json::json!({"type": "user", "timestamp": "2026-01-01T00:01:55Z",
+            "origin": {"kind": "task-notification"}, "message": {"role": "user", "content":
+            "<task-notification>\n<task-id>settled</task-id>\n<status>completed</status>\n\
+             <note>Synthetic note: it stops with no live background children.</note>\n\
+             </task-notification>"}}),
+        );
+        assert_eq!(poll(&path), base);
+    }
+
+    #[test]
+    fn send_message_revives_are_read_from_the_structured_result_or_the_content() {
+        let entry = |content: serde_json::Value| {
+            serde_json::json!({"type": "user", "timestamp": TURN, "message": {"role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "tool-send",
+                    "content": content}]}})
+        };
+        let both = r#"{"success":true,"resumedAgentId":"a","revivedAgentId":"a"}"#;
+        let resumed = r#"{"success":true,"message":"Resuming agent a","resumedAgentId":"a"}"#;
+        let mut structured = entry(serde_json::json!("Resuming agent a"));
+        structured["toolUseResult"] = serde_json::from_str(both).unwrap();
+        for (entry, id) in [
+            (structured, Some("a")),
+            (entry(serde_json::json!(resumed)), Some("a")),
+            (
+                entry(serde_json::json!([{"type": "text", "text": resumed}])),
+                Some("a"),
+            ),
+            // A message to a running subagent is only queued.
+            (
+                entry(serde_json::json!(
+                    r#"{"success":true,"message":"Message queued"}"#
+                )),
+                None,
+            ),
+            (
+                entry(serde_json::json!(
+                    r#"{"success":false,"resumedAgentId":"a","revivedAgentId":"a"}"#
+                )),
+                None,
+            ),
+        ] {
+            assert_eq!(
+                tool_results(&entry).iter().find_map(revived).as_deref(),
+                id,
+                "{entry}"
+            );
+            assert!(
+                id.is_none() || Lifecycle::candidate(&entry.to_string()),
+                "{entry}"
+            );
+        }
+    }
+
+    #[test]
     fn task_stop_results_are_read_from_the_structured_result_or_the_content() {
         let json = |id: &str, kind: &str| {
             format!(
@@ -1037,7 +1166,11 @@ mod tests {
             ),
             (shell, None),
         ] {
-            assert_eq!(stopped(&entry).as_deref(), id, "{entry}");
+            assert_eq!(
+                tool_results(&entry).iter().find_map(stopped).as_deref(),
+                id,
+                "{entry}"
+            );
             // The prefilter passes the escaped string form too.
             assert!(
                 id.is_none() || Lifecycle::candidate(&entry.to_string()),
