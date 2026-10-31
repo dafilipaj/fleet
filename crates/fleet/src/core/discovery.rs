@@ -560,6 +560,12 @@ fn discover_harnesses(panes: &HashMap<String, Pane>, only: Option<&Exact>) -> Ve
         }
         let ts = harness::transcripts(h, &root, &mine);
         let assigned = harness::assign(&mine, &ts);
+        let mut spawned: HashMap<&str, Vec<&harness::TranscriptRef>> = HashMap::new();
+        for t in &ts {
+            if let Some(parent) = t.parent.as_deref() {
+                spawned.entry(parent).or_default().push(t);
+            }
+        }
         let names = if h == Harness::Codex {
             harness::codex_names(&root)
         } else {
@@ -575,7 +581,8 @@ fn discover_harnesses(panes: &HashMap<String, Pane>, only: Option<&Exact>) -> Ve
             if !named {
                 continue;
             }
-            let mut s = harness_session(p, t, panes);
+            let children = t.map(|t| descendants(&spawned, &t.session_id, p.start_ms));
+            let mut s = harness_session(p, t, children.as_deref(), panes);
             if let Some(n) = s.session_id.as_ref().and_then(|id| names.get(id)) {
                 // Codex titles every thread itself after its first turn.
                 s.name = Some(n.clone());
@@ -587,9 +594,36 @@ fn discover_harnesses(panes: &HashMap<String, Pane>, only: Option<&Exact>) -> Ve
     out
 }
 
+/// The rollouts of `id`'s descendant threads, at any depth, that a process started at
+/// `since` wrote: a child left by an earlier process (killed mid-turn, say) would otherwise
+/// count as running forever.
+fn descendants<'a>(
+    spawned: &HashMap<&str, Vec<&'a harness::TranscriptRef>>,
+    id: &str,
+    since: i64,
+) -> Vec<&'a std::path::Path> {
+    let mut out = Vec::new();
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::from([id]);
+    let mut next = vec![id];
+    while let Some(parent) = next.pop() {
+        for child in spawned.get(parent).into_iter().flatten() {
+            if seen.insert(&child.session_id) {
+                next.push(&child.session_id);
+                if child.mtime_ms >= since {
+                    out.push(child.path.as_path());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// `children`: a Codex session's [`descendants`], `None` for a session without a
+/// transcript of its own yet (its count is unknown) and for pi.
 fn harness_session(
     p: &harness::Proc,
     t: Option<&harness::TranscriptRef>,
+    children: Option<&[&std::path::Path]>,
     panes: &HashMap<String, Pane>,
 ) -> Session {
     let (backend, handle) = backend_of(p.pid, Some(p.tty.as_str()), panes);
@@ -634,6 +668,9 @@ fn harness_session(
         model: state.model.or_else(|| p.model_arg()),
         effort: state.effort,
         context: state.context,
+        subagents: children
+            .filter(|_| p.harness == Harness::Codex)
+            .map(|c| crate::core::subagents::codex(c, state.turn_start.as_deref())),
         harness: p.harness,
         transcript: t.map(|t| t.path.display().to_string()),
         ..Default::default()
@@ -1784,6 +1821,11 @@ mod tests {
         );
         let root =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/subagents/codex");
+        let children: Vec<std::path::PathBuf> = ["running", "finished", "prior"]
+            .iter()
+            .map(|name| root.join(format!("{name}.jsonl")))
+            .collect();
+        let children: Vec<&std::path::Path> = children.iter().map(|c| c.as_path()).collect();
         for agent in [Harness::Codex, Harness::Pi] {
             let proc = harness::Proc {
                 pid: 42,
@@ -1793,13 +1835,10 @@ mod tests {
                 argv: vec![agent.id().into()],
                 cwd: Some("/work/project".into()),
             };
-            // Even child rollouts in different states remain outside the count's scope.
-            for name in [
-                None,
-                Some("parent"),
-                Some("running"),
-                Some("finished"),
-                Some("prior"),
+            for (name, kids) in [
+                (None, None),
+                (Some("parent"), Some(&children[..])),
+                (Some("parent"), Some(&[][..])),
             ] {
                 let transcript = name.map(|name| harness::TranscriptRef {
                     path: root.join(format!("{name}.jsonl")),
@@ -1808,15 +1847,64 @@ mod tests {
                     created_ms: 0,
                     mtime_ms: 0,
                     child: false,
+                    parent: None,
                 });
-                let s = harness_session(&proc, transcript.as_ref(), &HashMap::new());
+                let s = harness_session(&proc, transcript.as_ref(), kids, &HashMap::new());
                 let row = serde_json::to_value(&s).unwrap();
                 assert!(row.as_object().unwrap().contains_key("subagents"));
-                assert!(row["subagents"].is_null());
+                // Codex counts once its session has a rollout; pi never does. The parent's
+                // turn started at 00:01: `running` runs, `finished` ended in it and `prior`
+                // ended in the turn before.
+                let expected = match (agent, kids) {
+                    (Harness::Codex, Some([])) => serde_json::json!({"running": 0, "finished": 0}),
+                    (Harness::Codex, Some(_)) => serde_json::json!({"running": 1, "finished": 1}),
+                    _ => serde_json::Value::Null,
+                };
+                assert_eq!(row["subagents"], expected, "{agent:?} {name:?}");
                 assert!(row.as_object().unwrap().contains_key("activity"));
                 assert!(row["activity"].is_null());
             }
         }
+    }
+
+    #[test]
+    fn a_codex_sessions_subagents_are_its_descendants_its_process_wrote() {
+        let t = |id: &str, parent: &str, mtime: i64| harness::TranscriptRef {
+            path: format!("/t/{id}.jsonl").into(),
+            session_id: id.into(),
+            cwd: "/w".into(),
+            created_ms: 0,
+            mtime_ms: mtime,
+            child: true,
+            parent: Some(parent.into()),
+        };
+        let ts = [
+            t("a", "root", 2_000),
+            t("b", "root", 2_000),
+            // Nested: a child of a child counts, once.
+            t("a1", "a", 2_000),
+            // Written before the process started: an earlier process's child.
+            t("old", "root", 999),
+            // Its descendants still count when this process wrote them.
+            t("old1", "old", 2_000),
+            // A cycle never loops, and never counts the session itself.
+            t("root", "a1", 2_000),
+            t("other", "elsewhere", 2_000),
+        ];
+        let mut spawned: HashMap<&str, Vec<&harness::TranscriptRef>> = HashMap::new();
+        for t in &ts {
+            spawned
+                .entry(t.parent.as_deref().unwrap())
+                .or_default()
+                .push(t);
+        }
+        let mut got: Vec<String> = descendants(&spawned, "root", 1_000)
+            .iter()
+            .map(|p| p.file_stem().unwrap().to_string_lossy().into_owned())
+            .collect();
+        got.sort();
+        assert_eq!(got, ["a", "a1", "b", "old1"]);
+        assert!(descendants(&spawned, "none", 0).is_empty());
     }
 
     #[test]

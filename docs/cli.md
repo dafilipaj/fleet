@@ -149,9 +149,10 @@ successful `TaskStop` stops it: Claude Code does not mark a stopped task finishe
 revived with `SendMessage` counts as running from the revive's result until its next
 notification. Nested,
 stopped and forked tasks
-count; background shell commands do not. Codex and pi always return `null` for now:
-Codex counting waits on a known pairing bug: Fleet's Codex pairing can pick a child agent's
-rollout, rather than the parent's, as an interactive Session's Transcript.
+count; background shell commands do not. For Codex, the counts are the Session's child
+agents (`spawn_agent`, nested ones included) that its process wrote: a child runs while it is
+in a turn, and counts in `finished` once that turn ended if it started in the current Turn
+(your last prompt's). `null` before the Session's first prompt. pi always returns `null`.
 See [architecture](architecture.md#subagent-counts) for the read strategy and known limits.
 
 ### Spawning

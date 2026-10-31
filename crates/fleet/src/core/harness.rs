@@ -1247,6 +1247,9 @@ pub struct TranscriptRef {
     /// Codex: a child thread's rollout (`session_meta.source.subagent`: `spawn_agent`,
     /// `/review`), written by its parent's process, never a process's own by cwd.
     pub child: bool,
+    /// Codex: the thread that spawned this child (`thread_spawn.parent_thread_id`): a
+    /// session's subagents are its descendants by this link. `/review`'s child has none.
+    pub parent: Option<String>,
 }
 
 fn mtime_ms(p: &Path) -> Option<i64> {
@@ -1290,7 +1293,14 @@ fn transcript_ref(h: Harness, path: &Path) -> Option<TranscriptRef> {
     let created = iso_ms(meta.get("timestamp"))
         .or_else(|| iso_ms(head.get("timestamp")))
         .unwrap_or(mtime);
-    let child = h == Harness::Codex && meta.get("source").and_then(|s| s.get("subagent")).is_some();
+    let subagent = meta.get("source").and_then(|s| s.get("subagent"));
+    let child = h == Harness::Codex && subagent.is_some();
+    let parent = subagent
+        .and_then(|s| s.get("thread_spawn"))
+        .and_then(|t| t.get("parent_thread_id"))
+        .and_then(Value::as_str)
+        .filter(|_| child)
+        .map(str::to_string);
     Some(TranscriptRef {
         path: path.to_path_buf(),
         session_id,
@@ -1298,6 +1308,7 @@ fn transcript_ref(h: Harness, path: &Path) -> Option<TranscriptRef> {
         created_ms: created,
         mtime_ms: mtime,
         child,
+        parent,
     })
 }
 
@@ -1472,6 +1483,10 @@ pub struct State {
     /// The `timestamp` of the entry `model` was read from, as written.
     pub model_at: Option<String>,
     pub context: Option<ContextUsage>,
+    /// Codex: the `timestamp` of the last turn you started (`task_started` whose
+    /// `turn_attribution.turn_trigger` is `user` or `exec`, or that records none), as written:
+    /// the current Turn, which a child's turn must start in to count as finished in it.
+    pub turn_start: Option<String>,
     /// Codex: a `busy` turn's last command asked to leave the sandbox
     /// (`sandbox_permissions: "require_escalated"`) and has no output yet — most likely an
     /// approval prompt on screen (Codex records none in the transcript). Only a hint: a
@@ -1657,6 +1672,13 @@ fn codex_state_from(seed: Option<&Value>, text: &str) -> State {
             ("event_msg", "task_started") => {
                 st.status = "busy".into();
                 st.waiting_for = None;
+                let trigger = p
+                    .and_then(|p| p.get("turn_attribution"))
+                    .and_then(|a| a.get("turn_trigger"))
+                    .and_then(Value::as_str);
+                if trigger.is_none_or(|t| matches!(t, "user" | "exec")) {
+                    st.turn_start = stamp(&v);
+                }
             }
             ("event_msg", "task_complete" | "turn_aborted") => {
                 st.status = "idle".into();
@@ -2141,6 +2163,7 @@ mod tests {
             created_ms: created,
             mtime_ms: mtime,
             child: false,
+            parent: None,
         }
     }
 
@@ -2213,6 +2236,41 @@ mod tests {
         assert_eq!(st.model.as_deref(), Some("gpt-6"));
         assert_eq!(st.effort, None, "a turn_context without effort");
         assert_eq!(st.model_at, None, "a turn_context without a timestamp");
+    }
+
+    #[test]
+    fn codex_turn_start_is_the_last_turn_you_started() {
+        let started = |at: &str, trigger: Option<&str>| {
+            let mut v = serde_json::json!({"timestamp": at, "type": "event_msg",
+                "payload": {"type": "task_started"}});
+            if let Some(t) = trigger {
+                v["payload"]["turn_attribution"] = serde_json::json!({"turn_trigger": t});
+            }
+            v.to_string()
+        };
+        let done = r#"{"type":"event_msg","payload":{"type":"task_complete"}}"#;
+        assert_eq!(codex_state(done).turn_start, None);
+        for (trigger, counts) in [
+            (None, true),
+            (Some("user"), true),
+            (Some("exec"), true),
+            // A turn something else started (a child's report, say) keeps your Turn.
+            (Some("agent"), false),
+        ] {
+            let text = [
+                started("2026-01-01T00:01:00Z", Some("user")),
+                done.to_owned(),
+                started("2026-01-01T00:02:00Z", trigger),
+                done.to_owned(),
+            ]
+            .join("\n");
+            let expected = if counts { "00:02:00" } else { "00:01:00" };
+            assert_eq!(
+                codex_state(&text).turn_start,
+                Some(format!("2026-01-01T{expected}Z")),
+                "{trigger:?}"
+            );
+        }
     }
 
     #[test]

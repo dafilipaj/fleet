@@ -377,7 +377,7 @@ by — with no config, `local`):
 | `harness` | string | `claude` \| `codex` \| `pi` — see [Other harnesses](#other-harnesses) |
 | `model` | string \| null | the model it runs, when known (Claude: the context entry's) |
 | `effort` | string \| null | the reasoning effort it runs at, as its transcript last recorded it (`low`, `medium`, `high`, `xhigh`, `max`, or whatever the harness writes). Claude: the context entry's top-level `effort`; Codex: `effort` of the last `turn_context`. A mid-session change (`/effort`, Codex's `/model` picker) shows from the next reply on. `null` when unknown: no reply yet, a harness version that records none, and always for pi |
-| `subagents` | object \| null | `{ running, finished }`: tasks running now, across all Turns, and tasks that started and ended in the current Turn. `finished` alone is nullable. Claude Code 2.1.301+ only; always `null` for Codex and pi. See below |
+| `subagents` | object \| null | `{ running, finished }`: tasks running now, across all Turns, and tasks that started and ended in the current Turn. `finished` alone is nullable. Claude Code 2.1.301+, from its sidecars, and Codex, from its child rollouts (`null` before the Session's first prompt); always `null` for pi. See below |
 | `activity` | string \| null | what a Busy Claude Code Session is doing now: `"{tool}: {summary}"` of the latest main-thread `tool_use` with no `tool_result` for its id (the chat's own summary, `core::transcript::tool_summary`), or `Thinking` when every call is answered and the turn has not ended; `null` for any other Status (a pending `AskUserQuestion` is not Busy), after `end_turn` or an interrupt marker, and always for Codex and pi. See below |
 | `model_at` | string \| null | the `timestamp` of the transcript entry `model` was read from, as written there (RFC 3339): Claude Code's last reply (the context entry), Codex's last `turn_context`, pi's last reply or model change; `null` when there is none (no transcript, or `model` from the command line). It moves with every reply, whatever its model — so a caller holding a `fleet model` switch's `switched_at` knows once a reply came after it |
 | `transcript` | string \| null | absolute transcript path (Codex / pi only) |
@@ -466,6 +466,25 @@ malformed first timestamp skips that candidate until a later poll can read it. T
 I/O regression asserts the exact meta/log opens on each call; the ignored
 `tests/subagents.rs` benchmark measures fresh CLI processes, comparing an absent sidecar
 directory with 210 synthetic metas using alternating trials and a release build.
+
+A Codex Session's subagents are the child rollouts of its descendant threads: every rollout
+the day-folder scan already reads whose `session_meta.source.subagent.thread_spawn.parent_thread_id`
+is the Session's thread id or a descendant's, at any depth, each once (`/review`'s child names
+no parent and doesn't count). Only rollouts written at or after the Session's process start
+count, so a child an earlier process left mid-turn never runs forever. Each child's last turn
+event in its last 256 KiB decides: `task_started` runs, `task_complete` or `turn_aborted` ended
+it, and a cut tail with none is a turn that has written more than that since it started, so it
+runs (a whole rollout with none hasn't started one and runs nothing). A child opens with a zero-length copy of its parent's turn (`task_started`, then
+`turn_aborted`, in one millisecond) before its own, which the last event passes over. A child
+open between turns runs nothing, as the Session's own Idle says. `finished` counts the ended
+children whose last turn started at or after the Turn's start (its `task_started`, or, once that
+has left the tail, the `started_at` its end carries, in whole seconds): the parent's last
+`task_started` in its state tail whose `turn_attribution.turn_trigger` is `user` or `exec`, or
+that records none (a turn something else started keeps your Turn). No Turn start in that tail
+gives `finished: null` once a child has ended; with none ended it is 0. Seen on Codex 0.166.0:
+your prompt's turn has `turn_trigger: "user"`, a child's own turn does too, with
+`parent_turn_id` and `initiating_agent_path`, and a child's report starts no turn in the parent.
+Like the Claude Code count, nothing is cached across polls.
 
 `core::context` finds the Turn start in the same reverse pass and buffer as context, model and
 effort: the last main-thread human `user` prompt or human `queued_command` attachment with
@@ -573,13 +592,11 @@ against 30.5–33.4 ms (median 32.9 ms) for the build before unfinished sidecars
 Known limits: a task that dies without its sidecar being finalized and without a terminal
 notification or `TaskStop` in the tail counts until the Session ends. Notifications are written when Claude Code delivers them, which can lag a run's end:
 a task whose interim notification isn't written yet, or that new input resumed before the
-notification saying so, reads as finished until it is written. Revival semantics
-(`finished`/`revivedAt`) are unverified (a revive of a stopped task is recognised only by its
-meta being rewritten after the stop), and the first timestamp still dates the original run. A delayed first entry can place a task launched just before a prompt
-in the next Turn. Live foreground, stop, crash and revive checks remain outstanding.
-Codex counting is deferred: Fleet's Codex pairing can pick a child agent's rollout, rather
-than the parent's, as an interactive Session's Transcript; Codex and pi always report `null`
-for now.
+notification saying so, reads as finished until it is written (live, for 1–6 s). A revived
+task's first timestamp still dates the original run. A delayed first entry can place a task
+launched just before a prompt in the next Turn. A Codex descendant is reached only through
+threads the day-folder scan reads: a new grandchild under a child last written before the
+oldest Codex process started (an idle child of a resumed Session, say) is missed.
 
 ### Subscription usage
 
