@@ -5,6 +5,7 @@ pub mod brief;
 pub mod close;
 pub mod commands;
 pub mod config_cmd;
+pub mod diff;
 pub mod effort;
 pub mod group;
 pub mod hosts;
