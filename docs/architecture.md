@@ -513,7 +513,13 @@ status Fleet doesn't know decides nothing either way: the sidecar's own `finishe
 revive (`SendMessage` to a task that ended) clears `finished` and records `revivedAt` (epoch
 ms), so once a meta has `revivedAt` only evidence whose `timestamp` is at or after it counts:
 an older terminal entry, or one without a `timestamp`, belongs to an earlier run and the
-revived task runs. The meta's mtime decides nothing here, since worktree cleanup
+revived task runs. Claude Code 2.1.316 writes no `revivedAt`: the revive only drops
+`finished`, so the earlier run's settled notice would still be the latest evidence. A
+successful `SendMessage` result naming the task (`toolUseResult.revivedAgentId` or
+`resumedAgentId`; without a `toolUseResult`, the same fields in the `tool_result` content's
+JSON, and never one with `success: false`) is therefore evidence that it runs, at its
+`timestamp`; the revived run's own notice, written after it, settles it again. A message to a
+task still running is only queued and names none. The meta's mtime decides nothing here, since worktree cleanup
 (`worktreeCleanlyRemoved`) and a user stop rewrite the meta after the stop. A meta with
 `stoppedByUser: true` has ended with or without evidence: Claude Code won't revive it. A
 sidecar settled this way ended at the `timestamp` of the entry that

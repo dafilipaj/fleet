@@ -145,8 +145,9 @@ counts as running while its latest task notification says the task waits on back
 of its own or resumes on new input, until a later notification or a successful `TaskStop`
 settles it. A sidecar not marked finished counts as finished once its latest notification
 ends the task (`killed`, `stopped`, `failed`, or `completed` without such a note) or a
-successful `TaskStop` stops it: Claude Code does not mark a stopped task finished. Evidence
-older than the sidecar's last write is ignored, so a revived task counts as running. Nested,
+successful `TaskStop` stops it: Claude Code does not mark a stopped task finished. A task
+revived with `SendMessage` counts as running from the revive's result until its next
+notification. Nested,
 stopped and forked tasks
 count; background shell commands do not. Codex and pi always return `null` for now:
 Codex counting waits on a known pairing bug: Fleet's Codex pairing can pick a child agent's
