@@ -1,2 +1,2 @@
 {"type":"session_meta","payload":{"id":"running","cwd":"/work/project","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent","depth":1}}}}}
-{"type":"event_msg","timestamp":"2026-01-01T00:01:00Z","payload":{"type":"task_started","started_at":"2026-01-01T00:01:00Z"}}
+{"type":"event_msg","timestamp":"2026-01-01T00:01:00Z","payload":{"type":"task_started","started_at":1767225660}}
