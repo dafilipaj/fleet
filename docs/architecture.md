@@ -691,6 +691,17 @@ Codex. Core backend launch options append the harness's flags after model/name a
 prompt; the CLI validates effort with `core::effort::valid_level` and rejects these overrides
 for pi, `--resume` and `--from`. Other spawn commands leave the options at their defaults.
 
+### `fleet diff --json`
+
+See [cli.md](cli.md#changes). `core::diff` ports the snapshot of the web's `web/lib/diff.mjs`
+(temp index, `add -A`, `write-tree`, merge-base) with `--numstat`/`--raw` in place of hunks, and
+narrows `web/lib/touched.mjs` to edits: the web's touched index also counts paths a tool read, which
+would make every repo a session looked at a candidate. The edits index is incremental per session
+(state file + `flock`), since the CLI is a fresh process per call and a long transcript runs to
+100 MB. Every git call is fenced (`GIT_*` cleared, no hooks, no fsmonitor, no lazy fetch, no
+optional locks) because a poller runs it against repos an agent is working in. Codex sessions get
+their cwd only: 0.16x rollouts carry no `patch_apply_end`, and `apply_patch` runs inside `exec`.
+
 ### `fleet messages --json`
 
 See [cli.md](cli.md#messages) for the shape. The parser (`core::transcript`) is a port of the web's

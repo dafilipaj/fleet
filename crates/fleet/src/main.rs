@@ -5,7 +5,7 @@ use colored::Colorize;
 
 use fleet::cli::{
     answer as answer_cmd, brief as brief_cmd, close as close_cmd, commands, config_cmd,
-    effort as effort_cmd, group, hosts as host_cmds, init, jobs as jobs_cmd, mcp,
+    diff as diff_cmd, effort as effort_cmd, group, hosts as host_cmds, init, jobs as jobs_cmd, mcp,
     messages as messages_cmd, model as model_cmd, prs as prs_cmd, repos as repos_cmd, restore,
     schedule as schedule_cmd, skill, slack as slack_cmd, stack as stack_cmds, tasks as tasks_cmd,
     tmux as tmux_cmds, trust as trust_cmd, usage as usage_cmd, web,
@@ -154,6 +154,19 @@ enum Commands {
         /// How many entries (default 100, max 500; --after returns all unless given)
         #[arg(long, value_name = "N")]
         limit: Option<String>,
+    },
+
+    /// A session's Changes: the checkouts it may work in (its cwd's, those it edited files in)
+    /// and what each changed since its branch point, as paths and line counts. Local only
+    Diff {
+        /// generated title, session name, sessionId prefix, pid:<n> or id:<session_id>
+        target: String,
+        /// One JSON object (failures: { ok: false, kind, error })
+        #[arg(long)]
+        json: bool,
+        /// An earlier answer's fingerprint: unchanged → { unchanged: true } without candidates
+        #[arg(long, value_name = "FINGERPRINT")]
+        since: Option<String>,
     },
 
     /// Answer the prompt a session waits on: a question (--question), a permission or approval prompt (--choice)
@@ -1487,7 +1500,7 @@ enum Placement {
 
 fn placement(c: &Commands) -> Placement {
     match c {
-        Commands::Trust { .. } => Placement::Here,
+        Commands::Trust { .. } | Commands::Diff { .. } => Placement::Here,
         Commands::Tmux { .. } | Commands::Enter { .. } | Commands::Last | Commands::New(_) => {
             Placement::Dispatch(Scope::DefaultHost)
         }
@@ -1760,6 +1773,24 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
             before,
             limit,
         })?,
+        Commands::Diff {
+            target: diff_target,
+            json,
+            since,
+        } => {
+            let remote = !matches!(
+                target(cli.host.as_deref(), cli.local, Scope::SelfHost),
+                Ok(Target::Local { .. })
+            );
+            diff_cmd::run(
+                diff_cmd::Opts {
+                    target: diff_target,
+                    json,
+                    since,
+                },
+                remote,
+            )?;
+        }
         Commands::Trust {
             tmux_session,
             json,

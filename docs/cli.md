@@ -343,6 +343,63 @@ hook output, bookkeeping entries, subagent (sidechain) messages.
 - `--before` settles what is open where its page ends: a reply's later blocks (after a tool
   call) are glued in, a question's outcome (or abandonment) is filled in, from the lines after.
 
+### Changes
+
+`fleet --local diff <target> [--json] [--since <fingerprint>]` reports a live session's Changes:
+the checkouts it may work in, and what each one's working tree changed since its branch point, as
+paths and line counts (no file contents). Local only: another host (`-H`, `FLEET_HOST`) is `usage`.
+
+- **Candidates**: the session's cwd's checkout (`why: ["cwd"]`), then the checkouts holding files
+  it edited (`"edited"`), most recent edit first, at most 12. Edits come from Claude Code
+  transcripts — the session's and every subagent's (`<id>/subagents/agent-*.jsonl`): `Edit`,
+  `MultiEdit`, `Write`, `NotebookEdit` paths and a `Bash` command's `>`, `>>`, `N>` and `tee`
+  targets (relative ones resolved against a preceding `cd`). Reads don't count. Codex sessions
+  get their cwd's checkout only. A checkout is the nearest directory with a `.git` on the real
+  path (symlinks resolved), never `$HOME` or `/`; it's recorded when the edit is read, so a removed worktree is `skipped: gone`.
+- **Changes**: the working tree (tracked edits and untracked files) as a tree — the index copied
+  into a temp dir, `add -A` into the copy, `write-tree` — against the branch point: the
+  merge-base of the snapshot's HEAD with the default branch (`origin/HEAD`, else `main`, else `master`), or HEAD
+  itself on the default branch or without one, or the empty tree without commits. HEAD is read
+  before and after; if it moved twice the checkout is `skipped: busy`. Merges in progress and
+  sparse checkouts are `skipped: unsupported`.
+- **Fenced git**: `GIT_*` cleared, `core.hooksPath=/dev/null`, `core.fsmonitor=false`,
+  `core.splitIndex=false` (the temp index is written whole: no shared index lands in the repo),
+  `GIT_NO_LAZY_FETCH=1`, `GIT_OPTIONAL_LOCKS=0`; 20 s per call, 50 s in all (checkouts not reached
+  are `skipped: timeout`). Clean filters (Git LFS) still run on `add`. Nothing in the repo changes
+  but loose objects.
+- **Incremental**: per session, the checkouts found and each transcript's read offset live in
+  `$FLEET_DIFF_STATE_DIR`, else `${XDG_STATE_HOME:-~/.local/state}/fleet/diff/<id>.json`, under an
+  `flock`; only complete lines are read, a replaced or shorter transcript is read again, and state
+  untouched for 7 days is deleted (only when its lock is free).
+
+`--json` prints one object:
+
+```json
+{
+  "ok": true, "session_id": "…", "harness": "claude",
+  "fingerprint": "<32 hex>", "unchanged": false,
+  "candidates": [ {
+    "root": "/abs/checkout", "why": ["edited"],
+    "repo": { "common_dir": "/abs/repo/.git", "linked_worktree": true },
+    "branch": "fix/rates", "head": "<sha>", "on_default_branch": false,
+    "base": { "ref": "origin/develop", "sha": "<sha>" },
+    "stats": { "files": 2, "additions": 96, "deletions": 30 },
+    "files": [ { "path": "app/models/rates.rb", "kind": "modified", "old_path": null,
+                 "additions": 40, "deletions": 12, "binary": false, "uncommitted": true } ],
+    "more_files": 0
+  } ],
+  "skipped": [ { "root": "/abs/gone", "why": ["edited"], "detail": "gone" } ]
+}
+```
+
+`kind` is `added`, `modified`, `deleted`, `renamed` (with `old_path`), `type_changed`,
+`mode_changed` or `submodule`; binary, mode and submodule changes count no lines. Files are sorted
+by path, 500 at most (`more_files` counts the rest; `stats` covers all). `uncommitted`: the file
+differs between HEAD and the working tree. `--since <fingerprint>` answers `{ ok, session_id,
+harness, fingerprint, unchanged: true }` when nothing changed — the snapshot is still taken, the
+diff is not. Failures: `{ ok: false, kind, error }` with `usage`, `target_not_found`,
+`target_ambiguous`.
+
 ### Sending
 
 `fleet send <target> <text> [--force] [--require-empty]` types into the session's input box and

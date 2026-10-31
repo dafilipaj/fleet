@@ -6,6 +6,7 @@ pub mod background;
 pub mod brief;
 pub mod config;
 pub mod context;
+pub mod diff;
 pub mod discovery;
 pub mod done;
 pub mod effort;
