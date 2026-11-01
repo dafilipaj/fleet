@@ -62,22 +62,14 @@ export function Board({ list, groups, columns, onMoveColumn, now, cursorKey, sel
 
   return (
     <div className="flex h-full min-w-0 flex-col">
-      {error || unreachable.length ? (
-        <div className="shrink-0 space-y-2 px-4 pt-2">
-          {error ? (
-            <Alert variant="destructive">
-              <AlertDescription>
-                {fleet ? `Refresh failed: ${error} — showing last known data` : `Could not reach fleet web: ${error}`}
-              </AlertDescription>
-            </Alert>
-          ) : null}
-          {unreachable.map((h) => (
-            <Alert key={h.name} variant="destructive">
-              <AlertDescription className="break-words">
-                {h.name} unreachable: {h.error || 'no response'}
-              </AlertDescription>
-            </Alert>
-          ))}
+      {/* An unreachable host shows in the top bar (HostButtons), not here. */}
+      {error ? (
+        <div className="shrink-0 px-4 pt-2">
+          <Alert variant="destructive">
+            <AlertDescription>
+              {fleet ? `Refresh failed: ${error} — showing last known data` : `Could not reach fleet web: ${error}`}
+            </AlertDescription>
+          </Alert>
         </div>
       ) : null}
 
@@ -91,7 +83,7 @@ export function Board({ list, groups, columns, onMoveColumn, now, cursorKey, sel
           [0, 1, 2].map((i) => <Skeleton key={i} className="h-64 w-72 shrink-0 rounded-xl" />)
         ) : columns.length === 0 ? (
           <div className="w-full px-4 py-10 text-center text-sm text-dimmer">
-            {allSessions(fleet).length > 0 ? 'Nothing matches.' : 'No Claude sessions running.'}
+            {allSessions(fleet).length > 0 ? 'Nothing matches.' : unreachable.length ? 'No sessions from the reachable hosts.' : 'No Claude sessions running.'}
           </div>
         ) : (
           <BoardColumns
