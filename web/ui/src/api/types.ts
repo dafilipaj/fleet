@@ -967,10 +967,14 @@ export interface UsageExtra {
   limit: number | null
   currency: string | null
   percent: number | null
+  /** Prepaid credits left (OpenAI). */
+  balance?: number | null
 }
 
-export interface UsageResponse {
-  host: string
+/** One subscription's read: Claude's at the top level, the ChatGPT plan Codex uses under `openai`. */
+export interface UsageRead {
+  /** `claude` | `openai` (absent from older servers: Claude). */
+  provider?: string
   account: UsageAccount | null
   limits: UsageLimit[]
   extra_usage: UsageExtra | null
@@ -978,7 +982,14 @@ export interface UsageResponse {
   fetched_at: string
   /** A refresh failed; these are the last good numbers. */
   stale: boolean
+  /** With `stale`: why the refresh failed. With no `limits`: why there are none. */
   error: string | null
+}
+
+export interface UsageResponse extends UsageRead {
+  host: string
+  /** The ChatGPT subscription Codex is logged in with on this host (absent: none). */
+  openai?: UsageRead | null
 }
 
 /** A Claude session inside a dormant entry (`fleet restore --json`). */

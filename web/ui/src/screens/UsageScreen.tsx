@@ -12,15 +12,15 @@ import { useSwipeBack } from '@/hooks/useSwipeBack'
 import { useUsage } from '@/hooks/useUsage'
 import { relTime } from '@/lib/format'
 import { CTX_FILL } from '@/lib/styles'
-import { money, resetsLabel, usageLevel, type AccountUsage } from '@/lib/usage'
+import { PROVIDER_NAME, money, resetsLabel, usageLevel, type AccountUsage } from '@/lib/usage'
 import { cn } from '@/lib/utils'
 
 const LEVEL_TEXT = { low: 'text-foreground', warn: 'text-status-waiting', hot: 'text-status-error' } as const
 
 /**
- * `#/usage`: the Claude subscription limits (current session, weekly, per-model weekly,
- * extra usage) of every account logged in across the fleet — hosts on one account share
- * one card. `screen` = the mobile page (back, swipe back); `pane` = the desktop main pane.
+ * `#/usage`: the subscription limits of every account logged in across the fleet — Claude
+ * (current session, weekly, per-model weekly, extra usage) and the ChatGPT plan Codex and pi
+ * use (session, weekly, credits). Hosts on one account share one card. `screen` = the mobile page (back, swipe back); `pane` = the desktop main pane.
  */
 export function UsageScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane' }) {
   const pane = layout === 'pane'
@@ -65,7 +65,7 @@ export function UsageScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane' 
       {errors.length ? (
         <ul className="space-y-1.5">
           {errors.map((e) => (
-            <li key={e.host} className="flex items-start gap-2 text-sm text-muted-foreground">
+            <li key={e.key} className="flex items-start gap-2 text-sm text-muted-foreground">
               <HostDot host={e.host} className="mt-1.5" />
               <span className="min-w-0">
                 <span className="font-medium text-foreground">{e.host}</span> — {e.error}
@@ -75,7 +75,7 @@ export function UsageScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane' 
         </ul>
       ) : null}
       {!loading && !accounts.length && !errors.length ? <p className="py-8 text-center text-sm text-muted-foreground">No hosts to read usage from.</p> : null}
-      <p className="text-xs text-dimmer">The same numbers as Claude Code’s /usage, read from each host’s Claude login. Refreshed every minute.</p>
+      <p className="text-xs text-dimmer">The same numbers as Claude Code’s /usage and Codex’s /status, read from each host’s Claude and Codex logins. Refreshed every minute.</p>
     </div>
   )
 
@@ -115,12 +115,15 @@ export function UsageScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane' 
 
 function AccountCard({ account: a, now }: { account: AccountUsage; now: number }) {
   const u = a.usage
-  const who = a.account?.email ?? a.account?.organization ?? 'Claude account'
+  const name = PROVIDER_NAME[a.provider]
+  const who = a.account?.email ?? a.account?.organization ?? `${name} account`
   const x = u.extra_usage
+  const openai = a.provider === 'openai'
   const fetched = Date.parse(u.fetched_at)
   return (
     <section className="rounded-xl border bg-card p-4">
       <header className="mb-3 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <span className="rounded-full bg-muted px-1.5 py-px text-[0.6875rem] font-medium text-muted-foreground">{name}</span>
         <h2 className="min-w-0 truncate font-semibold">{who}</h2>
         {a.account?.plan_label ? <span className="text-sm text-muted-foreground">{a.account.plan_label}</span> : null}
         <span className="ml-auto flex items-center gap-1.5 text-xs text-dimmer">
@@ -140,9 +143,15 @@ function AccountCard({ account: a, now }: { account: AccountUsage; now: number }
       </div>
       {x ? (
         <div className="mt-3.5 flex items-baseline justify-between gap-2 border-t pt-3 text-sm">
-          <span>Extra usage</span>
+          <span>{openai ? 'Credits' : 'Extra usage'}</span>
           <span className="text-muted-foreground tabular-nums">
-            {!x.enabled
+            {openai
+              ? !x.enabled
+                ? 'None'
+                : x.balance != null
+                  ? `${x.balance.toFixed(2)} left`
+                  : 'On'
+              : !x.enabled
               ? 'Off'
               : x.limit != null
                 ? `${money(x.used ?? 0, x.currency)} / ${money(x.limit, x.currency)}`

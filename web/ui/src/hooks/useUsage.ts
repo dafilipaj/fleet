@@ -3,7 +3,7 @@ import { useCallback, useMemo, useState } from 'react'
 import { ApiError, api, isAbortError } from '@/api/client'
 import { useFleet } from '@/hooks/useFleet'
 import { usePoller } from '@/hooks/usePoller'
-import { groupByAccount, type HostUsage } from '@/lib/usage'
+import { groupByAccount, usageErrors, type HostUsage } from '@/lib/usage'
 
 // The CLI caches for 60s (the endpoint rate-limits), so polling faster buys nothing.
 const POLL_MS = 60_000
@@ -58,6 +58,6 @@ export function useUsage() {
   }, [load, refreshPoll])
 
   const accounts = useMemo(() => groupByAccount(results), [results])
-  const errors = useMemo(() => results.filter((r) => r.error), [results])
+  const errors = useMemo(() => usageErrors(results), [results])
   return { accounts, errors, loading: loading && hosts.length > 0, refresh, refreshing }
 }

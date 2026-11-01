@@ -1,4 +1,4 @@
-import type { UsageAccount, UsageLimit, UsageResponse } from '@/api/types'
+import type { UsageAccount, UsageLimit, UsageRead, UsageResponse } from '@/api/types'
 import type { CtxLevel } from '@/lib/format'
 
 /** One host's answer: its usage, or why there is none. */
@@ -8,13 +8,41 @@ export interface HostUsage {
   error: string | null
 }
 
-/** One Claude account, with every host logged in to it (the numbers are the account's). */
+export type Provider = 'claude' | 'openai'
+
+export const PROVIDER_NAME: Record<Provider, string> = { claude: 'Claude', openai: 'ChatGPT' }
+
+/** One subscription account, with every host logged in to it (the numbers are the account's). */
 export interface AccountUsage {
   key: string
+  provider: Provider
   account: UsageAccount | null
   hosts: string[]
   /** The freshest read among those hosts. */
-  usage: UsageResponse
+  usage: UsageRead
+}
+
+/** A host's reads, one per provider: Claude's, then the ChatGPT one (if Codex is logged in). */
+export function hostReads(u: UsageResponse): { provider: Provider; read: UsageRead }[] {
+  const out: { provider: Provider; read: UsageRead }[] = [{ provider: 'claude', read: u }]
+  if (u.openai) out.push({ provider: 'openai', read: u.openai })
+  return out
+}
+
+/** A read with nothing to show (its provider's login failed and nothing is cached). */
+const failed = (r: UsageRead) => !r.limits.length && !!r.error && !r.stale
+
+/** Per-host errors: unreachable hosts, and a provider whose read failed outright. */
+export function usageErrors(results: HostUsage[]): { key: string; host: string; error: string }[] {
+  const out: { key: string; host: string; error: string }[] = []
+  for (const r of results) {
+    if (r.error) out.push({ key: r.host, host: r.host, error: r.error })
+    if (!r.usage) continue
+    for (const { provider, read } of hostReads(r.usage)) {
+      if (failed(read)) out.push({ key: `${r.host}:${provider}`, host: r.host, error: `${PROVIDER_NAME[provider]}: ${read.error}` })
+    }
+  }
+  return out
 }
 
 /** Band for a limit: the endpoint's severity wins, else ≥90% hot, ≥70% warn. */
@@ -49,23 +77,28 @@ export function money(n: number | null, currency: string | null): string | null 
 }
 
 /**
- * Group hosts by the account they're logged in to (uuid, else email): two machines on one
- * subscription show one set of bars. Accounts keep the order their first host appears in.
+ * Group hosts by the account they're logged in to (provider + uuid, else email): two machines
+ * on one subscription show one set of bars. Claude accounts come first, then ChatGPT ones;
+ * within a provider, accounts keep the order their first host appears in.
  */
 export function groupByAccount(results: HostUsage[]): AccountUsage[] {
   const out: AccountUsage[] = []
-  for (const r of results) {
-    const u = r.usage
-    if (!u) continue
-    const key = u.account?.uuid ?? u.account?.email ?? `host:${r.host}`
+  for (const want of ['claude', 'openai'] as const) {
+    for (const r of results) {
+      if (r.usage) for (const { provider, read } of hostReads(r.usage)) if (provider === want && !failed(read)) add(r.host, provider, read)
+    }
+  }
+  return out
+
+  function add(host: string, provider: Provider, u: UsageRead) {
+    const key = `${provider}:${u.account?.uuid ?? u.account?.email ?? `host:${host}`}`
     const existing = out.find((a) => a.key === key)
     if (!existing) {
-      out.push({ key, account: u.account, hosts: [r.host], usage: u })
-      continue
+      out.push({ key, provider, account: u.account, hosts: [host], usage: u })
+      return
     }
-    existing.hosts.push(r.host)
+    existing.hosts.push(host)
     const fresher = (!u.stale && existing.usage.stale) || (u.stale === existing.usage.stale && Date.parse(u.fetched_at) > Date.parse(existing.usage.fetched_at))
     if (fresher) existing.usage = u
   }
-  return out
 }

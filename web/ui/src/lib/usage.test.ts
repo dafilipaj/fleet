@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest'
 
 import type { UsageResponse } from '@/api/types'
-import { groupByAccount, money, resetsLabel, usageLevel } from '@/lib/usage'
+import { groupByAccount, money, resetsLabel, usageErrors, usageLevel } from '@/lib/usage'
 
 const usage = (over: Partial<UsageResponse> = {}): UsageResponse => ({
   host: 'laptop',
@@ -46,6 +46,21 @@ describe('usage', () => {
       { host: 'down', usage: null, error: 'unreachable' },
     ])
     expect(accounts.map((a) => a.hosts)).toEqual([['laptop', 'workstation'], ['other']])
-    expect(accounts[0].usage.host).toBe('workstation')
+    expect((accounts[0].usage as UsageResponse).host).toBe('workstation')
+  })
+
+  test('ChatGPT reads become their own cards, after Claude; failed reads become errors', () => {
+    const gpt = { ...usage(), host: undefined, provider: 'openai', account: { uuid: 'acct', email: 'me@example.com', organization: null, plan: 'plus', tier: null, plan_label: 'ChatGPT Plus' } }
+    const results = [
+      { host: 'laptop', usage: usage({ openai: gpt }), error: null },
+      { host: 'workstation', usage: usage({ host: 'workstation', openai: gpt }), error: null },
+      { host: 'codex-only', usage: usage({ host: 'codex-only', account: null, error: 'no Claude Code login found', openai: gpt }), error: null },
+    ]
+    const accounts = groupByAccount(results)
+    expect(accounts.map((a) => [a.provider, a.hosts])).toEqual([
+      ['claude', ['laptop', 'workstation']],
+      ['openai', ['laptop', 'workstation', 'codex-only']],
+    ])
+    expect(usageErrors(results)).toEqual([{ key: 'codex-only:claude', host: 'codex-only', error: 'Claude: no Claude Code login found' }])
   })
 })

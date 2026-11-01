@@ -360,7 +360,8 @@ enum Commands {
         cmd: Option<SlackCmd>,
     },
 
-    /// Claude subscription usage limits: session (5h), weekly, per-model weekly, extra usage
+    /// Subscription usage limits: Claude (session, weekly, per-model weekly, extra usage) and
+    /// the ChatGPT plan Codex is logged in with (session, weekly, credits)
     Usage {
         /// Machine-readable output (the web API's shape)
         #[arg(long)]

@@ -335,11 +335,12 @@ back to a scan of the project dirs when the session's cwd changed):
 ### Subscription usage
 
 `fleet usage --json` (and the web's `GET /api/hosts/:host/usage`, which adds `host`) reports the
-Claude subscription limits of the account logged in to Claude Code on that machine, from
-`core::usage`:
+Claude subscription limits of the account logged in to Claude Code on that machine, and under
+`openai` the ChatGPT plan Codex is logged in with, from `core::usage`:
 
 ```json
 {
+  "provider": "claude",
   "account": { "uuid": "…", "email": "…", "organization": "…", "plan": "max", "tier": "default_claude_max_5x", "plan_label": "Max 5x" },
   "limits": [
     { "kind": "session", "group": "session", "label": "Current session", "model": null, "percent": 18.0, "severity": "normal", "resets_at": "2026-09-29T22:20:00+00:00", "active": false },
@@ -349,10 +350,30 @@ Claude subscription limits of the account logged in to Claude Code on that machi
   "extra_usage": { "enabled": false, "used": 0.0, "limit": null, "currency": "USD", "percent": 0.0 },
   "fetched_at": "2026-09-29T20:00:00+00:00",
   "stale": false,
-  "error": null
+  "error": null,
+  "openai": {
+    "provider": "openai",
+    "account": { "uuid": "…", "email": "…", "organization": null, "plan": "plus", "tier": null, "plan_label": "ChatGPT Plus" },
+    "limits": [
+      { "kind": "session", "group": "session", "label": "Current session", "model": null, "percent": 3.0, "severity": "normal", "resets_at": "…", "active": false },
+      { "kind": "weekly_all", "group": "weekly", "label": "Weekly", "model": null, "percent": 2.0, "severity": "normal", "resets_at": "…", "active": false }
+    ],
+    "extra_usage": { "enabled": false, "used": null, "limit": null, "currency": null, "percent": null, "balance": 0.0 },
+    "fetched_at": "…", "stale": false, "error": null
+  }
 }
 ```
 
+- **`openai`** (since the field was added; absent when `$CODEX_HOME/auth.json` holds no ChatGPT
+  login): the same shape, from the endpoint Codex's `/status` calls (`GET
+  https://chatgpt.com/backend-api/wham/usage`) with Codex's access token and `ChatGPT-Account-Id`.
+  Its `primary_window` / `secondary_window` become the session and weekly limits; a
+  `code_review_rate_limit` or `additional_rate_limits` add scoped ones (`Weekly · Code review`);
+  `credits` becomes `extra_usage` with `balance`. Codex and pi share the plan; pi's own login is
+  another OAuth app the endpoint refuses, so only Codex's is read. Cached in
+  `$CODEX_HOME/fleet-usage.json` like the Claude read. When one provider fails with nothing
+  cached and the other has a read, the command still succeeds: the failed one comes back with
+  empty `limits` and `error` (the Claude one at the top level, with `account: null`).
 - **Source**: the plan-usage endpoint Claude Code's `/usage` calls (`GET
   https://api.anthropic.com/api/oauth/usage`), authenticated with Claude Code's OAuth access
   token — the macOS keychain item `Claude Code-credentials`, else `~/.claude/.credentials.json`.

@@ -1,4 +1,4 @@
-//! `fleet usage`: the Claude subscription's usage limits, as bars.
+//! `fleet usage`: the Claude and ChatGPT (Codex) subscriptions' usage limits, as bars.
 
 use chrono::{DateTime, Local, Utc};
 use colored::Colorize;
@@ -9,17 +9,34 @@ use crate::error::{Error, Result};
 const BAR: usize = 20;
 
 pub fn run(json: bool, refresh: bool) -> Result<()> {
-    let u = usage::get(&crate::core::discovery::claude_home(), refresh).map_err(Error::Other)?;
+    let u = usage::get_all(
+        &crate::core::discovery::claude_home(),
+        &crate::core::harness::codex_home(),
+        refresh,
+    )
+    .map_err(Error::Other)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&u)?);
     } else {
-        print!("{}", render(&u, Utc::now()));
+        let now = Utc::now();
+        let mut out = render(&u, now);
+        if let Some(o) = &u.openai {
+            out.push('\n');
+            out.push_str(&render(o, now));
+        }
+        print!("{out}");
     }
     Ok(())
 }
 
 fn render(u: &Usage, now: DateTime<Utc>) -> String {
     let mut out = String::new();
+    let openai = u.provider == "openai";
+    let title = if openai {
+        "ChatGPT usage"
+    } else {
+        "Claude usage"
+    };
     let who = u.account.as_ref().map(|a| {
         let name = a
             .email
@@ -34,7 +51,7 @@ fn render(u: &Usage, now: DateTime<Utc>) -> String {
     });
     out.push_str(&format!(
         "{}{}\n",
-        "Claude usage".bold(),
+        title.bold(),
         who.map(|w| format!(" — {w}")).unwrap_or_default()
     ));
     let width = u
@@ -56,7 +73,20 @@ fn render(u: &Usage, now: DateTime<Utc>) -> String {
                 .dimmed(),
         ));
     }
-    if let Some(x) = &u.extra_usage {
+    if u.limits.is_empty()
+        && let Some(e) = &u.error
+    {
+        out.push_str(&format!("  {}\n", e.yellow()));
+        return out;
+    }
+    if let Some(x) = u.extra_usage.as_ref().filter(|_| openai) {
+        let text = match (x.enabled, x.balance) {
+            (false, _) => "none".to_string(),
+            (true, Some(b)) => format!("{b:.2} left"),
+            (true, None) => "on".to_string(),
+        };
+        out.push_str(&format!("  {:<width$}  {}\n", "Credits", text.dimmed()));
+    } else if let Some(x) = &u.extra_usage {
         let cur = x.currency.as_deref().unwrap_or("");
         let text = match (x.enabled, x.used, x.limit) {
             (false, _, _) => "off".to_string(),

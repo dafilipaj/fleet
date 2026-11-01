@@ -16,6 +16,14 @@
 //! the last good read marked `stale`, and backs off for [`BACKOFF_SECS`].
 //!
 //! `curl` does the HTTP (the token goes in on stdin, never on the command line).
+//!
+//! **OpenAI.** Codex (and pi, on the same ChatGPT plan) bill against a ChatGPT
+//! subscription with its own 5-hour and weekly windows. They are read the same
+//! way from the endpoint Codex's `/status` calls
+//! (`GET https://chatgpt.com/backend-api/wham/usage`), with the ChatGPT login in
+//! `$CODEX_HOME/auth.json`, cached in `$CODEX_HOME/fleet-usage.json`, and
+//! reported under [`Usage::openai`]. pi's own login is a different OAuth app the
+//! endpoint does not accept, so only Codex's is used.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -26,6 +34,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const ENDPOINT: &str = "https://api.anthropic.com/api/oauth/usage";
+pub const OPENAI_ENDPOINT: &str = "https://chatgpt.com/backend-api/wham/usage";
 /// A read younger than this is served from the cache.
 pub const FRESH_SECS: i64 = 60;
 /// After a failed read, don't ask again for this long.
@@ -35,6 +44,9 @@ const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 /// `fleet usage --json` (and the web's `GET /api/hosts/:host/usage`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Usage {
+    /// `claude` or `openai`.
+    #[serde(default = "claude")]
+    pub provider: String,
     /// Whose limits these are (from Claude Code's state). Absent when unknown.
     pub account: Option<Account>,
     /// Every limit, in the endpoint's order: session first, then weekly ones.
@@ -45,8 +57,16 @@ pub struct Usage {
     pub fetched_at: String,
     /// True when a refresh failed and this is the last good read.
     pub stale: bool,
-    /// Why the last refresh failed (with `stale`).
+    /// Why the last refresh failed (with `stale`). With no `limits`, why there are none.
     pub error: Option<String>,
+    /// The ChatGPT subscription Codex is logged in with on this machine (only on
+    /// the top-level, Claude read; absent when there is no Codex ChatGPT login).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openai: Option<Box<Usage>>,
+}
+
+fn claude() -> String {
+    "claude".into()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -90,6 +110,9 @@ pub struct ExtraUsage {
     pub limit: Option<f64>,
     pub currency: Option<String>,
     pub percent: Option<f64>,
+    /// Prepaid credits left (OpenAI), in `currency` units or credits.
+    #[serde(default)]
+    pub balance: Option<f64>,
 }
 
 /// On-disk cache: the last good read plus the last failure.
@@ -104,16 +127,15 @@ fn cache_path(home: &Path) -> PathBuf {
     home.join("fleet-usage.json")
 }
 
-fn read_cache(home: &Path) -> Cache {
-    std::fs::read_to_string(cache_path(home))
+fn read_cache(path: &Path) -> Cache {
+    std::fs::read_to_string(path)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default()
 }
 
-fn write_cache(home: &Path, c: &Cache) {
+fn write_cache(path: &Path, c: &Cache) {
     if let Ok(text) = serde_json::to_string_pretty(c) {
-        let path = cache_path(home);
         let tmp = path.with_extension("json.tmp");
         if std::fs::write(&tmp, text).is_ok() {
             let _ = std::fs::rename(tmp, path);
@@ -129,19 +151,67 @@ fn age_secs(ts: Option<&str>, now: DateTime<Utc>) -> Option<i64> {
 /// Usage for the Claude account on this machine. `refresh` skips the cache
 /// (but not the backoff after a failure, unless the cache is empty).
 pub fn get(home: &Path, refresh: bool) -> Result<Usage, String> {
-    get_with(home, refresh, Utc::now(), &fetch_live)
+    let now = Utc::now();
+    get_with(&cache_path(home), refresh, now, &|| {
+        fetch_live(home).map(|(v, account)| parse(&v, account, now))
+    })
 }
 
-/// The endpoint's JSON and the account it belongs to (swapped out in tests).
-type Fetch<'a> = dyn Fn(&Path) -> Result<(Value, Option<Account>), String> + 'a;
+/// Usage for the ChatGPT account Codex is logged in with (`codex_home`), or
+/// `None` when there is no ChatGPT login there. Cached like [`get`].
+pub fn get_openai(codex_home: &Path, refresh: bool) -> Option<Result<Usage, String>> {
+    let creds = openai_credentials(codex_home)?;
+    let now = Utc::now();
+    Some(get_with(&cache_path(codex_home), refresh, now, &|| {
+        fetch_openai(&creds).map(|v| parse_openai(&v, now))
+    }))
+}
+
+/// Both subscriptions: the Claude read at the top level (as before), the ChatGPT
+/// one under `openai`. Fails only when neither has anything to show.
+pub fn get_all(claude_home: &Path, codex_home: &Path, refresh: bool) -> Result<Usage, String> {
+    let openai = get_openai(codex_home, refresh).map(|r| {
+        Box::new(r.unwrap_or_else(|e| Usage {
+            provider: "openai".into(),
+            error: Some(e),
+            ..empty(Utc::now())
+        }))
+    });
+    match get(claude_home, refresh) {
+        Ok(u) => Ok(Usage { openai, ..u }),
+        Err(e) if openai.is_some() => Ok(Usage {
+            error: Some(e),
+            openai,
+            ..empty(Utc::now())
+        }),
+        Err(e) => Err(e),
+    }
+}
+
+/// A read with no limits (a provider whose read failed with nothing cached).
+fn empty(now: DateTime<Utc>) -> Usage {
+    Usage {
+        provider: claude(),
+        account: None,
+        limits: vec![],
+        extra_usage: None,
+        fetched_at: now.to_rfc3339(),
+        stale: false,
+        error: None,
+        openai: None,
+    }
+}
+
+/// A fresh read from the endpoint, parsed (swapped out in tests).
+type Fetch<'a> = dyn Fn() -> Result<Usage, String> + 'a;
 
 fn get_with(
-    home: &Path,
+    path: &Path,
     refresh: bool,
     now: DateTime<Utc>,
     fetch: &Fetch<'_>,
 ) -> Result<Usage, String> {
-    let mut cache = read_cache(home);
+    let mut cache = read_cache(path);
     let fresh = cache
         .usage
         .as_ref()
@@ -160,21 +230,20 @@ fn get_with(
     {
         return Ok(u);
     }
-    match fetch(home) {
-        Ok((v, account)) => {
-            let usage = parse(&v, account, now);
+    match fetch() {
+        Ok(usage) => {
             cache = Cache {
                 usage: Some(usage.clone()),
                 failed_at: None,
                 error: None,
             };
-            write_cache(home, &cache);
+            write_cache(path, &cache);
             Ok(usage)
         }
         Err(e) => {
             cache.failed_at = Some(now.to_rfc3339());
             cache.error = Some(e.clone());
-            write_cache(home, &cache);
+            write_cache(path, &cache);
             serve_cached(&cache).ok_or(e)
         }
     }
@@ -220,6 +289,30 @@ fn fetch_live(home: &Path) -> Result<(Value, Option<Account>), String> {
     let creds = credentials(home)?;
     let token = access_token(&creds)?;
     let account = account(&creds);
+    let cfg = format!(
+        "header = \"Authorization: Bearer {token}\"\n\
+         header = \"anthropic-beta: oauth-2025-04-20\"\n\
+         header = \"User-Agent: fleet/{}\"\n",
+        env!("CARGO_PKG_VERSION")
+    );
+    let v = curl_json(ENDPOINT, &cfg).map_err(|e| match e {
+        HttpErr::Refused(code) => {
+            format!("usage endpoint refused the login (HTTP {code}) — run `claude` and /login")
+        }
+        HttpErr::Other(e) => e,
+    })?;
+    Ok((v, account))
+}
+
+enum HttpErr {
+    /// 401 / 403: the login was refused.
+    Refused(String),
+    Other(String),
+}
+
+/// GET `url` with curl, its config (headers) on stdin; the 200 body as JSON.
+fn curl_json(url: &str, cfg: &str) -> Result<Value, HttpErr> {
+    let other = |e: String| HttpErr::Other(e);
     let mut child = Command::new("curl")
         .args([
             "-sS",
@@ -229,43 +322,182 @@ fn fetch_live(home: &Path) -> Result<(Value, Option<Account>), String> {
             "-",
             "-w",
             "\n%{http_code}",
-            ENDPOINT,
+            url,
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("curl: {e}"))?;
+        .map_err(|e| other(format!("curl: {e}")))?;
     {
-        let mut stdin = child.stdin.take().ok_or("curl: no stdin")?;
-        let cfg = format!(
-            "header = \"Authorization: Bearer {token}\"\n\
-             header = \"anthropic-beta: oauth-2025-04-20\"\n\
-             header = \"User-Agent: fleet/{}\"\n",
-            env!("CARGO_PKG_VERSION")
-        );
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| other("curl: no stdin".into()))?;
         stdin
             .write_all(cfg.as_bytes())
-            .map_err(|e| format!("curl: {e}"))?;
+            .map_err(|e| other(format!("curl: {e}")))?;
     }
-    let out = child.wait_with_output().map_err(|e| format!("curl: {e}"))?;
+    let out = child
+        .wait_with_output()
+        .map_err(|e| other(format!("curl: {e}")))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
-        return Err(format!("usage request failed: {}", err.trim()));
+        return Err(other(format!("usage request failed: {}", err.trim())));
     }
     let text = String::from_utf8_lossy(&out.stdout);
     let (body, code) = text.rsplit_once('\n').unwrap_or(("", &text));
     match code.trim() {
-        "200" => serde_json::from_str(body)
-            .map(|v| (v, account))
-            .map_err(|e| format!("usage endpoint: bad JSON ({e})")),
-        "401" | "403" => Err(format!(
-            "usage endpoint refused the login (HTTP {}) — run `claude` and /login",
-            code.trim()
-        )),
-        "429" => Err("usage endpoint is rate-limited (HTTP 429)".into()),
-        c => Err(format!("usage endpoint answered HTTP {c}")),
+        "200" => {
+            serde_json::from_str(body).map_err(|e| other(format!("usage endpoint: bad JSON ({e})")))
+        }
+        c @ ("401" | "403") => Err(HttpErr::Refused(c.to_string())),
+        "429" => Err(other("usage endpoint is rate-limited (HTTP 429)".into())),
+        c => Err(other(format!("usage endpoint answered HTTP {c}"))),
     }
+}
+
+// --- OpenAI (Codex's ChatGPT login) ------------------------------------------------
+
+struct OpenAiCreds {
+    token: String,
+    account_id: Option<String>,
+}
+
+/// Codex's ChatGPT login, or `None` (no Codex, or an API-key login: no plan limits).
+fn openai_credentials(codex_home: &Path) -> Option<OpenAiCreds> {
+    let text = std::fs::read_to_string(codex_home.join("auth.json")).ok()?;
+    let v: Value = serde_json::from_str(&text).ok()?;
+    let t = &v["tokens"];
+    let token = t["access_token"].as_str().filter(|s| !s.is_empty())?;
+    if v["auth_mode"].as_str().is_some_and(|m| m != "chatgpt") {
+        return None;
+    }
+    Some(OpenAiCreds {
+        token: token.to_string(),
+        account_id: t["account_id"].as_str().map(str::to_string),
+    })
+}
+
+fn fetch_openai(c: &OpenAiCreds) -> Result<Value, String> {
+    let mut cfg = format!(
+        "header = \"Authorization: Bearer {}\"\n\
+         header = \"User-Agent: fleet/{}\"\n",
+        c.token,
+        env!("CARGO_PKG_VERSION")
+    );
+    if let Some(id) = &c.account_id {
+        cfg.push_str(&format!("header = \"ChatGPT-Account-Id: {id}\"\n"));
+    }
+    curl_json(OPENAI_ENDPOINT, &cfg).map_err(|e| match e {
+        HttpErr::Refused(code) => format!(
+            "ChatGPT usage endpoint refused the Codex login (HTTP {code}) — run `codex` once to renew it"
+        ),
+        HttpErr::Other(e) => e,
+    })
+}
+
+fn parse_openai(v: &Value, now: DateTime<Utc>) -> Usage {
+    let s = |v: &Value| v.as_str().filter(|s| !s.is_empty()).map(str::to_string);
+    let plan = s(&v["plan_type"]);
+    let account = Account {
+        uuid: s(&v["account_id"]),
+        email: s(&v["email"]),
+        organization: None,
+        plan_label: plan.as_deref().map(|p| match p {
+            "plus" => "ChatGPT Plus".to_string(),
+            "pro" => "ChatGPT Pro".to_string(),
+            p => format!("ChatGPT {}", p[..1].to_uppercase() + &p[1..]),
+        }),
+        plan,
+        tier: None,
+    };
+    let mut limits = openai_windows(&v["rate_limit"], None);
+    limits.extend(openai_windows(
+        &v["code_review_rate_limit"],
+        Some("Code review"),
+    ));
+    if let Some(extra) = v["additional_rate_limits"].as_array() {
+        for l in extra {
+            let name = s(&l["limit_name"]).or_else(|| s(&l["metered_feature"]));
+            limits.extend(openai_windows(
+                &l["rate_limit"],
+                Some(name.as_deref().unwrap_or("Other")),
+            ));
+        }
+    }
+    let c = &v["credits"];
+    let extra_usage = c.is_object().then(|| ExtraUsage {
+        enabled: c["has_credits"].as_bool().unwrap_or(false)
+            || c["unlimited"].as_bool().unwrap_or(false),
+        used: None,
+        limit: None,
+        currency: None,
+        percent: None,
+        balance: c["balance"]
+            .as_f64()
+            .or_else(|| c["balance"].as_str().and_then(|b| b.parse().ok())),
+    });
+    Usage {
+        provider: "openai".into(),
+        account: (account.uuid.is_some() || account.email.is_some() || account.plan.is_some())
+            .then_some(account),
+        limits,
+        extra_usage,
+        fetched_at: now.to_rfc3339(),
+        stale: false,
+        error: None,
+        openai: None,
+    }
+}
+
+/// A ChatGPT `rate_limit` object's primary (5h) and secondary (weekly) windows.
+/// `scope` names a non-default limit (`Code review`, …).
+fn openai_windows(rl: &Value, scope: Option<&str>) -> Vec<Limit> {
+    let reached = rl["limit_reached"].as_bool().unwrap_or(false);
+    ["primary_window", "secondary_window"]
+        .iter()
+        .filter_map(|key| {
+            let w = &rl[*key];
+            let percent = num(&w["used_percent"])?;
+            let secs = w["limit_window_seconds"].as_i64().unwrap_or(0);
+            let weekly = secs >= 24 * 3600 || (secs == 0 && *key == "secondary_window");
+            let window = match secs {
+                18000 => "Current session".to_string(),
+                604800 => "Weekly".to_string(),
+                0 if weekly => "Weekly".to_string(),
+                0 => "Current session".to_string(),
+                s if s % 86400 == 0 => format!("{}-day", s / 86400),
+                s => format!("{}h window", (s as f64 / 3600.0).round()),
+            };
+            let (kind, group) = match (weekly, scope) {
+                (false, None) => ("session", "session"),
+                (true, None) => ("weekly_all", "weekly"),
+                (false, Some(_)) => ("session_scoped", "session"),
+                (true, Some(_)) => ("weekly_scoped", "weekly"),
+            };
+            Some(Limit {
+                kind: kind.into(),
+                group: group.into(),
+                label: match scope {
+                    Some(s) => format!("{window} · {s}"),
+                    None => window,
+                },
+                model: None,
+                percent,
+                severity: if reached && percent >= 100.0 {
+                    "exceeded".into()
+                } else {
+                    "normal".into()
+                },
+                resets_at: w["reset_at"]
+                    .as_i64()
+                    .and_then(|t| DateTime::from_timestamp(t, 0))
+                    .map(|t| t.to_rfc3339()),
+                active: false,
+            })
+        })
+        .collect()
 }
 
 // --- account ------------------------------------------------------------------------
@@ -328,12 +560,14 @@ fn parse(v: &Value, account: Option<Account>, now: DateTime<Utc>) -> Usage {
         _ => legacy_limits(v),
     };
     Usage {
+        provider: claude(),
         account,
         limits,
         extra_usage: extra_usage(v),
         fetched_at: now.to_rfc3339(),
         stale: false,
         error: None,
+        openai: None,
     }
 }
 
@@ -441,6 +675,7 @@ fn extra_usage(v: &Value) -> Option<ExtraUsage> {
             limit: money(&spend["limit"]).or_else(|| money(&spend["cap"])),
             currency: spend["used"]["currency"].as_str().map(str::to_string),
             percent: num(&spend["percent"]),
+            balance: None,
         });
     }
     if extra.is_object() {
@@ -450,6 +685,7 @@ fn extra_usage(v: &Value) -> Option<ExtraUsage> {
             limit: num(&extra["monthly_limit"]),
             currency: extra["currency"].as_str().map(str::to_string),
             percent: num(&extra["utilization"]),
+            balance: None,
         });
     }
     None
@@ -533,11 +769,12 @@ mod tests {
     fn caches_and_backs_off() {
         let d = tempfile::tempdir().unwrap();
         let calls = Cell::new(0);
-        let ok = |_: &Path| {
+        let p = d.path().join("fleet-usage.json");
+        let ok = || {
             calls.set(calls.get() + 1);
-            Ok((sample(), None))
+            Ok(parse(&sample(), None, now()))
         };
-        let fail = |_: &Path| {
+        let fail = || {
             calls.set(calls.get() + 1);
             Err("usage endpoint is rate-limited (HTTP 429)".to_string())
         };
@@ -545,26 +782,103 @@ mod tests {
         let secs = |s| t0 + chrono::Duration::seconds(s);
 
         // First read fetches; a second within FRESH_SECS is served from the cache.
-        assert!(!get_with(d.path(), false, t0, &ok).unwrap().stale);
-        get_with(d.path(), false, secs(30), &ok).unwrap();
+        assert!(!get_with(&p, false, t0, &ok).unwrap().stale);
+        get_with(&p, false, secs(30), &ok).unwrap();
         assert_eq!(calls.get(), 1);
         // Past FRESH_SECS a failure serves the last read, stale, with the reason.
-        let u = get_with(d.path(), false, secs(90), &fail).unwrap();
+        let u = get_with(&p, false, secs(90), &fail).unwrap();
         assert!(u.stale);
         assert!(u.error.unwrap().contains("429"));
         assert_eq!(calls.get(), 2);
         // Backing off: even --refresh doesn't ask again.
-        assert!(get_with(d.path(), true, secs(120), &ok).unwrap().stale);
+        assert!(get_with(&p, true, secs(120), &ok).unwrap().stale);
         assert_eq!(calls.get(), 2);
         // After the backoff a good read clears the error.
-        assert!(!get_with(d.path(), false, secs(300), &ok).unwrap().stale);
+        assert!(!get_with(&p, false, secs(300), &ok).unwrap().stale);
         assert_eq!(calls.get(), 3);
     }
 
     #[test]
     fn a_failure_with_no_cache_is_an_error() {
         let d = tempfile::tempdir().unwrap();
-        let fail = |_: &Path| Err("no Claude Code login found".to_string());
-        assert!(get_with(d.path(), false, now(), &fail).is_err());
+        let fail = || Err("no Claude Code login found".to_string());
+        assert!(get_with(&d.path().join("c.json"), false, now(), &fail).is_err());
+    }
+
+    fn openai_sample() -> Value {
+        serde_json::json!({
+            "account_id": "acct-1", "email": "me@example.com", "plan_type": "plus",
+            "rate_limit": {
+                "allowed": true, "limit_reached": false,
+                "primary_window": {"used_percent": 12, "limit_window_seconds": 18000,
+                                   "reset_after_seconds": 600, "reset_at": 1790000000},
+                "secondary_window": {"used_percent": 40, "limit_window_seconds": 604800,
+                                     "reset_after_seconds": 6000, "reset_at": 1790500000}
+            },
+            "code_review_rate_limit": null,
+            "additional_rate_limits": null,
+            "credits": {"has_credits": true, "unlimited": false, "balance": "4.5"}
+        })
+    }
+
+    #[test]
+    fn parses_openai_windows() {
+        let u = parse_openai(&openai_sample(), now());
+        assert_eq!(u.provider, "openai");
+        let a = u.account.unwrap();
+        assert_eq!(
+            (a.uuid.as_deref(), a.plan_label.as_deref()),
+            (Some("acct-1"), Some("ChatGPT Plus"))
+        );
+        let rows: Vec<_> = u
+            .limits
+            .iter()
+            .map(|l| (l.kind.as_str(), l.label.as_str(), l.percent))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("session", "Current session", 12.0),
+                ("weekly_all", "Weekly", 40.0)
+            ]
+        );
+        assert_eq!(
+            u.limits[0].resets_at.as_deref(),
+            Some("2026-09-21T14:13:20+00:00")
+        );
+        let x = u.extra_usage.unwrap();
+        assert_eq!((x.enabled, x.balance), (true, Some(4.5)));
+    }
+
+    #[test]
+    fn openai_needs_a_chatgpt_login() {
+        let d = tempfile::tempdir().unwrap();
+        assert!(openai_credentials(d.path()).is_none());
+        let auth = d.path().join("auth.json");
+        std::fs::write(
+            &auth,
+            r#"{"auth_mode":"apikey","tokens":{"access_token":"t"}}"#,
+        )
+        .unwrap();
+        assert!(openai_credentials(d.path()).is_none());
+        std::fs::write(
+            &auth,
+            r#"{"auth_mode":"chatgpt","tokens":{"access_token":"t","account_id":"a"}}"#,
+        )
+        .unwrap();
+        let c = openai_credentials(d.path()).unwrap();
+        assert_eq!(
+            (c.token.as_str(), c.account_id.as_deref()),
+            ("t", Some("a"))
+        );
+    }
+
+    #[test]
+    fn old_caches_read_as_claude() {
+        let mut v = serde_json::to_value(parse(&sample(), None, now())).unwrap();
+        v.as_object_mut().unwrap().remove("provider");
+        let u: Usage = serde_json::from_value(v).unwrap();
+        assert_eq!(u.provider, "claude");
+        assert!(u.openai.is_none());
     }
 }
