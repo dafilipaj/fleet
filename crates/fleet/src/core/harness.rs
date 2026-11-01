@@ -285,50 +285,6 @@ pub fn codex_models(home: &Path) -> Vec<ModelOption> {
     out
 }
 
-/// Codex stops a new session at "Trust this folder?" in a directory it was never told to trust,
-/// and `fleet list` does not see it until someone answers. A spawn's directory was picked
-/// explicitly, so it is trusted for that launch only (Codex's config is not written):
-/// ` -c 'projects."<path>".trust_level="trusted"'` for the directory, its canonical path and
-/// its git root (Codex keys trust by the repository root).
-pub fn codex_trust_args(dir: &str) -> String {
-    let d = crate::core::tools::expand_tilde(dir);
-    let mut paths = vec![d.clone()];
-    if let Ok(c) = std::fs::canonicalize(&d) {
-        paths.push(c.display().to_string());
-    }
-    let mut git = Command::new("git");
-    git.args(["-C", &d, "rev-parse", "--show-toplevel"]);
-    if let Ok(got) = crate::core::hosts::capture(git, Duration::from_secs(2)) {
-        let top = got.stdout.trim();
-        if got.code == Some(0) && top.starts_with('/') {
-            paths.push(top.to_string());
-        }
-    }
-    trust_args(&paths)
-}
-
-/// Pure: the `-c` overrides for `paths` (absolute, deduplicated; a path TOML would need
-/// escapes for is skipped).
-fn trust_args(paths: &[String]) -> String {
-    let mut seen: Vec<&str> = Vec::new();
-    let mut out = String::new();
-    for p in paths {
-        let p = p.trim_end_matches('/');
-        if !p.starts_with('/') || p.contains(['"', '\\']) || p.chars().any(char::is_control) {
-            continue;
-        }
-        if seen.contains(&p) {
-            continue;
-        }
-        seen.push(p);
-        out.push_str(" -c ");
-        out.push_str(&crate::core::tools::shq(&format!(
-            "projects.\"{p}\".trust_level=\"trusted\""
-        )));
-    }
-    out
-}
-
 /// A model id safe to type into a shell (the `--model` rule: letters, digits, `._[]-/:`).
 pub fn is_model_id(m: &str) -> bool {
     !m.is_empty()
@@ -1183,22 +1139,6 @@ pub fn content_text(c: Option<&Value>) -> String {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn codex_trust_args_cover_each_path_once() {
-        let got = trust_args(&[
-            "/w/repo/sub".into(),
-            "/w/repo/sub/".into(),
-            "/w/repo".into(),
-            "rel".into(),
-            "/w/a\"b".into(),
-        ]);
-        assert_eq!(
-            got,
-            " -c 'projects.\"/w/repo/sub\".trust_level=\"trusted\"' -c 'projects.\"/w/repo\".trust_level=\"trusted\"'"
-        );
-        assert_eq!(trust_args(&[]), "");
-    }
-
     #[test]
     fn with_adds_the_picked_or_default_model_and_the_default_effort() {
         use super::Harness::*;

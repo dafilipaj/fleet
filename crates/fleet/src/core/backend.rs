@@ -742,13 +742,6 @@ pub fn spawn_tagged(
         (Backend::Iterm, Some(_)) => Backend::Tmux,
         (b, _) => b,
     };
-    let codex_launcher;
-    let launcher = if harness == Harness::Codex {
-        codex_launcher = format!("{launcher}{}", crate::core::harness::codex_trust_args(dir));
-        codex_launcher.as_str()
-    } else {
-        launcher
-    };
     // A long prompt typed onto the command line is slow and fragile (the web spawn has the
     // same limit): it goes through a file the shell expands at launch instead.
     let long_file = match prompt {
@@ -803,6 +796,9 @@ pub fn spawn_tagged(
             crate::core::tools::tmux_cmd()
                 .args(["send-keys", "-t", &win, "Enter"])
                 .status()?;
+            if harness == Harness::Codex {
+                accept_codex_trust(&win);
+            }
             let desc = if exists {
                 format!("spawned tmux window {win}  (attach: tmux attach -t {session})")
             } else {
@@ -811,6 +807,74 @@ pub fn spawn_tagged(
             Ok((desc, Some(session)))
         }
         Backend::Unknown => Err(Error::Other("unknown backend".into())),
+    }
+}
+
+/// What a Codex pane shows right after launch.
+#[derive(Debug, PartialEq)]
+enum CodexStart {
+    /// "Trust this folder?"; `selected`: "› 1. Trust and continue" is highlighted.
+    Trust {
+        selected: bool,
+    },
+    /// Codex is up (its banner or prompt).
+    Up,
+    Starting,
+}
+
+fn codex_start(screen: &str) -> CodexStart {
+    if screen.contains("Trust this folder?") {
+        let selected = screen.lines().any(|l| {
+            let t = l.trim_start();
+            t.starts_with('›') && t.contains("1. Trust and continue")
+        });
+        return CodexStart::Trust { selected };
+    }
+    if ["OpenAI Codex", "Ask Codex", "for shortcuts"]
+        .iter()
+        .any(|m| screen.contains(m))
+    {
+        return CodexStart::Up;
+    }
+    CodexStart::Starting
+}
+
+fn capture(win: &str) -> Option<String> {
+    let out = crate::core::tools::tmux_cmd()
+        .args(["capture-pane", "-p", "-t", win])
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Codex stops a new session at "Trust this folder?" in a directory it was never told to trust,
+/// and `fleet list` does not see it until someone answers. The spawn's directory was picked
+/// explicitly, so answer "Trust and continue" (preselected: Enter), as the web spawner does.
+/// Polls the pane for up to ~10 s; best effort. (Trusting by a `-c projects.…` override instead
+/// broke Codex's code-mode host on some machines: every shell command timed out.)
+fn accept_codex_trust(win: &str) {
+    use std::time::Duration;
+    for _ in 0..20 {
+        std::thread::sleep(Duration::from_millis(500));
+        let Some(screen) = capture(win) else { return };
+        match codex_start(&screen) {
+            CodexStart::Up => return,
+            CodexStart::Starting => {}
+            CodexStart::Trust { .. } => {
+                // The dialog is drawn before it listens for keys: settle, then check again.
+                std::thread::sleep(Duration::from_millis(1200));
+                if capture(win).map(|s| codex_start(&s))
+                    == Some(CodexStart::Trust { selected: true })
+                {
+                    let _ = crate::core::tools::tmux_cmd()
+                        .args(["send-keys", "-t", win, "Enter"])
+                        .status();
+                }
+                return;
+            }
+        }
     }
 }
 
@@ -931,6 +995,19 @@ fn tmux_spawn_args(session: &str, dir: &str, exists: bool) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_start_reads_the_trust_dialog() {
+        let dialog = "  Folder access\n  Trust this folder? Codex can read …\n› 1. Trust and continue\n  2. Back\n";
+        assert_eq!(codex_start(dialog), CodexStart::Trust { selected: true });
+        let moved = "  Trust this folder?\n  1. Trust and continue\n› 2. Back\n";
+        assert_eq!(codex_start(moved), CodexStart::Trust { selected: false });
+        assert_eq!(
+            codex_start(">_ OpenAI Codex (v0.166.0)\n› Ask Codex to do anything"),
+            CodexStart::Up
+        );
+        assert_eq!(codex_start("~/Code/project $ "), CodexStart::Starting);
+    }
 
     #[test]
     fn attach_command_quotes_both_words() {
