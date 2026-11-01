@@ -275,6 +275,7 @@ export function normalizeConfig(
   const hosts = raw.hosts == null ? {} : raw.hosts;
   if (!isObject(hosts)) throw new Error('config.hosts must be an object of name -> { ssh, web }');
   const peers = {};
+  const peerProxies = {}; // peer origin → HTTP proxy url (hosts.<name>.webProxy)
   const sshHosts = {}; // name → ssh destination (the "Open in editor" Remote-SSH links)
   const hostAddrs = {}; // name → the hostname of its web url (which machine a browser is on)
   for (const [name, host] of Object.entries(hosts)) {
@@ -296,6 +297,12 @@ export function normalizeConfig(
       throw new Error(`config.hosts.${name}.web must be an http(s) url`);
     }
     peers[name] = host.web.replace(/\/+$/, '');
+    if (host.webProxy != null) {
+      if (typeof host.webProxy !== 'string' || !/^https?:\/\//.test(host.webProxy)) {
+        throw new Error(`config.hosts.${name}.webProxy must be an http(s) url`);
+      }
+      peerProxies[new URL(peers[name]).origin] = host.webProxy.replace(/\/+$/, '');
+    }
   }
 
   const web = raw.web == null ? {} : raw.web;
@@ -606,6 +613,7 @@ export function normalizeConfig(
     port,
     bind,
     peers,
+    peerProxies,
     sshHosts,
     hostAddrs,
     editor,

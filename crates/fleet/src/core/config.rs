@@ -60,6 +60,10 @@ pub struct Host {
     /// server only); `None` → `ssh`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub editor_ssh: Option<String>,
+    /// HTTP proxy the web server reaches this host's `web` through (read by the web server only),
+    /// e.g. a second tailnet's userspace `tailscaled`; `None` → direct.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web_proxy: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

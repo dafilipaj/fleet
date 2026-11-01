@@ -3,6 +3,48 @@ import https from 'node:https';
 
 import { sortSessions } from './util.mjs';
 
+// Peer origin → HTTP proxy url, for peers on another network (hosts.<name>.webProxy): set once from
+// the config. Node's built-in proxy support (agent `proxyEnv`, Node >= 24.5) does the tunnelling.
+let peerProxies = {};
+const agents = new Map();
+
+export function setPeerProxies(map) {
+  peerProxies = map && typeof map === 'object' ? { ...map } : {};
+  agents.clear();
+}
+
+function proxyAgentFor(target) {
+  const proxy = peerProxies[target.origin];
+  if (!proxy) return undefined;
+  const key = `${target.protocol}${proxy}`;
+  if (!agents.has(key)) {
+    const Agent = target.protocol === 'https:' ? https.Agent : http.Agent;
+    agents.set(key, new Agent({ keepAlive: true, proxyEnv: { HTTP_PROXY: proxy, HTTPS_PROXY: proxy } }));
+  }
+  return agents.get(key);
+}
+
+// fetch() has no per-request proxy without undici, so a proxied peer goes through http(s).request
+// and comes back as a Response, which is all the callers use.
+function requestViaAgent(target, { method = 'GET', headers = {}, body = null, signal } = {}, agent) {
+  return new Promise((resolve, reject) => {
+    const out = (target.protocol === 'https:' ? https : http).request(target, { method, headers, agent, signal }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('error', reject);
+      res.on('end', () => {
+        const h = new Headers();
+        for (const [k, v] of Object.entries(res.headers)) if (v != null) h.set(k, Array.isArray(v) ? v.join(', ') : String(v));
+        const status = res.statusCode ?? 502;
+        const noBody = status === 204 || status === 304;
+        resolve(new Response(noBody ? null : Buffer.concat(chunks), { status, headers: h }));
+      });
+    });
+    out.on('error', reject);
+    out.end(body ?? undefined);
+  });
+}
+
 function withLocalFlag(search) {
   const params = new URLSearchParams(search ?? '');
   params.set('local', '1');
@@ -13,6 +55,9 @@ async function fetchWithTimeout(url, opts, timeoutMs) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
+    const target = new URL(url);
+    const agent = proxyAgentFor(target);
+    if (agent) return await requestViaAgent(target, { ...opts, signal: controller.signal }, agent);
     return await fetch(url, { ...opts, signal: controller.signal });
   } finally {
     clearTimeout(timer);
@@ -121,7 +166,7 @@ export function streamToPeer(baseUrl, { method = 'POST', pathname, search = '', 
       if (!req.readableEnded) req.resume();
       resolve(result);
     };
-    const out = (target.protocol === 'https:' ? https : http).request(target, { method, headers }, (res) => {
+    const out = (target.protocol === 'https:' ? https : http).request(target, { method, headers, agent: proxyAgentFor(target) }, (res) => {
       const chunks = [];
       res.on('data', (c) => chunks.push(c));
       res.on('error', (err) => done({ status: 502, body: { error: `peer ${baseUrl} unreachable: ${err.message}` } }));
@@ -180,7 +225,7 @@ export function streamFromPeer(baseUrl, { pathname, search = '', timeoutMs = 200
       clearTimeout(timer);
       resolve(result);
     };
-    const out = (target.protocol === 'https:' ? https : http).request(target, { method: 'GET' }, (res) => {
+    const out = (target.protocol === 'https:' ? https : http).request(target, { method: 'GET', agent: proxyAgentFor(target) }, (res) => {
       const headers = {};
       for (const h of PASS_HEADERS) if (res.headers[h] != null) headers[h] = res.headers[h];
       done({ status: res.statusCode ?? 502, headers, stream: res });

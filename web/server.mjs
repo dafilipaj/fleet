@@ -36,7 +36,7 @@ import { createStacks } from './lib/stacks.mjs';
 import { createAgentAsk, createInbox } from './lib/inbox.mjs';
 import { createPromptQueue } from './lib/queue.mjs';
 import { TOKEN_NAMES, createSlackApi, createSlackBridge, createSocketClient } from './lib/slack.mjs';
-import { fetchPeerHost } from './lib/peers.mjs';
+import { fetchPeerHost, setPeerProxies } from './lib/peers.mjs';
 import { createDormant } from './lib/dormant.mjs';
 import { createMemos } from './lib/memos.mjs';
 import { createApi } from './lib/api.mjs';
@@ -60,6 +60,8 @@ try {
   process.stderr.write(`[fleet-web] ${err.message}\n`);
   process.exit(2);
 }
+
+setPeerProxies(config.peerProxies);
 
 const cli = createFleetCli({ run, bin: config.fleetBin });
 const fleet = createFleet({ cli, self: config.self, ttlMs: 2000 });

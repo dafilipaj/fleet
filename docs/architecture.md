@@ -125,6 +125,7 @@ server. Path: `$FLEET_CONFIG`, else `${XDG_CONFIG_HOME:-~/.config}/fleet/config.
 | `defaultHost` | target for tmux-session commands when no `-H` is given |
 | `hosts.<name>.ssh` | ssh destination (an `~/.ssh/config` alias or `user@host`); `null` for `self` |
 | `hosts.<name>.web` | that host's web server URL; hosts without one are not web peers |
+| `hosts.<name>.webProxy` | HTTP proxy the web server reaches that host's `web` url through, for a peer on another network than this machine's tailnet (e.g. a second, userspace `tailscaled` with `--outbound-http-proxy-listen`); needs Node >= 24.5; default direct. The CLI goes over `ssh` and ignores it |
 | `hosts.<name>.editorSsh` | ssh destination the browser's machine uses for that host in "Open in editor" links, when it differs from `ssh` or `ssh` is unset (a web-only peer); default `ssh` |
 | `web.port` / `web.bind` | web server listen address; with no config at all it binds `127.0.0.1` only |
 | `web.dir` | where the web app lives (repo checkout or install dir), detected by `init` |
