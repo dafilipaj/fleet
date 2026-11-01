@@ -635,6 +635,7 @@ export function SessionScreen({
         lockedReason={lockedReason}
         onSend={send}
         onQueue={queueing ? enqueue : null}
+        onSendQueued={queue?.items.length ? () => void queueAction(api.queueSend(host, id, queue.items[0].id), afterSteer) : null}
         onKey={sendKey}
         desktop={pane}
         inputRef={composerRef}

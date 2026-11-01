@@ -65,7 +65,7 @@ export function QueuePanel({ queue, agent = 'Claude', desktop = false, onSendNow
               <button type="button" className={iconBtn} aria-label="Edit" title="Edit (back into the composer)" onClick={() => onEdit(it.id)}>
                 <PencilIcon />
               </button>
-              <button type="button" className={iconBtn} aria-label="Send now" title="Send now (mid-run: Claude reads it after the current step)" onClick={() => onSendNow(it.id)}>
+              <button type="button" className={iconBtn} aria-label="Send now" title={`Send now (mid-run: Claude reads it after the current step)${i === 0 && desktop ? ' — or ⌘Enter in an empty composer' : ''}`} onClick={() => onSendNow(it.id)}>
                 <SendHorizontalIcon />
               </button>
               <button type="button" className={iconBtn} aria-label="Remove" title="Remove" onClick={() => onDelete(it.id)}>

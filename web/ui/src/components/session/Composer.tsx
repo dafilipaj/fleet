@@ -69,6 +69,8 @@ export interface ComposerProps {
    * ⌘/Ctrl+Enter sends it now. Absent = always send.
    */
   onQueue?: ((text: string) => boolean) | null
+  /** Messages wait in the queue: ⌘/Ctrl+Enter in an empty composer sends the first one now. */
+  onSendQueued?: (() => void) | null
 }
 
 export interface ComposerApi {
@@ -94,6 +96,7 @@ export function Composer({
   sessionId,
   slashCommands = false,
   onQueue = null,
+  onSendQueued = null,
 }: ComposerProps) {
   const [text, setText] = useState(() => takeDraft(draftKey))
   useEffect(() => saveDraft(draftKey, text), [draftKey, text])
@@ -402,6 +405,7 @@ export function Composer({
               if (isTouch && !desktop) return
               if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault()
+                if ((e.metaKey || e.ctrlKey) && !text.trim() && onSendQueued && !locked) return onSendQueued()
                 submit(e.metaKey || e.ctrlKey)
               }
             }}
@@ -409,6 +413,8 @@ export function Composer({
             placeholder={
               locked
                 ? 'Read-only'
+                : onSendQueued && desktop
+                  ? `${onQueue ? `${agent} is working — Enter queues, ` : ''}⌘Enter sends the first queued message now`
                 : onQueue
                   ? desktop
                     ? `${agent} is working — Enter queues for when it finishes, ⌘Enter sends now`
