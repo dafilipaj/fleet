@@ -777,11 +777,11 @@ function NewSessionForm({
 
           {modelField}
 
-          {promptField}
-
           {slackField}
 
           {fixed || prefill?.embed ? null : whenField}
+
+          {promptField}
 
           {errorBox}
 
