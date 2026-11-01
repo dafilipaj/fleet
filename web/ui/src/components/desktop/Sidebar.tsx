@@ -52,13 +52,7 @@ export function Sidebar({ list, now, cursorKey, selectedKey }: SidebarProps) {
             </AlertDescription>
           </Alert>
         ) : null}
-        {unreachable.map((h) => (
-          <Alert key={h.name} variant="destructive" className="mb-2">
-            <AlertDescription className="break-words">
-              {h.name} unreachable: {h.error || 'no response'}
-            </AlertDescription>
-          </Alert>
-        ))}
+        {/* An unreachable host shows in the top bar (HostButtons), not here. */}
         {!fleet ? (
           <SessionListSkeleton />
         ) : view.sessions.length > 0 ? (
@@ -81,11 +75,11 @@ export function Sidebar({ list, now, cursorKey, selectedKey }: SidebarProps) {
               )
             })}
           </nav>
-        ) : unreachable.length === 0 ? (
+        ) : (
           <div className="px-4 py-10 text-center text-sm text-dimmer">
-            {allSessions(fleet).length > 0 ? 'Nothing matches.' : 'No Claude sessions running.'}
+            {allSessions(fleet).length > 0 ? 'Nothing matches.' : unreachable.length ? 'No sessions from the reachable hosts.' : 'No Claude sessions running.'}
           </div>
-        ) : null}
+        )}
         {fleet ? <DormantSection now={now} host={host} query={query} desktop className="mt-4" /> : null}
         {fleet ? <ClosedSection now={now} host={host} query={query} desktop className="mt-3" /> : null}
       </div>
