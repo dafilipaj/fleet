@@ -194,6 +194,7 @@ const spawner = createSpawner({
   launchers: config.launchers,
   ghIdentities: config.ghIdentities,
   ghIdentityLauncher: (name, launcher) => cli.ghIdentityLauncher(name, launcher),
+  harnessDefaults: () => config.harnessDefaults,
 });
 const operator = createOperator({ config, fleet, spawner, backend, log });
 // One transcript reader: the chat and the review threads (their replies) share its cache.

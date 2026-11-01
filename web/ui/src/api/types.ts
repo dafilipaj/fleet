@@ -126,6 +126,19 @@ export interface HarnessInfo {
   installed: boolean
   /** The picker; `id: ''` is the harness's own default. */
   models: ModelOption[]
+  /** Reasoning-effort levels it takes, lowest first (older servers: absent). */
+  efforts?: string[]
+  /** `harnesses.<id>.model` / `.effort`: what a spawn uses when it picks none (Settings → Agents). */
+  defaultModel?: string | null
+  defaultEffort?: string | null
+}
+
+/** PUT /api/hosts/:host/harness-defaults */
+export interface HarnessDefaults {
+  host?: string
+  harness: HarnessId
+  model: string | null
+  effort: string | null
 }
 
 export interface HarnessesResponse {

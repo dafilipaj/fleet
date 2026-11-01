@@ -7,7 +7,7 @@ use chrono::{DateTime, Local, TimeZone};
 use colored::Colorize;
 use serde_json::{Value, json};
 
-use crate::cli::commands::{clean_model, with_model};
+use crate::cli::commands::clean_model;
 use crate::cli::render::{ago, home_rel};
 use crate::cli::web::{self, ServiceOpts};
 use crate::core::backend::{self, Prompt};
@@ -365,7 +365,7 @@ fn start(j: &Job, trigger: &str, slot: Option<i64>) -> Result<Run> {
         run: format!("{}/{id}", j.name),
         command: j.command.clone(),
     };
-    let launcher = with_model(
+    let launcher = j.harness.with_defaults(
         j.command
             .as_deref()
             .map(String::from)

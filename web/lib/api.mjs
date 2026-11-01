@@ -128,6 +128,10 @@ const FOCUS_PROXY_MS = 45 * 1000;
 const HARNESSES_ROUTE = /^\/api\/hosts\/([^/]+)\/harnesses$/;
 /** `fleet harness list` runs `pi --list-models` (a node start): keep its answer a while. */
 const HARNESSES_TTL_MS = 10 * 60 * 1000;
+const HARNESS_DEFAULTS_ROUTE = /^\/api\/hosts\/([^/]+)\/harness-defaults$/;
+const HARNESS_IDS = ['claude', 'codex', 'pi'];
+// Fallback effort levels for a CLI that predates `efforts` in `fleet harness list`.
+const DEFAULT_EFFORTS = { claude: ['low', 'medium', 'high', 'xhigh', 'max'], codex: ['minimal', 'low', 'medium', 'high', 'xhigh'], pi: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] };
 const SLACK_LINK_ACTION_ROUTE = /^\/api\/slack\/links\/([^/]+)\/(unlink|relink)$/;
 const DORMANT_ROUTE = /^\/api\/hosts\/([^/]+)\/dormant(?:\/(restore|forget))?$/;
 /** A restore types launch lines into new tmux panes; `--all` may bring back many sessions. */
@@ -1096,6 +1100,12 @@ export function createApi({
       return forHost({ req, url, host, timeoutMs: FOCUS_PROXY_MS, local: () => localFocus(req) });
     }
 
+    const hd = HARNESS_DEFAULTS_ROUTE.exec(url.pathname);
+    if (hd) {
+      if (req.method !== 'PUT') throw new HttpError('method not allowed', 405);
+      return forHost({ req, url, host: decodeURIComponent(hd[1]), local: () => localHarnessDefaults(req) });
+    }
+
     const hr = HARNESSES_ROUTE.exec(url.pathname);
     if (hr) {
       if (req.method !== 'GET') throw new HttpError('method not allowed', 405);
@@ -1452,7 +1462,7 @@ export function createApi({
   async function localHarnesses(url) {
     const refresh = url.searchParams.get('refresh') === '1';
     if (!refresh && harnessCache && Date.now() - harnessCache.at < HARNESSES_TTL_MS) {
-      return { status: 200, body: { host: config.self, harnesses: harnessCache.rows, ghIdentities: config.ghIdentities ?? [] } };
+      return { status: 200, body: { host: config.self, harnesses: withDefaults(harnessCache.rows), ghIdentities: config.ghIdentities ?? [] } };
     }
     let rows;
     try {
@@ -1464,7 +1474,42 @@ export function createApi({
     // Claude's picker is the configured one (`web.models`), like before harnesses.
     rows = rows.map((r) => (r.id === 'claude' ? { ...r, models: config.models ?? DEFAULT_MODELS } : r));
     harnessCache = { at: Date.now(), rows };
-    return { status: 200, body: { host: config.self, harnesses: rows, ghIdentities: config.ghIdentities ?? [] } };
+    return { status: 200, body: { host: config.self, harnesses: withDefaults(rows), ghIdentities: config.ghIdentities ?? [] } };
+  }
+
+  // The defaults come from the live config (a PUT changes them at once), the rest from the cache.
+  function withDefaults(rows) {
+    return rows.map((r) => {
+      const d = config.harnessDefaults?.[r.id] ?? {};
+      return { ...r, efforts: Array.isArray(r.efforts) ? r.efforts : (DEFAULT_EFFORTS[r.id] ?? []), defaultModel: d.model ?? null, defaultEffort: d.effort ?? null };
+    });
+  }
+
+  /**
+   * PUT harness-defaults `{ harness, model, effort }` → `{ host, harness, model, effort }`: what a
+   * spawn of `harness` on this host uses when it picks none (`harnesses.<id>.model` / `.effort`,
+   * written through the CLI like spawn dirs). `null` / `""` clears one (the harness's own default).
+   */
+  async function localHarnessDefaults(req) {
+    if (typeof cli?.configSet !== 'function') throw new HttpError('editing defaults is not available on this server', 501);
+    const body = await readJsonBody(req);
+    const harness = body?.harness;
+    if (!HARNESS_IDS.includes(harness)) throw new HttpError(`harness must be one of ${HARNESS_IDS.join(', ')}`, 400);
+    const norm = (v) => (v == null ? null : typeof v === 'string' ? v.trim() || null : undefined);
+    const model = norm(body?.model);
+    const effort = norm(body?.effort);
+    if (model === undefined || (model && !/^[A-Za-z0-9._[\]/:-]{1,100}$/.test(model))) {
+      throw new HttpError('model must be 1-100 chars of letters, digits, . _ [ ] / : or -', 400);
+    }
+    if (effort === undefined || (effort && !/^[a-z]{1,20}$/.test(effort))) throw new HttpError('effort must be a lowercase level like "high"', 400);
+    try {
+      await cli.configSet({ key: `harnesses.${harness}.model`, value: model });
+      await cli.configSet({ key: `harnesses.${harness}.effort`, value: effort });
+    } catch (err) {
+      throw new HttpError(String(err?.message ?? err), err?.timedOut ? 504 : 502);
+    }
+    config.harnessDefaults = { ...(config.harnessDefaults ?? {}), [harness]: { model, effort } };
+    return { status: 200, body: { host: config.self, harness, model, effort } };
   }
 
   /**

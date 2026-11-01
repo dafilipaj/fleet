@@ -87,6 +87,21 @@ export function ghIdentitiesOf(raw) {
 
 export const GH_IDENTITY_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
+/**
+ * `harnesses.<id>.model` / `.effort`: what a spawn uses when it picks none. Read leniently (a bad
+ * value is dropped, never fatal): a model must be a typed-safe id, an effort a lowercase word.
+ */
+export function harnessDefaultsOf(raw) {
+  const out = {};
+  for (const id of ['claude', 'codex', 'pi']) {
+    const h = raw?.harnesses?.[id];
+    const model = typeof h?.model === 'string' && /^[A-Za-z0-9._[\]/:-]{1,100}$/.test(h.model.trim()) ? h.model.trim() : null;
+    const effort = typeof h?.effort === 'string' && /^[a-z]{1,20}$/.test(h.effort.trim()) ? h.effort.trim() : null;
+    out[id] = { model, effort };
+  }
+  return out;
+}
+
 /** `harnesses.<id>.command` when it is a non-blank string, else the bare id. Read leniently. */
 function harnessCommand(raw, id, home) {
   const c = raw?.harnesses?.[id]?.command;
@@ -622,6 +637,7 @@ export function normalizeConfig(
     fleetBin: resolveFleetBin(raw, { env, home, fsImpl }),
     tmux: resolveBinary('tmux', { explicit: env.FLEET_TMUX || raw.tmux, env, home, fsImpl }),
     claude: typeof raw.claude === 'string' && raw.claude ? expandHome(raw.claude, home) : 'claude',
+    harnessDefaults: harnessDefaultsOf(raw),
     // How each harness launches in a spawned session (`claude`, `harnesses.<id>.command`).
     launchers: {
       claude: typeof raw.claude === 'string' && raw.claude ? expandHome(raw.claude, home) : 'claude',

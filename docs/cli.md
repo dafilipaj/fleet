@@ -83,11 +83,20 @@ Launch commands: Claude's is `FLEET_CMD` / config `claude`; the others' are conf
 
 ```json
 [{ "id": "codex", "label": "Codex", "command": "codex", "installed": true,
-   "models": [{ "id": "", "label": "Default (gpt-6.1-sol)" }, { "id": "gpt-6.1-sol", "label": "GPT-6.1-Sol" }] }]
+   "models": [{ "id": "", "label": "Default (gpt-6.1-sol)" }, { "id": "gpt-6.1-sol", "label": "GPT-6.1-Sol" }],
+   "efforts": ["low", "medium", "high", "xhigh", "max"], "defaultModel": null, "defaultEffort": "high" }]
 ```
 
 Models: Claude's built-in list; Codex's from its `models_cache.json` (listed ones, its order);
 pi's from `pi --list-models` (ids `provider/model`). `id: ""` is the harness's own default.
+Efforts: Claude `low…max`; Codex the levels its model cache lists; pi `off…max`.
+
+**Default model and effort.** Config `harnesses.<id>.model` / `harnesses.<id>.effort` (Settings →
+Agents in the web writes them to every host) are what a spawn starts with when it picks no model:
+`spawn`, the web, bots, scheduled sessions and stack spawns alike. A picked model wins over the
+default one; the effort goes in as Claude `--effort <l>`, Codex `-c model_reasoning_effort=<l>`, pi
+`--thinking <l>`. A launcher that already sets one (a bot's own `command`, a wrapper with flags)
+keeps its own. Unset, the harness's own config decides. A resumed session keeps its own.
 
 ### GitHub identities
 

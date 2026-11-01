@@ -52,13 +52,41 @@ export const TYPED_LINE_MAX = 900;
 export const HARNESSES = ['claude', 'codex', 'pi'];
 export const HARNESS_LABELS = { claude: 'Claude', codex: 'Codex', pi: 'pi' };
 
+/** Reasoning-effort levels per harness when the host does not say (`fleet harness list` does). */
+export const EFFORT_RE = /^[a-z]{1,20}$/;
+
+/** The launcher arguments that set the reasoning effort (`core::harness::Harness::effort_args`). */
+export function effortArgs(harness, level) {
+  if (harness === 'codex') return ['-c', `model_reasoning_effort=${level}`];
+  if (harness === 'pi') return ['--thinking', level];
+  return ['--effort', level];
+}
+
+/**
+ * What a spawn adds to `launcher` from the host's defaults (`harnesses.<id>.model` / `.effort`,
+ * Settings → Agents): the picked model, else the default one, and the default effort — unless the
+ * launcher already sets one (a wrapper with flags keeps its own). Mirrors `Harness::with_defaults`.
+ * @returns {{ model: string, effort: string | null }}
+ */
+export function applyHarnessDefaults(launcher, harness, model, defaults = {}) {
+  const words = String(launcher).split(/\s+/);
+  const has = (...flags) => words.some((w) => flags.some((f) => w === f || w.startsWith(`${f}=`)));
+  const setsModel = has('--model') || (harness === 'codex' && has('-m'));
+  const setsEffort = has('--effort', '--thinking') || String(launcher).includes('model_reasoning_effort');
+  return {
+    model: model || (!setsModel && defaults.model) || '',
+    effort: (!setsEffort && defaults.effort) || null,
+  };
+}
+
 /** Build the shell line typed into the new pane (`promptFile`: read the prompt from there). */
-export function launchCommand({ launcher = 'claude', harness = 'claude', name, prompt, model, promptFile }) {
+export function launchCommand({ launcher = 'claude', harness = 'claude', name, prompt, model, effort = null, promptFile }) {
   // No name → plain `claude`: it derives `<cwd>-9d` and the auto-namer (lib/autoname.mjs)
   // replaces that with a task-shaped name, tmux session included, once the session is idle.
   // Codex has no name flag: its tmux session carries the name, and Codex titles the thread.
   const parts = [launcher];
   if (model) parts.push('--model', shq(model));
+  if (effort && EFFORT_RE.test(effort)) parts.push(...effortArgs(harness, effort));
   if (name && harness !== 'codex') parts.push('-n', shq(name));
   if (promptFile) parts.push(`"$(cat ${shq(promptFile)})"`);
   else if (prompt && prompt.trim()) parts.push(shqTyped(prompt));
@@ -177,6 +205,9 @@ export function createSpawner({
   // (name, launcher) → the launcher of a session acting as GitHub identity `name`.
   ghIdentityLauncher = null,
   ghIdentities = [],
+  // () → { <harness>: { model, effort } }: the defaults a spawn uses when it picks none (live:
+  // Settings → Agents updates them without a restart).
+  harnessDefaults = () => ({}),
   sleep,
   promptDir = path.join(os.homedir(), '.claude', 'fleet-prompts'),
 }) {
@@ -236,7 +267,8 @@ export function createSpawner({
     await run(tmux, ['new-session', '-d', '-s', name, '-c', dir, '-e', 'DISABLE_AUTO_UPDATE=true'], { timeout: 8000 });
     let base = launchers[harness] || (harness === 'claude' ? launcher : harness);
     if (ghIdentity) base = await ghIdentityLauncher(ghIdentity, base);
-    const launch = { launcher: base, harness, name: nameGiven ? name : null, prompt, model };
+    const picked = applyHarnessDefaults(base, harness, model, harnessDefaults()?.[harness] ?? {});
+    const launch = { launcher: base, harness, name: nameGiven ? name : null, prompt, model: picked.model, effort: picked.effort };
     let command = launchCommand(launch);
     if (Buffer.byteLength(command) > TYPED_LINE_MAX) {
       const d = new Date();
@@ -256,7 +288,7 @@ export function createSpawner({
     if (embed) await run(tmux, ['set-option', '-p', '-t', `${name}:`, '@fleet_embed', embed], { timeout: 5000 }).catch(() => {});
     const trusted = await acceptTrustPrompt(name, { harness });
     if (!trusted) await ensureStarted(name, { harness });
-    return { name, dir, tmuxSession: name, command, trusted, model: model || null, harness, ghIdentity, embed };
+    return { name, dir, tmuxSession: name, command, trusted, model: picked.model || null, harness, ghIdentity, embed };
   }
 
   /**

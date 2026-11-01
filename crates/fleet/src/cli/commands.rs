@@ -95,14 +95,6 @@ pub(crate) fn clean_model(raw: &str) -> Result<Option<String>> {
     Ok(Some(m.to_string()))
 }
 
-/// The launcher with `--model <id>` appended when one was picked.
-pub(crate) fn with_model(launcher: &str, model: Option<&str>) -> String {
-    match model {
-        Some(m) => format!("{launcher} --model {}", crate::core::tools::shq(m)),
-        None => launcher.to_string(),
-    }
-}
-
 /// `fleet harness list`: what this host can spawn, and the models each one offers.
 /// `fleet gh-identity list`: the configured GitHub identities.
 pub fn gh_identity_list(json: bool) -> Result<()> {
@@ -727,7 +719,9 @@ pub fn spawn(prompt: Option<String>, from: Option<String>, opts: SpawnOpts) -> R
         );
     }
     let launcher = crate::core::gh_identity::wrap_current(
-        &with_model(&opts.harness.command(), model.as_deref()),
+        &opts
+            .harness
+            .with_defaults(&opts.harness.command(), model.as_deref()),
         opts.harness,
     )?;
     if crate::core::hosts::dry_run() {
@@ -773,7 +767,7 @@ fn spawn_linked(
     link: &crate::cli::slack::SpawnLink,
 ) -> Result<()> {
     let launcher = crate::core::gh_identity::wrap_current(
-        &with_model(&opts.harness.command(), model),
+        &opts.harness.with_defaults(&opts.harness.command(), model),
         opts.harness,
     )?;
     if crate::core::hosts::dry_run() {
@@ -839,7 +833,9 @@ fn spawn_from(source: &str, extra: Option<String>, mut opts: SpawnOpts) -> Resul
     ));
     let path_s = path.display().to_string();
     let launcher = crate::core::gh_identity::wrap_current(
-        &with_model(&opts.harness.command(), model.as_deref()),
+        &opts
+            .harness
+            .with_defaults(&opts.harness.command(), model.as_deref()),
         opts.harness,
     )?;
     if crate::core::hosts::dry_run() {
@@ -1015,7 +1011,9 @@ pub fn handoff(
     ));
     if crate::core::hosts::dry_run() {
         let launcher = crate::core::gh_identity::wrap_current(
-            &with_model(&opts.harness.command(), model.as_deref()),
+            &opts
+                .harness
+                .with_defaults(&opts.harness.command(), model.as_deref()),
             opts.harness,
         )?;
         let path_s = path.display().to_string();
@@ -1041,7 +1039,9 @@ pub fn handoff(
 
     let before: HashSet<String> = discovery::discover().iter().map(Session::key).collect();
     let launcher = crate::core::gh_identity::wrap_current(
-        &with_model(&opts.harness.command(), model.as_deref()),
+        &opts
+            .harness
+            .with_defaults(&opts.harness.command(), model.as_deref()),
         opts.harness,
     )?;
     let desc = backend::spawn(
@@ -1132,11 +1132,6 @@ mod tests {
         for bad in ["a b", "x';id'", "$(id)", "a;b", "`id`", &"x".repeat(101)] {
             assert!(clean_model(bad).is_err(), "{bad}");
         }
-        assert_eq!(
-            with_model("claude", Some("claude-haiku-4-5-20251001")),
-            "claude --model 'claude-haiku-4-5-20251001'"
-        );
-        assert_eq!(with_model("cc", None), "cc");
     }
 
     #[test]

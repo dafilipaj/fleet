@@ -1,9 +1,24 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { ChevronLeftIcon, KeyboardIcon, MonitorIcon, MoonIcon, SunIcon, XIcon } from 'lucide-react'
-import { useLocation } from 'wouter'
+import {
+  ActivityIcon,
+  BotIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  FolderOpenIcon,
+  GitBranchIcon,
+  InboxIcon,
+  KeyboardIcon,
+  MonitorIcon,
+  MoonIcon,
+  PaletteIcon,
+  SunIcon,
+  XIcon,
+} from 'lucide-react'
+import { useLocation, useRoute } from 'wouter'
 
 import { api } from '@/api/client'
 import type { InboxSettings } from '@/api/types'
+import { AgentsEditor } from '@/components/AgentsEditor'
 import { ReposEditor } from '@/components/ReposEditor'
 import { ScreenHeader } from '@/components/ScreenHeader'
 import { SpawnDirsEditor } from '@/components/SpawnDirsEditor'
@@ -28,28 +43,159 @@ import { cn } from '@/lib/utils'
 const segItem =
   'h-9 flex-1 gap-1.5 rounded-md px-3 text-[0.8125rem] text-muted-foreground data-[state=on]:bg-background data-[state=on]:text-foreground data-[state=on]:shadow-sm dark:data-[state=on]:bg-accent'
 
+type SectionId = 'general' | 'agents' | 'start-dirs' | 'repos' | 'inbox' | 'status'
+
+/** Settings' sub-pages, in nav order: `#/settings/<id>`. */
+const SECTIONS: { id: SectionId; label: string; hint: string; icon: ReactNode }[] = [
+  { id: 'general', label: 'General', hint: 'Text size, theme, chat — this browser', icon: <PaletteIcon /> },
+  { id: 'agents', label: 'Agents', hint: 'Default model and effort per harness', icon: <BotIcon /> },
+  { id: 'start-dirs', label: 'Start directories', hint: 'Where new sessions can start', icon: <FolderOpenIcon /> },
+  { id: 'repos', label: 'Git repos', hint: 'Repos fleet keeps in sync', icon: <GitBranchIcon /> },
+  { id: 'inbox', label: 'Inbox', hint: 'When Slack and email are scanned', icon: <InboxIcon /> },
+  { id: 'status', label: 'Status', hint: 'Hosts and diagnostics', icon: <ActivityIcon /> },
+]
+
 /**
- * `#/settings`: the viewer's global preferences — text size (scales the whole app), theme
- * (colour palette), mode (light/dark), progress notes, send delay. Stored in this browser (localStorage).
- * Plus the fleet's Start directories (the New session form's list) and Git repos (`fleet repos`), stored in each host's config. `screen` = the mobile page
- * (back button, swipe back); `pane` = the desktop main pane (✕ / Esc back to `#/`).
+ * `#/settings[/<section>]`: one sub-page per section (`SECTIONS`). General is the viewer's own
+ * preferences (localStorage); Agents, Start directories, Git repos and Inbox are stored in the
+ * hosts' configs. `screen` = the mobile page: `#/settings` lists the sections, a section opens as
+ * its own page (back / swipe back to the list). `pane` = the desktop main pane: the sections in a
+ * side nav next to the open one (General by default; ✕ / Esc back to `#/`).
  */
 export function SettingsScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane' }) {
   const pane = layout === 'pane'
   const [, navigate] = useLocation()
-  const { theme, setTheme } = useTheme()
-  const desktop = useIsDesktop()
-  const { textSize, setTextSize, hideNotes, setHideNotes, sendDelay, setSendDelay } = usePrefs()
+  const [, params] = useRoute('/settings/:section')
+  const active = SECTIONS.find((s) => s.id === params?.section) ?? null
+  const current = active ?? (pane ? SECTIONS[0] : null)
 
   const back = () => {
-    if (!pane && window.history.length > 1) window.history.back()
+    if (!pane && active) navigate('/settings')
+    else if (!pane && window.history.length > 1) window.history.back()
     else navigate('/', { replace: !pane })
   }
   const screenRef = useRef<HTMLDivElement>(null)
   useSwipeBack(screenRef, back, !pane)
 
-  const content = (
+  const body = current ? (
     <div className="mx-auto w-full max-w-lg px-4 pt-2 pb-[max(1.5rem,env(safe-area-inset-bottom))] md:max-w-2xl">
+      <SectionBody id={current.id} />
+    </div>
+  ) : (
+    <SectionList />
+  )
+
+  if (pane) {
+    return (
+      <section aria-label="Settings" className="flex h-full min-w-0 flex-1 flex-col bg-background">
+        <header
+          data-tauri-drag-region="deep"
+          className="titlebar titlebar-lead flex shrink-0 items-center gap-1 border-b py-1.5 pr-2 pl-4 [--titlebar-pad:1rem]"
+        >
+          <h1 className="min-w-0 flex-1 text-[0.9375rem] leading-tight font-bold">Settings</h1>
+          <Button variant="ghost" size="icon" aria-label="Close settings" title="Close (Esc)" onClick={back} className="size-11 shrink-0 rounded-xl">
+            <XIcon className="size-5" />
+          </Button>
+        </header>
+        <div className="flex min-h-0 flex-1">
+          <nav aria-label="Settings sections" className="w-52 shrink-0 overflow-y-auto border-r p-2">
+            {SECTIONS.map((s) => (
+              <a
+                key={s.id}
+                href={`#/settings/${s.id}`}
+                aria-current={s.id === current?.id ? 'page' : undefined}
+                className={cn(
+                  'flex h-9 items-center gap-2.5 rounded-lg px-2.5 text-sm text-muted-foreground hover:bg-muted/60 hover:text-foreground [&_svg]:size-4 [&_svg]:shrink-0',
+                  s.id === current?.id && 'bg-muted font-medium text-foreground',
+                )}
+              >
+                {s.icon}
+                <span className="truncate">{s.label}</span>
+              </a>
+            ))}
+          </nav>
+          <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">{body}</div>
+        </div>
+      </section>
+    )
+  }
+
+  return (
+    <div ref={screenRef} className="flex min-h-app flex-col bg-background">
+      <ScreenHeader>
+        <div className="-ml-2 flex min-h-8 items-center gap-1">
+          <Button variant="ghost" size="icon" aria-label="Back" onClick={back} className="-my-1.5 size-11 shrink-0 rounded-xl">
+            <ChevronLeftIcon className="size-6" />
+          </Button>
+          <h1 className="text-xl font-bold tracking-tight">{active ? active.label : 'Settings'}</h1>
+        </div>
+      </ScreenHeader>
+      {body}
+    </div>
+  )
+}
+
+/** Mobile `#/settings`: one row per section. */
+function SectionList() {
+  return (
+    <nav aria-label="Settings sections" className="mx-auto w-full max-w-lg px-4 pt-2 pb-[max(1.5rem,env(safe-area-inset-bottom))]">
+      <div className="divide-y divide-border/60">
+        {SECTIONS.map((s) => (
+          <a key={s.id} href={`#/settings/${s.id}`} className="flex min-h-14 items-center gap-3 py-2 [&>svg:first-child]:size-5 [&>svg:first-child]:text-dimmer">
+            {s.icon}
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm">{s.label}</span>
+              <span className="block truncate text-xs text-dimmer">{s.hint}</span>
+            </span>
+            <ChevronRightIcon className="size-4 shrink-0 text-dimmer" />
+          </a>
+        ))}
+      </div>
+    </nav>
+  )
+}
+
+function SectionBody({ id }: { id: SectionId }) {
+  switch (id) {
+    case 'general':
+      return <GeneralSettings />
+    case 'agents':
+      return (
+        <Section title="Default model & effort">
+          <AgentsEditor />
+        </Section>
+      )
+    case 'start-dirs':
+      return (
+        <Section title="Start directories">
+          <SpawnDirsEditor />
+        </Section>
+      )
+    case 'repos':
+      return (
+        <Section title="Git repos">
+          <ReposEditor />
+        </Section>
+      )
+    case 'inbox':
+      return <InboxSchedule />
+    case 'status':
+      return (
+        <>
+          <FleetStatus />
+          <ViewportInfo />
+        </>
+      )
+  }
+}
+
+/** Settings → General: this viewer's preferences, stored in this browser (localStorage). */
+function GeneralSettings() {
+  const { theme, setTheme } = useTheme()
+  const desktop = useIsDesktop()
+  const { textSize, setTextSize, hideNotes, setHideNotes, sendDelay, setSendDelay } = usePrefs()
+  return (
+    <>
       <Section title="Appearance">
         <Stacked label="Text size" hint="Scales the whole app">
           <ToggleGroup
@@ -135,47 +281,7 @@ export function SettingsScreen({ layout = 'screen' }: { layout?: 'screen' | 'pan
       ) : null}
 
       <p className="pt-4 text-xs text-dimmer">Saved in this browser; every session uses them.</p>
-      <Section title="Start directories">
-        <SpawnDirsEditor />
-      </Section>
-      <Section title="Git repos">
-        <ReposEditor />
-      </Section>
-      <InboxSchedule />
-      <FleetStatus />
-      <ViewportInfo />
-    </div>
-  )
-
-  if (pane) {
-    return (
-      <section aria-label="Settings" className="flex h-full min-w-0 flex-1 flex-col bg-background">
-        <header
-          data-tauri-drag-region="deep"
-          className="titlebar titlebar-lead flex shrink-0 items-center gap-1 border-b py-1.5 pr-2 pl-4 [--titlebar-pad:1rem]"
-        >
-          <h1 className="min-w-0 flex-1 text-[0.9375rem] leading-tight font-bold">Settings</h1>
-          <Button variant="ghost" size="icon" aria-label="Close settings" title="Close (Esc)" onClick={back} className="size-11 shrink-0 rounded-xl">
-            <XIcon className="size-5" />
-          </Button>
-        </header>
-        <div className="min-h-0 flex-1 overflow-y-auto">{content}</div>
-      </section>
-    )
-  }
-
-  return (
-    <div ref={screenRef} className="flex min-h-app flex-col bg-background">
-      <ScreenHeader>
-        <div className="-ml-2 flex min-h-8 items-center gap-1">
-          <Button variant="ghost" size="icon" aria-label="Back" onClick={back} className="-my-1.5 size-11 shrink-0 rounded-xl">
-            <ChevronLeftIcon className="size-6" />
-          </Button>
-          <h1 className="text-xl font-bold tracking-tight">Settings</h1>
-        </div>
-      </ScreenHeader>
-      {content}
-    </div>
+    </>
   )
 }
 
@@ -231,7 +337,13 @@ function InboxSchedule() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const cur = data?.enabled ? data.settings : undefined
-  if (!cur) return null
+  if (!cur) {
+    return (
+      <Section title="Inbox">
+        <p className="py-3 text-sm text-dimmer">{data ? 'The inbox is not set up on this fleet.' : 'Loading…'}</p>
+      </Section>
+    )
+  }
   const save = async (patch: Partial<InboxSettings>) => {
     setSaving(true)
     setError(null)

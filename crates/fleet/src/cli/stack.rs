@@ -1017,7 +1017,9 @@ pub fn spawn(a: SpawnArgs) -> Result<()> {
     ));
     let pf = prompt_file.display().to_string();
     let launcher = crate::core::gh_identity::wrap_current(
-        &commands::with_model(&opts.harness.command(), model.as_deref()),
+        &opts
+            .harness
+            .with_defaults(&opts.harness.command(), model.as_deref()),
         opts.harness,
     )?;
     if hosts::dry_run() {

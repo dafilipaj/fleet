@@ -276,6 +276,18 @@ impl Config {
             .map(str::to_string)
     }
 
+    /// `harnesses.<id>.<key>` (`model`, `effort`) when it is a non-blank string: the default a
+    /// spawn uses when it picks none (Settings → Agents writes them to every host).
+    pub fn harness_default(&self, id: &str, key: &str) -> Option<String> {
+        self.harnesses
+            .get(id)?
+            .get(key)?
+            .as_str()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    }
+
     /// Target for tmux-session commands when no `--host` is given.
     pub fn default_host(&self) -> String {
         self.default_host

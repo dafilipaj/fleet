@@ -35,7 +35,7 @@ import { UsageScreen } from '@/screens/UsageScreen'
 
 /**
  * Hash routing: `#/` (list), `#/s/<host>/<session_id>` (detail),
- * plus `#/embed?host=…&dir=…` (one directory's sessions, for another app to frame: its own tree, below), `#/settings` (this viewer's preferences), `#/usage` (the subscription limits), `#/inbox` (everything waiting on you), `#/bots` (agent sessions from a recipe; `#/jobs` is its old name), `#/operator` (talk to the fleet by voice), `#/prs` (the GitHub PRs that need you), `#/tasks` (your open Productive tasks), `#/memos[/<id>]` (voice memos) and `#/notes[/<host>[/<path>]]` (the notes explorer) and `#/review/<host>/<session_id>` (the diff reviewer).
+ * plus `#/embed?host=…&dir=…` (one directory's sessions, for another app to frame: its own tree, below), `#/settings[/<section>]` (General, Agents, Start directories, Git repos, Inbox, Status), `#/usage` (the subscription limits), `#/inbox` (everything waiting on you), `#/bots` (agent sessions from a recipe; `#/jobs` is its old name), `#/operator` (talk to the fleet by voice), `#/prs` (the GitHub PRs that need you), `#/tasks` (your open Productive tasks), `#/memos[/<id>]` (voice memos) and `#/notes[/<host>[/<path>]]` (the notes explorer) and `#/review/<host>/<session_id>` (the diff reviewer).
  * No server-side SPA fallback needed; the PWA start_url is `/#/`. Desktop and mobile use the
  * same routes, so links work across both.
  */
@@ -72,7 +72,7 @@ function FleetApp() {
                   <Route path="/">
                     <ListScreen />
                   </Route>
-                  <Route path="/settings">
+                  <Route path="/settings/:section?">
                     <SettingsScreen />
                   </Route>
                   <Route path="/usage">

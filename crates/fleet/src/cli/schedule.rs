@@ -7,7 +7,7 @@ use chrono::{DateTime, Local, TimeZone};
 use colored::Colorize;
 use serde_json::json;
 
-use crate::cli::commands::{clean_model, clean_name, with_model};
+use crate::cli::commands::{clean_model, clean_name};
 use crate::cli::jobs::when;
 use crate::cli::render::{column, fit, home_rel};
 use crate::core::backend::{self, Prompt};
@@ -399,7 +399,8 @@ fn fire(e: &Entry, task: Option<&Task>) -> Result<Option<String>> {
     };
     let model = e.model.as_deref().map(clean_model).transpose()?.flatten();
     let launcher = crate::core::gh_identity::wrap(
-        &with_model(&e.harness.command(), model.as_deref()),
+        &e.harness
+            .with_defaults(&e.harness.command(), model.as_deref()),
         e.harness,
         e.gh_identity.as_deref(),
     )?;

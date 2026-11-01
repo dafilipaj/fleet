@@ -115,7 +115,7 @@ export function DesktopShell() {
   const { setTheme, setPalette } = useTheme()
   const [location, navigate] = useLocation()
   const [match, params] = useRoute('/s/:host/:id')
-  const [settingsOpen] = useRoute('/settings')
+  const [settingsOpen] = useRoute('/settings/:section?')
   const [usageOpen] = useRoute('/usage')
   const [jobsOpen] = useRoute(/^\/(?:bots|jobs)$/)
   const [inboxOpen] = useRoute('/inbox')
