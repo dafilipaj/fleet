@@ -88,7 +88,8 @@ Launch commands: Claude's is `FLEET_CMD` / config `claude`; the others' are conf
 ```
 
 Models: Claude's built-in list; Codex's from its `models_cache.json` (listed ones, its order);
-pi's from `pi --list-models` (ids `provider/model`). `id: ""` is the harness's own default.
+pi's from `pi --list-models` (ids `provider/model`), narrowed to the `enabledModels` patterns of
+pi's `settings.json` when set. `id: ""` is the harness's own default.
 Efforts: Claude `low…max`; Codex the levels its model cache lists; pi `off…max`.
 
 **Default model and effort.** Config `harnesses.<id>.model` / `harnesses.<id>.effort` (Settings →

@@ -332,7 +332,9 @@ pub fn codex_efforts(home: &Path) -> Vec<String> {
 }
 
 /// pi's picker: `pi --list-models` (the providers it has credentials for) after the
-/// default from its `settings.json`. Ids are `provider/model`.
+/// default from its `settings.json`, narrowed to its `enabledModels` patterns when set
+/// (pi lists every model of a provider, also ones its login cannot use). Ids are
+/// `provider/model`.
 pub fn pi_models(home: &Path, launcher: &str) -> Vec<ModelOption> {
     let settings: Value = std::fs::read_to_string(home.join("settings.json"))
         .ok()
@@ -342,6 +344,16 @@ pub fn pi_models(home: &Path, launcher: &str) -> Vec<ModelOption> {
         .get("defaultModel")
         .and_then(Value::as_str)
         .map(str::to_string);
+    let enabled: Vec<String> = settings
+        .get("enabledModels")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
     let mut out = vec![opt("", &default_label(default.as_deref()))];
     let bin = launcher.split_whitespace().next().unwrap_or("pi");
     let bin = crate::core::tools::resolve_binary(bin, None);
@@ -352,7 +364,11 @@ pub fn pi_models(home: &Path, launcher: &str) -> Vec<ModelOption> {
             .env("PATH", crate::core::tools::search_path()),
         Duration::from_secs(15),
     ) {
-        out.extend(parse_pi_models(&text));
+        out.extend(
+            parse_pi_models(&text)
+                .into_iter()
+                .filter(|m| pi_model_enabled(&m.id, &enabled)),
+        );
     }
     out
 }
@@ -364,22 +380,73 @@ fn default_label(model: Option<&str>) -> String {
     }
 }
 
-/// `provider  model  context …` table rows → `provider/model`.
+/// `provider  model  context …` table rows → `provider/model`. Only rows under the
+/// header count: without a login pi prints a "No models available …" message instead.
 fn parse_pi_models(text: &str) -> Vec<ModelOption> {
-    text.lines()
+    let mut lines = text.lines();
+    if !lines.any(|l| {
+        let mut cols = l.split_whitespace();
+        cols.next() == Some("provider") && cols.next() == Some("model")
+    }) {
+        return Vec::new();
+    }
+    lines
         .filter_map(|l| {
             let mut cols = l.split_whitespace();
             let provider = cols.next()?;
             let model = cols.next()?;
-            if provider == "provider" {
-                return None;
-            }
             Some(opt(
                 &format!("{provider}/{model}"),
                 &format!("{model} ({provider})"),
             ))
         })
         .collect()
+}
+
+/// pi's `enabledModels` semantics, enough for the picker: a pattern matches
+/// `provider/model` or the bare model, case-insensitively, `*` and `?` as globs, a
+/// `:<thinking>` suffix ignored. No patterns: everything is enabled.
+fn pi_model_enabled(id: &str, patterns: &[String]) -> bool {
+    if patterns.is_empty() {
+        return true;
+    }
+    let id = id.to_lowercase();
+    let bare = id.split_once('/').map_or(id.as_str(), |(_, m)| m);
+    patterns.iter().any(|p| {
+        let p = p.to_lowercase();
+        let p = match p.rsplit_once(':') {
+            Some((base, level))
+                if ["off", "minimal", "low", "medium", "high", "xhigh", "max"].contains(&level) =>
+            {
+                base.to_string()
+            }
+            _ => p,
+        };
+        glob_match(&p, &id) || glob_match(&p, bare)
+    })
+}
+
+/// `*` (any run) and `?` (one char) globbing.
+fn glob_match(pat: &str, s: &str) -> bool {
+    let (p, s): (Vec<char>, Vec<char>) = (pat.chars().collect(), s.chars().collect());
+    let (mut pi, mut si, mut star, mut mark) = (0, 0, None, 0);
+    while si < s.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == s[si]) {
+            pi += 1;
+            si += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = Some(pi);
+            mark = si;
+            pi += 1;
+        } else if let Some(st) = star {
+            pi = st + 1;
+            mark += 1;
+            si = mark;
+        } else {
+            return false;
+        }
+    }
+    p[pi..].iter().all(|&c| c == '*')
 }
 
 /// stdout of `cmd`, or `None` when it fails or outlives `timeout` (then it is killed).
@@ -1451,5 +1518,24 @@ mod tests {
         assert_eq!(m.len(), 2);
         assert_eq!(m[0].id, "openai/gpt-5.5");
         assert_eq!(m[1].label, "claude-x (anthropic)");
+    }
+
+    #[test]
+    fn pi_models_without_a_login_are_empty() {
+        let t = "No models available. Use /login to log into a provider. See:\n  /x/docs/providers.md\n";
+        assert!(parse_pi_models(t).is_empty());
+    }
+
+    #[test]
+    fn pi_enabled_models_narrow_the_picker() {
+        let pats = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(pi_model_enabled("openai/gpt-4o", &[]));
+        let p = pats(&["openai/gpt-6*", "gpt-5.6-sol:high", "Anthropic/claude-?"]);
+        assert!(pi_model_enabled("openai/gpt-6.1-sol", &p));
+        assert!(pi_model_enabled("openai/gpt-5.6-sol", &p));
+        assert!(pi_model_enabled("anthropic/claude-x", &p));
+        assert!(!pi_model_enabled("openai/gpt-4o", &p));
+        assert!(!pi_model_enabled("openai/gpt-5.6-sol-pro", &p));
+        assert!(!pi_model_enabled("other/gpt-6", &pats(&["openai/gpt-6"])));
     }
 }
