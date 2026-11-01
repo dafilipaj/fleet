@@ -26,7 +26,7 @@ Open `http://<host>:<port>/` on your phone and "Add to Home Screen". Health: `/a
 
 Reads the shared fleet config (`$FLEET_CONFIG` or `~/.config/fleet/config.json`, written by
 `fleet init`). Relevant keys: `self`, `hosts.<name>.web` (peers), `web.port`, `web.bind`,
-`web.ui` (a path), `web.editor`, `web.quickReplies`, `web.models`, `web.autoName`, `web.grouping`, `web.briefs`, `web.stacks`, `restore.onBoot`, `grouping.host`, `stacks.model` (reported only), `tmux`, `fleetBin`, `claude` / `harnesses.<codex|pi>.command` (how each agent launches in a spawn), `harnesses.<claude|codex|pi>.model` / `.effort` (the default a spawn starts with; Settings → Agents), `spawnDirs` (spawn only accepts dirs inside these; editable in Settings → Start directories, which writes it through `fleet config set`), `repos` (Settings → Git repos: `fleet repos` roots, intervals and the sync timer, per host). Example:
+`web.ui` (a path), `web.editor`, `web.quickReplies`, `web.models`, `web.autoName`, `web.grouping`, `web.briefs`, `web.stacks`, `restore.onBoot`, `grouping.host`, `stacks.model` (reported only), `tmux`, `fleetBin`, `claude` / `harnesses.<codex|pi>.command` (how each agent launches in a spawn), `harnesses.<claude|codex|pi>.model` / `.effort` (the default a spawn starts with; Settings → Models), `spawnDirs` (spawn only accepts dirs inside these; editable in Settings → Start directories, which writes it through `fleet config set`), `repos` (Settings → Git repos: `fleet repos` roots, intervals and the sync timer, per host). Example:
 [`config.example.json`](./config.example.json). Without a config it runs as a single local host
 on 127.0.0.1.
 

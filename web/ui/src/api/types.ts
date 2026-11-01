@@ -128,7 +128,7 @@ export interface HarnessInfo {
   models: ModelOption[]
   /** Reasoning-effort levels it takes, lowest first (older servers: absent). */
   efforts?: string[]
-  /** `harnesses.<id>.model` / `.effort`: what a spawn uses when it picks none (Settings → Agents). */
+  /** `harnesses.<id>.model` / `.effort`: what a spawn uses when it picks none (Settings → Models). */
   defaultModel?: string | null
   defaultEffort?: string | null
 }

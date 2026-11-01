@@ -277,7 +277,7 @@ impl Config {
     }
 
     /// `harnesses.<id>.<key>` (`model`, `effort`) when it is a non-blank string: the default a
-    /// spawn uses when it picks none (Settings → Agents writes them to every host).
+    /// spawn uses when it picks none (Settings → Models writes them to every host).
     pub fn harness_default(&self, id: &str, key: &str) -> Option<String> {
         self.harnesses
             .get(id)?

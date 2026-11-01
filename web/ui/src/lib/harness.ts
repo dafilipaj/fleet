@@ -33,7 +33,7 @@ export function offeredHarnesses(rows: HarnessInfo[] | null | undefined, claudeM
   return out.sort((a, b) => Number(b.id === 'claude') - Number(a.id === 'claude'))
 }
 
-/** "Opus 5.5 · high": the host's fleet default for a harness (Settings → Agents), or null when none. */
+/** "Opus 5.5 · high": the host's fleet default for a harness (Settings → Models), or null when none. */
 export function fleetDefaultLabel(h: Pick<HarnessInfo, 'defaultModel' | 'defaultEffort'>, models: ModelOption[]): string | null {
   const model = h.defaultModel ? (models.find((m) => m.id === h.defaultModel)?.label ?? h.defaultModel) : null
   const parts = [model, h.defaultEffort].filter(Boolean)

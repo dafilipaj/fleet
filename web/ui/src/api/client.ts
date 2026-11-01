@@ -210,7 +210,7 @@ export const api = {
   /** The host's Start directories (config `spawnDirs`) and whether its own paths exist. */
   harnesses: (host: string, o: Opts = {}) => request<HarnessesResponse>(`${hostPath(host)}/harnesses`, o),
   spawnDirs: (host: string, o: Opts = {}) => request<SpawnDirsResponse>(`${hostPath(host)}/spawn-dirs`, o),
-  /** Settings → Agents: the default model / effort a spawn of `harness` uses on `host` (null clears). */
+  /** Settings → Models: the default model / effort a spawn of `harness` uses on `host` (null clears). */
   saveHarnessDefaults: (host: string, body: HarnessDefaults, o: Opts = {}) =>
     request<HarnessDefaults>(`${hostPath(host)}/harness-defaults`, { ...o, method: 'PUT', body }),
   /** Replace the host's list (400 `SpawnDirsError` when invalid); `dryRun` validates only. */

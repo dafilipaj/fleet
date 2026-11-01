@@ -7,7 +7,7 @@ import type { GhIdentity, HarnessesResponse } from '@/api/types'
 // changes when a harness is installed, and `pi --list-models` behind it is slow.
 const cache = new Map<string, Promise<HarnessesResponse | null>>()
 
-/** Forget the cached answers (Settings → Agents changed a default), so the next read asks again. */
+/** Forget the cached answers (Settings → Models changed a default), so the next read asks again. */
 export function invalidateHarnesses() {
   cache.clear()
 }

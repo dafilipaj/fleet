@@ -18,7 +18,7 @@ import { useLocation, useRoute } from 'wouter'
 
 import { api } from '@/api/client'
 import type { InboxSettings } from '@/api/types'
-import { AgentsEditor } from '@/components/AgentsEditor'
+import { ModelsEditor } from '@/components/ModelsEditor'
 import { ReposEditor } from '@/components/ReposEditor'
 import { ScreenHeader } from '@/components/ScreenHeader'
 import { SpawnDirsEditor } from '@/components/SpawnDirsEditor'
@@ -43,12 +43,12 @@ import { cn } from '@/lib/utils'
 const segItem =
   'h-9 flex-1 gap-1.5 rounded-md px-3 text-[0.8125rem] text-muted-foreground data-[state=on]:bg-background data-[state=on]:text-foreground data-[state=on]:shadow-sm dark:data-[state=on]:bg-accent'
 
-type SectionId = 'general' | 'agents' | 'start-dirs' | 'repos' | 'inbox' | 'status'
+type SectionId = 'general' | 'models' | 'start-dirs' | 'repos' | 'inbox' | 'status'
 
 /** Settings' sub-pages, in nav order: `#/settings/<id>`. */
 const SECTIONS: { id: SectionId; label: string; hint: string; icon: ReactNode }[] = [
   { id: 'general', label: 'General', hint: 'Text size, theme, chat — this browser', icon: <PaletteIcon /> },
-  { id: 'agents', label: 'Agents', hint: 'Default model and effort per harness', icon: <BotIcon /> },
+  { id: 'models', label: 'Models', hint: 'Default model and effort per harness', icon: <BotIcon /> },
   { id: 'start-dirs', label: 'Start directories', hint: 'Where new sessions can start', icon: <FolderOpenIcon /> },
   { id: 'repos', label: 'Git repos', hint: 'Repos fleet keeps in sync', icon: <GitBranchIcon /> },
   { id: 'inbox', label: 'Inbox', hint: 'When Slack and email are scanned', icon: <InboxIcon /> },
@@ -57,7 +57,7 @@ const SECTIONS: { id: SectionId; label: string; hint: string; icon: ReactNode }[
 
 /**
  * `#/settings[/<section>]`: one sub-page per section (`SECTIONS`). General is the viewer's own
- * preferences (localStorage); Agents, Start directories, Git repos and Inbox are stored in the
+ * preferences (localStorage); Models, Start directories, Git repos and Inbox are stored in the
  * hosts' configs. `screen` = the mobile page: `#/settings` lists the sections, a section opens as
  * its own page (back / swipe back to the list). `pane` = the desktop main pane: the sections in a
  * side nav next to the open one (General by default; ✕ / Esc back to `#/`).
@@ -159,10 +159,10 @@ function SectionBody({ id }: { id: SectionId }) {
   switch (id) {
     case 'general':
       return <GeneralSettings />
-    case 'agents':
+    case 'models':
       return (
         <Section title="Default model & effort">
-          <AgentsEditor />
+          <ModelsEditor />
         </Section>
       )
     case 'start-dirs':

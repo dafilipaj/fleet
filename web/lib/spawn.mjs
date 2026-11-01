@@ -64,7 +64,7 @@ export function effortArgs(harness, level) {
 
 /**
  * What a spawn adds to `launcher` from the host's defaults (`harnesses.<id>.model` / `.effort`,
- * Settings → Agents): the picked model, else the default one, and the default effort — unless the
+ * Settings → Models): the picked model, else the default one, and the default effort — unless the
  * launcher already sets one (a wrapper with flags keeps its own). Mirrors `Harness::with_defaults`.
  * @returns {{ model: string, effort: string | null }}
  */
@@ -206,7 +206,7 @@ export function createSpawner({
   ghIdentityLauncher = null,
   ghIdentities = [],
   // () → { <harness>: { model, effort } }: the defaults a spawn uses when it picks none (live:
-  // Settings → Agents updates them without a restart).
+  // Settings → Models updates them without a restart).
   harnessDefaults = () => ({}),
   sleep,
   promptDir = path.join(os.homedir(), '.claude', 'fleet-prompts'),

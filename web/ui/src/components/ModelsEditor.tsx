@@ -16,12 +16,12 @@ const select =
   'h-9 w-full min-w-0 rounded-lg border bg-card px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-60'
 
 /**
- * Settings → Agents: the default model and reasoning effort each harness (Claude Code, Codex,
+ * Settings → Models: the default model and reasoning effort each harness (Claude Code, Codex,
  * pi) starts with when a spawn picks none — web, CLI, bots and scheduled sessions alike. Stored
  * per host (`harnesses.<id>.model` / `.effort`); a change is written to every reachable host so
  * the fleet stays in step. "Harness default" clears it: the harness's own config decides.
  */
-export function AgentsEditor() {
+export function ModelsEditor() {
   const { fleet } = useFleet()
   const { models: claudeModels } = useSettings()
   const hostsKey = (fleet?.hosts ?? []).map((h) => h.name).join('\n')

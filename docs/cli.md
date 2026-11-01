@@ -92,7 +92,7 @@ pi's from `pi --list-models` (ids `provider/model`). `id: ""` is the harness's o
 Efforts: Claude `low…max`; Codex the levels its model cache lists; pi `off…max`.
 
 **Default model and effort.** Config `harnesses.<id>.model` / `harnesses.<id>.effort` (Settings →
-Agents in the web writes them to every host) are what a spawn starts with when it picks no model:
+Models in the web writes them to every host) are what a spawn starts with when it picks no model:
 `spawn`, the web, bots, scheduled sessions and stack spawns alike. A picked model wins over the
 default one; the effort goes in as Claude `--effort <l>`, Codex `-c model_reasoning_effort=<l>`, pi
 `--thinking <l>`. A launcher that already sets one (a bot's own `command`, a wrapper with flags)
