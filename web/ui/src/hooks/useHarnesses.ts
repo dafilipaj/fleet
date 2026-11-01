@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 
 import { api } from '@/api/client'
-import type { GhIdentity, HarnessesResponse } from '@/api/types'
+import type { HarnessesResponse } from '@/api/types'
 
 // One answer per host per page load (the server caches its own for 10 minutes): the list only
 // changes when a harness is installed, and `pi --list-models` behind it is slow.
@@ -28,7 +28,16 @@ function load(host: string): Promise<HarnessesResponse | null> {
   return p
 }
 
-function useHarnessesResponse(host: string | null | undefined): HarnessesResponse | null {
+/** Ask every host up front (the New session form), so switching hosts shows its answer at once. */
+export function prefetchHarnesses(hosts: string[]) {
+  for (const h of hosts) if (h) void load(h)
+}
+
+/**
+ * What `host` can spawn (GET /api/hosts/:host/harnesses): `harnesses` null when unknown (an older
+ * server, an unreachable host); `loading` until its answer is in.
+ */
+export function useHarnesses(host: string | null | undefined): { harnesses: HarnessesResponse['harnesses'] | null; loading: boolean } {
   const [state, setState] = useState<{ host: string; res: HarnessesResponse | null } | null>(null)
   useEffect(() => {
     if (!host) return
@@ -40,15 +49,6 @@ function useHarnessesResponse(host: string | null | undefined): HarnessesRespons
       live = false
     }
   }, [host])
-  return state && state.host === host ? state.res : null
-}
-
-/** What `host` can spawn (GET /api/hosts/:host/harnesses); null while loading or unknown. */
-export function useHarnesses(host: string | null | undefined) {
-  return useHarnessesResponse(host)?.harnesses ?? null
-}
-
-/** The GitHub identities a session spawned on `host` can act as; [] while loading or none. */
-export function useGhIdentities(host: string | null | undefined): GhIdentity[] {
-  return useHarnessesResponse(host)?.ghIdentities ?? []
+  const here = state && state.host === host ? state : null
+  return { harnesses: here?.res?.harnesses ?? null, loading: !!host && !here }
 }

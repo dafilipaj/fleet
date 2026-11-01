@@ -14,11 +14,12 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Drawer, DrawerContent, DrawerDescription, DrawerHeader, DrawerTitle } from '@/components/ui/drawer'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useAttach, useFileDrop } from '@/hooks/useAttach'
 import { useFleet } from '@/hooks/useFleet'
-import { useGhIdentities, useHarnesses } from '@/hooks/useHarnesses'
+import { prefetchHarnesses, useHarnesses } from '@/hooks/useHarnesses'
 import { useSettings } from '@/hooks/useSettings'
 import { refreshSlack, SLACK_DURATIONS, toSlackMinutes, useSlack } from '@/hooks/useSlack'
 import { useVoice } from '@/hooks/useVoice'
@@ -39,8 +40,6 @@ import { appendTranscript, formatElapsed } from '@/lib/voice'
 const HOST_KEY = 'fleet.spawnHost'
 const dirKey = (host: string) => `fleet.spawnDirLabel.${host}`
 const HARNESS_KEY = 'fleet.spawnHarness'
-// The "GitHub as" choice for the user's own identity (no identity name can contain a space).
-const ME_IDENTITY = 'me (you)'
 // "New session from here": the last mode picked (Hand off / Sibling).
 const FROM_MODE_KEY = 'fleet.spawnFromMode'
 // Past this many models a harness's picker is a dropdown, not chips (pi lists dozens).
@@ -213,18 +212,18 @@ function NewSessionForm({
   const dir = dirs.find((d) => d.label === rememberedLabel) ?? dirs[0] ?? null
 
   const { models: claudeModels, voice: voiceEnabled } = useSettings()
-  const offered = offeredHarnesses(useHarnesses(host), claudeModels)
+  // Every host's harnesses are asked for when the form opens; until this host's answer is in, the
+  // Agent and Model rows show placeholders of the same height (the form never changes height).
+  const hostNames = hosts.map((h) => h.name).join(' ')
+  useEffect(() => prefetchHarnesses(hostNames.split(' ')), [hostNames])
+  const { harnesses: hostHarnesses, loading: harnessesLoading } = useHarnesses(host)
+  const offered = offeredHarnesses(hostHarnesses, claudeModels)
   const [harnessChoice, setHarnessChoice] = useState<string | null>(() => storage.get(HARNESS_KEY))
   const harness = pickHarness(offered, harnessChoice)
   const who = harnessLabel(harness)
   const models = offered.find((h) => h.id === harness)?.models ?? claudeModels
   const [modelChoices, setModelChoices] = useState<Record<string, string | null>>({})
   const model = pickModel(models, modelChoices[harness] ?? storage.get(modelKey(harness)))
-  // GitHub identity (a GitHub App the session acts as instead of you): chosen per spawn, never
-  // remembered — a forgotten choice must not start the next session as a bot. Claude only.
-  const ghIdentities = useGhIdentities(host)
-  const [ghIdentityChoice, setGhIdentityChoice] = useState('')
-  const ghIdentity = harness === 'claude' && ghIdentities.some((i) => i.name === ghIdentityChoice) ? ghIdentityChoice : ''
   const [prompt, setPrompt] = useState(() => prefill?.prompt ?? (sibling ? '' : loadDraft()))
   // Keep the draft on every change (attachments typed in included); a prefill / sibling is never a draft.
   const draftable = !prefill && !sibling
@@ -233,8 +232,8 @@ function NewSessionForm({
   }, [draftable, prompt])
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  // Start linked to Slack: offered on the bridge's host (`slack.host`) only. The prompt goes in
-  // with the link's intro, so the session never works on it before it knows it is in Slack.
+  // Start linked to Slack (any host: the bridge on `slack.host` reaches the others). The prompt goes
+  // in with the link's intro, so the session never works on it before it knows it is in Slack.
   const slack = useSlack()
   const [slackUrl, setSlackUrl] = useState('')
   const [slackMinutes, setSlackMinutes] = useState<SlackMinutes>(240)
@@ -297,7 +296,7 @@ function NewSessionForm({
   }
 
   // ⌘/Ctrl+Enter submits from any field (the prompt included; plain Enter there stays a newline).
-  const canStart = !busy && (sibling ? siblingSameHost || !!dir : !!dir) && progress == null && voice.state === 'idle'
+  const canStart = !busy && !harnessesLoading && (sibling ? siblingSameHost || !!dir : !!dir) && progress == null && voice.state === 'idle'
 
   const startSibling = async (sib: SiblingTarget) => {
     setBusy(true)
@@ -308,7 +307,6 @@ function NewSessionForm({
         prompt: sent.trim() ? sent : undefined,
         model: model || undefined,
         harness: harness === 'claude' ? undefined : harness,
-        ghIdentity: ghIdentity || undefined,
         // Another host than the source's: say where, and in which of its directories.
         ...(siblingSameHost ? {} : { host, dir: dir?.path }),
       }
@@ -355,7 +353,6 @@ function NewSessionForm({
         prompt: sent.trim() ? sent : undefined,
         model: model || undefined,
         harness: harness === 'claude' ? undefined : harness,
-        ghIdentity: ghIdentity || undefined,
         embed: prefill?.embed || undefined,
         ...(linkTo ? { slack: { url: linkTo, minutes: slackMinutes, mode: slackMode } } : {}),
       })
@@ -392,7 +389,6 @@ function NewSessionForm({
         prompt: sent.trim() ? sent : undefined,
         model: model || undefined,
         harness: harness === 'claude' ? undefined : harness,
-        ghIdentity: ghIdentity || undefined,
       })
       clearDraftIf(sent)
       onDone()
@@ -403,7 +399,8 @@ function NewSessionForm({
     }
   }
 
-  const slackOffered = !!slack?.enabled && slack.host === host && !laterAt && !prefill?.embed
+  // Shown until the bridge says it is off (`null` = not asked yet), so the row does not pop in.
+  const slackOffered = slack?.enabled !== false && !laterAt && !prefill?.embed
   const slackField = slackOffered ? (
     <Field label="Slack" hint={slackUrl.trim() ? 'starts linked: the prompt goes in with the link' : 'optional'}>
       <Input
@@ -482,9 +479,21 @@ function NewSessionForm({
     </Field>
   )
 
-  const harnessField =
-    offered.length > 1 ? (
-      <Field label="Agent">
+  const chipClass =
+    'h-10 shrink-0 rounded-full border border-border bg-card px-4 text-sm data-[state=on]:border-primary/50 data-[state=on]:bg-accent'
+  const loadingChips = (widths: string[], label: string) => (
+    <div className="flex gap-2" aria-busy="true" aria-label={label}>
+      {widths.map((w, i) => (
+        <Skeleton key={i} className={cn('h-10 rounded-full', w)} />
+      ))}
+    </div>
+  )
+  // Always one row, also with a single harness: switching hosts never moves the fields below.
+  const harnessField = (
+    <Field label="Agent">
+      {harnessesLoading ? (
+        loadingChips(['w-20', 'w-20', 'w-14'], 'Loading agents')
+      ) : (
         <ToggleGroup
           type="single"
           value={harness}
@@ -493,79 +502,48 @@ function NewSessionForm({
           className="no-scrollbar w-full justify-start overflow-x-auto"
         >
           {offered.map((h) => (
-            <ToggleGroupItem
-              key={h.id}
-              value={h.id}
-              title={h.command}
-              className="h-10 shrink-0 rounded-full border border-border bg-card px-4 text-sm data-[state=on]:border-primary/50 data-[state=on]:bg-accent"
-            >
+            <ToggleGroupItem key={h.id} value={h.id} title={h.command} className={chipClass}>
               {h.label}
             </ToggleGroupItem>
           ))}
         </ToggleGroup>
-      </Field>
-    ) : null
-  const ghIdentityField =
-    harness === 'claude' && ghIdentities.length > 0 ? (
-      <Field label="GitHub as">
-        <ToggleGroup
-          type="single"
-          value={ghIdentity || ME_IDENTITY}
-          onValueChange={(v) => v && setGhIdentityChoice(v === ME_IDENTITY ? '' : v)}
-          aria-label="GitHub identity"
-          className="no-scrollbar w-full justify-start overflow-x-auto"
-        >
-          {[{ name: ME_IDENTITY, login: 'You' }, ...ghIdentities].map((i) => (
-            <ToggleGroupItem
-              key={i.name}
-              value={i.name}
-              title={i.name === ME_IDENTITY ? 'Acts on GitHub as you' : `Acts on GitHub as ${i.login} (uses its gh wrapper)`}
-              className="h-10 shrink-0 rounded-full border border-border bg-card px-4 text-sm data-[state=on]:border-primary/50 data-[state=on]:bg-accent"
-            >
-              {i.login}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
-      </Field>
-    ) : null
-  const modelField =
-    models.length > MODEL_CHIPS_MAX ? (
-      <Field label="Model">
-        <select
-          value={model}
-          onChange={(e) => chooseModel(e.target.value)}
-          aria-label="Model"
-          className="h-10 w-full rounded-xl border border-border bg-card px-3 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
-        >
-          {models.map((m) => (
-            <option key={m.id || DEFAULT_MODEL_VALUE} value={m.id}>
-              {m.label}
-            </option>
-          ))}
-        </select>
-      </Field>
-    ) : models.length > 1 ? (
-      <Field label="Model">
-        <ToggleGroup
-          type="single"
-          value={model || DEFAULT_MODEL_VALUE}
-          onValueChange={(v) => v && chooseModel(v === DEFAULT_MODEL_VALUE ? '' : v)}
-          aria-label="Model"
-          className="no-scrollbar w-full justify-start overflow-x-auto"
-        >
-          {models.map((m) => (
-            <ToggleGroupItem
-              key={m.id || DEFAULT_MODEL_VALUE}
-              value={m.id || DEFAULT_MODEL_VALUE}
-              title={m.id || `${who}'s default model`}
-              className="h-10 shrink-0 rounded-full border border-border bg-card px-4 text-sm data-[state=on]:border-primary/50 data-[state=on]:bg-accent"
-            >
-              {m.label}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
-      </Field>
-    ) : null
+      )}
+    </Field>
+  )
+  const modelField = harnessesLoading ? (
+    <Field label="Model">{loadingChips(['w-24', 'w-20', 'w-20', 'w-16'], 'Loading models')}</Field>
+  ) : models.length > MODEL_CHIPS_MAX ? (
+    <Field label="Model">
+      <select
+        value={model}
+        onChange={(e) => chooseModel(e.target.value)}
+        aria-label="Model"
+        className="h-10 w-full rounded-xl border border-border bg-card px-3 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+      >
+        {models.map((m) => (
+          <option key={m.id || DEFAULT_MODEL_VALUE} value={m.id}>
+            {m.label}
+          </option>
+        ))}
+      </select>
+    </Field>
+  ) : (
+    <Field label="Model">
+      <ToggleGroup
+        type="single"
+        value={model || DEFAULT_MODEL_VALUE}
+        onValueChange={(v) => v && chooseModel(v === DEFAULT_MODEL_VALUE ? '' : v)}
+        aria-label="Model"
+        className="no-scrollbar w-full justify-start overflow-x-auto"
+      >
+        {models.map((m) => (
+          <ToggleGroupItem key={m.id || DEFAULT_MODEL_VALUE} value={m.id || DEFAULT_MODEL_VALUE} title={m.id || `${who}'s default model`} className={chipClass}>
+            {m.label}
+          </ToggleGroupItem>
+        ))}
+      </ToggleGroup>
+    </Field>
+  )
   const promptField = (
     <Field label="First prompt" hint="optional">
       <Textarea
@@ -680,7 +658,7 @@ function NewSessionForm({
           ))}
         </ToggleGroup>
       ) : (
-        <p className="text-sm text-dimmer">{host} advertises no directories.</p>
+        <p className="flex h-10 items-center text-sm text-dimmer">{host} advertises no directories.</p>
       )}
     </Field>
   )
@@ -781,7 +759,6 @@ function NewSessionForm({
           {siblingSameHost ? null : dirField}
           {harnessField}
           {modelField}
-          {ghIdentityField}
           {promptField}
           {errorBox}
           {submitButton}
@@ -799,8 +776,6 @@ function NewSessionForm({
           {harnessField}
 
           {modelField}
-
-          {ghIdentityField}
 
           {promptField}
 
