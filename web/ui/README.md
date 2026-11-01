@@ -490,10 +490,10 @@ Master–detail on the same hash routes as mobile (`#/` = nothing open, `#/s/<ho
 session in the pane), so a link opens the same session on either layout.
 
 - **Top bar** (the same over List and Board): Fleet summary, Sessions | Bots | Slack | Apps
-  toggle with status and host pickers, search (⌘F), List | Board, modules, then the helpers — a ▣ per host
+  toggle with status and host pickers, search (⌘F), List | Board, a ▣ per host in its own group
   (`HostButtons`, the host's colour dot, a red dot when unreachable; it opens a popover with the
   host's state, session count, error and Open terminal: Fleet.app opens an iTerm tab via
-  `fleet://shell`, a browser copies `fleet -H <host> new`), Focus, Usage, Settings — and `+`.
+  `fleet://shell`, a browser copies `fleet -H <host> new`), modules, then the helpers — Focus, Usage, Settings — and `+`.
 - **Sidebar** (left, List only): the session list (the open row is highlighted, the keyboard
   cursor has a ring), Dormant and Recently closed; an unreachable host shows only in the top bar. Resizable by dragging its edge (280–560px,
   double-click resets, ←/→ on the focused handle; `fleet.sidebarWidth`).
