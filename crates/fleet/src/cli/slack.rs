@@ -196,7 +196,7 @@ pub fn link(
             body["session"] = json!(id);
         }
         None => {
-            let pane = std::env::var("TMUX_PANE").map_err(|_| {
+            let pane = crate::core::done::own_pane_from_env(None).ok_or_else(|| {
                 Error::Other(
                     "not inside a tmux session — name the session to link: --session <target>"
                         .into(),
@@ -246,7 +246,7 @@ pub fn reply(id: &str, text: &str, thread: Option<&str>, json: bool) -> Result<(
     if let Some(t) = thread {
         body["thread"] = json!(t);
     }
-    if let Ok(pane) = std::env::var("TMUX_PANE") {
+    if let Some(pane) = crate::core::done::own_pane_from_env(None) {
         body["pane"] = json!(pane);
     }
     let (status, v) = request("POST", "/api/slack/reply", Some(&body))?;

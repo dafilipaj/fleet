@@ -742,6 +742,13 @@ pub fn spawn_tagged(
         (Backend::Iterm, Some(_)) => Backend::Tmux,
         (b, _) => b,
     };
+    let codex_launcher;
+    let launcher = if harness == Harness::Codex {
+        codex_launcher = format!("{launcher}{}", crate::core::harness::codex_trust_args(dir));
+        codex_launcher.as_str()
+    } else {
+        launcher
+    };
     // A long prompt typed onto the command line is slow and fragile (the web spawn has the
     // same limit): it goes through a file the shell expands at launch instead.
     let long_file = match prompt {

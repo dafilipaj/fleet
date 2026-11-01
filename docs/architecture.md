@@ -223,6 +223,8 @@ later-started processes first, the newest transcript in the process's cwd create
 started (3 s slack), then the newest written to since it started. A Codex session before its first
 prompt has no transcript yet: `session_id` is `null` and its title `<cwd>-codex`.
 
+Codex runs a session's shell commands through a shared app-server daemon, so in them `$TMUX_PANE` is the pane that started the daemon (or unset); `$CODEX_THREAD_ID` is the session's `session_id`, and `fleet done` / `fleet slack link|reply` find their own session by it (`core::done::own_pane`).
+
 Status from the transcript tail (512 KiB): Codex is `busy` from `task_started` until
 `task_complete` / `turn_aborted`, `waiting` on an `*_approval_request` (until anything else
 happens); pi is `busy` while the last message is the user's, a tool result, or an assistant turn

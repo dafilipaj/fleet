@@ -1,7 +1,8 @@
 //! `fleet done`: a session says its work is finished and nothing waits on the user. Nothing is
 //! closed: `fleet list` stamps the mark on the row (`done: { at, note }`), the views show it (a
 //! Done chip in the list, a Done card at the end of the conversation) and the user closes it.
-//! The agent runs it from inside its own pane (`$TMUX_PANE`), right before its final message.
+//! The agent runs it from inside its own pane, right before its final message: `$TMUX_PANE`, or
+//! for Codex the session `$CODEX_THREAD_ID` names ([`own_pane`]).
 //!
 //! Marks live in `$FLEET_DONE_STATE`, else `${XDG_STATE_HOME:-~/.local/state}/fleet/done.json`:
 //! `{ "marks": [{ sessionId, pane, tmuxSession, at, note }] }`. A mark stops counting when the
@@ -14,6 +15,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::core::discovery::Session;
+use crate::core::harness::Harness;
 use crate::error::{Error, Result};
 
 /// What a session is told when it should report itself done once finished (bots, `spawn
@@ -85,6 +87,47 @@ pub fn save(st: &State) -> Result<()> {
     std::fs::write(&tmp, serde_json::to_string_pretty(st)?)?;
     std::fs::rename(&tmp, &p)?;
     Ok(())
+}
+
+/// The tmux pane of the agent session a command runs for. `$TMUX_PANE` does not do for Codex:
+/// it runs commands through a shared app-server daemon, whose `$TMUX_PANE` is the pane that
+/// started the daemon (another session's) or unset. Codex names the session in
+/// `$CODEX_THREAD_ID` instead, its transcript id: the row's `session_id`. When that is set but
+/// no Codex row in tmux has it, `None` — never the stale pane, which would be another session.
+pub fn own_pane(
+    rows: &[Session],
+    codex_thread: Option<&str>,
+    tmux_pane: Option<&str>,
+) -> Option<String> {
+    if let Some(t) = codex_thread.filter(|t| !t.is_empty()) {
+        return rows
+            .iter()
+            .find(|r| {
+                r.harness == Harness::Codex
+                    && r.session_id.as_deref() == Some(t)
+                    && r.tmux_session.is_some()
+            })
+            .and_then(|r| r.handle.clone());
+    }
+    tmux_pane.filter(|p| !p.is_empty()).map(String::from)
+}
+
+/// [`own_pane`] from this process's environment; discovers only when Codex asks.
+pub fn own_pane_from_env(rows: Option<&[Session]>) -> Option<String> {
+    let thread = std::env::var("CODEX_THREAD_ID").ok();
+    let pane = std::env::var("TMUX_PANE").ok();
+    if thread.as_deref().is_some_and(|t| !t.is_empty()) {
+        let found;
+        let rows = match rows {
+            Some(r) => r,
+            None => {
+                found = crate::core::discovery::discover();
+                &found
+            }
+        };
+        return own_pane(rows, thread.as_deref(), pane.as_deref());
+    }
+    own_pane(&[], None, pane.as_deref())
 }
 
 /// The session running in `pane`, from a discovery pass.
@@ -210,6 +253,37 @@ mod tests {
         assert!(stands(&m, Some(&row(None))));
         assert!(stands(&m, Some(&row(Some(900)))));
         assert!(!stands(&m, Some(&row(Some(1_500)))));
+    }
+
+    fn codex_row(id: &str, pane: &str) -> Session {
+        Session {
+            session_id: Some(id.into()),
+            harness: Harness::Codex,
+            handle: Some(pane.into()),
+            tmux_session: Some("job".into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn own_pane_is_tmux_pane_outside_codex() {
+        assert_eq!(own_pane(&[], None, Some("%3")), Some("%3".into()));
+        assert_eq!(own_pane(&[], None, None), None);
+        assert_eq!(own_pane(&[], Some(""), Some("%3")), Some("%3".into()));
+    }
+
+    #[test]
+    fn codex_finds_its_pane_by_thread_not_the_daemons_stale_pane() {
+        let rows = [codex_row("t1", "%7"), codex_row("t2", "%9")];
+        assert_eq!(own_pane(&rows, Some("t2"), Some("%7")), Some("%9".into()));
+        // unknown thread: no guess, and never the stale pane (another session's)
+        assert_eq!(own_pane(&rows, Some("t3"), Some("%7")), None);
+        // a Claude row with the same id does not count
+        let claude = Session {
+            harness: Harness::Claude,
+            ..codex_row("t3", "%5")
+        };
+        assert_eq!(own_pane(&[claude], Some("t3"), Some("%5")), None);
     }
 
     #[test]

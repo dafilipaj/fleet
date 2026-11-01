@@ -254,12 +254,15 @@ pub fn send(target: &str, text: &str) -> Result<()> {
 
 /// `fleet done`: mark (or `--cancel`, unmark) the session this runs in as finished.
 pub fn done(note: Option<String>, cancel: bool) -> Result<()> {
-    let pane = std::env::var("TMUX_PANE").map_err(|_| {
-        Error::Other(
-            "fleet done runs inside the session's own tmux pane ($TMUX_PANE is not set)".into(),
-        )
+    let rows = discovery::discover();
+    let pane = crate::core::done::own_pane_from_env(Some(&rows)).ok_or_else(|| {
+        Error::Other(if std::env::var_os("CODEX_THREAD_ID").is_some() {
+            "fleet done: no Codex session in tmux has this $CODEX_THREAD_ID".into()
+        } else {
+            "fleet done runs inside the session's own tmux pane ($TMUX_PANE is not set)".into()
+        })
     })?;
-    let m = crate::core::done::mark(&discovery::discover(), &pane, note, cancel)?;
+    let m = crate::core::done::mark(&rows, &pane, note, cancel)?;
     if cancel {
         println!("{}: no longer marked done", m.tmux_session);
     } else {
