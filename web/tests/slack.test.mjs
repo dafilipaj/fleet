@@ -206,6 +206,39 @@ test('proactive mode: every message goes in, marked as not addressed', async (t)
   await assert.rejects(fx.bridge.link({ session: SID, url: URL_, minutes: 60, mode: 'loud', host: 'h' }), /mode must be one of/);
 });
 
+test('a session on another host: listed and typed into on its host; replies only from there', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-slack-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const slack = fakeSlack();
+  const byHost = {
+    workstation: [{ session_id: OTHER, name: 'local', status: 'idle', handle: '%5', backend: 'tmux' }],
+    laptop: [{ session_id: SID, name: 'remote', status: 'idle', handle: '%5', backend: 'tmux' }],
+  };
+  const asked = [];
+  const sent = [];
+  const bridge = createSlackBridge({
+    settings: { owner: 'UOWNER' },
+    self: 'workstation',
+    call: slack.call,
+    listSessions: async (host) => (asked.push(host), byHost[host] ?? null),
+    send: async (s, text, host) => void sent.push({ id: s.session_id, host, text }),
+    file: path.join(dir, 'slack-links.json'),
+  });
+  // Not on the bridge's host: found by its pane on its own host.
+  await assert.rejects(bridge.link({ pane: '%9', url: URL_, minutes: 30, host: 'laptop' }), /on laptop/);
+  const link = await bridge.link({ pane: '%5', url: URL_, minutes: 30, host: 'laptop' });
+  assert.equal(link.host, 'laptop');
+  assert.equal(link.session, SID);
+  await bridge.tick();
+  assert.equal(sent.length, 1);
+  assert.deepEqual([sent[0].id, sent[0].host], [SID, 'laptop']);
+  assert.ok(asked.includes('laptop'));
+  // The same pane id on the bridge's host is another session: refused.
+  await assert.rejects(bridge.reply({ link: link.id, text: 'hi', pane: '%5', host: 'workstation' }), (err) => err.status === 403);
+  const r = await bridge.reply({ link: link.id, text: 'hi', pane: '%5', host: 'laptop' });
+  assert.equal(r.ok, true);
+});
+
 test('delivery waits while the session is busy or waiting', async (t) => {
   const fx = fixture(t, { status: 'busy' });
   await fx.bridge.link({ session: SID, url: URL_, minutes: 30, host: 'h' });
@@ -514,7 +547,7 @@ test('a spawn linked to Slack: no prompt at launch, linked once it registers, th
     return { status: res.status, body: await res.json() };
   };
 
-  // Refused before anything opens: another host, a bad link, a bad duration.
+  // Refused before anything opens: a host that cannot reach the bridge, a bad link, a bad duration.
   assert.equal((await post(peer, 'laptop', { name: 'job', dir, prompt: 'x', slack: { url: URL_, minutes: 30 } })).status, 400);
   assert.equal((await post(bridge, 'workstation', { name: 'job', dir, prompt: 'x', slack: { url: 'https://x.test', minutes: 30 } })).status, 400);
   assert.equal((await post(bridge, 'workstation', { name: 'job', dir, prompt: 'x', slack: { url: URL_, minutes: 0 } })).status, 400);

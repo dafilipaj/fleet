@@ -515,8 +515,9 @@ export function createApi({
     if (raw == null) return null;
     if (typeof raw !== 'object' || Array.isArray(raw)) throw new HttpError('slack must be { url, minutes, mode?, task? }', 400);
     if (!slack) {
-      const host = config.slack?.host;
-      throw new HttpError(host && host !== config.self ? `only sessions on ${host} can be linked to Slack` : 'no server runs Slack links (slack.host)', 400);
+      const bridge = config.slack?.host;
+      if (!bridge || bridge === config.self) throw new HttpError('no server runs Slack links (slack.host)', 400);
+      if (!config.peers[bridge]) throw new HttpError(`slack.host "${bridge}" is not a peer with a web URL`, 400);
     }
     const url = typeof raw.url === 'string' ? raw.url.trim() : '';
     if (!url) throw new HttpError('slack.url is required: a Slack thread or channel link, or @person', 400);
@@ -539,12 +540,28 @@ export function createApi({
     return { url, minutes, mode: raw.mode ?? undefined, task: raw.task?.trim() || undefined };
   }
 
+  /** Link a session of this host: by the bridge here, else through the bridge's host (`slack.host`). */
+  async function slackLink(body) {
+    if (slack) return slack.link({ ...body, host: config.self });
+    const bridge = config.slack?.host;
+    const peerUrl = bridge ? config.peers[bridge] : null;
+    if (!peerUrl) throw new SlackError(`slack.host "${bridge}" is not a peer with a web URL`, 502);
+    const r = await proxyToPeer(peerUrl, {
+      method: 'POST',
+      pathname: '/api/slack/link',
+      body: JSON.stringify({ ...body, host: config.self }),
+      timeoutMs: peerProxyTimeoutMs,
+    });
+    if (r.status !== 200) throw new SlackError(r.body?.error ?? `HTTP ${r.status} from ${bridge}`, r.status);
+    return r.body;
+  }
+
   /** Link a just-spawned session once it has a session id; its prompt goes in with the intro. */
   async function linkSpawned(tmuxSession, link, first) {
     const deadline = Date.now() + spawnLinkWaitMs;
     for (;;) {
       try {
-        return await slack.link({ ...link, tmuxSession, first, host: config.self });
+        return await slackLink({ ...link, tmuxSession, first });
       } catch (err) {
         // 404: not listed yet, 409: no session id yet.
         if (!(err instanceof SlackError) || ![404, 409].includes(err.status) || Date.now() >= deadline) throw err;
@@ -696,6 +713,11 @@ export function createApi({
    * minutes, task? }`; POST reply `{ link, text, thread?, pane? }`; POST links/:id/unlink;
    * POST links/:id/relink `{ minutes? }`.
    */
+  /** Where a reply comes from: a proxying server stamps its own name; a direct call is this host's. */
+  function replyHost(body) {
+    return typeof body?.host === 'string' && body.host ? body.host : config.self;
+  }
+
   async function handleSlack(req, url, action, id = null) {
     const body = action === 'status' ? null : await readJsonBody(req);
     const host = config.slack?.host ?? null;
@@ -709,10 +731,11 @@ export function createApi({
           refreshFleet();
           return { status: 200, body: link };
         }
-        if (action === 'reply') return { status: 200, body: await slack.reply(body ?? {}) };
+        if (action === 'reply') return { status: 200, body: await slack.reply({ ...(body ?? {}), host: replyHost(body) }) };
+        // Any host's session: the bridge lists and types into it through that host's web server.
         const target = typeof body?.host === 'string' && body.host ? body.host : config.self;
-        if (target !== config.self) throw new HttpError(`only sessions on ${config.self} can be linked to Slack for now`, 400);
-        const link = await slack.link({ ...body, host: config.self });
+        if (target !== config.self && !config.peers[target]) throw new HttpError(`unknown host: ${target} (not a peer with a web url)`, 400);
+        const link = await slack.link({ ...body, host: target });
         refreshFleet();
         return { status: 200, body: link };
       } catch (err) {
@@ -728,10 +751,12 @@ export function createApi({
     if (url.searchParams.get('local') === '1') return off(null); // never chain
     const peerUrl = config.peers[host];
     if (!peerUrl) return off(`slack.host "${host}" is not a peer with a web URL`);
+    // A reply from a session here: say so, so the bridge checks the pane on this host.
+    const sent = action === 'reply' ? { ...(body ?? {}), host: replyHost(body) } : body;
     const r = await proxyToPeer(peerUrl, {
       method: action === 'status' ? 'GET' : 'POST',
       pathname: url.pathname,
-      ...(body == null ? {} : { body: JSON.stringify(body) }),
+      ...(sent == null ? {} : { body: JSON.stringify(sent) }),
       timeoutMs: peerProxyTimeoutMs,
     });
     return { status: r.status, body: r.body };

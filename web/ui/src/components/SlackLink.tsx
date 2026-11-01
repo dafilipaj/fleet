@@ -43,7 +43,7 @@ export function SlackChip({ session: s, className }: { session: Pick<Session, 'h
 
 /**
  * Details → Slack: the session's links (time left, task, Unlink), and "Link to Slack": a thread,
- * channel or DM link, how long, and what it may help with. Only on the bridge's host (`slack.host`).
+ * channel or DM link, how long, and what it may help with. Any host: the bridge (`slack.host`) reaches the others.
  */
 export function SlackLinkSection({ host, session: s }: { host: string; session: Session | null }) {
   const slack = useSlack()
@@ -56,7 +56,7 @@ export function SlackLinkSection({ host, session: s }: { host: string; session: 
   const [mode, setMode] = useState<'mention' | 'proactive'>('mention')
   const [busy, setBusy] = useState<string | null>(null)
 
-  if (!s?.session_id || !slack?.enabled || slack.host !== host) return null
+  if (!s?.session_id || !slack?.enabled) return null
 
   // Ended links of this session (newest first), one per place, none it is linked to again already.
   const placeOf = (l: SlackLink) => `${l.channel}/${l.threadTs ?? ''}`

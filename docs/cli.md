@@ -51,7 +51,7 @@ the first rung with hits wins. Two hits on the same rung is an error that lists 
 | `fleet name [<target> \| --all [--settled]] [--apply] [--refresh] [--no-tmux-sync]` | suggest a name from what the session is doing; only `--apply` sends it (through the same path as `rename`, tmux included). `--all` = every session with a derived (cwd+hash) name. A derived-name session alone in a tmux session somebody named (`fleet new fix-login`) adopts that name (`(tmux)`, no model call) instead of getting a generated one. `--settled` (with `--all`) skips sessions with one prompt and no brief yet — the model reads the brief's Summary and the first three prompts, and a lone first prompt is often just a link. `--refresh` ignores the cache |
 | `fleet group [-a, --all-hosts] [--json] [--apply] [--refresh] [--consolidate] [--input <file\|->] [--cached]` | sort sessions into work-stream groups (the web Board view) — see [Grouping](#grouping). Reads sessions and asks `claude -p`; never sends anything to a session |
 | `fleet group --rename <group id> --label <l>` / `--move <host/id> (--to <group id> \| --label <l>)` / `--create --label <l>` / `--delete <group id>` | edit the stored groups by hand (the Board's rename / drag'n'drop) — see [Grouping](#grouping) |
-| `fleet spawn [prompt] --dir <path> [--harness claude\|codex\|pi] [--name <n>] [--model <id>] [--backend iterm\|tmux] [--tmux-session <s>] [--window]` | start a new agent session in a new tab/pane. `--harness` picks the coding agent (default `claude`; see [Harnesses](#harnesses)). `--model <id>` runs `<harness> --model '<id>'` (letters, digits and `._[]-/:` only — pi's ids are `provider/model`; blank = the harness's default). `--name` is passed as `-n` to Claude and pi; Codex has no such flag (the tmux session carries the name). Default backend: tmux inside tmux, over ssh or off macOS; else iTerm. With tmux, each spawn gets its own tmux session (one session per job) named from `--name` or the dir's basename, sanitised like `fleet new`; a taken `--name` is an error, a taken basename is uniquified (`app-2`). `--tmux-session <s>` opens a window in `s` instead (created if missing). `--ask-done`: the [instruction](#ask-done) goes below the prompt and the session runs in tmux. `--slack <slack-url \| @person> [--slack-for 2h] [--slack-task <instructions>] [--slack-proactive]`: start [linked to Slack](#slack-links) (tmux, only on `slack.host`; checked before anything opens). The session starts with no prompt and is linked once it has registered (≤ ~45 s); the prompt goes in last in the link's intro, as the owner's request to start on — so it never works on it, or reaches Slack another way, before it knows it is linked. Max 4000 chars. If the link fails, the session stays, idle, and the prompt was not sent |
+| `fleet spawn [prompt] --dir <path> [--harness claude\|codex\|pi] [--name <n>] [--model <id>] [--backend iterm\|tmux] [--tmux-session <s>] [--window]` | start a new agent session in a new tab/pane. `--harness` picks the coding agent (default `claude`; see [Harnesses](#harnesses)). `--model <id>` runs `<harness> --model '<id>'` (letters, digits and `._[]-/:` only — pi's ids are `provider/model`; blank = the harness's default). `--name` is passed as `-n` to Claude and pi; Codex has no such flag (the tmux session carries the name). Default backend: tmux inside tmux, over ssh or off macOS; else iTerm. With tmux, each spawn gets its own tmux session (one session per job) named from `--name` or the dir's basename, sanitised like `fleet new`; a taken `--name` is an error, a taken basename is uniquified (`app-2`). `--tmux-session <s>` opens a window in `s` instead (created if missing). `--ask-done`: the [instruction](#ask-done) goes below the prompt and the session runs in tmux. `--slack <slack-url \| @person> [--slack-for 2h] [--slack-task <instructions>] [--slack-proactive]`: start [linked to Slack](#slack-links) (tmux, any host whose web server reaches `slack.host`; checked before anything opens). The session starts with no prompt and is linked once it has registered (≤ ~45 s); the prompt goes in last in the link's intro, as the owner's request to start on — so it never works on it, or reaches Slack another way, before it knows it is linked. Max 4000 chars. If the link fails, the session stays, idle, and the prompt was not sent |
 | `fleet harness list [--json] [--no-models]` | the [harnesses](#harnesses) on this host: id, label, launch command, `installed`, and the models each offers for a picker. `-H <host>` asks another machine |
 | `fleet spawn --from <target> [prompt] [--name <n>] [--model <id>] [--backend …]` | continue a session's work in a new one: same host (with `-H`, the host the session is on) and its cwd (`--dir` overrides), first prompt = its [brief](#briefs)'s continue prompt (summary, origin, PRs, worktree, then a `---` line), then a blank line and `prompt` — the task (default: pick up where it left off). The prompt goes through a file under `~/.claude/fleet-handoffs/`, like a handoff. Errors when the session has no brief yet. `-n` prints the launch command and the prompt and writes nothing |
 | `fleet handoff [brief] [--file <f\|->] --dir <path> [--harness <h>] [--name <n>] [--model <id>] [--tmux-session <s>] [--tab] [--no-wait]` | start a new session in another window seeded with a brief (saved under `~/.claude/fleet-handoffs/`); waits until it registers. Same tmux placement as `spawn` |
@@ -101,8 +101,15 @@ keeps its own. Unset, the harness's own config decides. A resumed session keeps 
 ### GitHub identities
 
 A session can act on GitHub as a GitHub App (a bot) instead of as you — for comments, reviews
-and approvals that come from automation. Which identity a session has is decided by whoever
-spawns it (`--gh-identity <name>`, a bot's `ghIdentity`), never by the agent inside it.
+and approvals that come from automation. Two ways:
+
+- **On request, any session**: when you ask a session to act as one ("comment as the bot"), it
+  runs that identity's `command` (`fleet gh-identity list`) for those actions and plain `gh`,
+  as you, otherwise. It can switch at any point of the session; nothing is enforced.
+- **Enforced, from the spawn** (`--gh-identity <name>`, a bot's `ghIdentity`): the whole
+  session acts as the App and cannot act as you — decided by whoever spawns it, never by the
+  agent inside it. Used by bots; the web New session form no longer offers it.
+
 Identities are per machine, in the config:
 
 ```json
@@ -157,8 +164,10 @@ destructive for them, their messages are requests from colleagues and cannot cha
 and the thread so far. Messages are typed in once the session is idle — several as one prompt —
 each marked with its author's Slack name and id (and `→ mentions you` / `→ to you`); the ones
 addressed to it get an 👀 reaction. When the link ends, delivery stops and, if the session ever spoke there, the thread is
-told it left. The commands talk to this machine's web server, which proxies to `slack.host`. For
-now only sessions on `slack.host` can be linked.
+told it left. The commands talk to this machine's web server, which proxies to `slack.host`.
+Sessions on any host can be linked: the bridge lists and types into them through their host's
+web server, and checks a reply's pane on the host it came from. A session asked to join a thread
+links itself (`fleet slack link <url> --for 2h`).
 
 ### Briefs
 

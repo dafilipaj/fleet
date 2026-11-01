@@ -36,7 +36,7 @@ import { createStacks } from './lib/stacks.mjs';
 import { createAgentAsk, createInbox } from './lib/inbox.mjs';
 import { createPromptQueue } from './lib/queue.mjs';
 import { TOKEN_NAMES, createSlackApi, createSlackBridge, createSocketClient } from './lib/slack.mjs';
-import { fetchPeerHost, setPeerProxies } from './lib/peers.mjs';
+import { fetchPeerHost, proxyToPeer, setPeerProxies } from './lib/peers.mjs';
 import { createDormant } from './lib/dormant.mjs';
 import { createMemos } from './lib/memos.mjs';
 import { createApi } from './lib/api.mjs';
@@ -158,11 +158,30 @@ if (config.slack.enabled) {
     settings: config.slack,
     call,
     socket,
-    listSessions: async () => {
-      const host = await fleet.localHost({ force: true });
-      return host.ok ? host.sessions : null;
+    self: config.self,
+    // A link's session may run on any host: a peer is asked through its web server.
+    listSessions: async (host) => {
+      if (!host || host === config.self) {
+        const local = await fleet.localHost({ force: true });
+        return local.ok ? local.sessions : null;
+      }
+      const peerUrl = config.peers[host];
+      if (!peerUrl) return null;
+      const h = await fetchPeerHost(host, peerUrl, { timeoutMs: 8000 });
+      return h.ok ? h.sessions : null;
     },
-    send: (session, text) => backend.send(session, text),
+    send: async (session, text, host) => {
+      if (!host || host === config.self) return backend.send(session, text);
+      const peerUrl = config.peers[host];
+      if (!peerUrl) throw new Error(`${host} is not a peer with a web url`);
+      const r = await proxyToPeer(peerUrl, {
+        method: 'POST',
+        pathname: `/api/hosts/${encodeURIComponent(host)}/sessions/${encodeURIComponent(session.session_id)}/send`,
+        body: JSON.stringify({ text }),
+        timeoutMs: 15000,
+      });
+      if (r.status !== 200) throw new Error(r.body?.error ?? `HTTP ${r.status} from ${host}`);
+    },
     file: path.join(fleetStateDir(process.env), 'slack-links.json'),
     log,
   });

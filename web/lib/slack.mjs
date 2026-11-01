@@ -22,6 +22,9 @@
 // it should (the link's instructions say how). Either way it posts only when it has something to
 // say.
 //
+// Any host's sessions can be linked: the bridge asks the session's host for its sessions and types
+// into them through that host's web server (`listSessions(host)`, `send(session, text, host)`).
+//
 // Delivery: messages wait while the session is busy or waiting on you, and go in together, as
 // one prompt, once it is idle; the ones addressed to it get an 👀 reaction when typed in.
 //
@@ -388,11 +391,12 @@ export function createSocketClient({ getAppToken, onEvent, fetch = globalThis.fe
  *   settings      { owner }  (config `slack`)
  *   call          createSlackApi(...)
  *   socket        createSocketClient-like { start, stop, status } (null: events come through handleEvent only)
- *   listSessions  async () => this host's sessions (fresh)
- *   send          async (session, text) — types a prompt into it
+ *   self          this host's name (a link with no host is a session here)
+ *   listSessions  async (host) => that host's sessions (fresh)
+ *   send          async (session, text, host) — types a prompt into it, on its host
  *   file          the state file
  */
-export function createSlackBridge({ settings = {}, call, socket = null, listSessions, send, file, now = Date.now, log = () => {}, tickMs = TICK_MS }) {
+export function createSlackBridge({ settings = {}, self = null, call, socket = null, listSessions, send, file, now = Date.now, log = () => {}, tickMs = TICK_MS }) {
   let links = []; // active
   let ended = [];
   let loaded = false;
@@ -523,7 +527,7 @@ export function createSlackBridge({ settings = {}, call, socket = null, listSess
   const isPerson = (m) => DELIVERED_SUBTYPES.has(m.subtype) && !m.bot_id && m.user && m.user !== bot?.userId;
 
   /**
-   * POST link: the session (on this host) follows the Slack link for `minutes`. `first`: the
+   * POST link: the session (on `host`, default this one) follows the Slack link for `minutes`. `first`: the
    * owner's first request, for a session spawned linked (it has had no prompt yet).
    */
   async function link({ session: sessionId, pane, tmuxSession, url, user, minutes, task, mode, host, first }, again = null) {
@@ -537,7 +541,8 @@ export function createSlackBridge({ settings = {}, call, socket = null, listSess
     if (first != null && typeof first !== 'string') throw new SlackError('first must be a string');
     const firstText = first?.trim() ?? '';
     if (firstText.length > MAX_FIRST) throw new SlackError(`the first prompt is too long for a linked spawn (max ${MAX_FIRST} chars)`);
-    const session = await findLinkSession({ sessionId, pane, tmuxSession });
+    host = host || self;
+    const session = await findLinkSession({ sessionId, pane, tmuxSession, host });
     await whoami();
 
     // A person: the app's DM with them (opened if new) is the conversation.
@@ -626,14 +631,14 @@ export function createSlackBridge({ settings = {}, call, socket = null, listSess
     return view(l);
   }
 
-  async function findLinkSession({ sessionId, pane, tmuxSession }) {
-    const sessions = (await listSessions()) ?? [];
+  async function findLinkSession({ sessionId, pane, tmuxSession, host }) {
+    const sessions = (await listSessions(host)) ?? [];
     let s = null;
     if (typeof sessionId === 'string' && sessionId) s = findSession(sessions, sessionId);
     else if (typeof pane === 'string' && pane) s = sessions.find((x) => x.handle === pane) ?? null;
     else if (typeof tmuxSession === 'string' && tmuxSession) s = sessions.find((x) => x.tmux_session === tmuxSession) ?? null;
     else throw new SlackError('session (or pane) is required');
-    if (!s) throw new SlackError(`no live session ${sessionId ?? (pane ? `in pane ${pane}` : `in tmux session ${tmuxSession}`)} on this host`, 404);
+    if (!s) throw new SlackError(`no live session ${sessionId ?? (pane ? `in pane ${pane}` : `in tmux session ${tmuxSession}`)} on ${host ?? 'this host'}`, 404);
     if (!s.session_id || s.session_id.startsWith('pid-')) throw new SlackError('this session has no session id yet — try again in a moment', 409);
     return s;
   }
@@ -690,7 +695,7 @@ export function createSlackBridge({ settings = {}, call, socket = null, listSess
   }
 
   /** POST reply: the linked session (identified by its pane or id, when given) posts in the thread. */
-  async function reply({ link: id, text, thread, pane, session: sessionId }) {
+  async function reply({ link: id, text, thread, pane, session: sessionId, host }) {
     await load();
     if (!validLinkId(id)) throw new SlackError('link must look like sl-xxxxxx');
     const l = links.find((x) => x.id === id);
@@ -703,7 +708,10 @@ export function createSlackBridge({ settings = {}, call, socket = null, listSess
       throw new SlackError(`link ${id} has ended (expired) — nothing posted`, 410);
     }
     if (pane || sessionId) {
-      const sessions = (await listSessions()) ?? [];
+      // `host`: where the replying session runs (stamped by the server that proxied the reply here).
+      const from = host || self;
+      if (from && l.host && from !== l.host) throw new SlackError(`link ${id} belongs to a session on ${l.host} — nothing posted`, 403);
+      const sessions = (await listSessions(l.host || from)) ?? [];
       const me = sessionId ? findSession(sessions, sessionId) : sessions.find((x) => x.handle === pane);
       if (me && me.session_id !== l.session) throw new SlackError(`link ${id} belongs to another session — nothing posted`, 403);
     }
@@ -766,13 +774,15 @@ export function createSlackBridge({ settings = {}, call, socket = null, listSess
     for (const l of [...links]) if (!isActive(l)) await end(l, 'expired');
     const waiting = links.filter((l) => wakes(l) && !busy.has(l.id) && now() - (lastDelivery.get(l.id) ?? 0) >= DELIVER_GAP_MS);
     if (!waiting.length) return;
-    let sessions;
-    try {
-      sessions = (await listSessions()) ?? [];
-    } catch {
-      return;
+    // One fresh list per host that has a link waiting; an unreachable host waits for the next tick.
+    const byHost = new Map();
+    for (const l of waiting) {
+      const h = l.host || self;
+      if (!byHost.has(h)) byHost.set(h, Promise.resolve(listSessions(h)).then((x) => x ?? [], () => null));
     }
     for (const l of waiting) {
+      const sessions = await byHost.get(l.host || self);
+      if (!sessions) continue;
       const s = findSession(sessions, l.session);
       if (!s || s.status !== 'idle') continue;
       busy.add(l.id);
@@ -799,7 +809,7 @@ export function createSlackBridge({ settings = {}, call, socket = null, listSess
     await Promise.all([...new Set(msgs.map((m) => m.user))].map(nameOf));
     // The intro first, on its own; messages that came meanwhile follow on the next tick.
     const text = l.intro ?? messagesPrompt(l, msgs, { names });
-    await send(s, text);
+    await send(s, text, l.host || self);
     lastDelivery.set(l.id, now());
     if (l.intro) {
       l.intro = null;
