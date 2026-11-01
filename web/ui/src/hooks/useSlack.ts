@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react'
 
 import { api } from '@/api/client'
-import type { SlackLink, SlackStatus } from '@/api/types'
+import type { SlackLink, SlackMinutes, SlackStatus } from '@/api/types'
 
 /**
  * Slack links, shared by every row and panel: one poll of /api/slack (every 20s while anything
@@ -62,18 +62,34 @@ export function useSessionSlackLinks(host: string | null | undefined, sessionId:
 const NONE: SlackLink[] = []
 
 /** How long a link lasts: the choices in Link to Slack and New session. */
-export const SLACK_DURATIONS = [
-  { label: '30m', minutes: 30 },
+export const SLACK_DURATIONS: { label: string; minutes: SlackMinutes }[] = [
   { label: '1h', minutes: 60 },
-  { label: '2h', minutes: 120 },
   { label: '4h', minutes: 240 },
   { label: '8h', minutes: 480 },
   { label: '1d', minutes: 24 * 60 },
-  { label: '2d', minutes: 2 * 24 * 60 },
+  { label: '1w', minutes: 7 * 24 * 60 },
+  { label: 'Always', minutes: 'forever' },
 ]
 
-/** "42m" / "1h 5m" / "1d 3h" left. */
-export function slackLeft(until: number, now: number): string {
+/** A toggle's value back to a duration. */
+export const toSlackMinutes = (v: string): SlackMinutes => (v === 'forever' ? 'forever' : Number(v))
+
+/** A duration as a label: "4h", "1w", "always". */
+export function slackDuration(minutes: number | null): string {
+  if (minutes == null) return 'always'
+  const d = SLACK_DURATIONS.find((x) => x.minutes === minutes)
+  if (d) return d.label
+  return minutes % 1440 === 0 ? `${minutes / 1440}d` : minutes % 60 === 0 ? `${minutes / 60}h` : `${minutes}m`
+}
+
+/** Of several links, the one that lasts longest (null: one has no end). */
+export function slackLatest(untils: (number | null)[]): number | null {
+  return untils.some((u) => u == null) ? null : Math.max(...(untils as number[]))
+}
+
+/** "42m" / "1h 5m" / "1d 3h" left; "∞" for a link with no end. */
+export function slackLeft(until: number | null, now: number): string {
+  if (until == null) return '∞'
   const m = Math.max(1, Math.ceil((until - now) / 60000))
   if (m >= 24 * 60) return `${Math.floor(m / 1440)}d${Math.floor((m % 1440) / 60) ? ` ${Math.floor((m % 1440) / 60)}h` : ''}`
   return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ''}`

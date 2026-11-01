@@ -320,7 +320,7 @@ enum Commands {
         /// the prompt goes in with the link's intro, so nothing runs before it knows
         #[arg(long, value_name = "URL", conflicts_with = "from")]
         slack: Option<String>,
-        /// How long the --slack link lasts: minutes, or like 30m, 2h, 2d (max 2 days)
+        /// How long the --slack link lasts: minutes, or like 30m, 2h, 2d, 1w (max 1 week), or `forever`
         #[arg(
             long,
             value_name = "DURATION",
@@ -669,7 +669,7 @@ enum SlackCmd {
         /// A Slack link: a message (its thread), or a channel / DM (all of it); or a person
         /// (@name or their user id): the app's DM with them
         url: String,
-        /// How long: minutes, or like 30m, 2h, 1h30m, 2d (max 2 days)
+        /// How long: minutes, or like 30m, 2h, 1h30m, 2d, 1w (max 1 week), or `forever` (until unlinked)
         #[arg(long = "for", value_name = "DURATION")]
         duration: String,
         /// The session to link (default: the one this command runs in, by $TMUX_PANE)

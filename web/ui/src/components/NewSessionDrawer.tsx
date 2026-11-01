@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 
 import { api, ApiError } from '@/api/client'
 import { watchForSpawned } from '@/api/spawnWatch'
+import type { SlackMinutes } from '@/api/types'
 import { DropOverlay } from '@/components/DropOverlay'
 import { HostDot } from '@/components/HostBadge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -19,7 +20,7 @@ import { useAttach, useFileDrop } from '@/hooks/useAttach'
 import { useFleet } from '@/hooks/useFleet'
 import { useGhIdentities, useHarnesses } from '@/hooks/useHarnesses'
 import { useSettings } from '@/hooks/useSettings'
-import { refreshSlack, SLACK_DURATIONS, useSlack } from '@/hooks/useSlack'
+import { refreshSlack, SLACK_DURATIONS, toSlackMinutes, useSlack } from '@/hooks/useSlack'
 import { useVoice } from '@/hooks/useVoice'
 import type { SiblingTarget } from '@/hooks/useStackUi'
 import { withContinueTask } from '@/lib/brief'
@@ -236,7 +237,7 @@ function NewSessionForm({
   // with the link's intro, so the session never works on it before it knows it is in Slack.
   const slack = useSlack()
   const [slackUrl, setSlackUrl] = useState('')
-  const [slackMinutes, setSlackMinutes] = useState(120)
+  const [slackMinutes, setSlackMinutes] = useState<SlackMinutes>(240)
   const [slackMode, setSlackMode] = useState<'mention' | 'proactive'>('mention')
   // Later: a local `YYYY-MM-DDTHH:MM` the session is scheduled for (`fleet schedule`); null = now.
   const [laterAt, setLaterAt] = useState<string | null>(null)
@@ -414,7 +415,7 @@ function NewSessionForm({
       />
       {slackUrl.trim() ? (
         <div className="flex flex-col gap-2 pt-1">
-          <ToggleGroup type="single" value={String(slackMinutes)} onValueChange={(v) => v && setSlackMinutes(Number(v))} aria-label="How long" className="no-scrollbar w-full justify-start overflow-x-auto">
+          <ToggleGroup type="single" value={String(slackMinutes)} onValueChange={(v) => v && setSlackMinutes(toSlackMinutes(v))} aria-label="How long" className="no-scrollbar w-full justify-start overflow-x-auto">
             {SLACK_DURATIONS.map((d) => (
               <ToggleGroupItem
                 key={d.minutes}

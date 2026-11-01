@@ -109,6 +109,7 @@ test('parseMinutes', () => {
   assert.equal(parseMinutes('1h30m'), 90);
   assert.equal(parseMinutes('2d'), 2880);
   assert.equal(parseMinutes('1d12h'), 2160);
+  assert.equal(parseMinutes('1w'), 10080);
   assert.equal(parseMinutes('soon'), null);
   assert.equal(parseMinutes(''), null);
 });
@@ -256,8 +257,8 @@ test('expiry: messages after the end are not delivered; a link never used leaves
 test('link: validation, renewal, unlink, and a conversation the app cannot see', async (t) => {
   const fx = fixture(t);
   await assert.rejects(fx.bridge.link({ session: SID, url: URL_, minutes: 0, host: 'h' }), /minutes must be/);
-  await assert.rejects(fx.bridge.link({ session: SID, url: URL_, minutes: 'forever', host: 'h' }), /minutes must be/);
-  await assert.rejects(fx.bridge.link({ session: SID, url: URL_, minutes: '2d1m', host: 'h' }), /minutes must be 1–2880/);
+  await assert.rejects(fx.bridge.link({ session: SID, url: URL_, minutes: 'always', host: 'h' }), /minutes must be/);
+  await assert.rejects(fx.bridge.link({ session: SID, url: URL_, minutes: '1w1m', host: 'h' }), /minutes must be 1–10080 .*or forever/);
   await assert.rejects(fx.bridge.link({ session: 'cccccccc-0000', url: URL_, minutes: 5, host: 'h' }), { status: 404 });
   await assert.rejects(fx.bridge.link({ url: URL_, minutes: 5, host: 'h' }), /session \(or pane\) is required/);
 
@@ -475,6 +476,10 @@ test('HTTP: /api/slack on the bridge host, proxied elsewhere, off without slack.
   assert.equal((await call(`${servers.bridge}/api/slack/link`, 'POST', { session: SID, url: 'https://x.test', minutes: 30 })).status, 400);
   assert.equal((await call(`${servers.peer}/api/slack/links/${linked.body.id}/unlink`, 'POST', {})).status, 200);
   assert.equal((await call(`${servers.bridge}/api/slack/links/bad/unlink`, 'POST', {})).status, 400);
+  const again = await call(`${servers.peer}/api/slack/links/${linked.body.id}/relink`, 'POST', { minutes: 'forever' });
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  assert.equal(again.body.until, null);
+  assert.equal((await call(`${servers.bridge}/api/slack/links/sl-000000/relink`, 'POST', {})).status, 404);
   assert.equal((await call(`${servers.bridge}/api/slack/reply`, 'GET')).status, 405);
 });
 
@@ -525,4 +530,40 @@ test('a spawn linked to Slack: no prompt at launch, linked once it registers, th
   const intro = fx.sent.find((s) => s.id === NEW).text;
   assert.match(intro, /^\[slack sl-[0-9a-f]{6}\] You are linked to a Slack thread/);
   assert.match(intro, /How does it work\?[^]*Their request — start on it now[^]*\nHelp Alex with this$/);
+});
+
+test('forever: a link with no end never expires and says so in its intro', async (t) => {
+  const fx = fixture(t);
+  const link = await fx.bridge.link({ session: SID, url: URL_, minutes: 'forever', host: 'h' });
+  assert.equal(link.until, null);
+  assert.equal(link.minutes, null);
+  await fx.bridge.tick();
+  assert.match(fx.sent[0].text, /You are linked to a Slack thread until the owner unlinks it/);
+  fx.advance(30 * 24 * 60 * 60 * 1000);
+  await fx.bridge.tick();
+  assert.equal((await fx.bridge.list()).links.length, 1);
+  assert.equal((await fx.bridge.reply({ link: link.id, text: 'still here' })).ok, true);
+});
+
+test('relink: an ended link comes back on the same thread, with its instructions, mode and duration', async (t) => {
+  const fx = fixture(t);
+  const a = await fx.bridge.link({ session: SID, url: URL_, minutes: '4h', mode: 'proactive', task: 'demo help', host: 'h' });
+  await fx.bridge.unlink(a.id);
+  await assert.rejects(fx.bridge.relink('sl-000000'), { status: 404 });
+  const reads = fx.slack.calls.length;
+  const b = await fx.bridge.relink(a.id);
+  assert.notEqual(b.id, a.id);
+  assert.equal(b.threadTs, THREAD);
+  assert.equal(b.permalink, a.permalink);
+  assert.equal(b.task, 'demo help');
+  assert.equal(b.mode, 'proactive');
+  assert.equal(b.minutes, 240);
+  assert.equal(b.until - b.createdAt, 240 * 60 * 1000);
+  assert.ok(fx.slack.calls.slice(reads).some((c) => c.method === 'conversations.replies'), 're-reads the thread');
+  // Relinking again while it is active renews it; a duration can be given.
+  const c = await fx.bridge.relink(a.id, { minutes: 'forever' });
+  assert.equal(c.id, b.id);
+  assert.equal(c.renewed, true);
+  assert.equal(c.until, null);
+  assert.equal((await fx.bridge.list()).links.length, 1);
 });

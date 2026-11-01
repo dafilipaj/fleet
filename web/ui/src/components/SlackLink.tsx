@@ -1,16 +1,16 @@
 import { useState } from 'react'
-import { ExternalLinkIcon, Loader2Icon, MessagesSquareIcon, UnlinkIcon } from 'lucide-react'
+import { ExternalLinkIcon, Link2Icon, Loader2Icon, MessagesSquareIcon, UnlinkIcon } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { api } from '@/api/client'
-import type { Session } from '@/api/types'
+import type { Session, SlackLink, SlackMinutes } from '@/api/types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useNow } from '@/hooks/useNow'
-import { refreshSlack, SLACK_DURATIONS, slackLeft, useSessionSlackLinks, useSlack } from '@/hooks/useSlack'
+import { refreshSlack, SLACK_DURATIONS, slackDuration, slackLatest, slackLeft, toSlackMinutes, useSessionSlackLinks, useSlack } from '@/hooks/useSlack'
 import { cn } from '@/lib/utils'
 
 /**
@@ -21,12 +21,12 @@ export function SlackChip({ session: s, className }: { session: Pick<Session, 'h
   const links = useSessionSlackLinks(s.host, s.session_id)
   const now = useNow(30 * 1000)
   if (!links.length) return null
-  const until = Math.max(...links.map((l) => l.until))
+  const until = slackLatest(links.map((l) => l.until))
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <span
-          aria-label={`Linked to Slack for ${slackLeft(until, now)}`}
+          aria-label={until == null ? 'Linked to Slack, no end' : `Linked to Slack for ${slackLeft(until, now)}`}
           className={cn(
             'inline-flex h-4.5 shrink-0 items-center gap-1 rounded-[5px] border border-primary/40 px-1 text-[0.6875rem] text-primary tabular-nums',
             className,
@@ -51,25 +51,48 @@ export function SlackLinkSection({ host, session: s }: { host: string; session: 
   const now = useNow(30 * 1000)
   const [open, setOpen] = useState(false)
   const [url, setUrl] = useState('')
-  const [minutes, setMinutes] = useState(60)
+  const [minutes, setMinutes] = useState<SlackMinutes>(60)
   const [task, setTask] = useState('')
   const [mode, setMode] = useState<'mention' | 'proactive'>('mention')
   const [busy, setBusy] = useState<string | null>(null)
 
   if (!s?.session_id || !slack?.enabled || slack.host !== host) return null
 
+  // Ended links of this session (newest first), one per place, none it is linked to again already.
+  const placeOf = (l: SlackLink) => `${l.channel}/${l.threadTs ?? ''}`
+  const active = new Set(links.map(placeOf))
+  const past: SlackLink[] = []
+  for (const l of slack.ended) {
+    if (l.host !== host || l.session !== s.session_id || active.has(placeOf(l)) || past.some((p) => placeOf(p) === placeOf(l))) continue
+    past.push(l)
+  }
+
   const link = async () => {
     if (busy || !url.trim()) return
     setBusy('link')
     try {
       const l = await api.slackLink({ host, session: s.session_id!, url: url.trim(), minutes, mode, ...(task.trim() ? { task: task.trim() } : {}) })
-      toast.success(l.renewed ? 'Slack link renewed' : 'Linked to Slack', { description: `until ${new Date(l.until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` })
+      toast.success(l.renewed ? 'Slack link renewed' : 'Linked to Slack', { description: linkedUntil(l) })
       setOpen(false)
       setUrl('')
       setTask('')
       await refreshSlack()
     } catch (err) {
       toast.error('Link to Slack failed', { description: (err as Error)?.message })
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const relink = async (l: SlackLink) => {
+    if (busy) return
+    setBusy(l.id)
+    try {
+      const n = await api.slackRelink(l.id)
+      toast.success('Linked to Slack again', { description: linkedUntil(n) })
+      await refreshSlack()
+    } catch (err) {
+      toast.error('Link again failed', { description: (err as Error)?.message })
     } finally {
       setBusy(null)
     }
@@ -98,7 +121,7 @@ export function SlackLinkSection({ host, session: s }: { host: string; session: 
             <div className="min-w-0">
               <a href={l.permalink} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm hover:underline">
                 <MessagesSquareIcon className="size-3.5 shrink-0 text-primary" />
-                {l.dm ? `DM with ${l.dm.name}` : l.threadTs ? 'Thread' : 'Conversation'} · {slackLeft(l.until, now)} left
+                {placeName(l)} · {l.until == null ? 'no end' : `${slackLeft(l.until, now)} left`}
                 <ExternalLinkIcon className="size-3 text-dimmer" />
               </a>
               <div className="truncate text-xs text-dimmer">
@@ -108,6 +131,24 @@ export function SlackLinkSection({ host, session: s }: { host: string; session: 
             <Button variant="outline" size="lg" disabled={busy === l.id} onClick={() => void unlink(l.id)}>
               {busy === l.id ? <Loader2Icon className="animate-spin" /> : <UnlinkIcon />}
               Unlink
+            </Button>
+          </div>
+        ))}
+        {past.map((l) => (
+          <div key={l.id} className="flex min-h-12 items-center justify-between gap-3 py-1.5">
+            <div className="min-w-0">
+              <a href={l.permalink} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:underline">
+                <MessagesSquareIcon className="size-3.5 shrink-0 text-dimmer" />
+                {placeName(l)} · {l.endReason === 'expired' ? 'expired' : 'unlinked'}
+                <ExternalLinkIcon className="size-3 text-dimmer" />
+              </a>
+              <div className="truncate text-xs text-dimmer">
+                {[l.mode === 'proactive' ? 'Proactive' : 'When mentioned', l.task || 'the work of this session'].join(' · ')}
+              </div>
+            </div>
+            <Button variant="outline" size="lg" disabled={busy === l.id} onClick={() => void relink(l)}>
+              {busy === l.id ? <Loader2Icon className="animate-spin" /> : <Link2Icon />}
+              Link again · {slackDuration(l.minutes)}
             </Button>
           </div>
         ))}
@@ -121,7 +162,7 @@ export function SlackLinkSection({ host, session: s }: { host: string; session: 
               placeholder="Slack link (a message's thread, a channel) or @person for a DM"
               className="h-9 text-sm"
             />
-            <ToggleGroup type="single" value={String(minutes)} onValueChange={(v) => v && setMinutes(Number(v))} aria-label="How long" className="justify-start">
+            <ToggleGroup type="single" value={String(minutes)} onValueChange={(v) => v && setMinutes(toSlackMinutes(v))} aria-label="How long" className="justify-start">
               {SLACK_DURATIONS.map((d) => (
                 <ToggleGroupItem
                   key={d.minutes}
@@ -161,7 +202,7 @@ export function SlackLinkSection({ host, session: s }: { host: string; session: 
               {mode === 'proactive'
                 ? 'It sees every message there and posts when it has something useful, as the Slack app.'
                 : 'It follows quietly and answers when someone mentions the app or DMs it, or, in a thread it has posted in, talks to it.'}{' '}
-              {url.trim().startsWith('http') ? 'Everyone there can talk to it until the link ends. Invite the app first.' : 'A person: the app DMs with them — tell them to write to the app, or ask it in the instructions to start.'}
+              {url.trim().startsWith('http') ? `Everyone there can talk to it ${minutes === 'forever' ? 'until you unlink it' : 'until the link ends'}. Invite the app first.` : 'A person: the app DMs with them — tell them to write to the app, or ask it in the instructions to start.'}
             </p>
             <div className="flex justify-end gap-2">
               <Button variant="ghost" size="lg" onClick={() => setOpen(false)}>
@@ -189,3 +230,8 @@ export function SlackLinkSection({ host, session: s }: { host: string; session: 
     </section>
   )
 }
+
+const placeName = (l: SlackLink) => (l.dm ? `DM with ${l.dm.name}` : l.threadTs ? 'Thread' : 'Conversation')
+
+const linkedUntil = (l: SlackLink) =>
+  l.until == null ? 'until you unlink it' : `until ${new Date(l.until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`

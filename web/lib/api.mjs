@@ -36,7 +36,7 @@ import {
 import { DEFAULT_STACKS_MODEL } from './config.mjs';
 import { validateDormantRequest } from './dormant.mjs';
 import { validJobName } from './jobs.mjs';
-import { MAX_FIRST, MAX_MINUTES, MAX_TASK, MIN_MINUTES, MODES, SlackError, isPersonTarget, parseMinutes, parseSlackUrl, validLinkId } from './slack.mjs';
+import { MAX_FIRST, MAX_TASK, MODES, SlackError, isPersonTarget, linkMinutes, parseSlackUrl, validLinkId } from './slack.mjs';
 
 export const API_VERSION = 1;
 
@@ -128,7 +128,7 @@ const FOCUS_PROXY_MS = 45 * 1000;
 const HARNESSES_ROUTE = /^\/api\/hosts\/([^/]+)\/harnesses$/;
 /** `fleet harness list` runs `pi --list-models` (a node start): keep its answer a while. */
 const HARNESSES_TTL_MS = 10 * 60 * 1000;
-const SLACK_UNLINK_ROUTE = /^\/api\/slack\/links\/([^/]+)\/unlink$/;
+const SLACK_LINK_ACTION_ROUTE = /^\/api\/slack\/links\/([^/]+)\/(unlink|relink)$/;
 const DORMANT_ROUTE = /^\/api\/hosts\/([^/]+)\/dormant(?:\/(restore|forget))?$/;
 /** A restore types launch lines into new tmux panes; `--all` may bring back many sessions. */
 const DORMANT_PROXY_MS = 6 * 60 * 1000;
@@ -523,8 +523,12 @@ export function createApi({
         throw new HttpError(err.message, 400);
       }
     }
-    const minutes = parseMinutes(raw.minutes);
-    if (minutes == null || minutes < MIN_MINUTES || minutes > MAX_MINUTES) throw new HttpError(`slack.minutes must be ${MIN_MINUTES}–${MAX_MINUTES} min (or like 30m, 2h, 2d)`, 400);
+    let minutes;
+    try {
+      minutes = linkMinutes(raw.minutes) ?? 'forever';
+    } catch (err) {
+      throw new HttpError(`slack.${err.message}`, 400);
+    }
     if (raw.mode != null && !MODES.includes(raw.mode)) throw new HttpError(`slack.mode must be one of: ${MODES.join(', ')}`, 400);
     if (raw.task != null && (typeof raw.task !== 'string' || raw.task.trim().length > MAX_TASK)) throw new HttpError(`slack.task must be a string of at most ${MAX_TASK} chars`, 400);
     if (prompt.trim().length > MAX_FIRST) throw new HttpError(`the prompt is too long for a session linked to Slack (max ${MAX_FIRST} chars)`, 400);
@@ -685,7 +689,8 @@ export function createApi({
   /**
    * Slack links (lib/slack.mjs), on the `slack.host` server; the others proxy there. GET status
    * → `{ enabled, host, socket, bot, links, ended }`; POST link `{ host, session | pane, url,
-   * minutes, task? }`; POST reply `{ link, text, thread?, pane? }`; POST links/:id/unlink.
+   * minutes, task? }`; POST reply `{ link, text, thread?, pane? }`; POST links/:id/unlink;
+   * POST links/:id/relink `{ minutes? }`.
    */
   async function handleSlack(req, url, action, id = null) {
     const body = action === 'status' ? null : await readJsonBody(req);
@@ -693,9 +698,12 @@ export function createApi({
     if (slack) {
       try {
         if (action === 'status') return { status: 200, body: { host, ...(await slack.status()) } };
-        if (action === 'unlink') {
+        if (action === 'unlink' || action === 'relink') {
           if (!validLinkId(id)) throw new HttpError('link must look like sl-xxxxxx', 400);
-          return { status: 200, body: await slack.unlink(id) };
+          if (action === 'unlink') return { status: 200, body: await slack.unlink(id) };
+          const link = await slack.relink(id, { minutes: body?.minutes ?? undefined });
+          refreshFleet();
+          return { status: 200, body: link };
         }
         if (action === 'reply') return { status: 200, body: await slack.reply(body ?? {}) };
         const target = typeof body?.host === 'string' && body.host ? body.host : config.self;
@@ -965,10 +973,10 @@ export function createApi({
       return handleSlack(req, url, url.pathname.slice('/api/slack/'.length));
     }
 
-    const su = SLACK_UNLINK_ROUTE.exec(url.pathname);
+    const su = SLACK_LINK_ACTION_ROUTE.exec(url.pathname);
     if (su) {
       if (req.method !== 'POST') throw new HttpError('method not allowed', 405);
-      return handleSlack(req, url, 'unlink', decodeURIComponent(su[1]));
+      return handleSlack(req, url, su[2], decodeURIComponent(su[1]));
     }
 
     if (url.pathname === '/api/groups/edit') {

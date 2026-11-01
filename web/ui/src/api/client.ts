@@ -5,6 +5,7 @@ import type {
   DiffsResponse,
   ReviewAnchor,
   SlackLink,
+  SlackMinutes,
   SlackStatus,
   ReviewState,
   ReviewThread,
@@ -393,9 +394,12 @@ export const api = {
   /** Slack links: the bridge's state, from the `slack.host` server (proxied). */
   slack: (o: Opts = {}) => request<SlackStatus>('/api/slack', o),
   /** Link a session to a Slack thread / channel / DM for `minutes`. */
-  slackLink: (body: { host: string; session: string; url: string; minutes: number; task?: string; mode?: 'mention' | 'proactive' }, o: Opts = {}) =>
+  slackLink: (body: { host: string; session: string; url: string; minutes: SlackMinutes; task?: string; mode?: 'mention' | 'proactive' }, o: Opts = {}) =>
     request<SlackLink>('/api/slack/link', { ...o, method: 'POST', body }),
   slackUnlink: (id: string, o: Opts = {}) => request<SlackLink>(`/api/slack/links/${enc(id)}/unlink`, { ...o, method: 'POST', body: {} }),
+  /** Link the session of an ended link to the same place again (same instructions and mode); no `minutes` = as long as before. */
+  slackRelink: (id: string, minutes?: SlackMinutes, o: Opts = {}) =>
+    request<SlackLink>(`/api/slack/links/${enc(id)}/relink`, { ...o, method: 'POST', body: minutes === undefined ? {} : { minutes } }),
   /** The live inbox: brief + everything waiting on you, from the inbox host (proxied). */
   inbox: (o: Opts = {}) => request<InboxResponse>('/api/inbox', o),
   /** Scan now: the Slack & email scan starts in the background, every other source is re-read. */

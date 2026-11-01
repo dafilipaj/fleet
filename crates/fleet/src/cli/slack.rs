@@ -92,7 +92,7 @@ fn ok_or_err(status: &str, v: &Value) -> Result<()> {
     ))
 }
 
-/// `18:00` today, `Wed 28 Oct 18:00` another day (a link lasts up to 2 days).
+/// `18:00` today, `Wed 28 Oct 18:00` another day (a link lasts up to a week, or has no end).
 fn clock(ms: i64) -> String {
     chrono::DateTime::from_timestamp_millis(ms)
         .map(|t| {
@@ -112,7 +112,10 @@ fn link_line(l: &Value) -> String {
         .as_str()
         .or(l["session"].as_str())
         .unwrap_or("?");
-    let until = l["until"].as_i64().map(clock).unwrap_or_default();
+    let until = l["until"]
+        .as_i64()
+        .map(clock)
+        .unwrap_or_else(|| "unlinked".into());
     let task = l["task"].as_str().filter(|t| !t.is_empty());
     let place = match l["dm"]["name"].as_str() {
         Some(name) => format!("DM with {name}"),

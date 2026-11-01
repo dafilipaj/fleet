@@ -36,7 +36,9 @@ import { findSession } from './util.mjs';
 export const API = 'https://slack.com/api';
 export const TOKEN_NAMES = Object.freeze({ bot: 'SLACK_BOT_TOKEN', app: 'SLACK_APP_TOKEN' });
 export const MIN_MINUTES = 1;
-export const MAX_MINUTES = 2 * 24 * 60;
+export const MAX_MINUTES = 7 * 24 * 60;
+/** A link with no end (`until: null`): it lasts until it is unlinked. */
+export const FOREVER = 'forever';
 export const MAX_TASK = 1000;
 /** The owner's first request to a session spawned linked (`fleet spawn --slack`): ends the intro. */
 export const MAX_FIRST = 4000;
@@ -111,14 +113,24 @@ export function matchPeople(members, name) {
   return people.filter((u) => fields(u).some((f) => f.startsWith(name) || f.split(/\s+/).some((w) => w.startsWith(name))));
 }
 
-/** `30`, `30m`, `2h`, `1h30m`, `2d`, `1d12h` → minutes (integer), or null. */
+/** `30`, `30m`, `2h`, `1h30m`, `2d`, `1w`, `1d12h` → minutes (integer), or null. */
 export function parseMinutes(v) {
   if (typeof v === 'number') return Number.isInteger(v) ? v : null;
   const s = String(v ?? '').trim().toLowerCase();
   if (/^\d+$/.test(s)) return Number(s);
-  const m = /^(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?$/.exec(s);
-  if (!m || (!m[1] && !m[2] && !m[3])) return null;
-  return Number(m[1] ?? 0) * 24 * 60 + Number(m[2] ?? 0) * 60 + Number(m[3] ?? 0);
+  const m = /^(?:(\d+)w)?(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?$/.exec(s);
+  if (!m || (!m[1] && !m[2] && !m[3] && !m[4])) return null;
+  return Number(m[1] ?? 0) * 7 * 24 * 60 + Number(m[2] ?? 0) * 24 * 60 + Number(m[3] ?? 0) * 60 + Number(m[4] ?? 0);
+}
+
+export const DURATION_HINT = `${MIN_MINUTES}–${MAX_MINUTES} min (or like 30m, 2h, 2d, 1w), or ${FOREVER}`;
+
+/** A link's duration → minutes, or null for one with no end (`forever`); throws on anything else. */
+export function linkMinutes(v) {
+  if (typeof v === 'string' && v.trim().toLowerCase() === FOREVER) return null;
+  const mins = parseMinutes(v);
+  if (mins == null || mins < MIN_MINUTES || mins > MAX_MINUTES) throw new SlackError(`minutes must be ${DURATION_HINT}`);
+  return mins;
 }
 
 const clock = (ms) => {
@@ -128,6 +140,7 @@ const clock = (ms) => {
 
 /** When a link ends: `18:00`, or `Wed 28 Oct 18:00` when that is not the day it was made. */
 function ends(link) {
+  if (link.until == null) return 'the owner unlinks it';
   const d = new Date(link.until);
   if (link.createdAt != null && new Date(link.createdAt).toDateString() === d.toDateString()) return clock(link.until);
   return `${d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }).replace(',', '')} ${clock(link.until)}`;
@@ -475,7 +488,7 @@ export function createSlackBridge({ settings = {}, call, socket = null, listSess
     }
   }
 
-  const isActive = (l) => l.until > now();
+  const isActive = (l) => l.until == null || l.until > now();
   const view = (l) => ({
     id: l.id,
     host: l.host,
@@ -488,7 +501,8 @@ export function createSlackBridge({ settings = {}, call, socket = null, listSess
     task: l.task,
     mode: l.mode ?? 'mention',
     createdAt: l.createdAt,
-    until: l.until,
+    until: l.until ?? null,
+    minutes: l.minutes === undefined ? Math.max(1, Math.round((l.until - l.createdAt) / 60000)) || null : l.minutes,
     pending: l.pending.length,
     delivered: l.delivered ?? 0,
     replies: l.replies ?? 0,
@@ -512,13 +526,12 @@ export function createSlackBridge({ settings = {}, call, socket = null, listSess
    * POST link: the session (on this host) follows the Slack link for `minutes`. `first`: the
    * owner's first request, for a session spawned linked (it has had no prompt yet).
    */
-  async function link({ session: sessionId, pane, tmuxSession, url, user, minutes, task, mode, host, first }) {
+  async function link({ session: sessionId, pane, tmuxSession, url, user, minutes, task, mode, host, first }, again = null) {
     await load();
-    const person = user ?? (isPersonTarget(url) ? url : null);
-    const target = person != null ? null : parseSlackUrl(url);
+    const person = again ? null : user ?? (isPersonTarget(url) ? url : null);
+    const target = again ? { channel: again.channel, threadTs: again.threadTs } : person != null ? null : parseSlackUrl(url);
     if (mode != null && !MODES.includes(mode)) throw new SlackError(`mode must be one of: ${MODES.join(', ')}`);
-    const mins = parseMinutes(minutes);
-    if (mins == null || mins < MIN_MINUTES || mins > MAX_MINUTES) throw new SlackError(`minutes must be ${MIN_MINUTES}–${MAX_MINUTES} min (or like 30m, 2h, 2d)`);
+    const mins = linkMinutes(minutes);
     const taskText = typeof task === 'string' ? task.trim() : '';
     if (taskText.length > MAX_TASK) throw new SlackError(`task is too long (max ${MAX_TASK} chars)`);
     if (first != null && typeof first !== 'string') throw new SlackError('first must be a string');
@@ -528,7 +541,7 @@ export function createSlackBridge({ settings = {}, call, socket = null, listSess
     await whoami();
 
     // A person: the app's DM with them (opened if new) is the conversation.
-    let dm = null;
+    let dm = again?.dm ?? null;
     let conv = target;
     if (person != null) {
       dm = await findPerson(person);
@@ -563,18 +576,19 @@ export function createSlackBridge({ settings = {}, call, socket = null, listSess
       }
       throw err;
     }
-    let permalink = dm ? (bot.url ? `${bot.url.replace(/\/?$/, '/')}team/${dm.user}` : `slack:${dm.user}`) : String(url).trim();
+    let permalink = again ? again.permalink : dm ? (bot.url ? `${bot.url.replace(/\/?$/, '/')}team/${dm.user}` : `slack:${dm.user}`) : String(url).trim();
     try {
-      if (conv.threadTs) permalink = (await call('chat.getPermalink', { channel: conv.channel, message_ts: conv.threadTs })).permalink ?? permalink;
+      if (conv.threadTs && !again) permalink = (await call('chat.getPermalink', { channel: conv.channel, message_ts: conv.threadTs })).permalink ?? permalink;
     } catch {
       /* the link as given */
     }
 
-    const until = now() + mins * 60 * 1000;
+    const until = mins == null ? null : now() + mins * 60 * 1000;
     // The same session on the same thread again: a new time limit and task, not a second link.
     const same = links.find((l) => l.session === session.session_id && l.channel === conv.channel && l.threadTs === conv.threadTs);
     if (same) {
       same.until = until;
+      same.minutes = mins;
       if (taskText) same.task = taskText;
       if (mode) same.mode = mode;
       await save();
@@ -597,6 +611,7 @@ export function createSlackBridge({ settings = {}, call, socket = null, listSess
       owner: settings.owner ?? null,
       createdAt: now(),
       until,
+      minutes: mins,
       pending: [],
       intro: null,
       seen: history.map((m) => m.ts).slice(-MAX_SEEN),
@@ -606,7 +621,7 @@ export function createSlackBridge({ settings = {}, call, socket = null, listSess
     l.intro = linkPrompt(l, { history: people.map((m) => fromSlack(m)), names, first: firstText });
     links.push(l);
     await save();
-    log(`[slack] ${l.id}: ${session.name ?? session.session_id} ↔ ${l.channel}${l.threadTs ? `/${l.threadTs}` : ''} until ${clock(until)}`);
+    log(`[slack] ${l.id}: ${session.name ?? session.session_id} ↔ ${l.channel}${l.threadTs ? `/${l.threadTs}` : ''} until ${until == null ? 'unlinked' : clock(until)}`);
     schedule(0);
     return view(l);
   }
@@ -621,6 +636,22 @@ export function createSlackBridge({ settings = {}, call, socket = null, listSess
     if (!s) throw new SlackError(`no live session ${sessionId ?? (pane ? `in pane ${pane}` : `in tmux session ${tmuxSession}`)} on this host`, 404);
     if (!s.session_id || s.session_id.startsWith('pid-')) throw new SlackError('this session has no session id yet — try again in a moment', 409);
     return s;
+  }
+
+  /**
+   * POST links/:id/relink: link the same session to the same place again, with the same
+   * instructions and mode — an ended link (unlinked or expired), from the list. `minutes`:
+   * omitted = the duration it had.
+   */
+  async function relink(id, { minutes } = {}) {
+    await load();
+    const l = ended.find((x) => x.id === id) ?? links.find((x) => x.id === id);
+    if (!l) throw new SlackError(`no link ${id}`, 404);
+    const mins = minutes === undefined ? view(l).minutes ?? FOREVER : minutes;
+    return link(
+      { session: l.session, minutes: mins, task: l.task, mode: l.mode ?? 'mention', host: l.host },
+      { channel: l.channel, threadTs: l.threadTs, dm: l.dm ?? null, permalink: l.permalink },
+    );
   }
 
   /** POST unlink. */
@@ -791,6 +822,7 @@ export function createSlackBridge({ settings = {}, call, socket = null, listSess
 
   return {
     link,
+    relink,
     unlink,
     reply,
     handleEvent,

@@ -262,7 +262,10 @@ export interface SlackLink {
   /** `mention`: woken when addressed (the rest goes along as context); `proactive`: sees every message. */
   mode: 'mention' | 'proactive'
   createdAt: number
-  until: number
+  /** null: no end — it lasts until it is unlinked. */
+  until: number | null
+  /** How long it was linked for (null: no end): what Link again reuses. */
+  minutes: number | null
   pending: number
   delivered: number
   replies: number
@@ -270,6 +273,9 @@ export interface SlackLink {
   endReason: string | null
   renewed?: boolean
 }
+
+/** A link's duration: minutes, or `forever` (no end). */
+export type SlackMinutes = number | 'forever'
 
 /** GET /api/slack: the bridge on `slack.host` (proxied there). */
 export interface SlackStatus {
@@ -539,7 +545,7 @@ export interface SpawnRequest {
   /** Started from this app's embedded panel (the embed view's `app`): a label on the session. */
   embed?: string
   /** Start linked to Slack (only on `slack.host`): the prompt goes in with the link's intro. */
-  slack?: { url: string; minutes: number; mode?: 'mention' | 'proactive'; task?: string }
+  slack?: { url: string; minutes: SlackMinutes; mode?: 'mention' | 'proactive'; task?: string }
 }
 
 export interface SpawnResponse {
