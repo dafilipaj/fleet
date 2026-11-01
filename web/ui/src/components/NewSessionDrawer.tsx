@@ -701,7 +701,8 @@ function NewSessionForm({
     >
       <Header className="px-0 pt-3 pb-2 text-left">
         <Title className="text-left text-base font-semibold">{offersSibling ? 'New session from here' : sibling ? 'Spawn sibling' : fixed ? 'New session' : prefill ? 'Continue in new session' : 'New session'}</Title>
-        <Description className="text-left text-xs">
+        {/* A plain New session needs no explanation on screen: kept for screen readers only. */}
+        <Description className={cn('text-left text-xs', !sibling && !fixed && !offersSibling && 'sr-only')}>
           {sibling
             ? sibling.creates
               ? `This starts a new stack around this session (one Sonnet call), then a sibling session${siblingSameHost ? ' in the same directory' : ` on ${host}`} that reads the shared StackBrief first.`
