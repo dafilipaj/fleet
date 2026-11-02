@@ -1,15 +1,18 @@
 //! What `fleet model` and `fleet effort` share: type one of Claude Code's switching slash
-//! commands (`/model <id>`, `/effort <level>`) into a session, as typed in its terminal, and
-//! answer the one question that can come back — its confirmation while the prompt cache is
-//! warm — under one typing lock, then read the outcome off the transcript. `fleet send` is not
+//! commands (`/model <id>`, `/effort <level>`) or Codex's (`/model <slug>`, `/model
+//! --reasoning <level>`) into a session, as typed in its terminal, and answer the one question
+//! that can come back — Claude Code's confirmation while the prompt cache is warm — under one
+//! typing lock, then read the outcome off the transcript. `fleet send` is not
 //! enough for that: it returns before Claude Code acts, so confirming would take a second
 //! command (`answer`) and the caller still could not tell whether the switch happened.
 //!
 //! - **Exact target only** (`id:<session_id>` / `pid:<n>`), and **this process only**:
 //!   `--expect-pid` / `--expect-start` name the process the caller saw, as for `close`
 //!   (`target_changed`).
-//! - **Claude Code only** (`harness_unsupported`), **in a tmux pane only**
-//!   (`backend_unsupported`: the box is read with its text attributes).
+//! - **Claude Code and Codex** (`harness_unsupported` for pi), **in a tmux pane only**
+//!   (`backend_unsupported`: the box is read with its text attributes). A Codex session needs
+//!   its rollout (`transcript_not_found` before its first prompt, which writes it): the
+//!   outcome is read there.
 //! - **Under the session's typing lock** (`busy`, `locked`, while another fleet command holds
 //!   it), right before typing, in this order, and nothing is typed unless all four hold:
 //!   1. the agent owns its pane, by `close`'s foreground check ([`close::standing`]): the same
@@ -22,8 +25,10 @@
 //!      session the lock was taken for: the same process in the same pane, and the same
 //!      session id (the lock is named after it, and `/clear` changes it under the same
 //!      process) — else `target_changed`;
-//!   3. the screen shows no working line over the box ([`input::claude_working`]) — the
-//!      registry can lag a prompt typed in the terminal — else `not_idle`, `status: "busy"`;
+//!   3. Claude Code: the screen shows no working line over the box ([`input::claude_working`])
+//!      — the registry can lag a prompt typed in the terminal — else `not_idle`, `status:
+//!      "busy"`. Codex writes `task_started` as a turn begins, so check 2 stands alone, and a
+//!      `/model` that lands mid-turn applies from the next turn anyway;
 //!   4. the input box reads empty, as `send --require-empty` reads it ([`input::of_screen`]:
 //!      the same capture, and the caret — the terminal's cursor, or the one Claude Code paints
 //!      while that is hidden — so blanks left in Claude Code's box count as text, and a box
@@ -42,7 +47,10 @@
 //!   in place of the box for [`SETTLE`] is `confirm_unrecognized` — unless the transcript,
 //!   read once more first, already holds the command's answer, which then decides.
 //! - **The outcome** is the command's answer in the transcript, written after the command
-//!   began ([`Command::answer`]); its `timestamp` is `switched_at`. No answer within the wait,
+//!   began ([`Command::answer`]); its `timestamp` is `switched_at`. Codex asks nothing: its
+//!   answer is the rollout's `thread_settings_applied` event ([`slash::codex_applied`],
+//!   [`Command::applied`]), and a refusal it draws under the command, its box back
+//!   ([`Command::codex_drawn`]), ends the wait. No answer within the wait,
 //!   and a failure to read or press anything once the command was typed, are
 //!   `outcome_uncertain`. An `io` failure says in `typed` whether the command was being typed
 //!   (`--json`).
@@ -52,8 +60,11 @@
 
 use std::time::{Duration, Instant};
 
+use serde_json::Value;
+
 use crate::cli::close::{self, Agent, Expect, Standing};
 use crate::cli::commands::{SEND_HELD_EXIT, host_label, typed_field};
+use crate::cli::messages;
 use crate::core::backend;
 use crate::core::discovery::{self, Backend, Session, TargetError};
 use crate::core::harness::Harness;
@@ -101,6 +112,14 @@ pub trait Command {
     fn drawn(&self, _before: &str, _now: &str) -> Option<Error> {
         None
     }
+    /// What is typed into a Codex session: `/model <slug>`, `/model --reasoning <level>`.
+    fn codex_command(&self) -> String;
+    /// A refusal Codex draws under the command (`■ … is unavailable`), its box back: one on
+    /// `now` that is not on `before`.
+    fn codex_drawn(&self, before: &str, now: &str) -> Option<Error>;
+    /// What a `thread_settings_applied` event's `thread_settings` written since the command
+    /// says: the switch done, or why not. `typed` says what was typed, for the messages.
+    fn applied(&self, settings: &Value, typed: &str) -> Result<Self::Done>;
     /// Transcript line `line`, the next one written since the command: its `timestamp` and
     /// what it means — the switch done, or why not — when it answers the command. `typed`
     /// says what was typed, for the messages; `confirmed`, whether fleet pressed the
@@ -204,16 +223,34 @@ pub fn switch<C: Command>(
         ));
     }
     let s = discovery::resolve_target(t.target)?;
-    if s.harness != Harness::Claude {
+    if !matches!(s.harness, Harness::Claude | Harness::Codex) {
         return Err(Error::tagged(
             "harness_unsupported",
             format!(
-                "session {} runs {}: {name} switches Claude Code sessions only; {NOTHING}",
+                "session {} runs {}: {name} switches Claude Code and Codex sessions only; {NOTHING}",
                 s.label(),
                 s.harness.label()
             ),
         ));
     }
+    // Codex: where its answer will be written. Before its first prompt there is no rollout,
+    // and so nothing to read a switch off.
+    let rollout = match s.harness {
+        Harness::Codex => match messages::locate(&s) {
+            Ok(Some(p)) => Some(p),
+            Ok(None) => {
+                return Err(Error::tagged(
+                    "transcript_not_found",
+                    format!(
+                        "session {} has no rollout yet (Codex writes it with the first prompt), so a switch could not be confirmed; {NOTHING}",
+                        s.label()
+                    ),
+                ));
+            }
+            Err(f) => return Err(Error::tagged(f.kind, format!("{}; {NOTHING}", f.message))),
+        },
+        _ => None,
+    };
     let Some(start) = close::start_of(&s) else {
         return Err(Error::tagged(
             "io",
@@ -275,7 +312,7 @@ pub fn switch<C: Command>(
     // 3. and 4., off one capture: no working line, an empty box.
     let (before, styled) = backend::peek_styled(&s)
         .map_err(|e| Error::tagged("io", format!("the screen cannot be read: {e}; {NOTHING}")))?;
-    if let Some(line) = input::claude_working(&before) {
+    if let Some(line) = input::claude_working(&before).filter(|_| s.harness == Harness::Claude) {
         extra.status = Some("busy".into());
         return Err(Error::tagged(
             "not_idle",
@@ -302,6 +339,10 @@ pub fn switch<C: Command>(
             switched_at: None,
             done: None,
         });
+    }
+
+    if let Some(rollout) = rollout {
+        return codex(&s, cmd, &before, rollout, began, extra);
     }
 
     // Only what the transcript gains from now on counts.
@@ -428,6 +469,63 @@ pub fn switch<C: Command>(
                 ""
             },
             C::SUCCESS,
+            WAIT.as_secs()
+        ),
+    ))
+}
+
+/// The switch in Codex session `s`, its checks passed and `before` the screen they read: type
+/// [`Command::codex_command`], then read the rollout and the screen for up to [`WAIT`]. Codex
+/// asks nothing; the rollout's `thread_settings_applied` written since `began` decides
+/// ([`Command::applied`]), and a refusal drawn under the command ends it sooner.
+fn codex<C: Command>(
+    s: &Session,
+    cmd: &mut C,
+    before: &str,
+    rollout: std::path::PathBuf,
+    began: chrono::DateTime<chrono::Utc>,
+    extra: &mut Extra,
+) -> Result<Switched<C::Done>> {
+    let mut transcript = slash::Tail::from_end(move || Some(rollout.clone()));
+    let command = cmd.codex_command();
+    extra.typed = true;
+    backend::send(s, &command).map_err(|e| {
+        Error::tagged(
+            "io",
+            format!("{e}; `{command}` may be partly typed, nothing pressed after it"),
+        )
+    })?;
+    let typed = format!("`{command}` was typed");
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let answer = transcript
+            .read()
+            .iter()
+            .filter_map(|line| slash::codex_applied(line))
+            .find(|(at, _)| slash::at_or_after(at, began));
+        if let Some((at, settings)) = answer {
+            return cmd.applied(&settings, &typed).map(|d| Switched {
+                session: s.clone(),
+                confirmed: false,
+                switched_at: Some(at),
+                done: Some(d),
+            });
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        if let Ok((screen, _)) = backend::peek_styled_within(s, left)
+            && let Some(e) = cmd.codex_drawn(before, &screen)
+        {
+            return Err(e);
+        }
+        std::thread::sleep(POLL.min(deadline.saturating_duration_since(Instant::now())));
+    }
+    Err(Error::tagged(
+        "outcome_uncertain",
+        format!(
+            "{typed}, but Codex wrote no thread_settings_applied in its rollout within {}s: whether it switched cannot be told (see `fleet peek`)",
             WAIT.as_secs()
         ),
     ))

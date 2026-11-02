@@ -122,6 +122,16 @@ fn word(rest: &str) -> String {
         .to_string()
 }
 
+/// How many lines of `screen` say Codex's model has no level `level` (Codex 0.166: `■ Reasoning
+/// level '<level>' is unavailable for <model>. Available: …`), under the `/model --reasoning
+/// <level>` it answers.
+pub fn codex_unavailable(screen: &str, level: &str) -> usize {
+    slash::codex_refusals(
+        screen,
+        &format!("Reasoning level '{}' is unavailable for ", level.trim()),
+    )
+}
+
 /// Is `level` a word `/effort` can be given: lowercase letters only, 1 to 16 of them. Which
 /// levels a model has is for Claude Code to say (and `fleet harness list` to list).
 pub fn valid_level(level: &str) -> bool {

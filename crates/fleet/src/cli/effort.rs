@@ -1,13 +1,17 @@
 //! `fleet effort <target> <level>`: switch a Claude Code session's effort level, as
-//! `/effort <level>` typed in its terminal does, and answer the one question that can come
-//! back: its confirmation while the prompt cache is warm. The checks, the lock, the wait and
+//! `/effort <level>` typed in its terminal does, or a Codex session's reasoning effort, as
+//! `/model --reasoning <level>` does, and answer the one question that can come back: Claude
+//! Code's confirmation while the prompt cache is warm. The checks, the lock, the wait and
 //! the confirmation are [`switch`]'s, shared with `fleet model`; what is `/effort`'s own:
 //!
 //! - **The level** is checked for shape only ([`effort::valid_level`]: lowercase letters, at
 //!   most 16) and typed as given; which levels a model has is `fleet harness list`'s
 //!   (`efforts`), and Claude Code says what it makes of the word.
-//! - **Claude Code only**: Codex 0.163 changes its effort in the second step of its `/model`
-//!   picker, pi has none — `harness_unsupported`.
+//! - **Claude Code and Codex**: pi has none — `harness_unsupported`.
+//! - **Codex** (0.164+): `/model --reasoning <level>`, for this session only (`saved: false`),
+//!   asking nothing. Success is the rollout's `thread_settings_applied` with that very
+//!   `reasoning_effort`; another level there is `outcome_uncertain`, and `■ Reasoning level
+//!   '<level>' is unavailable for <model>.` drawn under the command is `effort_not_found`.
 //! - The confirmation is "Change effort level?" for that very level ([`effort::shown`]).
 //! - **Success** is the transcript's `Set effort level to <level> …` (or, for `auto`, `Effort
 //!   level set to auto`) under the entry naming `/effort <level>` ([`effort::Replies`]), written
@@ -19,7 +23,7 @@
 //!   `outcome_uncertain`.
 
 use colored::Colorize;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::cli::close::Expect;
 use crate::cli::commands::host_label;
@@ -63,6 +67,37 @@ impl Command for Effort {
 
     fn shown(&self, screen: &str, styled: bool) -> Shown {
         effort::shown(screen, &self.level, styled)
+    }
+
+    fn codex_command(&self) -> String {
+        format!("/model --reasoning {}", self.level)
+    }
+
+    fn codex_drawn(&self, before: &str, now: &str) -> Option<Error> {
+        let l = &self.level;
+        (effort::codex_unavailable(now, l) > effort::codex_unavailable(before, l)).then(|| {
+            Error::tagged(
+                "effort_not_found",
+                format!(
+                    "Codex's model has no reasoning level \"{l}\" (Reasoning level '{l}' is unavailable); nothing switched"
+                ),
+            )
+        })
+    }
+
+    fn applied(&self, settings: &Value, typed: &str) -> Result<bool> {
+        let want = &self.level;
+        match settings.get("reasoning_effort").and_then(Value::as_str) {
+            // Codex's switch is for this session only: nothing saved.
+            Some(l) if l == want => Ok(false),
+            l => Err(Error::tagged(
+                "outcome_uncertain",
+                format!(
+                    "{typed}, but Codex set the reasoning effort to {}, not {want} (see `fleet peek`)",
+                    l.unwrap_or("its model's default")
+                ),
+            )),
+        }
     }
 
     fn answer(

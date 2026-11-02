@@ -190,6 +190,12 @@ pub fn not_found(screen: &str, id: &str) -> usize {
         .count()
 }
 
+/// How many lines of `screen` say Codex has no model `id` (Codex 0.166: `■ Model '<id>' is
+/// unavailable. Use /model to see available models.`), under the `/model <id>` it answers.
+pub fn codex_not_found(screen: &str, id: &str) -> usize {
+    slash::codex_refusals(screen, &format!("Model '{}' is unavailable.", id.trim()))
+}
+
 /// How many lines of `screen` say a `PreModelSwitch` hook blocked a switch (`Model switch to
 /// <label> was blocked by a PreModelSwitch hook[: <reason>]`).
 pub fn refused(screen: &str) -> usize {

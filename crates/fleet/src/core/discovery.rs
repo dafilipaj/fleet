@@ -105,7 +105,8 @@ pub struct Session {
     pub model: Option<String>,
     /// The reasoning effort it runs at (`low`, `medium`, `high`, `xhigh`, `max` …), as the
     /// transcript last recorded it (Claude: the context entry's `effort`; Codex: the last
-    /// `turn_context`'s); `null` when unknown, and always for pi.
+    /// `turn_context`'s or `thread_settings_applied`'s, whichever is later); `null` when
+    /// unknown, and always for pi.
     pub effort: Option<String>,
     /// Claude Code 2.1.301+: tasks running now and tasks started and finished in
     /// the current Turn. `None` when unknown, and always for Codex and pi.
@@ -116,7 +117,8 @@ pub struct Session {
     /// pending call is beyond the transcript tail read, and always for Codex and pi.
     pub activity: Option<String>,
     /// The `timestamp` of the transcript entry `model` was read from (Claude Code: its last
-    /// reply; Codex: its `turn_context`; pi: its last reply or model change), as written;
+    /// reply; Codex: its last `turn_context` or `thread_settings_applied`; pi: its last reply
+    /// or model change), as written;
     /// `None` without one (no model known, or one from the command line).
     pub model_at: Option<String>,
     /// Absolute path of the session's transcript, when known (Codex / pi only — a

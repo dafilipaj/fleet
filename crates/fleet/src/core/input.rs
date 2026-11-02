@@ -24,7 +24,7 @@
 //! **Where the box is.** Claude Code: between the last two rules drawn from column 0, its first
 //! line starting with `❯ ` (`!` in bash mode — text, since a send there would run as a shell
 //! command; 2.1.30x puts a no-break space after the marker), every line under it indented. Codex: the last line starting with `› ` at column
-//! 0, and the rows under it drawn on that line's background (the composer's own), every one
+//! 0 (`» ` at the `ultra` reasoning level, Codex 0.166), and the rows under it drawn on that line's background (the composer's own), every one
 //! indented, the first row after them indented too (the footer, or a popup); on a screen
 //! where that line has no background, down to its footer: the indented rows at the very
 //! bottom, a blank row above them, one drawn faint, bold or in a colour, one saying what a
@@ -317,6 +317,10 @@ fn starts_with_marker(line: &str, marker: char) -> bool {
     cs.next() == Some(marker) && matches!(cs.next(), None | Some(' ' | '\u{a0}'))
 }
 
+/// The marker Codex starts its composer's first line with: `›`, and `»` while the session runs
+/// at the `ultra` reasoning level (Codex 0.166).
+const CODEX_MARKERS: [char; 2] = ['›', '»'];
+
 /// Indented, or blank: a line inside a box, never one of its own at column 0.
 fn inside(line: &str) -> bool {
     line.is_empty() || line.starts_with(char::is_whitespace)
@@ -383,7 +387,9 @@ fn locate(rows: &[Vec<Cell>], texts: &[String], harness: Harness) -> Option<Foun
                 .then(|| found(top + 1, bottom, marker == '!'))
         }
         Harness::Codex => {
-            let at = texts.iter().rposition(|l| starts_with_marker(l, '›'))?;
+            let at = texts
+                .iter()
+                .rposition(|l| CODEX_MARKERS.iter().any(|m| starts_with_marker(l, *m)))?;
             let (end, doubt) = match codex_composer_end(rows, texts, at) {
                 Some(end) => (end, Vec::new()),
                 None => codex_footer(rows, texts, at)?,
@@ -882,6 +888,15 @@ mod tests {
             // reads: no box. A known gap (cli.md, Sending): a plain send types there, and its
             // Enter picks the first choice; tests/send.rs pins the --require-empty hold.
             ("codex-menu-ratelimit", Codex, InputRead::NoBox),
+            // Codex 0.166, after `/model` switched (`• Model changed to …`) or refused
+            // (`■ … is unavailable`) under the command: the placeholder back.
+            ("codex-model-changed", Codex, InputRead::Empty),
+            ("codex-model-unavailable", Codex, InputRead::Empty),
+            ("codex-reasoning-unavailable", Codex, InputRead::Empty),
+            // At `ultra` the composer's marker is `»`, and its status row reads `U L T R A`
+            // for a moment.
+            ("codex-ultra-empty", Codex, InputRead::Empty),
+            ("codex-ultra-typed", Codex, typed("draft at ultra")),
         ];
         for (name, harness, want) in cases {
             assert_eq!(read(&live(name), harness, true), want, "{name}");
