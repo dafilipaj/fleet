@@ -64,6 +64,10 @@ pub struct Host {
     /// e.g. a second tailnet's userspace `tailscaled`; `None` → direct.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub web_proxy: Option<String>,
+    /// `host[:port]` the web server dials for this host's `web` instead of the url's own name
+    /// (read by the web server only); TLS and `Host` keep the url's name. `None` → the url's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web_connect: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

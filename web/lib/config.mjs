@@ -291,6 +291,7 @@ export function normalizeConfig(
   if (!isObject(hosts)) throw new Error('config.hosts must be an object of name -> { ssh, web }');
   const peers = {};
   const peerProxies = {}; // peer origin → HTTP proxy url (hosts.<name>.webProxy)
+  const peerConnects = {}; // peer origin → host[:port] dialled instead (hosts.<name>.webConnect)
   const sshHosts = {}; // name → ssh destination (the "Open in editor" Remote-SSH links)
   const hostAddrs = {}; // name → the hostname of its web url (which machine a browser is on)
   for (const [name, host] of Object.entries(hosts)) {
@@ -317,6 +318,12 @@ export function normalizeConfig(
         throw new Error(`config.hosts.${name}.webProxy must be an http(s) url`);
       }
       peerProxies[new URL(peers[name]).origin] = host.webProxy.replace(/\/+$/, '');
+    }
+    if (host.webConnect != null) {
+      if (typeof host.webConnect !== 'string' || !/^[A-Za-z0-9.-]+(:\d{1,5})?$/.test(host.webConnect)) {
+        throw new Error(`config.hosts.${name}.webConnect must be a host or host:port`);
+      }
+      peerConnects[new URL(peers[name]).origin] = host.webConnect;
     }
   }
 
@@ -629,6 +636,7 @@ export function normalizeConfig(
     bind,
     peers,
     peerProxies,
+    peerConnects,
     sshHosts,
     hostAddrs,
     editor,

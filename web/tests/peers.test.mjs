@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 
-import { fetchPeerHost, proxyToPeer, setPeerProxies, streamFromPeer } from '../lib/peers.mjs';
+import { fetchPeerHost, proxyToPeer, setPeerConnects, setPeerProxies, streamFromPeer } from '../lib/peers.mjs';
 import { normalizeConfig } from '../lib/config.mjs';
 
 function listen(server) {
@@ -88,4 +88,47 @@ test('config: hosts.<name>.webProxy maps the peer origin to the proxy and is val
   assert.deepEqual(cfg.peerProxies, { 'https://fleet.studio.example': 'http://localhost:1056' });
   raw.hosts.studio.webProxy = 'localhost:1056';
   assert.throws(() => normalizeConfig(raw, { home: '/home/tester', log: { warn() {} } }), /webProxy must be an http\(s\) url/);
+});
+
+test('a peer with webConnect is dialled at that address, keeping its own name as Host', async () => {
+  const hosts = [];
+  const peer = http.createServer((req, res) => {
+    hosts.push(req.headers.host);
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ hosts: [{ name: 'studio', ok: true, fetchedAt: 1, sessions: [] }], local: new URL(req.url, 'http://x').searchParams.get('local') }));
+  });
+  const peerUrl = await listen(peer);
+  const port = new URL(peerUrl).port;
+  // The web url names a host that does not resolve; webConnect points at the real listener.
+  const base = `http://fleet.studio.invalid:${port}`;
+  setPeerConnects({ [base]: `127.0.0.1:${port}` });
+  try {
+    const host = await fetchPeerHost('studio', base);
+    assert.equal(host.ok, true);
+    const proxied = await proxyToPeer(base, { pathname: '/api/fleet' });
+    assert.equal(proxied.status, 200);
+    assert.equal(proxied.body.local, '1');
+    const streamed = await streamFromPeer(base, { pathname: '/api/fleet' });
+    assert.equal(streamed.status, 200);
+    streamed.stream.resume();
+    assert.deepEqual(hosts, Array(3).fill(`fleet.studio.invalid:${port}`));
+  } finally {
+    setPeerConnects({});
+    peer.closeAllConnections();
+    await new Promise((r) => peer.close(r));
+  }
+});
+
+test('config: hosts.<name>.webConnect maps the peer origin to the address and is validated', () => {
+  const raw = {
+    self: 'laptop',
+    hosts: {
+      laptop: { web: 'http://100.x.y.z:7777' },
+      studio: { ssh: 'studio', web: 'https://fleet.studio.example/', webConnect: 'studio.tailnet.example' },
+    },
+  };
+  const cfg = normalizeConfig(raw, { home: '/home/tester', log: { warn() {} } });
+  assert.deepEqual(cfg.peerConnects, { 'https://fleet.studio.example': 'studio.tailnet.example' });
+  raw.hosts.studio.webConnect = 'https://studio.tailnet.example';
+  assert.throws(() => normalizeConfig(raw, { home: '/home/tester', log: { warn() {} } }), /webConnect must be a host or host:port/);
 });

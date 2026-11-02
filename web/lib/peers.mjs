@@ -7,10 +7,30 @@ import { sortSessions } from './util.mjs';
 // the config. Node's built-in proxy support (agent `proxyEnv`, Node >= 24.5) does the tunnelling.
 let peerProxies = {};
 const agents = new Map();
+// Peer origin → the host[:port] to dial instead of the url's own (hosts.<name>.webConnect), for a
+// name the proxy cannot resolve: TLS (SNI, the certificate check) and Host stay the url's name.
+let peerConnects = {};
 
 export function setPeerProxies(map) {
   peerProxies = map && typeof map === 'object' ? { ...map } : {};
   agents.clear();
+}
+
+export function setPeerConnects(map) {
+  peerConnects = map && typeof map === 'object' ? { ...map } : {};
+}
+
+// The url to dial and the request options that keep the original name for TLS and Host.
+function dialTarget(target) {
+  const connect = peerConnects[target.origin];
+  if (!connect) return { url: target, options: {} };
+  const url = new URL(target.href);
+  const at = new URL(`${target.protocol}//${connect}`);
+  url.hostname = at.hostname;
+  url.port = at.port || target.port;
+  const options = { headers: { host: target.host } };
+  if (target.protocol === 'https:') options.servername = target.hostname;
+  return { url, options };
 }
 
 function proxyAgentFor(target) {
@@ -27,8 +47,9 @@ function proxyAgentFor(target) {
 // fetch() has no per-request proxy without undici, so a proxied peer goes through http(s).request
 // and comes back as a Response, which is all the callers use.
 function requestViaAgent(target, { method = 'GET', headers = {}, body = null, signal } = {}, agent) {
+  const { url, options } = dialTarget(target);
   return new Promise((resolve, reject) => {
-    const out = (target.protocol === 'https:' ? https : http).request(target, { method, headers, agent, signal }, (res) => {
+    const out = (target.protocol === 'https:' ? https : http).request(url, { ...options, method, headers: { ...headers, ...options.headers }, agent, signal }, (res) => {
       const chunks = [];
       res.on('data', (c) => chunks.push(c));
       res.on('error', reject);
@@ -57,7 +78,7 @@ async function fetchWithTimeout(url, opts, timeoutMs) {
   try {
     const target = new URL(url);
     const agent = proxyAgentFor(target);
-    if (agent) return await requestViaAgent(target, { ...opts, signal: controller.signal }, agent);
+    if (agent || peerConnects[target.origin]) return await requestViaAgent(target, { ...opts, signal: controller.signal }, agent);
     return await fetch(url, { ...opts, signal: controller.signal });
   } finally {
     clearTimeout(timer);
@@ -225,7 +246,8 @@ export function streamFromPeer(baseUrl, { pathname, search = '', timeoutMs = 200
       clearTimeout(timer);
       resolve(result);
     };
-    const out = (target.protocol === 'https:' ? https : http).request(target, { method: 'GET', agent: proxyAgentFor(target) }, (res) => {
+    const { url, options } = dialTarget(target);
+    const out = (target.protocol === 'https:' ? https : http).request(url, { ...options, method: 'GET', agent: proxyAgentFor(target) }, (res) => {
       const headers = {};
       for (const h of PASS_HEADERS) if (res.headers[h] != null) headers[h] = res.headers[h];
       done({ status: res.statusCode ?? 502, headers, stream: res });
