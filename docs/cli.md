@@ -1071,9 +1071,10 @@ kind has none; a caller that does not know a reason goes by `kind` alone):
 ### Switching the model
 
 `fleet [-n] model <target> <model-id> [--json] [--expect-pid <n> --expect-start <t>]
-[--require-empty]` switches a Claude Code session to another model, as `/model <model-id>` typed
-in its terminal does: from its next reply on, and as Claude Code's default for new sessions too
-(`/model` saves it there). A plain `send "/model …"` is not enough: while the prompt cache is warm
+[--require-empty]` switches a Claude Code or Codex session to another model, as `/model
+<model-id>` typed in its terminal does: from its next reply on — in Claude Code as its default
+for new sessions too (`/model` saves it there), in Codex for this session only (see
+[Codex](#codex-model-and-effort) below). A plain `send "/model …"` is not enough: while the prompt cache is warm
 (on a subscription, for an hour after the last reply) Claude Code asks to confirm the switch, and
 `send` returns before Claude Code acts, so the caller would need a second command to confirm it
 (`answer`, which reads that dialog as a permission prompt) and still could not tell whether the
@@ -1086,9 +1087,8 @@ reads the outcome off the transcript.
   `target_changed`.
 - **The model id** is checked as `spawn --model`'s (letters, digits and `._[]-/:`, at most 100;
   blank is `usage`) and typed as given. Claude Code says whether it knows it.
-- **Claude Code only.** Codex (0.163 opens a picker on `/model`) and pi are
-  `harness_unsupported`; an iTerm tab is `backend_unsupported` (the box is read with its text
-  attributes, which only tmux gives).
+- **Claude Code and Codex.** pi is `harness_unsupported`; an iTerm tab is
+  `backend_unsupported` (the box is read with its text attributes, which only tmux gives).
 - **Checks, under the session's typing lock**, right before typing, in this order — nothing is
   typed unless all four hold:
   1. the agent owns its pane, by `close`'s foreground check: that very process, in the
@@ -1106,10 +1106,11 @@ reads the outcome off the transcript.
      in the same pane, and the same session id — the lock is named after it, and `/clear`
      gives the same process a new one, whose lock another fleet command could take — else
      `target_changed` (an `id:` target naming the id a `/clear` replaced too);
-  3. the screen shows no working line over the input box — Claude Code's spinner and its verb,
-     `✳ Actualizing…`, `✽ Symbioting… (4s · …)` — else `not_idle` with `status: "busy"`: the
-     registry can lag a prompt typed straight into the terminal, and the box alone reads empty
-     while a turn runs;
+  3. Claude Code: the screen shows no working line over the input box — its spinner and its
+     verb, `✳ Actualizing…`, `✽ Symbioting… (4s · …)` — else `not_idle` with `status: "busy"`:
+     the registry can lag a prompt typed straight into the terminal, and the box alone reads
+     empty while a turn runs. Not for Codex, which writes `task_started` to its rollout as a
+     turn begins;
   4. the input box reads empty, as `send --require-empty` reads it ([Sending](#sending)): the
      same reader, the caret included (the terminal's cursor, or while that is hidden the one
      Claude Code paints), so blanks left in Claude Code's box (which it draws as nothing) are
@@ -1179,6 +1180,33 @@ reads the outcome off the transcript.
 `list`'s `model` changes only with the session's next reply; `model_at` is that reply's time, so
 a caller that shows the new model until then compares it with `switched_at`.
 
+#### Codex: model and effort
+
+Codex 0.164 and later switch inline, at once, for this session only (its saved defaults stay),
+and ask nothing: `model` types `/model <slug>`, `effort` types `/model --reasoning <level>`, on
+the same targets, guard, lock and checks (the third, a working line on screen, is Claude Code's
+alone). A Codex session needs its rollout, which Codex writes with the first prompt: without one
+it is `transcript_not_found`, nothing typed. Then the screen and the rollout are read every 100
+ms for up to 5 s:
+
+- **Success** is the rollout's `thread_settings_applied` event (`type: "event_msg"`,
+  `payload.type`), timestamped no earlier than the command began, whose `payload.thread_settings`
+  names that very `model` (for `model`) or `reasoning_effort` (for `effort`); its `timestamp` is
+  `switched_at`, `confirmed` is `false` and `effort`'s `saved` is `false`. Another model or level
+  there is `outcome_uncertain`, and so is none within the wait.
+- A refusal Codex draws under the command, its input box back, ends the wait: `■ Model '<slug>'
+  is unavailable. …` is `model_not_found`; `■ Reasoning level '<level>' is unavailable for
+  <model>. Available: …` is `effort_not_found`. Only a line that was not there before the command
+  counts.
+- A model switch moves the session to the new model's default level (`default_reasoning_level`),
+  whatever level it ran at: `list` shows it at once.
+
+`list` reads `thread_settings_applied` beside `turn_context` (Codex writes both as each turn
+starts, and the event alone for a switch between turns), the later one winning, so a Codex
+session's `model`, `effort` and `model_at` change at once, with `model_at` equal to the switch's
+`switched_at`. Read off Codex 0.166's screens (`testdata/screens/live/codex-model-*`,
+`codex-reasoning-unavailable`) and rollouts (captured 2026-10-31).
+
 `--json` prints one object: `{ ok: true, host, session_id, pid, harness, model, confirmed,
 switched_at, dry_run }` — `confirmed` whether Claude Code asked and its first choice was
 picked, `switched_at` the `Set model to` entry's `timestamp` as written (`null` under `-n`).
@@ -1192,16 +1220,17 @@ Failures are `{ ok: false, host, kind, error }`, exit 1 — exit 3 for `send_hel
 | `usage` | not an exact target, no or a bad model id, `--expect-*` alone or not a time; clap's own too, wherever `--json` stands (exit 1) |
 | `target_not_found`, `target_ambiguous`, `target_invalid` | the target, as for every verb; `target_not_found` also for an agent that has exited |
 | `target_changed` | another process than `--expect-pid`/`--expect-start`, or than the one looked up, by the time of the checks; or the same process under another session id (a `/clear` since the lookup) |
-| `harness_unsupported` | a Codex or pi session |
+| `harness_unsupported` | a pi session |
+| `transcript_not_found` | a Codex session without its rollout yet (before its first prompt) |
 | `backend_unsupported` | not a tmux pane (an iTerm tab), or a `FLEET_FIXTURE` fleet |
 | `busy` | `reason`: `locked` (another fleet command holds the session's lock — retry) or `editor_open` |
 | `host_shared` | `reason`: `job_in_front` or `suspended` (see above) |
 | `not_idle` | `status`: the registry's (`busy`, `waiting`, `unknown`), or `busy` for a working line on screen |
 | `send_held` | the input box is not empty: `reason` `text`, `prompt`, `no_input_box` or `unreadable` (exit 3) |
-| `model_not_found` | Claude Code: `Model '<id>' not found` |
+| `model_not_found` | Claude Code: `Model '<id>' not found`; Codex: `■ Model '<slug>' is unavailable.` |
 | `switch_refused` | a `PreModelSwitch` hook refused it |
 | `confirm_unrecognized` | something other than that confirmation or the input box came up; nothing pressed |
-| `outcome_uncertain` | typed, but no `Set model to` within the wait; `Set model to` a label that is not positively the model asked for (another model's, or one fleet cannot match); `Kept model as` (declined in the terminal: nothing switched, the model unchanged); or a read or key that failed or got no answer once the command was typed |
+| `outcome_uncertain` | typed, but no `Set model to` (Codex: `thread_settings_applied`) within the wait, or Codex's naming another model; `Set model to` a label that is not positively the model asked for (another model's, or one fleet cannot match); `Kept model as` (declined in the terminal: nothing switched, the model unchanged); or a read or key that failed or got no answer once the command was typed |
 | `io` | the lock, `ps`, `lsof`, tmux or the typing failed, before or while the command was typed; `typed` says which (`false`: nothing typed, see [Sending](#sending)) |
 
 **Limits.** The confirmation and the answers are read off Claude Code 2.1.303's own screens
@@ -1215,7 +1244,7 @@ wording is checked against the Claude Code 2.1.303 bundle, not a capture. `-H` r
 
 `fleet [-n] effort <target> <level> [--json] [--expect-pid <n> --expect-start <t>]
 [--require-empty]` switches a Claude Code session's effort level, as `/effort <level>` typed in
-its terminal does: from its next request on, and — for `low` to `xhigh` — as Claude Code's
+its terminal does (a Codex session's reasoning effort: [Codex](#codex-model-and-effort)): from its next request on, and — for `low` to `xhigh` — as Claude Code's
 default for new sessions on the session's model too (`/effort` saves it per model, under
 `modelSettings.<model id>.effortLevel` in `settings.json`). `max` is for this session only;
 `auto` clears the model's saved level, so the session and new ones run at the model's default.
@@ -1223,9 +1252,8 @@ default for new sessions on the session's model too (`/effort` saves it per mode
 warm Claude Code asks "Change effort level?" first. `effort` is `model`'s sibling and runs on the
 same code:
 
-- **Exact targets**, `--expect-pid` / `--expect-start`, **Claude Code in a tmux pane only**
-  (Codex 0.163 changes its effort only in the second step of its `/model` picker, pi has none:
-  `harness_unsupported`), and **the four checks under the typing lock**, with the same refusals
+- **Exact targets**, `--expect-pid` / `--expect-start`, **Claude Code or Codex in a tmux pane
+  only** (pi has none: `harness_unsupported`), and **the four checks under the typing lock**, with the same refusals
   and the same `send_held` hold (`--require-empty` accepted, changing nothing) — all as in
   [Switching the model](#switching-the-model).
 - **The level** is checked for shape only — lowercase letters, at most 16 (`usage` otherwise) —
@@ -1270,8 +1298,9 @@ which clears the saved level; `false` for `max`, and for an answer that says nei
 under `-n`), `switched_at` the answer's `timestamp` as written (`null` under `-n`). Failures are
 `model`'s object, exit 1 (3 for `send_held`), with the same kinds — `usage`, the target kinds,
 `target_changed`, `harness_unsupported`, `backend_unsupported`, `busy`, `host_shared`,
-`not_idle`, `send_held`, `confirm_unrecognized`, `outcome_uncertain`, `io` — and none of
-`model_not_found` or `switch_refused` (Claude Code has no hook on effort changes).
+`not_idle`, `send_held`, `confirm_unrecognized`, `outcome_uncertain`, `io`, and Codex's
+`transcript_not_found` and `effort_not_found` — and none of `model_not_found` or
+`switch_refused` (Claude Code has no hook on effort changes).
 
 **Limits.** The confirmation and the answers are read off Claude Code 2.1.308's own screens
 (`testdata/screens/live/claude-effort-*`) and transcript entries

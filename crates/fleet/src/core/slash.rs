@@ -328,6 +328,45 @@ pub fn at_or_after(at: &str, since: chrono::DateTime<chrono::Utc>) -> bool {
     t.timestamp_millis() >= since.timestamp_millis()
 }
 
+/// Codex's answer to a `/model` switch in its rollout: a `thread_settings_applied` event
+/// (Codex 0.164+), its `timestamp` and its `thread_settings` (`model`, `reasoning_effort`, …).
+/// Codex writes one for each switch, and one with each turn's `turn_context`.
+pub fn codex_applied(line: &str) -> Option<(String, serde_json::Value)> {
+    if !line.contains("\"thread_settings_applied\"") {
+        return None;
+    }
+    let mut v: serde_json::Value = serde_json::from_str(line).ok()?;
+    if v.get("type")?.as_str()? != "event_msg"
+        || v.pointer("/payload/type")?.as_str()? != "thread_settings_applied"
+    {
+        return None;
+    }
+    let at = v.get("timestamp")?.as_str()?.to_string();
+    let settings = v.pointer_mut("/payload/thread_settings")?.take();
+    settings.is_object().then_some((at, settings))
+}
+
+/// How many of Codex's error notes on `screen` (`■ ` and the rows up to the next blank one,
+/// wrapped in a narrow pane) start with `said`: a refusal Codex 0.166 draws under a command, its
+/// input box back.
+pub fn codex_refusals(screen: &str, said: &str) -> usize {
+    let rows = lines(screen);
+    rows.iter()
+        .enumerate()
+        .filter_map(|(i, l)| {
+            let first = l.strip_prefix("■ ")?;
+            let rest = rows[i + 1..]
+                .iter()
+                .take_while(|r| !r.trim().is_empty() && !r.starts_with("■ "));
+            let note: Vec<&str> = std::iter::once(first)
+                .chain(rest.map(String::as_str))
+                .flat_map(str::split_whitespace)
+                .collect();
+            note.join(" ").starts_with(said).then_some(())
+        })
+        .count()
+}
+
 /// What a session's transcript gains from now on: the complete lines appended after the point
 /// it was at when made. The file is found again on every read (a session's first entries can
 /// create it); one that shrank is read again from its start.
@@ -389,6 +428,20 @@ fn len(path: &Path) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Codex wraps a long note in a narrow pane: the rows up to the next blank one are its rest.
+    #[test]
+    fn a_codex_refusal_wrapped_over_rows_is_one_refusal() {
+        let said = "Reasoning level 'ultra' is unavailable for ";
+        let one =
+            "■ Reasoning level 'ultra' is unavailable for gpt-6-luna. Available: low.\n\n› \n";
+        let wrapped = "■ Reasoning level 'ultra' is unavailable\n  for gpt-6-luna. Available:\n  low.\n\n■ Reasoning level\n  'ultra' is unavailable for gpt-6-luna.\n";
+        assert_eq!(codex_refusals(one, said), 1);
+        assert_eq!(codex_refusals(wrapped, said), 2);
+        // Another note, or the words cut off by a blank row, are not it.
+        let other = "■ Reasoning level 'ultra' is unavailable\n\n  for gpt-6-luna.\n■ Model 'x' is unavailable.\n";
+        assert_eq!(codex_refusals(other, said), 0);
+    }
 
     const ANY: Dialog = Dialog {
         title: "Switch model?",

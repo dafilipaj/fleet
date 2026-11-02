@@ -44,7 +44,7 @@ use serde_json::Value;
 const SID: &str = "dddddddd-1111-2222-3333-444444444444";
 const SONNET: &str = "claude-sonnet-5-5";
 
-/// Logs every byte it reads to the file it is given (a Codex or pi session's stand-in).
+/// Logs every byte it reads to the file it is given (a pi session's stand-in).
 const LOGGER: &str = r#"open(my $f, ">>", $ARGV[0]) or die; select((select($f), $| = 1)[0]);
 system("stty raw -echo");
 while (sysread(STDIN, my $b, 64)) { print $f $b }
@@ -731,36 +731,36 @@ fn only_an_exact_target_and_a_clean_model_id_are_taken() {
 }
 
 #[test]
-fn codex_and_pi_are_harness_unsupported() {
-    for (harness, home) in [("codex", "home/.codex"), ("pi", "home/.pi/agent")] {
-        let f = FakeFleet::new().expect("these tests need tmux");
-        std::fs::create_dir_all(f.env.path(home)).unwrap();
-        let log = f.env.path("received.log");
-        let logger = f.env.path("logger.pl");
-        std::fs::write(&logger, LOGGER).unwrap();
-        let pid = f.agent(
-            "model",
-            SID,
-            80,
-            24,
-            &format!(
-                "exec /bin/bash -c \"exec -a {harness} perl '{}' '{}'\"",
-                logger.display(),
-                log.display()
-            ),
-        );
-        std::fs::remove_file(f.env.path(&format!("home/.claude/sessions/{pid}.json"))).unwrap();
-        let a = Agent {
-            transcript: transcript_of(&f),
-            f,
-            pid,
-            log,
-        };
-        a.f.wait_for("the agent to start", || a.log.exists());
-        let (code, v, _) = a.model("gpt-6", &[]);
-        failed(code, &v, "harness_unsupported");
-        assert_eq!(a.received(), "", "{harness}: nothing typed");
-    }
+fn pi_is_harness_unsupported() {
+    // Codex is switched too: tests/codex_switch.rs.
+    let (harness, home) = ("pi", "home/.pi/agent");
+    let f = FakeFleet::new().expect("these tests need tmux");
+    std::fs::create_dir_all(f.env.path(home)).unwrap();
+    let log = f.env.path("received.log");
+    let logger = f.env.path("logger.pl");
+    std::fs::write(&logger, LOGGER).unwrap();
+    let pid = f.agent(
+        "model",
+        SID,
+        80,
+        24,
+        &format!(
+            "exec /bin/bash -c \"exec -a {harness} perl '{}' '{}'\"",
+            logger.display(),
+            log.display()
+        ),
+    );
+    std::fs::remove_file(f.env.path(&format!("home/.claude/sessions/{pid}.json"))).unwrap();
+    let a = Agent {
+        transcript: transcript_of(&f),
+        f,
+        pid,
+        log,
+    };
+    a.f.wait_for("the agent to start", || a.log.exists());
+    let (code, v, _) = a.model("gpt-6", &[]);
+    failed(code, &v, "harness_unsupported");
+    assert_eq!(a.received(), "", "{harness}: nothing typed");
 }
 
 #[test]

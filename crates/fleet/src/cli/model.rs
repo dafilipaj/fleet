@@ -1,11 +1,15 @@
-//! `fleet model <target> <model-id>`: switch a Claude Code session to another model, as
-//! `/model <id>` typed in its terminal does — the pick then also becomes Claude Code's default
-//! for new sessions, as it does there — and answer the one question that can come back: its
-//! confirmation while the prompt cache is warm. The checks, the lock, the wait and the
+//! `fleet model <target> <model-id>`: switch a Claude Code or Codex session to another model, as
+//! `/model <id>` typed in its terminal does — in Claude Code the pick then also becomes its
+//! default for new sessions, as it does there; in Codex it is for this session only — and
+//! answer the one question that can come back: Claude Code's confirmation while the prompt
+//! cache is warm. The checks, the lock, the wait and the
 //! confirmation are [`switch`]'s, shared with `fleet effort`; what is `/model`'s own:
 //!
-//! - **Claude Code only**: Codex 0.163 opens a picker on `/model`, pi has none —
-//!   `harness_unsupported`.
+//! - **Claude Code and Codex**: pi has no `/model` — `harness_unsupported`.
+//! - **Codex** (0.164+): `/model <slug>`, asking nothing. Success is the rollout's
+//!   `thread_settings_applied` naming that very model; another model there is
+//!   `outcome_uncertain`, and `■ Model '<slug>' is unavailable.` drawn under the command is
+//!   `model_not_found`. Codex moves the session to the new model's default level.
 //! - The confirmation is "Switch model?" for that model ([`model::shown`]); work still under
 //!   way where the box was ("Running PreModelSwitch hooks…") is waited for. "Model '…' not
 //!   found" under the command is `model_not_found`, a `PreModelSwitch` hook's refusal
@@ -20,7 +24,7 @@
 //!   `Kept model as …` (the switch declined in the terminal: the model is unchanged).
 
 use colored::Colorize;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::cli::close::Expect;
 use crate::cli::commands::{clean_model, host_label};
@@ -67,6 +71,30 @@ impl Command for Model {
             return Some(not_found_error(id));
         }
         (model::refused(now) > model::refused(before)).then(|| refused_error(id))
+    }
+
+    fn codex_command(&self) -> String {
+        format!("/model {}", self.id)
+    }
+
+    fn codex_drawn(&self, before: &str, now: &str) -> Option<Error> {
+        let id = &self.id;
+        (model::codex_not_found(now, id) > model::codex_not_found(before, id))
+            .then(|| codex_not_found_error(id))
+    }
+
+    fn applied(&self, settings: &Value, typed: &str) -> Result<()> {
+        let id = &self.id;
+        match settings.get("model").and_then(Value::as_str) {
+            Some(m) if m == id => Ok(()),
+            m => Err(Error::tagged(
+                "outcome_uncertain",
+                format!(
+                    "{typed}, but Codex set the model to {}, not {id} (see `fleet peek`)",
+                    m.unwrap_or("a model it did not name")
+                ),
+            )),
+        }
     }
 
     fn answer(&mut self, line: &str, typed: &str, confirmed: bool) -> Option<(String, Result<()>)> {
@@ -169,6 +197,13 @@ fn not_found_error(id: &str) -> Error {
     Error::tagged(
         "model_not_found",
         format!("Claude Code has no model \"{id}\" (Model '{id}' not found); nothing switched"),
+    )
+}
+
+fn codex_not_found_error(id: &str) -> Error {
+    Error::tagged(
+        "model_not_found",
+        format!("Codex has no model \"{id}\" (Model '{id}' is unavailable); nothing switched"),
     )
 }
 

@@ -1,0 +1,34 @@
+
+  [38;2;99;168;248m>_ [1m[39mOpenAI Codex[0;2m (v0.166.0)[0m
+     [2m/tmp/example-capture-0001[0m
+
+[1m⚠ Heads up, you have less than 10% of your weekly limit left. Run /status for a breakdown.[0m
+
+[1m⚠ Heads up, you have less than 50% of your 5h limit left. Run /status for a breakdown.[0m
+
+[2m• [0mModel changed to gpt-6-sol medium for this session only
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                            [1m[38;2;196;167;103m⚠ weekly limit: 6% left · /status[0m
+
+[1m›[0m [2mAsk Codex to do anything[0m
+
+  [38;2;246;226;183mGPT-6-Sol medium[39m · [38;2;171;223;167mexample-repo-0[39m · [38;2;143;179;239mmain[39m · [38;2;242;181;144mContext 0% used[39m · [38;2;233;144;169m5h 33% left[39m · [38;2;233;144;169mweekly 6% left[39m
+  [1m?[0m for shortcuts                                                                   ⚠ [38;2;196;167;103m4 warnings[39m · [1mf2[0m to view

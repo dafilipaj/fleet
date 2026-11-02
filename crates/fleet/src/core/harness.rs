@@ -1694,8 +1694,9 @@ pub struct State {
     pub name: Option<String>,
     pub waiting_for: Option<String>,
     pub model: Option<String>,
-    /// Codex: `effort` of the last `turn_context`, so a change made mid-session (the `/model`
-    /// picker's effort step) shows from the next turn on. pi: not read.
+    /// Codex: the effort of the last `turn_context` or `thread_settings_applied`, so a change
+    /// made with `/model` shows as soon as Codex writes it (at once, once the rollout exists).
+    /// pi: not read.
     pub effort: Option<String>,
     /// The `timestamp` of the entry `model` was read from, as written.
     pub model_at: Option<String>,
@@ -1740,10 +1741,10 @@ fn tail_at(path: &Path, max: u64) -> Option<(u64, String)> {
 
 /// How much of a transcript [`state`] reads: status, approvals and context are all near the end.
 const STATE_TAIL: u64 = 512 * 1024;
-/// How far back from the end a Codex rollout is searched for its last `turn_context` when the
+/// How far back from the end a Codex rollout is searched for its last settings entry when the
 /// tail holds none (a turn that wrote more than [`STATE_TAIL`] since, e.g. large tool
 /// outputs). The same bound as the widest tail Claude's context read takes.
-const TURN_CONTEXT_LOOKBACK: u64 = 8 * 1024 * 1024;
+const SETTINGS_LOOKBACK: u64 = 8 * 1024 * 1024;
 
 pub fn state(h: Harness, path: &Path) -> State {
     let Some((from, text)) = tail_at(path, STATE_TAIL) else {
@@ -1754,13 +1755,14 @@ pub fn state(h: Harness, path: &Path) -> State {
     };
     match h {
         Harness::Codex => {
-            // The model and effort live only in `turn_context`, written once per turn: when
-            // the turn has outgrown the tail, take them from the last one before it.
-            let seed = if text.lines().any(|l| turn_context(l).is_some()) {
+            // The model and effort live only in `turn_context` (once per turn) and
+            // `thread_settings_applied` (with it, and for a `/model` between turns): when the
+            // turn has outgrown the tail, take them from the last one before it.
+            let seed = if text.lines().any(|l| settings_entry(l).is_some()) {
                 None
             } else {
                 let len = std::fs::metadata(path).map_or(0, |m| m.len());
-                last_turn_context_before(path, from, len.saturating_sub(TURN_CONTEXT_LOOKBACK))
+                last_settings_before(path, from, len.saturating_sub(SETTINGS_LOOKBACK))
             };
             codex_state_from(seed.as_ref(), &text)
         }
@@ -1769,21 +1771,32 @@ pub fn state(h: Harness, path: &Path) -> State {
     }
 }
 
-/// A Codex `turn_context` entry (its `payload` and `timestamp`); a cheap substring check first,
-/// as most lines in a rollout are not one.
-fn turn_context(line: &str) -> Option<Value> {
-    if !line.contains("\"turn_context\"") {
+/// A Codex entry that records the session's model and effort, whole (its `payload` and
+/// `timestamp`): a `turn_context`, or the `thread_settings_applied` event Codex 0.164+ writes
+/// with it and for each `/model` switch; a cheap substring check first, as most lines in a
+/// rollout are neither.
+fn settings_entry(line: &str) -> Option<Value> {
+    if !line.contains("\"turn_context\"") && !line.contains("\"thread_settings_applied\"") {
         return None;
     }
     let v = serde_json::from_str::<Value>(line).ok()?;
-    (v.get("type").and_then(Value::as_str) == Some("turn_context") && v.get("payload").is_some())
-        .then_some(v)
+    let p = v.get("payload")?;
+    match v.get("type").and_then(Value::as_str)? {
+        "turn_context" => Some(v),
+        "event_msg"
+            if p.get("type").and_then(Value::as_str) == Some("thread_settings_applied")
+                && p.get("thread_settings").is_some() =>
+        {
+            Some(v)
+        }
+        _ => None,
+    }
 }
 
-/// The last `turn_context` entry that ends before byte `end` and starts at or after
+/// The last settings entry ([`settings_entry`]) that ends before byte `end` and starts at or after
 /// byte `floor`, reading backwards in chunks and stopping at the first one found: the read
 /// costs only the distance to that line, never more than `end - floor`.
-fn last_turn_context_before(path: &Path, end: u64, floor: u64) -> Option<Value> {
+fn last_settings_before(path: &Path, end: u64, floor: u64) -> Option<Value> {
     const CHUNK: u64 = 256 * 1024;
     let mut f = std::fs::File::open(path).ok()?;
     let mut pos = end;
@@ -1805,7 +1818,7 @@ fn last_turn_context_before(path: &Path, end: u64, floor: u64) -> Option<Value> 
             }
         };
         for line in buf[whole_from..].split(|&b| b == b'\n').rev() {
-            if let Some(p) = std::str::from_utf8(line).ok().and_then(turn_context) {
+            if let Some(p) = std::str::from_utf8(line).ok().and_then(settings_entry) {
                 return Some(p);
             }
         }
@@ -1815,19 +1828,26 @@ fn last_turn_context_before(path: &Path, end: u64, floor: u64) -> Option<Value> 
     None
 }
 
-/// Apply one `turn_context` entry: its payload's model, with the entry's `timestamp`
+/// Apply one settings entry ([`settings_entry`]): its model, with the entry's `timestamp`
 /// (`model_at`), and its effort (`null`, the model's default, clears an earlier one — each
-/// turn records its own).
-fn apply_turn_context(st: &mut State, v: &Value) {
+/// entry records the whole of it). A `turn_context` names them `model` and `effort` in its
+/// payload; `thread_settings_applied`, `model` and `reasoning_effort` in its `thread_settings`.
+fn apply_settings(st: &mut State, v: &Value) {
     let Some(p) = v.get("payload") else {
         return;
+    };
+    let (p, effort) = match p.get("thread_settings") {
+        Some(ts) if v.get("type").and_then(Value::as_str) == Some("event_msg") => {
+            (ts, "reasoning_effort")
+        }
+        _ => (p, "effort"),
     };
     if let Some(m) = p.get("model").and_then(Value::as_str) {
         st.model = Some(m.to_string());
         st.model_at = stamp(v);
     }
     st.effort = p
-        .get("effort")
+        .get(effort)
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|e| !e.is_empty())
@@ -1839,7 +1859,7 @@ fn codex_state(text: &str) -> State {
     codex_state_from(None, text)
 }
 
-/// A Codex rollout's state from `text` (its tail), starting from `seed`: the last `turn_context`
+/// A Codex rollout's state from `text` (its tail), starting from `seed`: the last settings entry
 /// before the tail, when the tail has none of its own.
 fn codex_state_from(seed: Option<&Value>, text: &str) -> State {
     let mut st = State {
@@ -1847,7 +1867,7 @@ fn codex_state_from(seed: Option<&Value>, text: &str) -> State {
         ..Default::default()
     };
     if let Some(v) = seed {
-        apply_turn_context(&mut st, v);
+        apply_settings(&mut st, v);
     }
     let mut window = None;
     let mut used = None;
@@ -1885,7 +1905,9 @@ fn codex_state_from(seed: Option<&Value>, text: &str) -> State {
             _ => {}
         }
         match (kind, ptype) {
-            ("turn_context", _) => apply_turn_context(&mut st, &v),
+            ("turn_context", _) | ("event_msg", "thread_settings_applied") => {
+                apply_settings(&mut st, &v)
+            }
             ("event_msg", "task_started") => {
                 st.status = "busy".into();
                 st.waiting_for = None;
@@ -2557,21 +2579,109 @@ mod tests {
     }
 
     #[test]
-    fn codex_effort_is_the_last_turn_contexts() {
+    fn codex_effort_is_the_last_one_recorded() {
         // A live rollout, trimmed: xhigh, then changed to high mid-session.
         let rollout = include_str!("../../../../testdata/codex/effort-change-rollout.jsonl");
         let st = codex_state(rollout);
         assert_eq!(st.effort.as_deref(), Some("high"));
         assert_eq!(st.model.as_deref(), Some("gpt-6-luna"));
-        // Before the change's turn_context, the earlier turn's effort still holds.
-        let before: Vec<&str> = rollout.lines().take(7).collect();
+        // Before the change, the earlier turn's effort holds; the change shows from the
+        // `thread_settings_applied` Codex wrote for it, before the next turn's turn_context.
+        let before: Vec<&str> = rollout.lines().take(6).collect();
         assert_eq!(
             codex_state(&before.join("\n")).effort.as_deref(),
             Some("xhigh")
         );
+        let switched: Vec<&str> = rollout.lines().take(7).collect();
+        let st = codex_state(&switched.join("\n"));
+        assert_eq!(st.effort.as_deref(), Some("high"));
+        assert_eq!(st.model_at.as_deref(), Some("2026-10-21T09:55:20.553Z"));
         // A later turn without one (the model's default) is no longer known.
         let unset = r#"{"type":"turn_context","payload":{"model":"gpt-6-luna","effort":null}}"#;
         assert_eq!(codex_state(&format!("{rollout}{unset}\n")).effort, None);
+    }
+
+    // Codex 0.166 writes `thread_settings_applied` with each turn's `turn_context`, and alone for
+    // a `/model` between turns (as captured live, its `thread_settings` trimmed).
+    #[test]
+    fn codex_a_model_switch_between_turns_shows_at_once() {
+        let applied = |at: &str, m: &str, e: Option<&str>| {
+            serde_json::json!({"timestamp": at, "type": "event_msg", "payload": {
+                "type": "thread_settings_applied", "thread_id": "t",
+                "thread_settings": {"model": m, "model_provider_id": "openai",
+                    "reasoning_effort": e, "personality": "pragmatic"}}})
+            .to_string()
+        };
+        let turn = [
+            r#"{"timestamp":"2026-10-31T21:58:19.496Z","type":"event_msg","payload":{"type":"task_started"}}"#.to_string(),
+            r#"{"timestamp":"2026-10-31T21:58:19.890Z","type":"turn_context","payload":{"model":"gpt-6-luna","effort":"low"}}"#.to_string(),
+            applied("2026-10-31T21:58:19.890Z", "gpt-6-luna", Some("low")),
+            r#"{"timestamp":"2026-10-31T21:58:20.796Z","type":"event_msg","payload":{"type":"task_complete"}}"#.to_string(),
+        ];
+        let st = codex_state(&turn.join("\n"));
+        assert_eq!(
+            (st.model.as_deref(), st.effort.as_deref()),
+            (Some("gpt-6-luna"), Some("low"))
+        );
+        // `/model --reasoning medium`, then `/model gpt-6-sol` (its default level, medium).
+        let mut switched = turn.to_vec();
+        switched.push(applied(
+            "2026-10-31T21:58:32.299Z",
+            "gpt-6-luna",
+            Some("medium"),
+        ));
+        switched.push(applied(
+            "2026-10-31T21:58:46.557Z",
+            "gpt-6-sol",
+            Some("medium"),
+        ));
+        let st = codex_state(&switched.join("\n"));
+        assert_eq!(
+            (
+                st.model.as_deref(),
+                st.effort.as_deref(),
+                st.model_at.as_deref()
+            ),
+            (
+                Some("gpt-6-sol"),
+                Some("medium"),
+                Some("2026-10-31T21:58:46.557Z")
+            )
+        );
+        assert_eq!(st.status, "idle", "a switch is no turn");
+        // Its `null` reasoning effort (the model's default) clears the level, as a turn's does.
+        switched.push(applied("2026-10-31T21:59:00.000Z", "gpt-6-sol", None));
+        assert_eq!(codex_state(&switched.join("\n")).effort, None);
+        // Only an event of that type counts: a `thread_settings` elsewhere, or a line quoting
+        // one, is not.
+        let quoted = serde_json::json!({"type": "response_item", "payload": {
+            "type": "function_call_output", "call_id": "c", "output": applied("2026-10-31T22:00:00.000Z", "decoy", Some("max"))}})
+        .to_string();
+        let other = r#"{"type":"event_msg","payload":{"type":"token_count","thread_settings":{"model":"decoy"}}}"#;
+        let st = codex_state(&[turn.join("\n"), quoted, other.to_string()].join("\n"));
+        assert_eq!(st.model.as_deref(), Some("gpt-6-luna"));
+        // The last one before the tail seeds a turn longer than the tail.
+        let text = rollout_with_filler(
+            700 * 1024,
+            300 * 1024,
+            &format!(
+                "{}\n",
+                applied("2026-10-31T21:58:46.557Z", "gpt-6-sol", Some("max"))
+            ),
+        );
+        let lines: Vec<&str> = text.lines().collect();
+        // Move the switch to just after the turn_context, before the filler.
+        let (sw, rest): (Vec<&str>, Vec<&str>) = lines
+            .iter()
+            .partition(|l| l.contains("thread_settings_applied"));
+        let mut moved = rest[..9].to_vec();
+        moved.extend(sw);
+        moved.extend(&rest[9..]);
+        let st = state_of(&(moved.join("\n") + "\n"));
+        assert_eq!(
+            (st.model.as_deref(), st.effort.as_deref()),
+            (Some("gpt-6-sol"), Some("max"))
+        );
     }
 
     /// The effort-change rollout with `filler` bytes of tool output between the last turn's
@@ -2633,7 +2743,7 @@ mod tests {
         assert_eq!(st.model.as_deref(), Some("gpt-6-luna"));
 
         // Beyond the lookback bound, unknown rather than a whole-file read.
-        let far = rollout_with_filler((TURN_CONTEXT_LOOKBACK + 64 * 1024) as usize, 512 * 1024, "");
+        let far = rollout_with_filler((SETTINGS_LOOKBACK + 64 * 1024) as usize, 512 * 1024, "");
         let st = state_of(&far);
         assert_eq!((st.effort, st.model), (None, None));
     }

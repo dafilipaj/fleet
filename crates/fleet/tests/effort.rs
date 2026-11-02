@@ -37,7 +37,7 @@ use serde_json::Value;
 
 const SID: &str = "eeeeeeee-1111-2222-3333-444444444444";
 
-/// Logs every byte it reads to the file it is given (a Codex session's stand-in).
+/// Logs every byte it reads to the file it is given (a pi session's stand-in).
 const LOGGER: &str = r#"open(my $f, ">>", $ARGV[0]) or die; select((select($f), $| = 1)[0]);
 system("stty raw -echo");
 while (sysread(STDIN, my $b, 64)) { print $f $b }
@@ -460,9 +460,10 @@ fn only_an_exact_target_and_a_level_are_taken() {
 }
 
 #[test]
-fn codex_is_harness_unsupported() {
+fn pi_is_harness_unsupported() {
+    // Codex is switched too: tests/codex_switch.rs.
     let f = FakeFleet::new().expect("these tests need tmux");
-    std::fs::create_dir_all(f.env.path("home/.codex")).unwrap();
+    std::fs::create_dir_all(f.env.path("home/.pi/agent")).unwrap();
     let log = f.env.path("received.log");
     let logger = f.env.path("logger.pl");
     std::fs::write(&logger, LOGGER).unwrap();
@@ -472,7 +473,7 @@ fn codex_is_harness_unsupported() {
         80,
         24,
         &format!(
-            "exec /bin/bash -c \"exec -a codex perl '{}' '{}'\"",
+            "exec /bin/bash -c \"exec -a pi perl '{}' '{}'\"",
             logger.display(),
             log.display()
         ),
