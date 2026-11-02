@@ -177,8 +177,11 @@ function SplitHunk({ hunk, c }: { hunk: DiffHunk; c: Commenting }) {
 }
 
 /** A .plain spec's card body: the module drawn with its clause diff; a clause is a comment target. */
-function SpecBody({ file, fileKey, selection, composing, onLine, threads, renderThread, renderComposer }: Pick<FileDiffProps, 'file' | 'fileKey' | 'selection' | 'composing' | 'onLine' | 'threads' | 'renderThread' | 'renderComposer'>) {
+function SpecBody({ file, fileKey, selection, composing, onLine, threads, renderThread, renderComposer, session }: Pick<FileDiffProps, 'file' | 'fileKey' | 'selection' | 'composing' | 'onLine' | 'threads' | 'renderThread' | 'renderComposer' | 'session'>) {
   const diff = useMemo(() => diffPlain(file.plain?.old ?? null, file.plain?.new ?? ''), [file.plain])
+  // Terms resolve across the checkout's modules: the file's absolute path (the key carries the root).
+  const root = fileKey.includes('\u0000') ? fileKey.slice(0, fileKey.indexOf('\u0000')) : null
+  const source = useMemo(() => (session && root ? { host: session.host, id: session.id, path: `${root}/${file.path}` } : null), [session, root, file.path])
   const clauses = useMemo(() => allClauses(diff), [diff])
   const placed = useMemo(() => placeOnClauses(file, clauses, threads), [file, clauses, threads])
   const composerKey = composing && selection ? clauseAt(clauses, selection.side, selection.end) : null
@@ -217,7 +220,7 @@ function SpecBody({ file, fileKey, selection, composing, onLine, threads, render
         </div>
       ) : null}
       <div className="px-4 py-4 pl-10 sm:px-8 sm:pl-12">
-        <PlainView diff={diff} name={basename(file.path).replace(/\.plain$/i, '')} diffed commenting={commenting} />
+        <PlainView diff={diff} name={basename(file.path).replace(/\.plain$/i, '')} diffed commenting={commenting} source={source} />
       </div>
     </>
   )
@@ -245,6 +248,8 @@ export interface FileDiffProps {
   threads: ReviewThread[]
   renderThread: (thread: ReviewThread, outdated: boolean) => ReactNode
   renderComposer: () => ReactNode
+  /** the session the diff is from: a .plain spec's terms resolve across its checkout's modules */
+  session?: { host: string; id: string } | null
 }
 
 /** One file's card: the GitHub "Files changed" header (path, +/−, Viewed) over its hunks. */
@@ -263,6 +268,7 @@ export const FileDiff = memo(function FileDiff({
   threads,
   renderThread,
   renderComposer,
+  session = null,
 }: FileDiffProps) {
   const placed = useMemo(() => placeThreads(file, threads), [file, threads])
   const composerKey = composing && selection ? anchorKey(selection.side, selection.end) : null
@@ -354,6 +360,7 @@ export const FileDiff = memo(function FileDiff({
           threads={threads}
           renderThread={renderThread}
           renderComposer={renderComposer}
+          session={session}
         />
       ) : null}
       {open && !spec && placed.unplaced.length ? (

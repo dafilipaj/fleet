@@ -10,6 +10,7 @@ import type {
   DiffsResponse,
   DormantResponse,
   FileOpenResponse,
+  PlainModulesResponse,
   FileStatResponse,
   FleetResponse,
   FocusStatus,
@@ -288,6 +289,9 @@ export const api = {
   /** Which of these paths (as written in chat, relative to the session cwd) exist on the session's host. */
   fileStat: (host: string, id: string, paths: string[], o: Opts = {}) =>
     request<FileStatResponse>(sessionPath(host, id, 'files/stat'), { ...o, method: 'POST', body: { paths } }),
+  /** The .plain modules beside a .plain file (its checkout's, else its directory's): term lookup across modules. */
+  filePlain: (host: string, id: string, path: string, o: Opts = {}) =>
+    request<PlainModulesResponse>(sessionPath(host, id, 'files/plain'), { ...o, method: 'POST', body: { path } }),
   /** Open the file with its default app — on `host`, not in this browser. */
   fileOpen: (host: string, id: string, path: string, o: Opts = {}) =>
     request<FileOpenResponse>(sessionPath(host, id, 'files/open'), { ...o, method: 'POST', body: { path } }),

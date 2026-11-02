@@ -94,6 +94,9 @@ export function isDenied(p, home) {
   return DENY_DIRS.some((d) => inside(p, path.join(home, d)));
 }
 
+/** At most this many modules in a files/plain answer. */
+const MAX_PLAIN_MODULES = 2000;
+
 /** Lowercased extension, `''` for none. */
 const extOf = (p) => path.extname(p).toLowerCase();
 
@@ -395,7 +398,29 @@ export function createFiles({ home, run, platform = process.platform, hasBinary 
     return { ok: true, path: loc.path, revealed: runnable, command: cmd[0] };
   }
 
-  return { stat, raw, open, locate };
+  /**
+   * POST …/files/plain — the PlainLang modules beside a .plain file, so a term can be looked up
+   * in the modules it imports and the rest of its repo: every `*.plain` of the file's git checkout
+   * (tracked + untracked, not ignored), else of its directory. → { root, files: [abs] }
+   */
+  async function plainModules(input, cwd, { session = null } = {}) {
+    const loc = await requireFile(input, cwd, session);
+    const dir = path.dirname(loc.real);
+    let root = dir;
+    let list = null;
+    try {
+      root = (await run('git', ['-C', dir, 'rev-parse', '--show-toplevel'], { timeout: 5000 })).stdout.trim() || dir;
+      const { stdout } = await run('git', ['-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', '*.plain'], { timeout: 5000, maxBuffer: 8 * 1024 * 1024 });
+      list = [...new Set(stdout.split('\0').filter(Boolean))].map((rel) => path.join(root, rel));
+    } catch {
+      root = dir;
+      list = (await fsp.readdir(dir).catch(() => [])).filter((n) => n.endsWith('.plain')).map((n) => path.join(dir, n));
+    }
+    const files = list.filter((f) => !isDenied(f, realHome)).sort().slice(0, MAX_PLAIN_MODULES);
+    return { root, files, truncated: list.length > files.length };
+  }
+
+  return { stat, raw, open, locate, plainModules };
 }
 
 function safeRealpathSync(p) {

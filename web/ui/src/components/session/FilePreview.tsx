@@ -155,7 +155,15 @@ export function FilePreview({ host, id, file, onClose, desktop = false }: FilePr
     } else if (plain && !source) {
       body = (
         <div className={cn('mx-auto w-full px-4 py-4', desktop ? 'max-w-6xl pl-6' : 'max-w-3xl')}>
-          <PlainPreview text={text} name={basename(cur.path).replace(/\.plain$/i, '')} onOpenModule={previewLinks ? (m) => previewLinks.open(`./${m}.plain`, 'file') : undefined} />
+          <PlainPreview
+            text={text}
+            name={basename(cur.path).replace(/\.plain$/i, '')}
+            host={host}
+            id={id}
+            path={cur.path}
+            onOpenModule={previewLinks ? (m) => previewLinks.open(`./${m}.plain`, 'file') : undefined}
+            onOpenFile={previewLinks ? (p) => previewLinks.open(p, 'file') : undefined}
+          />
         </div>
       )
     } else if (cur.kind === 'markdown' && !source) {
@@ -236,9 +244,11 @@ export function FilePreview({ host, id, file, onClose, desktop = false }: FilePr
   )
 }
 
-function PlainPreview({ text, name, onOpenModule }: { text: string; name: string; onOpenModule?: (m: string) => void }) {
+function PlainPreview(props: { text: string; name: string; host: string; id: string; path: string; onOpenModule?: (m: string) => void; onOpenFile?: (p: string) => void }) {
+  const { text, name, host, id, path, onOpenModule, onOpenFile } = props
   const diff = useMemo(() => undiffed(text), [text])
-  return <PlainView diff={diff} name={name} diffed={false} index onOpenModule={onOpenModule} />
+  const source = useMemo(() => ({ host, id, path }), [host, id, path])
+  return <PlainView diff={diff} name={name} diffed={false} index onOpenModule={onOpenModule} source={source} onOpenFile={onOpenFile} />
 }
 
 function Info({ text, host, downloadUrl, name, onOpen }: { text: string; host: string; downloadUrl: string; name: string; onOpen: () => void }) {

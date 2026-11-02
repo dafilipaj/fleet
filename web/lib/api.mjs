@@ -78,7 +78,7 @@ export function groupEditOp(body) {
 const SPAWN_ROUTE = /^\/api\/hosts\/([^/]+)\/spawn$/;
 const AUTONAME_ROUTE = /^\/api\/hosts\/([^/]+)\/autoname$/;
 const UPLOAD_ROUTE = /^\/api\/hosts\/([^/]+)\/uploads$/;
-const FILES_ROUTE = /^\/api\/hosts\/([^/]+)\/sessions\/([^/]+)\/files\/(stat|raw|open)$/;
+const FILES_ROUTE = /^\/api\/hosts\/([^/]+)\/sessions\/([^/]+)\/files\/(stat|raw|open|plain)$/;
 const COMPLETE_ROUTE = /^\/api\/hosts\/([^/]+)\/sessions\/([^/]+)\/complete$/;
 const COMPLETE_KINDS = new Set(['skills', 'files', 'brain']);
 const DIFF_ROUTE = /^\/api\/hosts\/([^/]+)\/sessions\/([^/]+)\/(diffs?)$/;
@@ -167,7 +167,7 @@ export const DEFAULT_QUICK_REPLIES = [
  *   speaker     lib/transcribe.mjs#createSpeaker (POST /api/speak, settings.speak; absent → off)
  *   memos       lib/memos.mjs#createMemos (/api/memos…, settings.memos; needs the transcriber's key)
  *   operator    lib/operator.mjs instance (GET/POST /api/operator; absent → 501)
- *   files       lib/files.mjs instance (files/stat|raw|open; absent → 501)
+ *   files       lib/files.mjs instance (files/stat|raw|open|plain; absent → 501)
  *   completer   lib/complete.mjs instance (…/complete: composer autocomplete; absent → 501)
  *   differ      lib/diff.mjs#createDiffer (…/diff, …/diffs: the diff reviewer; absent → 501)
  *   touched     lib/touched.mjs index — the files a session worked on (…/diffs finds their checkouts)
@@ -2109,6 +2109,7 @@ export function createApi({
     const cwd = typeof session.cwd === 'string' && session.cwd ? session.cwd : null;
     if (action === 'stat') return { status: 200, body: { host: config.self, id: session.session_id, ...(await files.stat(body.paths, cwd, { session })) } };
     if (action === 'open') return { status: 200, body: { host: config.self, ...(await files.open(body.path, cwd, { session })) } };
+    if (action === 'plain') return { status: 200, body: { host: config.self, ...(await files.plainModules(body.path, cwd, { session })) } };
     const download = ['1', 'true'].includes(url.searchParams.get('download') ?? '');
     return files.raw(url.searchParams.get('path'), cwd, { download, session });
   }

@@ -43,6 +43,7 @@ export function ReviewScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane'
   const id = loc?.id ?? ''
   const { fleet } = useFleet()
   const session = findSession(fleet, host, id)
+  const plainSession = useMemo(() => (host && id ? { host, id } : null), [host, id])
   const { title } = useSessionTitle(session, `${host}/${id}`)
   const now = useNow(5_000)
   const { data, error, changedAt } = useDiff(host, id)
@@ -335,6 +336,7 @@ export function ReviewScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane'
               threads={byKey.get(key) ?? NO_THREADS}
               renderThread={renderThread}
               renderComposer={renderComposer}
+              session={plainSession}
             />
           ))}
         </section>

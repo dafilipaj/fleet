@@ -1,12 +1,19 @@
-import { CheckIcon, CircleDashedIcon, MessageSquarePlusIcon } from 'lucide-react'
-import { createContext, Fragment, memo, useContext, useId, useMemo, useState, type ReactNode } from 'react'
+import { ArrowUpRightIcon, CheckIcon, ChevronLeftIcon, CircleDashedIcon, CornerDownRightIcon, Loader2Icon, MessageSquarePlusIcon } from 'lucide-react'
+import { Popover as PopoverPrimitive } from 'radix-ui'
+import { createContext, Fragment, memo, useContext, useEffect, useId, useMemo, useState, type ReactNode } from 'react'
 
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { usePlainConcepts } from '@/hooks/usePlainConcepts'
 import { definitions, flatClauses, gist, inlineParts, SECTIONS, SPEC_SECTION, specAnchor, wordDiff, type Clause, type ClauseState, type PlainDiff, type Spec, type Touched } from '@/lib/plain'
+import type { ConceptHit, ConceptResolver } from '@/lib/plainConcepts'
 import { cn } from '@/lib/utils'
 
 // A PlainLang module drawn for reading: the module's header, a Changes card (when diffed),
 // definitions as a glossary, requirements, and one card per functional spec with its acceptance
-// tests. Terms (`:Widget:`) are chips that jump to their definition; `§1.2` jumps to the spec.
+// tests. A term (`:Widget:`) is a chip: a click shows its definition in a popover, wherever it is
+// defined — this module, what it imports / requires, or elsewhere in its checkout (`source`
+// gives the file API; without it only this module); terms inside a definition open in place,
+// with Back. `§1.2` jumps to the spec.
 // Diffed, every clause carries its state (added / changed with a word diff / removed in place).
 // With `commenting`, a clause is a comment target: its own lines, on its side of the diff.
 
@@ -28,6 +35,16 @@ export interface PlainViewProps {
   commenting?: ClauseCommenting
   /** an import / requires chip opens that module */
   onOpenModule?: (name: string) => void
+  /** where the module lives (absolute path on the session's host): terms resolve across modules */
+  source?: PlainSource | null
+  /** open another module (absolute path), e.g. the one a term is defined in */
+  onOpenFile?: (path: string) => void
+}
+
+export interface PlainSource {
+  host: string
+  id: string
+  path: string
 }
 
 interface Ctx {
@@ -38,6 +55,12 @@ interface Ctx {
   only: boolean
   commenting?: ClauseCommenting
   jump: (id: string) => void
+  resolver: ConceptResolver
+  /** this module's path ('' when unknown) */
+  path: string
+  onOpenFile?: (path: string) => void
+  /** inside a definition popover: a term opens there */
+  nav?: (name: string) => void
 }
 const PlainCtx = createContext<Ctx | null>(null)
 const useCtx = () => useContext(PlainCtx)!
@@ -46,20 +69,127 @@ const BUILTIN = new Set(['UnitTests', 'ConformanceTests', 'AcceptanceTest', 'Acc
 
 const changedTree = (nodes: Clause[]) => flatClauses(nodes).some((x) => x.c.state !== 'same')
 
+const TERM = 'mx-px inline cursor-pointer rounded-[4px] px-1 py-px font-sans text-[0.86em] font-medium whitespace-nowrap'
+
 function Term({ name }: { name: string }) {
-  const { defs, jump } = useCtx()
+  const { defs, nav } = useCtx()
   const def = defs.get(name)
-  const cls = 'mx-px inline rounded-[4px] px-1 py-px font-sans text-[0.86em] font-medium whitespace-nowrap'
-  if (def != null)
+  const cls = cn(TERM, def != null ? 'bg-primary/10 text-primary hover:bg-primary/20' : 'bg-muted text-muted-foreground hover:bg-foreground/10 hover:text-foreground')
+  if (nav)
     return (
-      <button type="button" title={def.replace(/`/g, '')} onClick={() => jump(`def-${name}`)} className={cn(cls, 'cursor-pointer bg-primary/10 text-primary hover:bg-primary/20')}>
+      <button type="button" className={cls} onClick={() => nav(name)}>
         {name}
       </button>
     )
   return (
-    <span title={BUILTIN.has(name) ? 'Predefined by PlainLang' : 'Defined in an imported or required module'} className={cn(cls, 'bg-muted text-muted-foreground')}>
-      {name}
-    </span>
+    <Popover>
+      <PopoverTrigger asChild>
+        <button type="button" className={cls} title={def != null ? def.replace(/`/g, '') : 'Show the definition'}>
+          {name}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" collisionPadding={12} className="w-[min(32rem,92vw)] gap-0 p-0">
+        <ConceptCard start={name} />
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+/** `to` relative to the directory of `from` (both absolute). */
+function relPath(from: string, to: string) {
+  if (!from || !to.startsWith('/')) return to
+  const a = from.split('/').slice(0, -1)
+  const b = to.split('/')
+  let i = 0
+  while (i < a.length && i < b.length - 1 && a[i] === b[i]) i++
+  const up = a.length - i
+  if (up > 3) return to
+  return [...Array(up).fill('..'), ...b.slice(i)].join('/')
+}
+
+/** A concept's definition, looked up across modules; terms in it open here, with Back. */
+function ConceptCard({ start }: { start: string }) {
+  const ctx = useCtx()
+  const [stack, setStack] = useState([start])
+  const name = stack[stack.length - 1]
+  const [res, setRes] = useState<{ name: string; hit: ConceptHit | null } | null>(null)
+  useEffect(() => {
+    let live = true
+    ctx.resolver.lookup(name).then(
+      (hit) => live && setRes({ name, hit }),
+      () => live && setRes({ name, hit: null }),
+    )
+    return () => {
+      live = false
+    }
+  }, [name, ctx.resolver])
+  const hit = res?.name === name ? res.hit : undefined
+  const inner = useMemo<Ctx | null>(
+    () => (hit ? { ...ctx, defs: definitions(hit.mod), specIds: new Set(), hl: false, only: false, commenting: undefined, nav: (n) => setStack((s) => [...s, n]) } : null),
+    [hit, ctx],
+  )
+  const head = hit ? { ...hit.clause, text: hit.clause.text.replace(/^:[A-Za-z0-9+.\-_]+:\s*/, ''), oldText: undefined } : null
+  const where = hit ? relPath(ctx.path, hit.path) : ''
+  return (
+    <div className="flex max-h-[min(60vh,32rem)] flex-col font-sans">
+      <div className="flex items-center gap-1.5 border-b px-3 py-2">
+        {stack.length > 1 ? (
+          <button type="button" aria-label="Back" onClick={() => setStack((s) => s.slice(0, -1))} className="-ml-1 cursor-pointer rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground">
+            <ChevronLeftIcon className="size-4" />
+          </button>
+        ) : null}
+        <span className="min-w-0 flex-1 truncate text-sm font-semibold text-primary">{name}</span>
+        {stack.length > 1 ? <span className="truncate text-[0.6875rem] text-dimmer">{stack.slice(0, -1).join(' › ')}</span> : null}
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2.5 font-serif text-[0.92rem] leading-relaxed [font-family:ui-serif,Georgia,serif]">
+        {hit === undefined ? (
+          <p className="flex items-center gap-2 font-sans text-sm text-muted-foreground">
+            <Loader2Icon className="size-3.5 animate-spin" /> Looking it up…
+          </p>
+        ) : hit === null || !inner || !head ? (
+          <p className="font-sans text-sm text-muted-foreground">
+            {BUILTIN.has(name) ? 'Predefined by PlainLang.' : 'No definition in this module, the modules it imports or requires, or any other .plain file of its checkout.'}
+          </p>
+        ) : (
+          <PlainCtx.Provider value={inner}>
+            <ClauseList nodes={[head]} />
+          </PlainCtx.Provider>
+        )}
+      </div>
+      {hit ? (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground">
+          {hit.scope === 'here' ? (
+            <span>Defined in this module</span>
+          ) : (
+            <span className={cn('min-w-0', hit.scope === 'elsewhere' && 'text-status-waiting')} title={hit.path}>
+              <span className="font-mono">{where}</span>
+              {hit.scope === 'imported' && hit.via.length > 1 ? (
+                <span className="text-dimmer">
+                  {' '}
+                  <CornerDownRightIcon className="inline size-3 align-[-2px]" /> via {hit.via.join(' → ')}
+                </span>
+              ) : null}
+              {hit.scope === 'elsewhere' ? ' — not imported by this module' : null}
+            </span>
+          )}
+          <span className="flex-1" />
+          {hit.scope === 'here' && !ctx.nav && stack.length === 1 ? (
+            <PopoverPrimitive.Close asChild>
+              <button type="button" className="cursor-pointer text-primary hover:underline" onClick={() => ctx.jump(`def-${name}`)}>
+                Go to definition
+              </button>
+            </PopoverPrimitive.Close>
+          ) : null}
+          {hit.scope !== 'here' && ctx.onOpenFile ? (
+            <PopoverPrimitive.Close asChild>
+              <button type="button" className="inline-flex cursor-pointer items-center gap-0.5 text-primary hover:underline" onClick={() => ctx.onOpenFile?.(hit.path)}>
+                Open <ArrowUpRightIcon className="size-3" />
+              </button>
+            </PopoverPrimitive.Close>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
   )
 }
 
@@ -380,13 +510,15 @@ function Index({ diff, diffed }: { diff: PlainDiff; diffed: boolean }) {
 }
 
 /** One PlainLang module, readable. */
-export const PlainView = memo(function PlainView({ diff, name, diffed, index = false, commenting, onOpenModule }: PlainViewProps) {
+export const PlainView = memo(function PlainView({ diff, name, diffed, index = false, commenting, onOpenModule, source, onOpenFile }: PlainViewProps) {
   const prefix = `${useId().replace(/[^A-Za-z0-9_-]/g, '')}-`
   const [hl, setHl] = useState(true)
   const [onlyRaw, setOnly] = useState(false)
   const only = diffed && onlyRaw
   const showHl = diffed && hl
   const { mod } = diff
+  const src = source ?? null
+  const resolver = usePlainConcepts(src?.host ?? null, src?.id ?? null, src?.path ?? null, mod)
   const ctx = useMemo<Ctx>(
     () => ({
       prefix,
@@ -396,8 +528,11 @@ export const PlainView = memo(function PlainView({ diff, name, diffed, index = f
       only,
       commenting,
       jump: (id) => document.getElementById(prefix + id)?.scrollIntoView({ block: 'start', behavior: 'smooth' }),
+      resolver,
+      path: src?.path ?? '',
+      onOpenFile,
     }),
-    [prefix, mod, showHl, only, commenting],
+    [prefix, mod, showHl, only, commenting, resolver, src?.path, onOpenFile],
   )
   const live = mod.specs.filter((s) => s.state !== 'removed')
   const moduleChip = (m: string) =>

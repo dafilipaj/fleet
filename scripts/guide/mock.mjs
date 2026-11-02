@@ -411,12 +411,42 @@ exported_concepts: [":Invoice:", ":InvoiceTotal:"]
 
 - The PDF of an :Invoice: shows the same :InvoiceTotal: as the API.
 
-- A monthly statement sums up to 40000 :Line: items exactly.
+- A monthly :Statement: sums up to 40000 :Line: items exactly.
 
   ***acceptance tests***
   - A statement of 40000 lines of 0.005 KWD answers 200.000.
 `
+const SPEC_MONEY = `---
+description: Money — currencies and amounts.
+---
+
+***definitions***
+
+- :Currency: is an ISO 4217 code with its number of decimals: 2 for most, 0 for JPY, 3 for KWD and BHD.
+  - Unknown codes are rejected with 422 \`{"error": "unknown currency"}\`.
+> code: money.currency.Currency
+
+- :Amount: is a :Currency: and a decimal value.
+`
+const SPEC_CUSTOMERS = `---
+description: Customers — who is billed.
+import:
+  - money
+---
+
+***definitions***
+
+- :Customer: is an organization that receives invoices, with a billing :Currency: and a tax ID.
+  - A :Customer: without a tax ID is billed with tax.
+`
+const SPEC_STATEMENTS = `***definitions***
+
+- :Statement: is one :Customer:'s invoices of a calendar month, summed into one document.
+`
 const FILES = {
+  'docs/specs/money.plain': SPEC_MONEY,
+  'docs/specs/customers.plain': SPEC_CUSTOMERS,
+  'docs/specs/statements.plain': SPEC_STATEMENTS,
   'docs/specs/invoices.plain': SPEC_NEW,
   'src/billing/invoice_total.ts': `import { Currency, toMinor, fromMinor } from './currency'\n\nexport interface Line {\n  description: string\n  amount: number\n  quantity: number\n}\n\n/**\n * The invoice total: every line in minor units (cents), summed exactly,\n * converted back once. Matches the PDF renderer (src/pdf/totals.ts).\n */\nexport function invoiceTotal(lines: Line[], cur: Currency) {\n  const cents = lines.reduce((s, l) => s + toMinor(l.amount * l.quantity, cur), 0n)\n  return fromMinor(cents, cur)\n}\n`,
   'docs/billing/rounding.md': `# Invoice rounding\n\n**Status:** in review · PR [acme/acme-api#482](https://github.com/acme/acme-api/pull/482)\n\n## Problem\nThe API rounds each line to 2 decimals before summing; the PDF sums exact amounts and rounds once. With 3+ lines the totals drift by up to a cent.\n\n## Decision\n- Keep money in **integer minor units** (\`bigint\` cents) end to end.\n- Round **once**, at the end, with banker's rounding.\n- Currencies with 0 or 3 decimals use \`Currency.minorUnits\`.\n\n## Rollout\n1. Ship the fix behind no flag (pure bug fix).\n2. Re-issue the 3 affected invoices (finance).\n3. Add a nightly check comparing API and PDF totals.\n`,
@@ -628,6 +658,7 @@ function route(method, p, q, b) {
     if (what === 'diffs') return diffs(host, id)
     if (what === 'review') return review(host, id)
     if (what === 'complete') { const kind = q.get('kind'); return kind === 'skills' ? { host, id, kind, skills: SKILLS } : kind === 'files' ? { host, id, kind, files: ['README.md', 'docs/billing/rounding.md', 'docs/onboarding/v3.md', 'CHANGELOG.md'] } : { host, id, kind, available: true, notes: [{ ref: 'billing', path: 'projects/billing.md', title: 'Billing' }] } }
+    if (what === 'files/plain') return { host, root: sess?.cwd, files: ['customers', 'invoices', 'money', 'statements'].map((n) => `${sess?.cwd}/docs/specs/${n}.plain`), truncated: false }
     if (what === 'files/stat') return { host, id, cwd: sess?.cwd, home: H, files: (b.paths || []).map((input) => { const rel = input.replace(/:\d+(:\d+)?$/, ''); const ok = /^(src|test|docs)\//.test(rel); return ok ? { input, path: `${sess?.cwd}/${rel}`, rel, exists: true, isFile: true, size: 2048, mtime: now() - 20 * M, kind: kindOf(rel) } : { input, path: input, exists: false } }) }
     if (what === 'stack/spawn') return { host, stack: stack(), created: true, generated: true, spawn: { name: 'x', dir: '~', tmuxSession: 'x', command: 'claude', trusted: true } }
     return { ok: true, host, id, result: 'renamed', title: b.title }

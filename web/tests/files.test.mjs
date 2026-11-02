@@ -273,3 +273,27 @@ test('HTTP: a server without the files service answers 501; an unreachable peer 
   assert.equal(r.status, 502);
   assert.match((await r.json()).error, /unreachable/);
 });
+
+test('plainModules: every .plain of the checkout (git), else of the directory', async (t) => {
+  const fx = fixture(t);
+  const specs = path.join(fx.proj, 'specs');
+  fs.mkdirSync(path.join(specs, 'sub'), { recursive: true });
+  for (const f of ['a.plain', 'b.plain', 'sub/c.plain']) fs.writeFileSync(path.join(specs, f), '- x\n');
+  const calls = [];
+  const gitRun = async (bin, args) => {
+    calls.push(args.slice(2, 3)[0]);
+    if (args.includes('rev-parse')) return { stdout: `${fx.proj}\n` };
+    return { stdout: ['specs/a.plain', 'specs/b.plain', 'specs/sub/c.plain', ''].join('\0') };
+  };
+  const r = await createFiles({ home: fx.home, run: gitRun }).plainModules(path.join(specs, 'a.plain'), fx.proj);
+  assert.equal(r.root, fx.proj);
+  assert.deepEqual(r.files, ['a.plain', 'b.plain', 'sub/c.plain'].map((f) => path.join(specs, f)));
+  assert.deepEqual(calls, ['rev-parse', 'ls-files']);
+
+  // No git: the file's own directory.
+  const noGit = createFiles({ home: fx.home, run: async () => { throw new Error('not a repo'); } });
+  const d = await noGit.plainModules(path.join(specs, 'a.plain'), fx.proj);
+  assert.deepEqual(d.files, ['a.plain', 'b.plain'].map((f) => path.join(specs, f)));
+  // The file itself must be servable.
+  await assert.rejects(noGit.plainModules('/etc/hosts', fx.proj), { status: 403 });
+});

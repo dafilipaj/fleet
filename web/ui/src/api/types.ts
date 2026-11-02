@@ -425,6 +425,15 @@ export interface FileStatResponse {
   files: FileStat[]
 }
 
+/** POST …/files/plain: the PlainLang modules of a .plain file's checkout (else its directory). */
+export interface PlainModulesResponse {
+  host: string
+  root: string
+  /** absolute paths */
+  files: string[]
+  truncated: boolean
+}
+
 export interface FileOpenResponse {
   ok: true
   host: string
