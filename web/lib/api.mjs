@@ -133,6 +133,9 @@ const HARNESS_IDS = ['claude', 'codex', 'pi'];
 // Fallback effort levels for a CLI that predates `efforts` in `fleet harness list`.
 const DEFAULT_EFFORTS = { claude: ['low', 'medium', 'high', 'xhigh', 'max'], codex: ['minimal', 'low', 'medium', 'high', 'xhigh'], pi: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] };
 const SLACK_LINK_ACTION_ROUTE = /^\/api\/slack\/links\/([^/]+)\/(unlink|relink)$/;
+/** `fleet slack history | thread | file`: the linked session reads its conversation (read-only). */
+const SLACK_READS = new Set(['history', 'thread', 'file']);
+const SLACK_ACTIONS = new Set(['/api/slack/link', '/api/slack/reply', ...[...SLACK_READS].map((a) => `/api/slack/${a}`)]);
 const DORMANT_ROUTE = /^\/api\/hosts\/([^/]+)\/dormant(?:\/(restore|forget))?$/;
 /** A restore types launch lines into new tmux panes; `--all` may bring back many sessions. */
 const DORMANT_PROXY_MS = 6 * 60 * 1000;
@@ -739,6 +742,7 @@ export function createApi({
         return link;
       }
       if (action === 'reply') return await slack.reply({ ...(body ?? {}), host: replyHost(body) });
+      if (SLACK_READS.has(action)) return await slack[action]({ ...(body ?? {}), host: replyHost(body) });
       // Any host's session: the bridge lists and types into it through that host's web server.
       const target = typeof body?.host === 'string' && body.host ? body.host : config.self;
       if (target !== config.self && !config.peers[target]) throw new HttpError(`unknown host: ${target} (not a peer with a web url)`, 400);
@@ -768,7 +772,8 @@ export function createApi({
       method: action === 'status' ? 'GET' : 'POST',
       pathname,
       ...(body == null ? {} : { body: JSON.stringify(body) }),
-      timeoutMs: peerProxyTimeoutMs,
+      // A file comes back whole (base64): up to MAX_FILE_BYTES from Slack, then over here.
+      timeoutMs: action === 'file' ? Math.max(peerProxyTimeoutMs, 90000) : peerProxyTimeoutMs,
     });
   }
 
@@ -820,9 +825,10 @@ export function createApi({
       }
       return r;
     }
-    // link / reply: the bridge of the session's host. A reply from a session here says so, so the
-    // bridge checks the pane on this host.
-    const target = action === 'reply' ? replyHost(body) : (typeof body?.host === 'string' && body.host ? body.host : config.self);
+    // link / reply / a read: the bridge of the session's host. A reply or read from a session here
+    // says so, so the bridge checks the pane on this host.
+    const fromSession = action === 'reply' || SLACK_READS.has(action);
+    const target = fromSession ? replyHost(body) : (typeof body?.host === 'string' && body.host ? body.host : config.self);
     const bridge = bridgeFor(target);
     if (!bridge) return none;
     if (bridge !== config.self && local) {
@@ -831,7 +837,7 @@ export function createApi({
         ? { status: 400, body: { error: `sessions on ${target} are linked by the bridge on ${bridge} (slack.bridges) — set slack.bridges.${target} on the server you linked from` } }
         : none;
     }
-    const sent = action === 'reply' ? { ...(body ?? {}), host: target } : body;
+    const sent = fromSession ? { ...(body ?? {}), host: target } : body;
     return atBridge(bridge, action, null, sent, url.pathname);
   }
 
@@ -1070,7 +1076,7 @@ export function createApi({
       return handleSlack(req, url, 'status');
     }
 
-    if (url.pathname === '/api/slack/link' || url.pathname === '/api/slack/reply') {
+    if (SLACK_ACTIONS.has(url.pathname)) {
       if (req.method !== 'POST') throw new HttpError('method not allowed', 405);
       return handleSlack(req, url, url.pathname.slice('/api/slack/'.length));
     }

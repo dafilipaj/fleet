@@ -13,6 +13,8 @@ import { normalizeConfig } from '../lib/config.mjs';
 import {
   createSlackApi,
   createSlackBridge,
+  createSlackDownload,
+  SlackError,
   createSocketClient,
   linkPrompt,
   matchPeople,
@@ -54,7 +56,7 @@ function fakeSlack() {
   return { call, calls, handlers };
 }
 
-function fixture(t, { status = 'idle' } = {}) {
+function fixture(t, { status = 'idle', download = null } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-slack-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const slack = fakeSlack();
@@ -70,6 +72,7 @@ function fixture(t, { status = 'idle' } = {}) {
     listSessions: async () => sessions,
     send: async (s, text) => void sent.push({ id: s.session_id, text }),
     file: path.join(dir, 'slack-links.json'),
+    download,
     now: () => clock,
   });
   return { bridge, slack, sessions, sent, dir, advance: (ms) => (clock += ms) };
@@ -516,6 +519,92 @@ test('HTTP: /api/slack on the bridge host, proxied elsewhere, off without slack.
   assert.equal((await call(`${servers.bridge}/api/slack/reply`, 'GET')).status, 405);
 });
 
+test('history / thread / file: the linked session reads its own conversation, a page at a time', async (t) => {
+  const got = [];
+  const fx = fixture(t, { download: async (u) => (got.push(u), { bytes: Buffer.from('PNGDATA'), type: 'image/png' }) });
+  const CH = 'C0123ABCDEF';
+  const TOP = '1792777100.000001';
+  fx.slack.handlers['conversations.history'] = (p) => ({
+    messages: p.cursor
+      ? [{ ts: '1792777000.000001', user: 'U1', text: 'older' }]
+      : [
+          { ts: TOP, user: 'U1', text: 'plan in <@UOWNER>\'s doc', reply_count: 3, latest_reply: '1792777150.000001', files: [{ id: 'F0FILE00001', name: 'plan.png', mimetype: 'image/png', size: 7 }] },
+          { ts: '1792777090.000001', bot_id: 'B1', user: 'UBOT', text: 'from the app' },
+        ],
+    response_metadata: { next_cursor: p.cursor ? '' : 'CUR1' },
+  });
+  fx.slack.handlers['files.info'] = ({ file }) => {
+    if (file === 'F0ELSEWHERE') return { file: { id: file, name: 'x', shares: { public: { COTHER0000: [{ ts: TOP }] } }, url_private_download: 'https://files.slack.com/x' } };
+    return { file: { id: file, name: 'plan.png', mimetype: 'image/png', size: 7, shares: { public: { [CH]: [{ ts: TOP }] } }, url_private_download: 'https://files.slack.com/files-pri/T1-F0FILE00001/download/plan.png' } };
+  };
+  const ch = await fx.bridge.link({ session: SID, url: `https://team.slack.com/archives/${CH}`, minutes: 60 });
+
+  const page = await fx.bridge.history({ link: ch.id, session: SID });
+  assert.equal(page.order, 'newest first');
+  assert.equal(page.nextCursor, 'CUR1');
+  const [top, own] = page.messages;
+  assert.equal(top.name, 'Alex');
+  assert.equal(top.text, "plan in @Owner's doc");
+  assert.equal(top.replies, 3);
+  assert.deepEqual(top.files, [{ id: 'F0FILE00001', name: 'plan.png', mimetype: 'image/png', size: 7 }]);
+  assert.equal(own.you, true);
+  const older = await fx.bridge.history({ link: ch.id, session: SID, cursor: 'CUR1', limit: 10 });
+  assert.equal(older.messages[0].text, 'older');
+  assert.equal(older.nextCursor, null);
+  assert.equal(fx.slack.calls.filter((c) => c.method === 'conversations.history').at(-1).params.limit, 10);
+  await assert.rejects(fx.bridge.history({ link: ch.id, limit: 500 }), /limit must be/);
+  await assert.rejects(fx.bridge.history({ link: ch.id, oldest: 'yesterday' }), /oldest must be a Slack timestamp/);
+
+  // Another session may not read this link.
+  await assert.rejects(fx.bridge.history({ link: ch.id, session: OTHER }), (e) => e.status === 403);
+
+  const th = await fx.bridge.thread({ link: ch.id, ts: TOP, session: SID });
+  assert.equal(fx.slack.calls.at(-1).params.ts, TOP);
+  assert.equal(th.order, 'oldest first');
+  await assert.rejects(fx.bridge.thread({ link: ch.id }), /ts is required/);
+
+  const f = await fx.bridge.file({ link: ch.id, file: 'F0FILE00001', session: SID });
+  assert.equal(Buffer.from(f.data, 'base64').toString(), 'PNGDATA');
+  assert.equal(f.name, 'plan.png');
+  assert.match(got[0], /^https:\/\/files\.slack\.com\//);
+  await assert.rejects(fx.bridge.file({ link: ch.id, file: 'F0ELSEWHERE' }), (e) => e.status === 403);
+  await assert.rejects(fx.bridge.file({ link: ch.id, file: '../etc' }), /file must be a Slack file id/);
+
+  // A thread link: history is its thread; another thread or a file shared elsewhere in the channel is refused.
+  const tl = await fx.bridge.link({ session: OTHER, url: URL_, minutes: 60 });
+  const own2 = await fx.bridge.history({ link: tl.id, session: OTHER });
+  assert.equal(own2.order, 'oldest first');
+  assert.equal(fx.slack.calls.at(-1).method, 'conversations.replies');
+  assert.equal(fx.slack.calls.at(-1).params.ts, THREAD);
+  await assert.rejects(fx.bridge.thread({ link: tl.id, ts: TOP }), (e) => e.status === 403);
+
+  // Errors Slack gives are said plainly; an ended link reads nothing.
+  fx.slack.handlers['conversations.history'] = () => {
+    throw Object.assign(new SlackError('Slack conversations.history: ratelimited', 502), { slack: 'ratelimited' });
+  };
+  await assert.rejects(fx.bridge.history({ link: ch.id }), (e) => e.status === 429);
+  await fx.bridge.unlink(ch.id);
+  await assert.rejects(fx.bridge.history({ link: ch.id }), (e) => e.status === 410);
+});
+
+test('a file needs a download (files:read): none set up says so', async (t) => {
+  const fx = fixture(t);
+  const l = await fx.bridge.link({ session: SID, url: URL_, minutes: 60 });
+  await assert.rejects(fx.bridge.file({ link: l.id, file: 'F0FILE00001' }), (e) => e.status === 501);
+});
+
+test('createSlackDownload: only https on slack.com, with the bot token, within the size cap', async () => {
+  const seen = [];
+  const fetch = async (u, o) => (seen.push([String(u), o.headers.authorization]), { ok: true, arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer, headers: new Map([['content-type', 'image/png']]) });
+  const dl = createSlackDownload({ getToken: async () => 'xoxb-1', fetch, maxBytes: 2 });
+  await assert.rejects(dl('https://evil.test/x'), /not a Slack file URL/);
+  await assert.rejects(dl('http://files.slack.com/x'), /not a Slack file URL/);
+  await assert.rejects(dl('https://files.slack.com/x'), (e) => e.status === 413);
+  assert.deepEqual(seen, [['https://files.slack.com/x', 'Bearer xoxb-1']]);
+  const ok = await createSlackDownload({ getToken: async () => 'xoxb-1', fetch })('https://files.slack.com/x');
+  assert.deepEqual([...ok.bytes], [1, 2, 3]);
+});
+
 test('two bridges: slack.bridges sends a host\'s sessions to its own bridge; status, unlink and relink span both', async (t) => {
   const home = fixture(t);
   const studio = fixture(t);
@@ -573,6 +662,11 @@ test('two bridges: slack.bridges sends a host\'s sessions to its own bridge; sta
   const posts = (fx) => fx.slack.calls.filter((c) => c.method === 'chat.postMessage' && c.params.text === 'hi').length;
   assert.equal(posts(studio), 1);
   assert.equal(posts(home), 0);
+  // A read, the same way: the studio session's own server, its own bridge.
+  const h = await call(`${studioUrl}/api/slack/history`, 'POST', { link: again.body.id });
+  assert.equal(h.status, 200, JSON.stringify(h.body));
+  assert.equal(h.body.messages[1].name, 'Alex');
+  assert.equal((await call(`${studioUrl}/api/slack/history`, 'GET')).status, 405);
 });
 
 test('a spawn linked to Slack: no prompt at launch, linked once it registers, the prompt ends the intro', async (t) => {

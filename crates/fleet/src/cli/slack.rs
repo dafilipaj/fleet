@@ -17,13 +17,23 @@ use crate::error::{Error, Result};
 /// `curl` to this machine's web server: `(status, body)`. No HTTP client in the crate (see
 /// `brief::regenerate_command`).
 fn request(method: &str, path: &str, body: Option<&Value>) -> Result<(String, Value)> {
+    request_within(method, path, body, 40)
+}
+
+/// `request` with its own time limit (a file comes back whole).
+fn request_within(
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+    secs: u64,
+) -> Result<(String, Value)> {
     let base = local_web_base();
     let url = format!("{base}{path}");
     let mut c = std::process::Command::new("curl");
     c.args([
         "-sS",
         "--max-time",
-        "40",
+        &secs.to_string(),
         "-X",
         method,
         "-w",
@@ -46,7 +56,7 @@ fn request(method: &str, path: &str, body: Option<&Value>) -> Result<(String, Va
     let got = hosts::capture_input(
         c,
         input.as_deref().map(str::as_bytes),
-        Duration::from_secs(45),
+        Duration::from_secs(secs + 5),
     )
     .map_err(|e| Error::Other(format!("{e} — curl is needed for `fleet slack`")))?;
     let unreachable = || {
@@ -259,6 +269,243 @@ pub fn reply(id: &str, text: &str, thread: Option<&str>, json: bool) -> Result<(
     Ok(())
 }
 
+/// The body of a read: the link, and this session's pane (the bridge refuses another session's link).
+fn read_body(id: &str) -> Value {
+    let mut body = json!({ "link": id });
+    if let Some(pane) = crate::core::done::own_pane_from_env(None) {
+        body["pane"] = json!(pane);
+    }
+    body
+}
+
+/// `1792777175.569809` → `Wed 28 Oct 18:00` (or `18:00` today).
+fn ts_clock(ts: &str) -> String {
+    ts.parse::<f64>()
+        .map(|s| clock((s * 1000.0) as i64))
+        .unwrap_or_else(|_| "?".into())
+}
+
+fn human_size(n: u64) -> String {
+    match n {
+        n if n >= 1024 * 1024 => format!("{:.1} MB", n as f64 / 1024.0 / 1024.0),
+        n if n >= 1024 => format!("{} KB", n / 1024),
+        n => format!("{n} B"),
+    }
+}
+
+/// One message of a read, as the session reads it: who (name, id, owner / you / app), when, its
+/// ts, its thread, the text, its files.
+fn message_text(m: &Value, in_thread: bool) -> String {
+    let ts = m["ts"].as_str().unwrap_or("?");
+    let mut who = m["name"].as_str().unwrap_or("someone").to_string();
+    if let Some(u) = m["user"].as_str() {
+        who.push_str(&format!(" ({u}"));
+        if m["owner"].as_bool() == Some(true) {
+            who.push_str(", the owner of this session");
+        }
+        who.push(')');
+    }
+    if m["you"].as_bool() == Some(true) {
+        who.push_str(" [you]");
+    } else if m["bot"].as_bool() == Some(true) {
+        who.push_str(" [app]");
+    }
+    let mut head = format!("• {who} at {} · ts {ts}", ts_clock(ts));
+    let replies = m["replies"].as_u64().unwrap_or(0);
+    if !in_thread && replies > 0 {
+        head.push_str(&format!(
+            " · {replies} repl{} (fleet slack thread … {ts})",
+            if replies == 1 { "y" } else { "ies" }
+        ));
+    }
+    if !in_thread && let Some(t) = m["threadTs"].as_str().filter(|t| *t != ts) {
+        head.push_str(&format!(" · in thread {t}"));
+    }
+    if let Some(st) = m["subtype"].as_str().filter(|s| *s != "file_share") {
+        head.push_str(&format!(" · {st}"));
+    }
+    let mut out = format!("{head}\n{}", m["text"].as_str().unwrap_or(""));
+    for f in m["files"].as_array().into_iter().flatten() {
+        out.push_str(&format!(
+            "\n  [file {} · {}{}{}]",
+            f["id"].as_str().unwrap_or("?"),
+            f["name"].as_str().unwrap_or("?"),
+            f["mimetype"]
+                .as_str()
+                .map(|t| format!(" · {t}"))
+                .unwrap_or_default(),
+            f["size"]
+                .as_u64()
+                .map(|n| format!(" · {}", human_size(n)))
+                .unwrap_or_default()
+        ));
+    }
+    out
+}
+
+/// A page of messages, oldest first, and how to get the next one.
+fn print_page(v: &Value, next: &str) {
+    let in_thread = v["order"].as_str() == Some("oldest first");
+    let mut msgs = v["messages"].as_array().cloned().unwrap_or_default();
+    if !in_thread {
+        msgs.reverse(); // Slack pages a channel newest first; read it top-down
+    }
+    if msgs.is_empty() {
+        println!("no messages");
+    }
+    for m in &msgs {
+        println!("{}\n", message_text(m, in_thread));
+    }
+    match v["nextCursor"].as_str().filter(|c| !c.is_empty()) {
+        Some(c) => println!(
+            "{} {next} --cursor {c}",
+            if in_thread { "newer:" } else { "older:" }
+        ),
+        None => println!("(no more)"),
+    }
+}
+
+/// `fleet slack history <link>`: the linked conversation, a page at a time (a thread link: its thread).
+pub fn history(
+    id: &str,
+    limit: Option<u32>,
+    cursor: Option<&str>,
+    oldest: Option<&str>,
+    latest: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let mut body = read_body(id);
+    if let Some(n) = limit {
+        body["limit"] = json!(n);
+    }
+    for (k, v) in [("cursor", cursor), ("oldest", oldest), ("latest", latest)] {
+        if let Some(v) = v {
+            body[k] = json!(v);
+        }
+    }
+    let (status, v) = request("POST", "/api/slack/history", Some(&body))?;
+    ok_or_err(&status, &v)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&v)?);
+    } else {
+        print_page(&v, &format!("fleet slack history {id}"));
+    }
+    Ok(())
+}
+
+/// `fleet slack thread <link> <ts>`: one thread of the linked conversation.
+pub fn thread(
+    id: &str,
+    ts: &str,
+    limit: Option<u32>,
+    cursor: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let mut body = read_body(id);
+    body["ts"] = json!(ts);
+    if let Some(n) = limit {
+        body["limit"] = json!(n);
+    }
+    if let Some(c) = cursor {
+        body["cursor"] = json!(c);
+    }
+    let (status, v) = request("POST", "/api/slack/thread", Some(&body))?;
+    ok_or_err(&status, &v)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&v)?);
+    } else {
+        print_page(&v, &format!("fleet slack thread {id} {ts}"));
+    }
+    Ok(())
+}
+
+/// A file name safe to write: no path, no control characters.
+fn safe_name(name: &str) -> String {
+    let n: String = name
+        .chars()
+        .map(|c| {
+            if c == '/' || c == '\\' || c.is_control() {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let n = n.trim_start_matches('.').trim();
+    if n.is_empty() {
+        "file".into()
+    } else {
+        n.into()
+    }
+}
+
+/// Standard base64 (what the bridge sends) → bytes.
+fn base64_decode(s: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for c in s.bytes() {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' => break,
+            b'\n' | b'\r' => continue,
+            _ => return None,
+        };
+        acc = (acc << 6) | u32::from(v);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+            acc &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
+}
+
+/// `fleet slack file <link> <file-id> [-o <path>]`: a file shared in the linked conversation, saved
+/// here (default: a temp dir) — the path is printed.
+pub fn file(id: &str, file_id: &str, out: Option<&str>, json: bool) -> Result<()> {
+    let mut body = read_body(id);
+    body["file"] = json!(file_id);
+    let (status, v) = request_within("POST", "/api/slack/file", Some(&body), 120)?;
+    ok_or_err(&status, &v)?;
+    if hosts::dry_run() {
+        return Ok(());
+    }
+    let bytes = v["data"]
+        .as_str()
+        .and_then(base64_decode)
+        .ok_or_else(|| Error::Other("the web server sent no file".into()))?;
+    let name = safe_name(v["name"].as_str().unwrap_or(file_id));
+    let path = match out {
+        Some(o) if std::path::Path::new(o).is_dir() => std::path::Path::new(o).join(&name),
+        Some(o) => std::path::PathBuf::from(o),
+        None => {
+            let dir = std::env::temp_dir().join("fleet-slack");
+            std::fs::create_dir_all(&dir)?;
+            dir.join(format!("{file_id}-{name}"))
+        }
+    };
+    std::fs::write(&path, &bytes)?;
+    if json {
+        let mut meta = v.clone();
+        meta.as_object_mut().map(|o| o.remove("data"));
+        meta["path"] = json!(path.display().to_string());
+        println!("{}", serde_json::to_string_pretty(&meta)?);
+    } else {
+        println!(
+            "{} ({}, {})",
+            path.display(),
+            v["mimetype"].as_str().unwrap_or("file"),
+            human_size(bytes.len() as u64)
+        );
+    }
+    Ok(())
+}
+
 /// `fleet spawn --slack <url> --slack-for <duration>`: the link a new session starts with.
 pub struct SpawnLink {
     pub url: String,
@@ -323,5 +570,43 @@ pub fn link_spawned(tmux: &str, link: &SpawnLink, first: &str) -> Result<()> {
         })?;
         println!("linked: {}", link_line(&v));
         return Ok(());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base64_round_trips_what_node_sends() {
+        assert_eq!(base64_decode("UE5HREFUQQ==").unwrap(), b"PNGDATA");
+        assert_eq!(base64_decode("AAEC/w==").unwrap(), vec![0, 1, 2, 255]);
+        assert_eq!(base64_decode("").unwrap(), Vec::<u8>::new());
+        assert!(base64_decode("no*pe").is_none());
+    }
+
+    #[test]
+    fn file_names_cannot_leave_the_directory() {
+        assert_eq!(safe_name("../../etc/passwd"), "_.._etc_passwd");
+        assert_eq!(safe_name("plan.png"), "plan.png");
+        assert_eq!(safe_name("..."), "file");
+    }
+
+    #[test]
+    fn a_message_reads_with_who_when_replies_and_files() {
+        let m = json!({ "ts": "1792777100.000001", "user": "U1", "name": "Alex", "owner": false, "you": false, "bot": false,
+            "text": "plan", "replies": 2, "threadTs": "1792777100.000001",
+            "files": [{ "id": "F01", "name": "plan.png", "mimetype": "image/png", "size": 2048 }] });
+        let t = message_text(&m, false);
+        assert!(t.starts_with("• Alex (U1) at "), "{t}");
+        assert!(
+            t.contains("· 2 replies (fleet slack thread … 1792777100.000001)"),
+            "{t}"
+        );
+        assert!(
+            t.ends_with("plan\n  [file F01 · plan.png · image/png · 2 KB]"),
+            "{t}"
+        );
+        assert!(!message_text(&m, true).contains("replies"));
     }
 }

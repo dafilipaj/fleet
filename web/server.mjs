@@ -35,7 +35,7 @@ import { createBriefStore, createBriefs, createClaudeAsk, gitInfo } from './lib/
 import { createStacks } from './lib/stacks.mjs';
 import { createAgentAsk, createInbox } from './lib/inbox.mjs';
 import { createPromptQueue } from './lib/queue.mjs';
-import { TOKEN_NAMES, createSlackApi, createSlackBridge, createSocketClient } from './lib/slack.mjs';
+import { TOKEN_NAMES, createSlackApi, createSlackBridge, createSlackDownload, createSocketClient } from './lib/slack.mjs';
 import { fetchPeerHost, proxyToPeer, setPeerConnects, setPeerProxies } from './lib/peers.mjs';
 import { createDormant } from './lib/dormant.mjs';
 import { createMemos } from './lib/memos.mjs';
@@ -149,7 +149,8 @@ const inbox = config.inbox.enabled
 // Slack links: the bridge runs on the `slack.host` server only (the others proxy /api/slack there).
 let slack = null;
 if (config.slack.enabled) {
-  const call = createSlackApi({ getToken: createKeySource({ name: TOKEN_NAMES.bot, run }) });
+  const getBotToken = createKeySource({ name: TOKEN_NAMES.bot, run });
+  const call = createSlackApi({ getToken: getBotToken });
   const socket = createSocketClient({
     getAppToken: createKeySource({ name: TOKEN_NAMES.app, run }),
     onEvent: (event) => slack.handleEvent(event),
@@ -184,6 +185,7 @@ if (config.slack.enabled) {
       if (r.status !== 200) throw new Error(r.body?.error ?? `HTTP ${r.status} from ${host}`);
     },
     file: path.join(fleetStateDir(process.env), 'slack-links.json'),
+    download: createSlackDownload({ getToken: getBotToken }),
     log,
   });
 }

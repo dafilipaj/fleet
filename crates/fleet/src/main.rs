@@ -707,6 +707,53 @@ enum SlackCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Read the linked conversation, a page at a time (a thread link: its thread) — what a linked
+    /// session runs to catch up; lists each message's ts, replies and files
+    History {
+        /// The link id (sl-xxxxxx)
+        link: String,
+        /// Messages per page (1–200, default 50)
+        #[arg(long)]
+        limit: Option<u32>,
+        /// The next page: the cursor the previous page printed
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Only messages from this ts on
+        #[arg(long, value_name = "TS")]
+        oldest: Option<String>,
+        /// Only messages up to this ts
+        #[arg(long, value_name = "TS")]
+        latest: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Read one thread of the linked conversation
+    Thread {
+        /// The link id (sl-xxxxxx)
+        link: String,
+        /// The thread's first message ts
+        ts: String,
+        /// Messages per page (1–200, default 50)
+        #[arg(long)]
+        limit: Option<u32>,
+        /// The next page: the cursor the previous page printed
+        #[arg(long)]
+        cursor: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Download a file shared in the linked conversation (its id from `history` / `thread`)
+    File {
+        /// The link id (sl-xxxxxx)
+        link: String,
+        /// The file id (F…)
+        file: String,
+        /// Where to save it: a file, or a directory (default: a temp dir; the path is printed)
+        #[arg(short, long, value_name = "PATH")]
+        out: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1410,6 +1457,34 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
                 thread,
                 json,
             } => slack_cmd::reply(&link, &text, thread.as_deref(), json)?,
+            SlackCmd::History {
+                link,
+                limit,
+                cursor,
+                oldest,
+                latest,
+                json,
+            } => slack_cmd::history(
+                &link,
+                limit,
+                cursor.as_deref(),
+                oldest.as_deref(),
+                latest.as_deref(),
+                json,
+            )?,
+            SlackCmd::Thread {
+                link,
+                ts,
+                limit,
+                cursor,
+                json,
+            } => slack_cmd::thread(&link, &ts, limit, cursor.as_deref(), json)?,
+            SlackCmd::File {
+                link,
+                file,
+                out,
+                json,
+            } => slack_cmd::file(&link, &file, out.as_deref(), json)?,
         },
         Commands::Send { target, text } => commands::send(&target, &text)?,
         Commands::Done { note, cancel } => commands::done(note, cancel)?,

@@ -474,6 +474,9 @@ JSON over HTTP, errors as `{ "error": "..." }`. At a high level:
 | POST | `/api/slack/links/:id/unlink` | end the link now → Link |
 | POST | `/api/slack/links/:id/relink` | `{ minutes? }` → Link: link that link's session to the same thread / conversation / DM again, with the same instructions and mode (an ended link, from `ended`; an active one is renewed). No `minutes` = the duration it had. 404: no such link or the session is gone |
 | POST | `/api/slack/reply` | `{ link, text, thread?, pane? \| session? }` → `{ ok, link, channel, ts, threadTs }`: post in the linked thread. 403: `pane`/`session` is not the linked session; 410: the link has ended |
+| POST | `/api/slack/history` | `{ link, cursor?, limit? (1–200, 50), oldest?, latest?, pane? \| session? }` → `{ link, channel, threadTs, order: "newest first" \| "oldest first", messages: [Message], nextCursor \| null }`: the linked conversation (`conversations.history`; a thread link: `conversations.replies` of its thread). Message = `{ ts, threadTs, user, name, owner, you, bot, subtype, text (plain), replies, latestReply, files: [{ id, name, mimetype, size }] }`. 403 / 410 as `reply`; 429: Slack's rate limit |
+| POST | `/api/slack/thread` | `{ link, ts, cursor?, limit?, pane? \| session? }` → the same shape, oldest first: one thread of the linked conversation (a thread link: its own only, else 403) |
+| POST | `/api/slack/file` | `{ link, file, pane? \| session? }` → `{ link, id, name, mimetype, size, data (base64) }`: a file shared in the linked conversation (its `files.info` shares; a thread link: in its thread, else 403), at most 20 MB (413). Needs `files:read` |
 | POST | `/api/inbox/refresh` | Scan now: start a Slack + mail scan (also outside work hours; its brief skips the `briefMinutes` wait) and re-read every other source; answers the GET shape |
 | POST | `/api/inbox/dismiss` | `{ id }` → the item is done: off the list until its source drops it — a Slack / mail item, a session or a PR mention comes back on newer activity; answers the GET shape (404: no such item) |
 | PUT | `/api/inbox/settings` | `{ scanMinutes?, workHours?, workDays? }` (15–1440 min; `[from, to)` hours; weekdays 0–6) → `fleet config set inbox.<key>` on the inbox host, live at once; answers the GET shape, whose `settings` carries the three |
@@ -701,7 +704,7 @@ server's name as `host`, and the reply's pane is checked on that host.
   the app-level token `SLACK_APP_TOKEN`, `xapp-…`, scope `connections:write`), acks every envelope
   and reconnects when Slack asks. No public URL, so it works behind Tailscale. The Web API calls use
   the bot token `SLACK_BOT_TOKEN` (`xoxb-…`; scopes `channels:history`, `groups:history`,
-  `im:history`, `mpim:history`, `chat:write`, `reactions:write`, `users:read`, and `app_mentions:read`
+  `im:history`, `mpim:history`, `chat:write`, `reactions:write`, `users:read`, `files:read` (for `fleet slack file`), and `app_mentions:read`
   with the `message.*` events; `im:write` for a DM link to a person, whom people can write to only
   with the app's App Home → Messages tab on). Both come from the server's environment or the Keychain
   (`security find-generic-password -s <name> -w`). Sessions never see them.
@@ -722,6 +725,9 @@ server's name as `host`, and the reply's pane is checked on that host.
   `busy` or `waiting` on you; `idle` includes a main thread that is free while its subagents run —
   [discovery](#session-discovery), and the note tells the session to hand long work to them), several as one prompt under 8000 chars (the newest), at least 8 s
   apart; the ones addressed to it get an 👀 reaction when typed in.
+- **Reading** (`fleet slack history | thread | file`): the linked session reads its conversation,
+  read-only, through the bridge — the same checks as a reply (its own link, while linked), and only
+  that conversation (a thread link: only its thread; a file only when shared there).
 - **State** (`<fleet state>/slack-links.json`, 0600): the active links with their undelivered
   messages and the last 20 ended ones.
 

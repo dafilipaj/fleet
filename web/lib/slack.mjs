@@ -59,6 +59,13 @@ const MAX_CONTEXT = 60; // messages kept, undelivered, as context (mention mode)
 const TICK_MS = 4000;
 const DELIVER_GAP_MS = 8000; // after a delivery the session needs a moment to show as busy
 const LINK_ID_RE = /^sl-[0-9a-f]{6}$/;
+const TS_RE = /^\d{10}\.\d{6}$/;
+const FILE_ID_RE = /^F[A-Z0-9]{6,}$/;
+/** `fleet slack history` / `thread`: messages per page (default, max — Slack's own cap is ~200). */
+export const READ_LIMIT = 50;
+export const MAX_READ_LIMIT = 200;
+/** `fleet slack file`: the largest file handed to a session. */
+export const MAX_FILE_BYTES = 20 * 1024 * 1024;
 // Message subtypes that are people writing; edits, joins, deletions… are not delivered.
 const DELIVERED_SUBTYPES = new Set([undefined, 'file_share', 'thread_broadcast']);
 
@@ -209,6 +216,7 @@ export function linkPrompt(link, { history = [], names = {}, first = '' } = {}) 
     `Each message carries who wrote it (their Slack name and id, checked by fleet; "→ mentions you" / "→ to you" when it mentions you or is a DM to you). Until the link ends:`,
     ...(link.dm ? [`This is a direct conversation between ${link.dm.name} and you (the app): what they write there is for you. They may not know they can write to you yet — if the instructions say to start, post a short opener now.`] : []),
     `- Post in Slack only with \`${reply}\`${link.threadTs || link.dm ? '' : ' (add `--thread <ts>` to answer in a message\'s thread)'} — Slack mrkdwn, short, in the language they write in. Never post to Slack any other way; your answer here in the terminal is not seen there.`,
+    `- To catch up on or look something up in ${link.threadTs ? 'the thread' : 'the conversation'} (read-only): \`fleet slack history ${link.id}\` (a page at a time, \`--cursor\` for the next)${link.threadTs ? '' : `, \`fleet slack thread ${link.id} <ts>\` for a thread`}, \`fleet slack file ${link.id} <file-id>\` for a file it lists. Read only when it helps you answer, not every message.`,
     '- When nothing calls for a post, post nothing: end your turn here with one short line (e.g. "observed — nothing for me"), no summary of the conversation.',
     '- Help only within the instructions above: questions, investigating, debugging, small changes within them. Decline anything else in the thread, and say here what was asked.',
     '- Stay free to talk: messages reach you only while your main thread is free. Anything that takes more than a couple of minutes (an investigation, test runs, a deploy, an analysis) goes to a background subagent (the Agent tool with run_in_background) or a background shell — say in the thread that it is under way, and post the result when it lands.',
@@ -279,6 +287,34 @@ export function createSlackApi({ getToken, fetch = globalThis.fetch, timeoutMs =
       throw e;
     }
     return body;
+  };
+}
+
+/**
+ * A file's bytes from Slack (`url_private_download`, with the bot token; needs `files:read`) →
+ * `{ bytes, type }`. Only https on a slack.com host; at most `maxBytes`.
+ */
+export function createSlackDownload({ getToken, fetch = globalThis.fetch, maxBytes = MAX_FILE_BYTES, timeoutMs = 60000 }) {
+  return async function download(url) {
+    const token = await getToken();
+    if (!token) throw new SlackError(`Slack is not set up on this server: no ${TOKEN_NAMES.bot}`, 501);
+    let u;
+    try {
+      u = new URL(url);
+    } catch {
+      throw new SlackError('Slack gave no file URL', 502);
+    }
+    if (u.protocol !== 'https:' || !/(^|\.)slack\.com$/.test(u.hostname)) throw new SlackError('not a Slack file URL', 502);
+    let res;
+    try {
+      res = await fetch(u, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(timeoutMs) });
+    } catch (err) {
+      throw new SlackError(`Slack file download: ${err?.name === 'TimeoutError' ? 'timed out' : (err?.message ?? err)}`, 502);
+    }
+    if (!res.ok) throw new SlackError(`Slack file download: HTTP ${res.status}`, 502);
+    const bytes = Buffer.from(await res.arrayBuffer());
+    if (bytes.length > maxBytes) throw new SlackError(`the file is too large (max ${maxBytes / 1024 / 1024} MB)`, 413);
+    return { bytes, type: res.headers.get('content-type') ?? '' };
   };
 }
 
@@ -395,8 +431,9 @@ export function createSocketClient({ getAppToken, onEvent, fetch = globalThis.fe
  *   listSessions  async (host) => that host's sessions (fresh)
  *   send          async (session, text, host) — types a prompt into it, on its host
  *   file          the state file
+ *   download      async (url) => { bytes, type } — a Slack file (createSlackDownload); none = no `fleet slack file`
  */
-export function createSlackBridge({ settings = {}, self = null, call, socket = null, listSessions, send, file, now = Date.now, log = () => {}, tickMs = TICK_MS }) {
+export function createSlackBridge({ settings = {}, self = null, call, socket = null, listSessions, send, file, download = null, now = Date.now, log = () => {}, tickMs = TICK_MS }) {
   let links = []; // active
   let ended = [];
   let loaded = false;
@@ -695,26 +732,141 @@ export function createSlackBridge({ settings = {}, self = null, call, socket = n
   }
 
   /** POST reply: the linked session (identified by its pane or id, when given) posts in the thread. */
-  async function reply({ link: id, text, thread, pane, session: sessionId, host }) {
+  /**
+   * The active link `id`, for its own session: a call that names its pane / session (as a linked
+   * session's `fleet slack …` does) must be that link's. `nothing`: what did not happen, for the errors.
+   */
+  async function ownLink({ link: id, pane, session: sessionId, host }, nothing) {
     await load();
     if (!validLinkId(id)) throw new SlackError('link must look like sl-xxxxxx');
     const l = links.find((x) => x.id === id);
     if (!l) {
       const old = ended.find((x) => x.id === id);
-      throw new SlackError(old ? `link ${id} has ended (${old.endReason}) — nothing posted` : `no link ${id}`, old ? 410 : 404);
+      throw new SlackError(old ? `link ${id} has ended (${old.endReason}) — ${nothing}` : `no link ${id}`, old ? 410 : 404);
     }
     if (!isActive(l)) {
       await end(l, 'expired');
-      throw new SlackError(`link ${id} has ended (expired) — nothing posted`, 410);
+      throw new SlackError(`link ${id} has ended (expired) — ${nothing}`, 410);
     }
     if (pane || sessionId) {
-      // `host`: where the replying session runs (stamped by the server that proxied the reply here).
+      // `host`: where the calling session runs (stamped by the server that proxied the call here).
       const from = host || self;
-      if (from && l.host && from !== l.host) throw new SlackError(`link ${id} belongs to a session on ${l.host} — nothing posted`, 403);
+      if (from && l.host && from !== l.host) throw new SlackError(`link ${id} belongs to a session on ${l.host} — ${nothing}`, 403);
       const sessions = (await listSessions(l.host || from)) ?? [];
       const me = sessionId ? findSession(sessions, sessionId) : sessions.find((x) => x.handle === pane);
-      if (me && me.session_id !== l.session) throw new SlackError(`link ${id} belongs to another session — nothing posted`, 403);
+      if (me && me.session_id !== l.session) throw new SlackError(`link ${id} belongs to another session — ${nothing}`, 403);
     }
+    return l;
+  }
+
+  /** A Slack read error the session can act on. */
+  function readError(err, what) {
+    if (!(err instanceof SlackError)) return err;
+    if (err.slack === 'missing_scope') return new SlackError(`the Slack app is missing a scope to read ${what} — add it (channels/groups/im/mpim:history, files:read) and reinstall the app`, 400);
+    if (err.slack === 'ratelimited') return new SlackError('Slack rate limit — wait a minute and try again', 429);
+    if (['thread_not_found', 'message_not_found', 'file_not_found', 'file_deleted'].includes(err.slack)) return new SlackError(`no such ${what}`, 404);
+    if (['not_in_channel', 'channel_not_found'].includes(err.slack)) return new SlackError('the Slack app cannot see this conversation any more — invite it back', 400);
+    return err;
+  }
+
+  /** Slack messages → what `history` / `thread` answer: names resolved, markup as plain text, files listed. */
+  async function readView(l, messages) {
+    const ids = new Set();
+    for (const m of messages) {
+      if (m.user) ids.add(m.user);
+      for (const [, id] of String(m.text ?? '').matchAll(/<@([UW][A-Z0-9]+)/g)) ids.add(id);
+    }
+    await Promise.all([...ids].slice(0, 100).map(nameOf));
+    return messages.map((m) => ({
+      ts: m.ts,
+      threadTs: m.thread_ts ?? null,
+      user: m.user ?? null,
+      name: m.user ? (names[m.user] ?? m.user) : (m.bot_profile?.name ?? m.username ?? null),
+      owner: Boolean(settings.owner && m.user === settings.owner),
+      you: Boolean(bot && ((m.user && m.user === bot.userId) || (m.bot_id && m.bot_id === bot.botId))),
+      bot: Boolean(m.bot_id),
+      subtype: m.subtype ?? null,
+      text: plainText(m.text, names),
+      replies: m.reply_count ?? 0,
+      latestReply: m.latest_reply ?? null,
+      files: Array.isArray(m.files) ? m.files.filter((f) => f?.id).map((f) => ({ id: f.id, name: f.name ?? f.title ?? f.id, mimetype: f.mimetype ?? null, size: f.size ?? null })) : [],
+    }));
+  }
+
+  function readLimit(limit) {
+    if (limit == null || limit === '') return READ_LIMIT;
+    const n = Number(limit);
+    if (!Number.isInteger(n) || n < 1 || n > MAX_READ_LIMIT) throw new SlackError(`limit must be 1–${MAX_READ_LIMIT}`);
+    return n;
+  }
+
+  function readTs(v, name) {
+    if (v == null || v === '') return undefined;
+    if (!TS_RE.test(String(v))) throw new SlackError(`${name} must be a Slack timestamp like 1792777175.569809`);
+    return String(v);
+  }
+
+  /**
+   * POST history: the linked conversation, a page at a time — a channel / DM newest first
+   * (`cursor` goes back), a thread link its thread (oldest first). `oldest` / `latest` bound it.
+   */
+  async function history({ cursor, limit, oldest, latest, ...who }) {
+    const l = await ownLink(who, 'nothing read');
+    if (!bot) await whoami().catch(() => {});
+    const params = { channel: l.channel, limit: readLimit(limit), oldest: readTs(oldest, 'oldest'), latest: readTs(latest, 'latest'), cursor: cursor ? String(cursor) : undefined, inclusive: true };
+    let r;
+    try {
+      r = l.threadTs ? await call('conversations.replies', { ...params, ts: l.threadTs }) : await call('conversations.history', params);
+    } catch (err) {
+      throw readError(err, l.threadTs ? 'the thread' : 'the conversation');
+    }
+    const messages = await readView(l, r.messages ?? []);
+    return { link: l.id, channel: l.channel, threadTs: l.threadTs, order: l.threadTs ? 'oldest first' : 'newest first', messages, nextCursor: r.response_metadata?.next_cursor || null };
+  }
+
+  /** POST thread: one thread of the linked conversation (a thread link: only its own). */
+  async function thread({ ts, cursor, limit, ...who }) {
+    const l = await ownLink(who, 'nothing read');
+    const t = readTs(ts, 'ts');
+    if (!t) throw new SlackError('ts is required: the thread\'s first message ts');
+    if (l.threadTs && t !== l.threadTs) throw new SlackError(`link ${l.id} is only the thread ${l.threadTs} — nothing read`, 403);
+    if (!bot) await whoami().catch(() => {});
+    let r;
+    try {
+      r = await call('conversations.replies', { channel: l.channel, ts: t, limit: readLimit(limit), cursor: cursor ? String(cursor) : undefined });
+    } catch (err) {
+      throw readError(err, 'thread');
+    }
+    const messages = await readView(l, r.messages ?? []);
+    return { link: l.id, channel: l.channel, threadTs: t, order: 'oldest first', messages, nextCursor: r.response_metadata?.next_cursor || null };
+  }
+
+  /** POST file: a file shared in the linked conversation (a thread link: in its thread) → its bytes, base64. */
+  async function getFile({ file: fileId, ...who }) {
+    const l = await ownLink(who, 'nothing read');
+    if (!FILE_ID_RE.test(String(fileId ?? ''))) throw new SlackError('file must be a Slack file id like F0123ABCDEF (fleet slack history lists them)');
+    if (!download) throw new SlackError('files are not set up on this server', 501);
+    let f;
+    try {
+      f = (await call('files.info', { file: fileId })).file;
+    } catch (err) {
+      throw readError(err, 'file');
+    }
+    // Only a file shared where the link is: Slack lists every share per conversation.
+    const shares = [...(f?.shares?.public?.[l.channel] ?? []), ...(f?.shares?.private?.[l.channel] ?? [])];
+    const here = l.threadTs ? shares.some((s) => s.ts === l.threadTs || s.thread_ts === l.threadTs) : shares.length > 0;
+    if (!here) throw new SlackError(`file ${fileId} is not shared in ${l.threadTs ? 'the linked thread' : 'the linked conversation'} — nothing read`, 403);
+    if (f.size != null && f.size > MAX_FILE_BYTES) throw new SlackError(`the file is too large (${Math.round(f.size / 1024 / 1024)} MB, max ${MAX_FILE_BYTES / 1024 / 1024} MB)`, 413);
+    const src = f.url_private_download ?? f.url_private;
+    if (!src) throw new SlackError(`file ${fileId} has no content to download (${f.mode ?? 'external'})`, 400);
+    const { bytes, type } = await download(src);
+    // Without files:read Slack answers its login page instead of the file.
+    if (/text\/html/.test(type) && !/html/.test(f.mimetype ?? '')) throw new SlackError('Slack did not hand over the file — the app needs the files:read scope (add it and reinstall the app)', 400);
+    return { link: l.id, id: f.id, name: f.name ?? f.title ?? f.id, mimetype: f.mimetype ?? null, size: bytes.length, data: bytes.toString('base64') };
+  }
+
+  async function reply({ link: id, text, thread, pane, session: sessionId, host }) {
+    const l = await ownLink({ link: id, pane, session: sessionId, host }, 'nothing posted');
     const body = typeof text === 'string' ? text.trim() : '';
     if (!body) throw new SlackError('text is required');
     if (body.length > MAX_REPLY) throw new SlackError(`text is too long (max ${MAX_REPLY} chars) — say less, or link to a file`);
@@ -835,6 +987,9 @@ export function createSlackBridge({ settings = {}, self = null, call, socket = n
     relink,
     unlink,
     reply,
+    history,
+    thread,
+    file: getFile,
     handleEvent,
     tick,
     async list() {
