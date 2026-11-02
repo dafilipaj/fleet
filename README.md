@@ -36,8 +36,10 @@ The setup it is built for:
   drives them through tmux or iTerm, and dispatches to other hosts by re-running itself over ssh
   (`ssh <host> fleet <same args>`).
 - **Web** — every machine runs the same server. It serves its own sessions and merges in its
-  peers', so any one URL shows the whole fleet. Built for a phone: list, chat,
-  send a message, spawn a session.
+  peers', so any one URL shows the whole fleet. A keyboard-first desktop UI and a phone PWA:
+  session list and board, chat with a prompt queue, briefs, a live diff reviewer, spawning now
+  or later — plus the modules around the sessions: an Inbox of everything waiting on you,
+  Productive tasks, pull requests, Slack links, bots, a voice operator, voice memos and notes.
 - **Config** — one small JSON file per machine (`~/.config/fleet/config.json`), written by
   `fleet init`, read by both the CLI and the web server.
 
@@ -82,13 +84,16 @@ Building the whole setup from scratch (always-on Mac, Tailscale, ssh, tmux, phon
 
 | area | commands |
 | --- | --- |
-| Claude sessions | `list` · `peek` · `send` · `rename` · `name` · `spawn` · `handoff` · `watch` (default) · `skill` |
+| Claude sessions | `list` · `peek` · `send` · `rename` · `name` · `spawn` · `handoff` · `brief` · `stack` · `group` · `watch` (default) · `skill` |
+| finishing | `done` — an agent reports its work finished (the UI shows it Done; you close it) · `ask-done` · `sleep` — close a session but keep it dormant (the app's Deactivate) |
+| Slack | `slack link <thread-url \| @person> --for 2h` · `slack` · `slack unlink` · `slack reply` — a session talks, for a while, with the people in one Slack thread, channel or DM |
 | tmux sessions | `tmux list\|enter\|last\|new\|kill\|rename\|stale` (alias `t`), shortcuts `enter` · `last` · `new` |
-| after a reboot | `restore` — dormant sessions: list, bring back (same tmux layout, `claude --resume`), forget |
-| hosts | `exec` · `ssh` · `doctor` |
+| after a reboot | `restore` — dormant sessions (the app's Inactive): list, bring back (same tmux layout, `claude --resume`), forget; `--closed` for recently closed ones |
+| hosts | `exec` · `ssh` · `doctor` · `usage` (Claude and ChatGPT plan limits) · `harness` · `gh-identity` (act on GitHub as a GitHub App) |
 | setup | `init` · `config path\|show\|edit\|set` · `install --host <name>` |
 | pull requests | `prs` — the GitHub PRs that need you (unseen @mentions, yours, waiting on your review, waiting on their author), through `gh`, with their local worktrees |
-| Productive tasks | `tasks` · `task show\|status\|spawn` — your open Productive tasks (due soon, in progress, to do), moved between statuses, a session started on one |
+| Productive tasks | `tasks` · `task show\|status\|spawn\|schedule` — your open Productive tasks (due soon, in progress, to do), moved between statuses, a session started on one now or on its start date |
+| later | `schedule add --at <when> \| --task <task>` · `schedule` · `schedule cancel` — one-off sessions started later on this host |
 | git repos | `repos` · `repos sync` · `repos install-service` — fetch + fast-forward every repo under `~/Code`, on a timer |
 | bots | `bots` · `bots show\|run\|enable\|disable` · `bots install-service` — agent sessions a host starts from a recipe (prompt + schedule), like Claude Code routines; everything a bot session spawns joins its run. `jobs` is the old name, still an alias |
 | web | `web serve` · `web build` · `web install-service` |
@@ -117,6 +122,7 @@ fleet tmux stale                        # idle shells nothing is using
 - [docs/desktop.md](docs/desktop.md) — Fleet.app, the web UI as a macOS app (Tauri)
 - [docs/migration.md](docs/migration.md) — coming from `tb-fleet`, `ws` or `fleet-web`
 - [web/](web/) — the web server and its HTTP API
+- [scripts/guide/](scripts/guide/) — the feature guide: every screen, screenshotted from demo data
 
 ## Security
 

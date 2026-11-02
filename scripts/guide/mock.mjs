@@ -16,10 +16,10 @@ const iso = (ms) => new Date(ms).toISOString()
 // ---------------------------------------------------------------- sessions
 const S = (o) => ({ backend: 'tmux', harness: 'claude', name_source: 'generated', stack: null, origin: null, tty: '/dev/ttys004', ...o })
 const SESSIONS = () => [
-  S({ host: 'workstation', session_id: 'a1b2c3d4-1111-4000-8000-000000000001', pid: 41201, display_title: 'Invoice rounding fix', gen_title: 'Invoice rounding fix', cwd: `${H}/Code/acme-api/.worktrees/fix-invoice-rounding`, status: 'busy', updated_at: now() - 4_000, handle: '%12', tmux_session: 'invoice-rounding-fix', model: 'claude-opus-5-5', context: { used: 92_000, window: 200_000, pct: 46, model: 'claude-opus-5-5' }, title: 'Invoices with 3+ line items are off by a cent vs. the PDF…' }),
+  S({ host: 'workstation', session_id: 'a1b2c3d4-1111-4000-8000-000000000001', pid: 41201, display_title: 'Invoice rounding fix', gen_title: 'Invoice rounding fix', cwd: `${H}/Code/acme-api/.worktrees/fix-invoice-rounding`, status: 'busy', updated_at: now() - 4_000, handle: '%12', tmux_session: 'invoice-rounding-fix', model: 'claude-opus-5-5', background: { agents: [{ id: 'ag-1', description: 'Check the credit-note fixtures', type: 'Explore', model: 'claude-haiku-5-5', background: true, started_at: now() - 95_000, last_activity_at: now() - 4_000, activity: 'Grep: creditNote' }], shells: 1 }, context: { used: 92_000, window: 200_000, pct: 46, model: 'claude-opus-5-5' }, title: 'Invoices with 3+ line items are off by a cent vs. the PDF…' }),
   S({ host: 'workstation', session_id: 'a1b2c3d4-1111-4000-8000-000000000002', pid: 41388, display_title: 'Checkout e2e flake', cwd: `${H}/Code/acme-web`, status: 'waiting', waiting_for: 'permission: Bash(npm run test:e2e -- checkout)', updated_at: now() - 95_000, handle: '%15', tmux_session: 'checkout-e2e-flake', model: 'claude-sonnet-5-5', context: { used: 122_000, window: 200_000, pct: 61 } }),
   S({ host: 'workstation', session_id: 'a1b2c3d4-1111-4000-8000-000000000003', pid: 41420, display_title: 'Rate limits spec', cwd: `${H}/Code/acme-api`, status: 'waiting', waiting_for: 'question: Which limit model should v1 use?', updated_at: now() - 40_000, handle: '%17', tmux_session: 'rate-limits-spec', model: 'claude-opus-5-5', context: { used: 38_000, window: 200_000, pct: 19 } }),
-  S({ host: 'workstation', session_id: 'a1b2c3d4-1111-4000-8000-000000000004', pid: 41502, display_title: 'Dependency audit', cwd: `${H}/Code/acme-web`, status: 'idle', updated_at: now() - 26 * M, handle: '%21', tmux_session: 'job-dependency-audit', origin: { job: 'dependency-audit', run: '20261015-0700' }, model: 'claude-sonnet-5-5', context: { used: 54_000, window: 200_000, pct: 27 } }),
+  S({ host: 'workstation', session_id: 'a1b2c3d4-1111-4000-8000-000000000004', pid: 41502, display_title: 'Dependency audit', cwd: `${H}/Code/acme-web`, status: 'idle', updated_at: now() - 26 * M, handle: '%21', tmux_session: 'job-dependency-audit', gh_identity: 'acme-bot', origin: { job: 'dependency-audit', run: '20261015-0700' }, model: 'claude-sonnet-5-5', context: { used: 54_000, window: 200_000, pct: 27 } }),
   S({ host: 'workstation', session_id: 'a1b2c3d4-1111-4000-8000-000000000005', pid: 41630, display_title: 'Search index migration', harness: 'codex', cwd: `${H}/Code/search-indexer`, status: 'busy', updated_at: now() - 9_000, handle: '%24', tmux_session: 'search-index-migration', model: 'gpt-5.5-codex', context: null }),
   S({ host: 'workstation', session_id: 'a1b2c3d4-1111-4000-8000-000000000006', pid: 41702, display_title: 'Review acme-web#1310', cwd: `${H}/Code/acme-web/.worktrees/pr-1310`, status: 'idle', updated_at: now() - 12 * M, handle: '%26', tmux_session: 'review-acme-web-1310', done: { at: now() - 12 * M, note: 'Reviewed acme-web#1310: 2 blocking comments (retry loop, missing index), approved the rest' }, model: 'claude-opus-5-5', context: { used: 71_000, window: 200_000, pct: 36 } }),
   S({ host: 'devbox', session_id: 'b2c3d4e5-2222-4000-8000-000000000001', pid: 9120, display_title: 'Onboarding flow redesign', cwd: `${H}/Code/acme-web`, status: 'busy', updated_at: now() - 2_000, handle: '%3', tmux_session: 'onboarding-flow', model: 'claude-opus-5-5', stack: { id: 'onboarding-redesign', label: 'Onboarding redesign', host: 'devbox' }, context: { used: 148_000, window: 200_000, pct: 74 } }),
@@ -29,6 +29,7 @@ const SESSIONS = () => [
   S({ host: 'devbox', session_id: 'b2c3d4e5-2222-4000-8000-000000000004', pid: 9355, display_title: 'October release notes', cwd: `${H}/Code/docs`, status: 'waiting', waiting_for: 'Ready for your review', updated_at: now() - 3 * M, handle: '%9', tmux_session: 'release-notes-oct', model: 'claude-sonnet-5-5', context: { used: 44_000, window: 200_000, pct: 22 } }),
   S({ host: 'laptop', session_id: 'c3d4e5f6-3333-4000-8000-000000000001', pid: 77120, display_title: 'Docs site search', backend: 'iterm', handle: 'w0t2p0', tab: 'docs', cwd: `${H}/Code/docs`, status: 'idle', updated_at: now() - 2 * HR, model: 'claude-sonnet-5-5', context: { used: 18_000, window: 200_000, pct: 9 } }),
   S({ host: 'laptop', session_id: 'c3d4e5f6-3333-4000-8000-000000000002', pid: 77333, display_title: 'Billing webhook retries', cwd: `${H}/Code/billing-service`, status: 'busy', updated_at: now() - 6_000, handle: '%2', tmux_session: 'billing-webhooks', model: 'claude-opus-5-5', context: { used: 410_000, window: 1_000_000, pct: 41 } }),
+  S({ host: 'workstation', session_id: 'a1b2c3d4-1111-4000-8000-000000000008', pid: 41850, display_title: 'Billing questions (#billing)', cwd: `${H}/Code/acme-api`, status: 'idle', updated_at: now() - 14 * M, handle: '%32', tmux_session: 'billing-slack', model: 'claude-sonnet-5-5', context: { used: 26_000, window: 200_000, pct: 13 } }),
   S({ host: 'workstation', session_id: 'a1b2c3d4-1111-4000-8000-0000000000ff', pid: 41999, display_title: 'Operator', cwd: `${H}/.local/state/fleet/operator`, status: 'idle', updated_at: now() - 60_000, handle: '%30', tmux_session: 'operator', operator: true, model: 'claude-sonnet-5-5' }),
 ].map((s) => ({ ...s, name: s.display_title, editorUrl: `vscode://vscode-remote/ssh-remote+${s.host}${s.cwd}` }))
 
@@ -65,6 +66,13 @@ function chat(id) {
     { role: 'assistant', kind: 'assistant', final: true, ts: t - 16 * M, text: `Opened **[acme/acme-api#482](https://github.com/acme/acme-api/pull/482)** — *Fix invoice total rounding (sum in cents, round once)*.\n\n- Closes #1777\n- Review requested from @marta\n- CI is running; I'll watch it and fix anything that fails.` },
     { role: 'user', kind: 'command', name: '/code-review', args: 'focus on currency edge cases (JPY, 3-decimal currencies)', ts: t - 2 * M, text: '/code-review focus on currency edge cases' },
     { role: 'assistant', kind: 'assistant', final: false, ts: t - 60_000, text: 'Checking how `Currency.minorUnits` is used across billing…' },
+  ]
+  if (id.endsWith('0008') && id.startsWith('a1')) return [
+    { role: 'user', kind: 'user', ts: t - 2 * HR, text: 'You are linked to a Slack thread in #billing until 18:00 (sl-3c9e1a). Task: answer questions about the invoice rounding fix and when the affected invoices can be re-issued. Do not promise dates. Post only with `fleet slack reply`.' },
+    { role: 'assistant', kind: 'assistant', final: true, ts: t - 2 * HR + 30_000, text: 'Linked. I read the thread so far and will answer when someone asks me.' },
+    { role: 'user', kind: 'user', ts: t - 25 * M, text: 'Slack #billing · Marta (U04MARTA) → mentions you: can we re-issue INV-2026-0912 today?' },
+    { role: 'assistant', kind: 'assistant', final: false, ts: t - 24 * M, text: 'Checking the state of acme/acme-api#482.' },
+    { role: 'assistant', kind: 'assistant', final: true, ts: t - 23 * M, text: 'Replied in the thread: the fix is in review (#482, CI running); the invoice can be re-issued once it is merged and deployed. I did not give a date.' },
   ]
   if (id.endsWith('0006') && id.startsWith('a1')) return [
     { role: 'user', kind: 'user', ts: t - 25 * M, text: 'Review acme-web#1310 and leave the comments on GitHub.' },
@@ -249,6 +257,11 @@ const usage = (host) => ({
     { kind: 'weekly_scoped', group: 'weekly', label: 'Opus', model: 'Opus', percent: 81, severity: 'warning', resets_at: iso(now() + 3.2 * D), active: true },
   ],
   extra_usage: { enabled: true, used: 12.4, limit: 100, currency: 'USD', percent: 12 }, fetched_at: iso(now() - 40_000), stale: false, error: null,
+  openai: { provider: 'openai', account: { uuid: null, email: 'demo@acme.dev', organization: 'Acme', plan: 'pro', tier: null, plan_label: 'ChatGPT Pro' },
+    limits: [
+      { kind: 'session', group: 'session', label: '5-hour window', model: null, percent: 18, severity: 'normal', resets_at: iso(now() + 3.1 * HR), active: false },
+      { kind: 'weekly_all', group: 'weekly', label: 'Weekly', model: null, percent: 34, severity: 'normal', resets_at: iso(now() + 4.5 * D), active: true },
+    ], extra_usage: null, fetched_at: iso(now() - 50_000), stale: false, error: null },
 })
 
 // ---------------------------------------------------------------- notes
@@ -299,11 +312,11 @@ const SETTINGS = {
   quickReplies: [{ label: 'Continue', text: 'continue' }, { label: 'Yes', text: 'yes' }, { label: 'Run the tests', text: 'run the tests and fix what fails' }, { label: 'Commit & push', text: 'commit and push' }],
   uploads: { maxMB: 50 }, transcribe: { enabled: true }, memos: { enabled: true },
   models: [{ id: '', label: 'Default' }, { id: 'claude-opus-5-5', label: 'Opus 5.5' }, { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5' }, { id: 'claude-haiku-5-5', label: 'Haiku 5.5' }],
-  notes: { enabled: true, name: 'Team notes' }, stacks: { enabled: true, model: 'claude-sonnet-5-5', generate: true }, speak: { enabled: true, voice: 'alloy' }, operator: { enabled: true, hosts: ['workstation'] },
+  notes: { enabled: true, name: 'Team notes' }, stacks: { enabled: true, model: 'claude-sonnet-5-5', generate: true }, speak: { enabled: true, voice: 'alloy' }, operator: { enabled: true, hosts: ['workstation'] }, focus: { host: 'laptop' },
 }
 const HARN = (host) => ({ host, harnesses: [
-  { id: 'claude', label: 'Claude Code', command: 'claude', installed: true, models: [{ id: '', label: 'Default' }, { id: 'claude-opus-5-5', label: 'Opus 5.5' }, { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5' }, { id: 'claude-haiku-5-5', label: 'Haiku 5.5' }] },
-  { id: 'codex', label: 'Codex', command: 'codex', installed: true, models: [{ id: '', label: 'Default' }, { id: 'gpt-5.5-codex', label: 'GPT-5.5 Codex' }] },
+  { id: 'claude', label: 'Claude Code', command: 'claude', installed: true, efforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultModel: 'claude-opus-5-5', defaultEffort: 'high', models: [{ id: '', label: 'Default' }, { id: 'claude-opus-5-5', label: 'Opus 5.5' }, { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5' }, { id: 'claude-haiku-5-5', label: 'Haiku 5.5' }] },
+  { id: 'codex', label: 'Codex', command: 'codex', installed: true, efforts: ['low', 'medium', 'high'], defaultModel: 'gpt-5.5-codex', defaultEffort: 'medium', models: [{ id: '', label: 'Default' }, { id: 'gpt-5.5-codex', label: 'GPT-5.5 Codex' }] },
   { id: 'pi', label: 'pi', command: 'pi', installed: host !== 'laptop', models: [{ id: '', label: 'Default' }] },
 ] })
 const ALLDIRS = ['acme-api', 'acme-web', 'billing-service', 'docs', 'scratch']
@@ -436,6 +449,63 @@ function review(host, id) {
   }
 }
 
+// ---------------------------------------------------------------- inbox, tasks, schedule, slack, focus
+const ymd = (ms) => { const d = new Date(ms); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` }
+const SID = (tail) => `a1b2c3d4-1111-4000-8000-00000000000${tail}`
+function inbox() {
+  const t = now()
+  const I = (o) => ({ ask: null, url: null, href: null, from: null, firstSeen: t - HR, effort: null, meta: {}, ...o })
+  const items = [
+    I({ id: `session:workstation/${SID(2)}`, source: 'session', kind: 'session', section: 'quick', title: 'Checkout e2e flake', ask: 'Allow Bash(npm run test:e2e -- checkout)', href: `#/s/workstation/${SID(2)}`, at: t - 95_000, firstSeen: t - 95_000, effort: 'quick', meta: { host: 'workstation', sessionId: SID(2) } }),
+    I({ id: 'pr:https://github.com/acme/docs/pull/96', source: 'github', kind: 'myPr', section: 'quick', title: 'Docs: new API auth guide', ask: 'Approved — merge it', url: 'https://github.com/acme/docs/pull/96', from: 'marta', at: t - 40 * M, effort: 'quick', meta: { repo: 'acme/docs', number: 96, size: 'XS', additions: 60, deletions: 4, checks: 'success' } }),
+    I({ id: 'slack:C04BILLING/1761', source: 'slack', kind: 'message', section: 'quick', title: '#billing: can we re-issue INV-2026-0912 today?', ask: 'Answer Marta: yes once #482 is merged', url: 'https://acme.slack.com/archives/C04BILLING/p1761', from: 'Marta', at: t - 25 * M, firstSeen: t - 20 * M, effort: 'quick' }),
+    I({ id: 'pr:https://github.com/acme/acme-web/pull/1310', source: 'github', kind: 'review', section: 'waiting', title: 'Checkout: retry Stripe confirmation on network errors', ask: 'Review requested', url: 'https://github.com/acme/acme-web/pull/1310', from: 'ana', at: t - 3 * HR, effort: 'medium', meta: { repo: 'acme/acme-web', number: 1310, size: 'M', additions: 340, deletions: 85, checks: 'success' } }),
+    I({ id: 'pr:https://github.com/acme/billing-service/pull/207', source: 'github', kind: 'review', section: 'waiting', title: 'Webhook signature v2', ask: 'Review requested · CI failing', url: 'https://github.com/acme/billing-service/pull/207', from: 'ivo', at: t - 6 * HR, effort: 'deep', meta: { repo: 'acme/billing-service', number: 207, size: 'L', additions: 820, deletions: 240, checks: 'failure' } }),
+    I({ id: 'email:hr-1', source: 'email', kind: 'message', section: 'waiting', title: 'Q4 hiring plan — your numbers by Friday', ask: 'Send the AI team headcount', url: 'https://mail.google.com/', from: 'Petra (People)', at: t - 5 * HR, effort: 'medium' }),
+    I({ id: 'task:2041', source: 'productive', kind: 'task', section: 'mine', title: 'Invoice totals off by a cent', ask: 'Due tomorrow · In progress', url: 'https://app.productive.io/acme/tasks/2041', at: t - 2 * HR, effort: 'medium', meta: { project: 'Billing', due: ymd(now() + D), status: 'In progress' } }),
+    I({ id: 'task:2077', source: 'productive', kind: 'task', section: 'mine', title: 'Rate limits: spec for per-org limits', ask: 'In progress', url: 'https://app.productive.io/acme/tasks/2077', at: t - 26 * HR, effort: 'deep', meta: { project: 'API platform', status: 'In progress' } }),
+  ]
+  return {
+    enabled: true, host: 'workstation', updatedAt: t - 2 * M,
+    brief: { text: '- **Quick wins first:** approve the e2e run in [Checkout e2e flake](#/s/workstation/' + SID(2) + '), merge [the auth guide](https://github.com/acme/docs/pull/96) and answer Marta in [#billing](https://acme.slack.com/archives/C04BILLING/p1761).\n- [Invoice totals off by a cent](https://app.productive.io/acme/tasks/2041) is due tomorrow; its PR is in review.\n- Two reviews wait on you; [Webhook signature v2](https://github.com/acme/billing-service/pull/207) is large and its CI fails, so leave it for a focused block.\n- People wants the Q4 headcount by Friday.', at: t - 6 * M, model: 'claude-haiku-5-5' },
+    settings: { scanMinutes: 60, workHours: [8, 18], workDays: [1, 2, 3, 4, 5] },
+    sources: { github: { at: t - M, ok: true, error: null, count: 3 }, productive: { at: t - 4 * M, ok: true, error: null, count: 2 }, sessions: { at: t - 5_000, ok: true, error: null, count: 1 }, comms: { at: t - 22 * M, ok: true, error: null, count: 2, nextAt: t + 38 * M, running: false } },
+    items,
+  }
+}
+const ST = (id, name, category, position) => ({ id, name, category, position })
+const WF = [ST('s1', 'Backlog', 'notStarted', 1), ST('s2', 'To do', 'notStarted', 2), ST('s3', 'In progress', 'started', 3), ST('s4', 'In review', 'started', 4), ST('s5', 'Done', 'closed', 5)]
+function tasks(host) {
+  const T = (o) => ({ url: `https://app.productive.io/acme/tasks/${o.id}`, taskList: 'Sprint 44', workflowId: 'wf-1', dueDate: null, startDate: null, createdAt: now() - 9 * D, updatedAt: now() - 3 * HR, lastActivityAt: now() - 3 * HR, todos: 0, openTodos: 0, tags: [], description: '', ...o })
+  const list = [
+    T({ id: '2041', number: '412', title: 'Invoice totals off by a cent', column: 'due', project: { id: 'p1', name: 'Billing' }, status: WF[2], dueDate: ymd(now() + D), todos: 4, openTodos: 1, tags: ['bug'], description: 'Finance found three invoices where the PDF total and the API total differ by 0.01. Happens with 3+ line items.' }),
+    T({ id: '2052', number: '418', title: 'October release notes', column: 'due', project: { id: 'p3', name: 'Docs' }, status: WF[3], dueDate: ymd(now()), lastActivityAt: now() - 3 * M }),
+    T({ id: '2077', number: '57', title: 'Rate limits: spec for per-org limits', column: 'inProgress', project: { id: 'p2', name: 'API platform' }, status: WF[2], todos: 6, openTodos: 4, tags: ['spec'], lastActivityAt: now() - 26 * HR }),
+    T({ id: '2063', number: '421', title: 'Webhook retries with exponential backoff', column: 'inProgress', project: { id: 'p1', name: 'Billing' }, status: WF[3], lastActivityAt: now() - 2 * D }),
+    T({ id: '2090', number: '430', title: 'Re-issue the three affected invoices', column: 'toDo', project: { id: 'p1', name: 'Billing' }, status: WF[1], startDate: ymd(now() + 2 * D) }),
+    T({ id: '2091', number: '61', title: 'Search index: drop the v1 schema', column: 'toDo', project: { id: 'p2', name: 'API platform' }, status: WF[1], startDate: ymd(now() + 8 * D), tags: ['cleanup'] }),
+    T({ id: '2095', number: '12', title: 'Onboarding v3: welcome email copy', column: 'toDo', project: { id: 'p4', name: 'Onboarding' }, status: WF[0] }),
+  ]
+  const cols = [['due', 'Due soon'], ['inProgress', 'In progress'], ['toDo', 'To do']]
+  return { host, user: { id: 'u1', name: 'Demo User' }, organization: { id: 'o1', name: 'Acme', slug: 'acme' }, fetchedAt: now() - 4 * M, stale: false, error: null, truncated: false,
+    columns: cols.map(([id, title]) => ({ id, title, count: list.filter((x) => x.column === id).length })), tasks: list, statuses: { 'wf-1': WF } }
+}
+function schedule(host) {
+  if (host !== 'workstation') return { host, entries: [] }
+  const E = (o) => ({ dir: '~/Code/acme-api', name: null, model: null, harness: 'claude', ghIdentity: null, createdAt: now() - HR, state: 'pending', reason: null, firedAt: null, tmuxSession: null, ...o })
+  return { host, entries: [
+    E({ id: 'sc-7f21', at: new Date(new Date().setHours(24 + 7, 30, 0, 0)).getTime(), prompt: 'Check overnight CI on main and fix anything red.', name: 'ci-morning-check' }),
+    E({ id: 'sc-91aa', at: new Date(`${ymd(now() + 2 * D)}T08:00`).getTime(), time: '08:00', task: { id: '2090', number: '430', title: 'Re-issue the three affected invoices', url: 'https://app.productive.io/acme/tasks/2090', startDate: ymd(now() + 2 * D), checkedAt: now() - 20 * M }, prompt: 'Prepare the credit notes and the re-issued invoices for finance.', name: 'task-430' }),
+  ] }
+}
+function slack() {
+  const t = now()
+  return { enabled: true, host: 'workstation', socket: { connected: true, error: null }, ended: [],
+    links: [{ id: 'sl-3c9e1a', host: 'workstation', session: SID(8), sessionName: 'Billing questions (#billing)', channel: 'C04BILLING', threadTs: '1761.0001', permalink: 'https://acme.slack.com/archives/C04BILLING/p1761', dm: null,
+      task: 'Answer questions about the invoice rounding fix and when the affected invoices can be re-issued. Do not promise dates.', mode: 'mention', createdAt: t - 2 * HR, until: t + 6 * HR, minutes: 480, pending: 0, delivered: 5, replies: 3, endedAt: null, endReason: null }] }
+}
+const focusStatus = (host) => ({ host, active: false, remainingMs: 0, endsAt: null, apps: ['Slack', 'Mail'], stale: false })
+
 // ---------------------------------------------------------------- server
 async function body(req) { const b = []; for await (const c of req) b.push(c); try { return JSON.parse(Buffer.concat(b).toString() || '{}') } catch { return {} } }
 function route(method, p, q, b) {
@@ -447,13 +517,15 @@ function route(method, p, q, b) {
   if (p === '/api/operator') return OPERATOR()
   if (p === '/api/memos') return { dir: `${H}/Memos`, memos: MEMOS }
   if ((m = p.match(/^\/api\/memos\/([^/]+)$/))) return memo(decodeURIComponent(m[1]))
+  if (p === '/api/inbox' || p.startsWith('/api/inbox/')) return inbox()
+  if (p === '/api/slack' || p.startsWith('/api/slack/')) return slack()
   if (p === '/api/transcribe') return { text: 'run the e2e suite twenty times and tell me how many fail', model: 'demo' }
   if (!(m = p.match(/^\/api\/hosts\/([^/]+)\/(.*)$/))) return null
   const host = decodeURIComponent(m[1]); const rest = m[2]
   let s
   if ((s = rest.match(/^sessions\/([^/]+)\/(.*)$/))) {
     const id = decodeURIComponent(s[1]); const what = s[2]; const sess = find(host, id)
-    if (what === 'messages') { const msgs = chat(id); return { host, id, status: sess?.status ?? 'idle', backend: 'tmux', name: sess?.display_title, limit: 60, messages: msgs, total: msgs.length, truncated: false, updatedAt: sess?.updated_at, capturedAt: now() } }
+    if (what === 'messages') { const msgs = chat(id); return { host, id, status: sess?.status ?? 'idle', backend: 'tmux', name: sess?.display_title, limit: 60, messages: msgs, total: msgs.length, truncated: false, queue: id === SID(1) ? { items: [{ id: 'q-1', text: 'Then add a KWD case (3 decimals) to the regression test.', createdAt: now() - 40_000 }], paused: false, held: false } : null, updatedAt: sess?.updated_at, capturedAt: now() } }
     if (what === 'peek') return { host, id, backend: 'tmux', lines: 200, text: PEEK, capturedAt: now() }
     if (what === 'brief') return brief(host, id)
     if (what === 'diffs') return diffs(host, id)
@@ -468,6 +540,9 @@ function route(method, p, q, b) {
   if (rest === 'jobs') return jobs(host)
   if ((s = rest.match(/^jobs\/([^/]+)$/))) return jobs(host).jobs.find((j) => j.name === decodeURIComponent(s[1]))
   if (rest === 'repos') return repos(host)
+  if (rest === 'tasks') return tasks(host)
+  if (rest === 'schedule') return schedule(host)
+  if (rest === 'focus') return focusStatus(host)
   if (rest === 'usage') return usage(host)
   if (rest === 'prs') return host === 'workstation' || host === 'laptop' ? prs(host) : prs(host)
   if (rest === 'dormant') return dormant(host)

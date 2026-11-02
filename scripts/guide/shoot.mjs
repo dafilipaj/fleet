@@ -8,6 +8,8 @@ const INV = '#/s/workstation/a1b2c3d4-1111-4000-8000-000000000001' // Invoice ro
 const CHK = '#/s/workstation/a1b2c3d4-1111-4000-8000-000000000002' // waiting on a permission
 const RL = '#/s/workstation/a1b2c3d4-1111-4000-8000-000000000003'  // waiting on an AskUserQuestion
 const ONB = '#/s/devbox/b2c3d4e5-2222-4000-8000-000000000001'      // in a stack across two hosts
+const DONE = '#/s/workstation/a1b2c3d4-1111-4000-8000-000000000006'    // reported itself done (fleet done)
+const SLK = '#/s/workstation/a1b2c3d4-1111-4000-8000-000000000008'     // linked to a Slack thread
 const MUTE = { 'fleet.operator.speak': 'false' }                    // no read-aloud toast on the operator
 const focus = `document.querySelector('textarea[aria-label=Message]').focus()`
 const scrollTo = (t) => `(() => { const e = [...document.querySelectorAll('*')].find((e) => e.children.length === 0 && e.textContent?.trim() === ${JSON.stringify(t)}); e?.scrollIntoView({ block: 'start' }); return !!e })()`
@@ -46,8 +48,17 @@ const SHOTS = [
   ['d-notes-search', DESKTOP, async (p) => { await p.go(U + '#/notes/devbox'); await p.key('f', { meta: true }); await p.type('rounding', 1200) }],
   ['d-usage', DESKTOP, async (p) => { await p.go(U + '#/usage') }],
   ['d-settings', DESKTOP, async (p) => { await p.go(U + '#/settings') }],
-  ['d-settings-repos', DESKTOP, async (p) => { await p.go(U + '#/settings'); await p.eval(scrollTo('Git repos')); await p.sleep(1200) }],
-  ['d-settings-dirs', DESKTOP, async (p) => { await p.go(U + '#/settings'); await p.eval(scrollTo('Start directories')); await p.sleep(1200) }],
+  ['d-settings-repos', DESKTOP, async (p) => { await p.go(U + '#/settings/repos') }],
+  ['d-settings-dirs', DESKTOP, async (p) => { await p.go(U + '#/settings/start-dirs') }],
+  ['d-settings-models', DESKTOP, async (p) => { await p.go(U + '#/settings/models') }],
+  ['d-queue', DESKTOP, async (p) => { await p.go(U + INV) }, { x: 360, y: 560, width: 760, height: 340 }],
+  ['d-inbox', DESKTOP, async (p) => { await p.go(U + '#/inbox') }],
+  ['d-tasks', DESKTOP, async (p) => { await p.go(U + '#/tasks') }],
+  ['d-task', DESKTOP, async (p) => { await p.go(U + '#/tasks/2090', { }); await p.sleep(800) }],
+  ['d-slack', DESKTOP, async (p) => { await p.go(U + SLK) }],
+  ['d-done', DESKTOP, async (p) => { await p.go(U + DONE) }],
+  ['d-later', DESKTOP, async (p) => { await p.go(U + INV); await p.key('o', { meta: true, shift: true, ms: 1200 }); await p.click('=Later', { ms: 900 }) }],
+  ['d-host', DESKTOP, async (p) => { await p.go(U + INV); await p.click('workstation: ', { sel: 'button', ms: 900 }) }],
   ['d-memo', DESKTOP, async (p) => { await p.go(U + '#/memos/2026-10-15-0930-billing-sync') }],
   ['d-operator', DESKTOP, async (p) => { await p.go(U + '#/operator', MUTE) }],
   ['d-complete', DESKTOP, async (p) => { await p.go(U + INV); await p.eval(focus); await p.type('/', 1200) }],
@@ -55,7 +66,7 @@ const SHOTS = [
   ['d-scratch', DESKTOP, async (p) => { await p.go(U + INV, { 'fleet.scratchpad': 'TODO today\n- review acme-web#1310\n- answer rate limits question\n- ship invoice fix before 16:00\n\nfleet -H workstation enter invoice' }); await p.key('s', { meta: true, shift: true, ms: 1000 }) }],
   ['d-dusk', { ...DESKTOP, dark: true }, async (p) => { await p.go(U + INV, { 'fleet.palette': 'dusk', 'fleet.theme': 'dark' }) }],
   ['d-earth', DESKTOP, async (p) => { await p.go(U + '#/', { 'fleet.palette': 'earth', 'fleet.view': 'board' }) }],
-  ['d-dormant', DESKTOP, async (p) => { await p.go(U + '#/'); await p.eval(scrollAll(false)); await p.sleep(700) }],
+  ['d-dormant', DESKTOP, async (p) => { await p.go(U + '#/'); await p.eval(scrollAll(false)); await p.click('Inactive', { sel: 'button' }); await p.click('Closed', { sel: 'button' }); await p.eval(scrollAll(false)); await p.sleep(700) }],
   ['d-details-bottom', DESKTOP, async (p) => { await p.go(U + INV); await p.eval(scrollAll(true)); await p.sleep(700) }],
   ['d-review', DESKTOP, async (p) => { await p.go(U + REV, UNI); await p.eval(toCard('invoice_total.ts')); await p.sleep(800) }],
   ['d-review-select', DESKTOP, async (p) => { await p.go(U + REV, UNI); await p.eval(toCard('currency.ts')); await p.sleep(500); await p.eval(selectLines('currency.ts', 23, 25)); await p.sleep(800) }],
@@ -78,6 +89,8 @@ const SHOTS = [
   ['m-jobs', MOBILE, async (p) => { await p.go(U + '#/bots') }],
   ['m-notes', MOBILE, async (p) => { await p.go(U + '#/notes/devbox/projects/billing.md') }],
   ['m-review', MOBILE, async (p) => { await p.go(U + REV, UNI); await p.eval(toCard('invoice_total.ts')); await p.sleep(800) }],
+  ['m-inbox', MOBILE, async (p) => { await p.go(U + '#/inbox') }],
+  ['m-tasks', MOBILE, async (p) => { await p.go(U + '#/tasks') }],
   ['m-usage', MOBILE, async (p) => { await p.go(U + '#/usage') }],
   ['m-earth-dark', { ...MOBILE, dark: true }, async (p) => { await p.go(U + '#/', { 'fleet.palette': 'earth', 'fleet.theme': 'dark' }) }],
 ]
@@ -86,9 +99,9 @@ const only = process.argv.slice(2)
 const p = await launch()
 let failed = 0
 try {
-  for (const [name, device, run] of SHOTS) {
+  for (const [name, device, run, clip] of SHOTS) {
     if (only.length && !only.includes(name)) continue
-    try { await p.setup(device); await run(p); await p.shot(name) } catch (e) { failed++; console.log('FAIL', name, e.message) }
+    try { await p.setup(device); await run(p); await p.shot(name, clip) } catch (e) { failed++; console.log('FAIL', name, e.message) }
   }
   // The TUI: an ANSI capture turned into HTML by build.sh (GUIDE_TUI_HTML), cropped to the <pre>.
   if (process.env.GUIDE_TUI_HTML && (!only.length || only.includes('tui'))) {

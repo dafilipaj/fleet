@@ -13,6 +13,8 @@ scripts/guide/build.sh d-prs m-prs     # re-shoot only these; the rest of out/im
 
 Output: `out/fleet-guide.html` (the page, Croatian, for the team) and `out/img/*.webp`.
 Needs macOS, Google Chrome (`CHROME=` to override), Node ≥ 22, ImageMagick, tmux and cargo.
+If Google Chrome crashes headless at start (`Failed to get the path for 1001`), point `CHROME=` at
+Playwright's `chromium_headless_shell` (`~/Library/Caches/ms-playwright/chromium_headless_shell-*/chrome-mac/headless_shell`).
 `FLEET_GUIDE_SETUP_URL` sets where the page's "setup i arhitektura" links point.
 
 ## Files
