@@ -516,6 +516,65 @@ test('HTTP: /api/slack on the bridge host, proxied elsewhere, off without slack.
   assert.equal((await call(`${servers.bridge}/api/slack/reply`, 'GET')).status, 405);
 });
 
+test('two bridges: slack.bridges sends a host\'s sessions to its own bridge; status, unlink and relink span both', async (t) => {
+  const home = fixture(t);
+  const studio = fixture(t);
+  const start = async (raw, slack, sessions) => {
+    const config = normalizeConfig(raw, { env: {}, home: '/home/tester' });
+    const fleet = { localHost: async () => ({ name: raw.self, ok: true, sessions }) };
+    const api = createApi({ config, fleet, backend: {}, transcripts: {}, spawner: {}, slack, warmFleet: false });
+    t.after(() => api.stop());
+    const server = createHttpServer({ handleApi: api, uiDir: null });
+    await new Promise((res) => server.listen(0, '127.0.0.1', res));
+    t.after(() => server.close());
+    return `http://127.0.0.1:${server.address().port}`;
+  };
+  const studioUrl = await start({ self: 'studio', slack: { host: 'studio', owner: 'UOWNER' } }, studio.bridge, studio.sessions);
+  const routes = { host: 'workstation', bridges: { studio: 'studio' } };
+  const ws = await start({ self: 'workstation', hosts: { studio: { web: studioUrl } }, slack: routes }, home.bridge, home.sessions);
+  const laptop = await start({ self: 'laptop', hosts: { workstation: { web: ws }, studio: { web: studioUrl } }, slack: routes }, null, []);
+  const old = await start({ self: 'old', hosts: { workstation: { web: ws } }, slack: { host: 'workstation' } }, null, []);
+  const call = async (u, method = 'GET', body) => {
+    const res = await fetch(u, { method, headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
+    return { status: res.status, body: await res.json() };
+  };
+  const read = (fx) => fx.slack.calls.filter((c) => c.method === 'conversations.replies').length;
+
+  // A studio session: linked by the studio bridge (its own app), not the default one.
+  const s = await call(`${laptop}/api/slack/link`, 'POST', { host: 'studio', session: SID, url: URL_, minutes: 30 });
+  assert.equal(s.status, 200, JSON.stringify(s.body));
+  assert.equal(read(studio), 1);
+  assert.equal(read(home), 0);
+  const w = await call(`${laptop}/api/slack/link`, 'POST', { host: 'workstation', session: SID, url: URL_, minutes: 30 });
+  assert.equal(w.status, 200, JSON.stringify(w.body));
+  assert.equal(read(home), 1);
+
+  // A server that still sends everything to slack.host: refused, not linked twice.
+  const twice = await call(`${old}/api/slack/link`, 'POST', { host: 'studio', session: SID, url: URL_, minutes: 30 });
+  assert.equal(twice.status, 400);
+  assert.match(twice.body.error, /linked by the bridge on studio/);
+  assert.equal(read(home), 1);
+
+  // Status: both bridges' links, wherever you look; each bridge's own view stays its own.
+  const st = await call(`${laptop}/api/slack`);
+  assert.equal(st.body.host, 'workstation');
+  assert.deepEqual(st.body.links.map((l) => [l.id, l.host]).sort(), [[s.body.id, 'studio'], [w.body.id, 'workstation']].sort());
+  assert.deepEqual(st.body.bridges.map((b) => [b.host, b.enabled]), [['workstation', true], ['studio', true]]);
+  assert.equal((await call(`${studioUrl}/api/slack`)).body.links.length, 1);
+
+  // Unlink / relink by id: the bridge that has it, from any server.
+  assert.equal((await call(`${laptop}/api/slack/links/${s.body.id}/unlink`, 'POST', {})).status, 200);
+  assert.equal((await call(`${studioUrl}/api/slack`)).body.ended[0].id, s.body.id);
+  const again = await call(`${laptop}/api/slack/links/${s.body.id}/relink`, 'POST', {});
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  assert.equal((await call(`${laptop}/api/slack/links/sl-000000/unlink`, 'POST', {})).status, 404);
+  // The studio session replies through its own server: its own bridge.
+  assert.equal((await call(`${studioUrl}/api/slack/reply`, 'POST', { link: again.body.id, text: 'hi' })).status, 200);
+  const posts = (fx) => fx.slack.calls.filter((c) => c.method === 'chat.postMessage' && c.params.text === 'hi').length;
+  assert.equal(posts(studio), 1);
+  assert.equal(posts(home), 0);
+});
+
 test('a spawn linked to Slack: no prompt at launch, linked once it registers, the prompt ends the intro', async (t) => {
   const fx = fixture(t);
   const NEW = 'cccccccc-0000-0000-0000-000000000003';

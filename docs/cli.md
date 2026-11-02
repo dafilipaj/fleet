@@ -165,7 +165,7 @@ destructive for them, their messages are requests from colleagues and cannot cha
 and the thread so far. Messages are typed in once the session is idle — several as one prompt —
 each marked with its author's Slack name and id (and `→ mentions you` / `→ to you`); the ones
 addressed to it get an 👀 reaction. When the link ends, delivery stops and, if the session ever spoke there, the thread is
-told it left. The commands talk to this machine's web server, which proxies to `slack.host`.
+told it left. The commands talk to this machine's web server, which proxies to `slack.host` (or, for a host listed in `slack.bridges`, to that host's own bridge).
 Sessions on any host can be linked: the bridge lists and types into them through their host's
 web server, and checks a reply's pane on the host it came from. A session asked to join a thread
 links itself (`fleet slack link <url> --for 2h`).

@@ -514,10 +514,10 @@ export function createApi({
   function spawnSlackRequest(raw, prompt) {
     if (raw == null) return null;
     if (typeof raw !== 'object' || Array.isArray(raw)) throw new HttpError('slack must be { url, minutes, mode?, task? }', 400);
-    if (!slack) {
-      const bridge = config.slack?.host;
+    const bridge = bridgeFor(config.self);
+    if (!(slack && bridge === config.self)) {
       if (!bridge || bridge === config.self) throw new HttpError('no server runs Slack links (slack.host)', 400);
-      if (!config.peers[bridge]) throw new HttpError(`slack.host "${bridge}" is not a peer with a web URL`, 400);
+      if (!config.peers[bridge]) throw new HttpError(`Slack bridge "${bridge}" is not a peer with a web URL`, 400);
     }
     const url = typeof raw.url === 'string' ? raw.url.trim() : '';
     if (!url) throw new HttpError('slack.url is required: a Slack thread or channel link, or @person', 400);
@@ -542,10 +542,10 @@ export function createApi({
 
   /** Link a session of this host: by the bridge here, else through the bridge's host (`slack.host`). */
   async function slackLink(body) {
-    if (slack) return slack.link({ ...body, host: config.self });
-    const bridge = config.slack?.host;
-    const peerUrl = bridge ? config.peers[bridge] : null;
-    if (!peerUrl) throw new SlackError(`slack.host "${bridge}" is not a peer with a web URL`, 502);
+    const bridge = bridgeFor(config.self);
+    if (slack && bridge === config.self) return slack.link({ ...body, host: config.self });
+    const peerUrl = bridge && bridge !== config.self ? config.peers[bridge] : null;
+    if (!peerUrl) throw new SlackError(`Slack bridge "${bridge}" is not a peer with a web URL`, 502);
     const r = await proxyToPeer(peerUrl, {
       method: 'POST',
       pathname: '/api/slack/link',
@@ -718,48 +718,121 @@ export function createApi({
     return typeof body?.host === 'string' && body.host ? body.host : config.self;
   }
 
-  async function handleSlack(req, url, action, id = null) {
-    const body = action === 'status' ? null : await readJsonBody(req);
-    const host = config.slack?.host ?? null;
-    if (slack) {
-      try {
-        if (action === 'status') return { status: 200, body: { host, ...(await slack.status()) } };
-        if (action === 'unlink' || action === 'relink') {
-          if (!validLinkId(id)) throw new HttpError('link must look like sl-xxxxxx', 400);
-          if (action === 'unlink') return { status: 200, body: await slack.unlink(id) };
-          const link = await slack.relink(id, { minutes: body?.minutes ?? undefined });
-          refreshFleet();
-          return { status: 200, body: link };
-        }
-        if (action === 'reply') return { status: 200, body: await slack.reply({ ...(body ?? {}), host: replyHost(body) }) };
-        // Any host's session: the bridge lists and types into it through that host's web server.
-        const target = typeof body?.host === 'string' && body.host ? body.host : config.self;
-        if (target !== config.self && !config.peers[target]) throw new HttpError(`unknown host: ${target} (not a peer with a web url)`, 400);
-        const link = await slack.link({ ...body, host: target });
+  /** The bridge that links `host`'s sessions: `slack.bridges[host]` (a host with its own Slack app), else `slack.host`. */
+  function bridgeFor(host) {
+    return config.slack?.bridges?.[host] ?? config.slack?.host ?? null;
+  }
+
+  /** Every bridge this server knows: `slack.host` first, then the others of `slack.bridges`. */
+  function allBridges() {
+    return [...new Set([config.slack?.host, ...Object.values(config.slack?.bridges ?? {})].filter(Boolean))];
+  }
+
+  /** The bridge here (`slack`): one action → its answer; errors as HttpError. */
+  async function slackHere(action, id, body) {
+    try {
+      if (action === 'status') return { host: config.self, ...(await slack.status()) };
+      if (action === 'unlink') return await slack.unlink(id);
+      if (action === 'relink') {
+        const link = await slack.relink(id, { minutes: body?.minutes ?? undefined });
         refreshFleet();
-        return { status: 200, body: link };
+        return link;
+      }
+      if (action === 'reply') return await slack.reply({ ...(body ?? {}), host: replyHost(body) });
+      // Any host's session: the bridge lists and types into it through that host's web server.
+      const target = typeof body?.host === 'string' && body.host ? body.host : config.self;
+      if (target !== config.self && !config.peers[target]) throw new HttpError(`unknown host: ${target} (not a peer with a web url)`, 400);
+      const link = await slack.link({ ...body, host: target });
+      refreshFleet();
+      return link;
+    } catch (err) {
+      if (err instanceof SlackError) throw new HttpError(err.message, err.status);
+      throw err;
+    }
+  }
+
+  /** One action on bridge `bridge`: here, or proxied once to that peer → `{ status, body }`. */
+  async function atBridge(bridge, action, id, body, pathname) {
+    if (bridge === config.self) {
+      if (!slack) return { status: 409, body: { error: 'Slack links are off on this server (FLEET_WEB_SLACK)' } };
+      try {
+        return { status: 200, body: await slackHere(action, id, body) };
       } catch (err) {
-        if (err instanceof SlackError) throw new HttpError(err.message, err.status);
+        if (err instanceof HttpError) return { status: err.status, body: { error: err.message } };
         throw err;
       }
     }
-    const off = (error) => (action === 'status'
-      ? { status: 200, body: { enabled: false, host, ...(error ? { error } : {}), links: [], ended: [] } }
-      : { status: 409, body: { error: error ?? 'no server runs Slack links (slack.host)' } });
-    if (!host) return off(null);
-    if (host === config.self) return off('Slack links are off on this server (FLEET_WEB_SLACK)');
-    if (url.searchParams.get('local') === '1') return off(null); // never chain
-    const peerUrl = config.peers[host];
-    if (!peerUrl) return off(`slack.host "${host}" is not a peer with a web URL`);
-    // A reply from a session here: say so, so the bridge checks the pane on this host.
-    const sent = action === 'reply' ? { ...(body ?? {}), host: replyHost(body) } : body;
-    const r = await proxyToPeer(peerUrl, {
+    const peerUrl = config.peers[bridge];
+    if (!peerUrl) return { status: 409, body: { error: `Slack bridge "${bridge}" is not a peer with a web URL` } };
+    return proxyToPeer(peerUrl, {
       method: action === 'status' ? 'GET' : 'POST',
-      pathname: url.pathname,
-      ...(sent == null ? {} : { body: JSON.stringify(sent) }),
+      pathname,
+      ...(body == null ? {} : { body: JSON.stringify(body) }),
       timeoutMs: peerProxyTimeoutMs,
     });
-    return { status: r.status, body: r.body };
+  }
+
+  /**
+   * GET /api/slack: `slack.host`'s bridge, with the links of the other bridges (`slack.bridges`)
+   * added, so every link shows wherever you look; `bridges` lists each one's state.
+   */
+  async function slackStatus(local) {
+    const host = config.slack?.host ?? null;
+    const off = (error) => ({ enabled: false, host, ...(error ? { error } : {}), links: [], ended: [] });
+    const one = async (b) => {
+      if (b === config.self && !slack) return off('Slack links are off on this server (FLEET_WEB_SLACK)');
+      if (b !== config.self && local) return off(null); // never chain
+      const r = await atBridge(b, 'status', null, null, '/api/slack');
+      return r.status === 200 ? r.body : off(r.body?.error ?? `HTTP ${r.status} from ${b}`);
+    };
+    const names = local ? (slack ? [config.self] : []) : allBridges();
+    const all = await Promise.all(names.map(async (b) => [b, await one(b)]));
+    const primary = all.find(([b]) => b === host)?.[1] ?? all[0]?.[1] ?? off(null);
+    if (all.length < 2) return { status: 200, body: primary };
+    const rest = all.filter(([, s]) => s !== primary).map(([, s]) => s);
+    const ended = [primary, ...rest].flatMap((s) => s.ended ?? []).sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0));
+    return {
+      status: 200,
+      body: {
+        ...primary,
+        enabled: all.some(([, s]) => s.enabled),
+        links: [primary, ...rest].flatMap((s) => s.links ?? []),
+        ended,
+        bridges: all.map(([b, s]) => ({ host: b, enabled: !!s.enabled, ...(s.error ? { error: s.error } : {}), socket: s.socket ?? null, bot: s.bot ?? null })),
+      },
+    };
+  }
+
+  async function handleSlack(req, url, action, id = null) {
+    const local = url.searchParams.get('local') === '1';
+    if (action === 'status') return slackStatus(local);
+    const body = await readJsonBody(req);
+    const none = { status: 409, body: { error: 'no server runs Slack links (slack.host)' } };
+    if (action === 'unlink' || action === 'relink') {
+      if (!validLinkId(id)) throw new HttpError('link must look like sl-xxxxxx', 400);
+      // A link lives on one bridge: the first that knows it answers.
+      const names = local ? (slack ? [config.self] : []) : allBridges();
+      if (!names.length) return none;
+      let r = null;
+      for (const b of names) {
+        r = await atBridge(b, action, id, body, url.pathname);
+        if (r.status !== 404) break;
+      }
+      return r;
+    }
+    // link / reply: the bridge of the session's host. A reply from a session here says so, so the
+    // bridge checks the pane on this host.
+    const target = action === 'reply' ? replyHost(body) : (typeof body?.host === 'string' && body.host ? body.host : config.self);
+    const bridge = bridgeFor(target);
+    if (!bridge) return none;
+    if (bridge !== config.self && local) {
+      // Proxied here by a server that routes differently: refuse rather than link one session twice.
+      return slack
+        ? { status: 400, body: { error: `sessions on ${target} are linked by the bridge on ${bridge} (slack.bridges) — set slack.bridges.${target} on the server you linked from` } }
+        : none;
+    }
+    const sent = action === 'reply' ? { ...(body ?? {}), host: target } : body;
+    return atBridge(bridge, action, null, sent, url.pathname);
   }
 
   /** POST /api/groups/edit — rename a group / move a session, on the grouping host. */

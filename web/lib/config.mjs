@@ -12,7 +12,7 @@
 //     stacks: { enabled, model },         (read by the CLI; the server only reports them)
 //     grouping: { enabled, model, host },   (enabled/model are read by the CLI)
 //     inbox: { host, scanMinutes, workHours, workDays, model, briefModel, briefMinutes, language, comms },
-//     slack: { host, owner },
+//     slack: { host, owner, bridges },
 //     tmux, fleetBin, claude, spawnDirs: [ { label, paths: { host: dir }, hidden? } ] }
 //
 // A missing config file is not an error: the server runs as a single local host
@@ -469,12 +469,22 @@ export function normalizeConfig(
   // /api/slack there. `owner` is your Slack user id (your messages there are marked as the owner's).
   // FLEET_WEB_SLACK=0 turns it off on this server.
   const sl = raw.slack == null ? {} : raw.slack;
-  if (!isObject(sl)) throw new Error('config.slack must be an object { host, owner }');
+  if (!isObject(sl)) throw new Error('config.slack must be an object { host, owner, bridges }');
   if (sl.host != null && (typeof sl.host !== 'string' || !sl.host.trim())) throw new Error('config.slack.host must be a host name');
   if (sl.owner != null && (typeof sl.owner !== 'string' || !/^[UW][A-Z0-9]{4,}$/.test(sl.owner.trim()))) {
     throw new Error('config.slack.owner must be a Slack user id (U…)');
   }
-  const slack = { host: sl.host == null ? null : sl.host.trim(), owner: sl.owner == null ? null : sl.owner.trim() };
+  // `bridges`: { "<session host>": "<bridge host>" } — a host whose sessions another bridge links
+  // (one with its own Slack app); the rest go to `host`.
+  const bridges = {};
+  if (sl.bridges != null) {
+    if (!isObject(sl.bridges)) throw new Error('config.slack.bridges must be an object { "<host>": "<bridge host>" }');
+    for (const [h, b] of Object.entries(sl.bridges)) {
+      if (typeof b !== 'string' || !b.trim()) throw new Error(`config.slack.bridges.${h} must be a host name`);
+      bridges[h] = b.trim();
+    }
+  }
+  const slack = { host: sl.host == null ? null : sl.host.trim(), owner: sl.owner == null ? null : sl.owner.trim(), bridges };
   slack.enabled = slack.host != null && slack.host === self.trim();
   if (env.FLEET_WEB_SLACK != null && env.FLEET_WEB_SLACK !== '' && /^(0|false|off|no)$/i.test(env.FLEET_WEB_SLACK)) slack.enabled = false;
 
