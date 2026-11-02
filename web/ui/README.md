@@ -491,14 +491,13 @@ session in the pane), so a link opens the same session on either layout.
 
 - **Top bar** (the same over List and Board): Fleet summary (own hosts only), Sessions | Bots |
   Slack | Apps toggle with the status picker, search (⌘F), List | Board, the **host rail**
-  (`HostRail`, which is also the host filter): own hosts under *Mine*, shared sheds
-  (`hosts.<name>.shared`, a hollow diamond, dashed group) under *Shared* with a count of their
-  waiting sessions. A group label shows that group; a chip only that host (again: back to its
-  group); ⌘ / Ctrl / Shift-click adds or removes a host or a group (multi-select, persisted in
-  `fleet.hostFilter`, lib/hosts.ts; default *Mine*). A chip shows the session count, `!` and a
-  red ring when unreachable; names from 2xl up. Its chevron opens the host card (`HostCard`:
-  state, error and Open terminal: Fleet.app opens an iTerm tab via `fleet://shell`, a browser
-  copies `fleet -H <host> new`), modules, the helpers in their own group — Focus, Usage, Settings — and `+`.
+  (`HostRail`, which is also the host filter): a chip per host (colour mark + session count), own
+  hosts in one group, shared sheds (`hosts.<name>.shared`, a hollow diamond) in a dashed one, a
+  waiting dot on a shared chip with waiting sessions. Click: only that host (again: back to its
+  group, *Mine* or *Shared*); ⌘ / Ctrl / Shift-click adds or removes it (multi-select, persisted in
+  `fleet.hostFilter`, lib/hosts.ts; default *Mine*); `!` and a red ring when unreachable.
+  Right-click or ⌥-click opens the host card (`HostCard`: state, error and Open terminal:
+  Fleet.app opens an iTerm tab via `fleet://shell`, a browser copies `fleet -H <host> new`), modules, the helpers in their own group — Focus, Usage, Settings — and `+`.
 - **Sidebar** (left, List only): the session list (the open row is highlighted, the keyboard
   cursor has a ring), Dormant and Recently closed; an unreachable host shows only in the top bar (on the Board too). Resizable by dragging its edge (280–560px,
   double-click resets, ←/→ on the focused handle; `fleet.sidebarWidth`).

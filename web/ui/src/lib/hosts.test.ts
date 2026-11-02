@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { Host } from '@/api/types'
-import { clickGroup, clickHost, normalizeSelection, parseSelection, resolveSelection, selectionLabel, serializeSelection } from '@/lib/hosts'
+import { clickHost, normalizeSelection, parseSelection, resolveSelection, selectionLabel, serializeSelection } from '@/lib/hosts'
 
 const h = (name: string, shared = false): Host => ({ name, ok: true, shared, sessions: [] })
 const HOSTS = [h('laptop'), h('workstation'), h('shed-a', true), h('shed-b', true)]
@@ -32,14 +32,6 @@ describe('host selection', () => {
     expect(clickHost(new Set(['laptop']), 'workstation', HOSTS, true)).toEqual({ scope: 'mine' })
     // The last host stays.
     expect(clickHost(new Set(['laptop']), 'laptop', HOSTS, true)).toEqual({ hosts: ['laptop'] })
-  })
-
-  it('a group label switches the scope; ⌘ adds or removes the group', () => {
-    const mine = resolveSelection({ scope: 'mine' }, HOSTS)
-    expect(clickGroup(mine, 'shared', HOSTS, false)).toEqual({ scope: 'shared' })
-    expect(clickGroup(mine, 'shared', HOSTS, true)).toEqual({ scope: 'all' })
-    expect(clickGroup(resolveSelection({ scope: 'all' }, HOSTS), 'shared', HOSTS, true)).toEqual({ scope: 'mine' })
-    expect(clickGroup(mine, 'mine', HOSTS, true)).toEqual({ scope: 'mine' })
   })
 
   it('labels: none for the default, otherwise short', () => {

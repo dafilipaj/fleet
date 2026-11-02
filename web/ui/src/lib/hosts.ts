@@ -76,19 +76,6 @@ export function clickHost(current: Set<string>, name: string, hosts: Host[], add
   return { hosts: [name] }
 }
 
-/** A click on a group label (`mine` / `shared`). `add`: toggle the whole group in the current set. */
-export function clickGroup(current: Set<string>, scope: 'mine' | 'shared', hosts: Host[], add: boolean): HostSelection {
-  if (!add) return { scope }
-  const group = scopeHosts(hosts, scope)
-  const all = group.every((n) => current.has(n))
-  const next = new Set(current)
-  for (const n of group) {
-    if (all) next.delete(n)
-    else next.add(n)
-  }
-  return next.size ? normalizeSelection(next, hosts) : { scope }
-}
-
 /** Short text for the current selection, e.g. in the mobile filter summary; null for the default. */
 export function selectionLabel(sel: HostSelection, hosts: Host[]): string | null {
   const names = [...resolveSelection(sel, hosts)]
