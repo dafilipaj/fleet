@@ -255,3 +255,19 @@ test('HTTP: …/diffs — the cwd checkout plus those of the files the session w
   assert.deepEqual(body.repos.map((r) => [r.label, r.files.map((f) => f.path)]), [[meta.dir.replace(os.homedir(), '~'), []], ['wt/one', ['x.txt']]]);
   assert.equal((await (await fetch(`${base}?since=${body.fingerprint}`)).json()).unchanged, true);
 });
+
+test('diff: a .plain spec carries both whole texts; other files do not', async (t) => {
+  const r = repo(t);
+  r.write('spec/a.plain', '***functional specs***\n\n- one\n');
+  r.write('b.txt', 'x\n');
+  r.git('add', '-A');
+  r.git('commit', '-qm', 'init');
+  r.write('spec/a.plain', '***functional specs***\n\n- one\n- two\n');
+  r.write('spec/new.plain', '- fresh\n');
+  r.write('b.txt', 'y\n');
+  const d = await createDiffer({ run }).diff(r.dir);
+  const by = Object.fromEntries(d.files.map((f) => [f.path, f]));
+  assert.deepEqual(by['spec/a.plain'].plain, { old: '***functional specs***\n\n- one\n', new: '***functional specs***\n\n- one\n- two\n' });
+  assert.deepEqual(by['spec/new.plain'].plain, { old: null, new: '- fresh\n' });
+  assert.equal(by['b.txt'].plain, undefined);
+});

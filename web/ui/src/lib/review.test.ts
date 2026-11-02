@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 
 import type { DiffFile, DiffHunk, ReviewThread } from '@/api/types'
 
-import { diffBar, fileKey, rowsToRange, fileSignature, fileTree, orphanThreads, orphanThreadsByKey, repoViews, threadKey, parseReviewLocation, placeThreads, reviewHref, selectLine, selectionCode, splitRows, treeOrder } from './review'
+import { diffPlain } from './plain'
+import { allClauses, clauseAt, placeOnClauses, diffBar, fileKey, rowsToRange, fileSignature, fileTree, orphanThreads, orphanThreadsByKey, repoViews, threadKey, parseReviewLocation, placeThreads, reviewHref, selectLine, selectionCode, splitRows, treeOrder } from './review'
 
 const file = (path: string, o: Partial<DiffFile> = {}): DiffFile => ({
   path,
@@ -163,5 +164,39 @@ describe('rowsToRange', () => {
     ]
     expect(rowsToRange(rows, 'new')).toEqual({ side: 'new', start: 7, end: 8 })
     expect(rowsToRange(rows, 'old')).toEqual({ side: 'old', start: 7, end: 8 })
+  })
+})
+
+describe('a .plain spec: threads on clauses', () => {
+  const oldText = '***functional specs***\n\n- Alpha one.\n- Beta two\n  continued.\n'
+  const newText = '***functional specs***\n\n- Alpha one.\n- Beta two\n  continued.\n- Gamma three.\n'
+  const file: DiffFile = {
+    path: 's.plain',
+    oldPath: 's.plain',
+    status: 'modified',
+    binary: false,
+    additions: 1,
+    deletions: 0,
+    truncated: false,
+    hunks: [{ header: '@@ -5 +5,2 @@', oldStart: 5, oldLines: 1, newStart: 5, newLines: 2, section: '', lines: [{ t: ' ', o: 5, n: 5, text: '  continued.' }, { t: '+', o: null, n: 6, text: '- Gamma three.' }] }],
+    plain: { old: oldText, new: newText },
+  } as DiffFile
+  const thread = (id: string, start: number, end: number, code: string[]): ReviewThread => ({ id, path: 's.plain', side: 'new', start, end, code, base: null, createdAt: 0, status: 'draft', resolved: false, reviewId: null, entries: [] })
+  const clauses = allClauses(diffPlain(oldText, newText))
+
+  it('the whole text answers for lines outside the hunks', () => {
+    expect(selectionCode(file, { path: 's.plain', side: 'new', start: 3, end: 3 })).toEqual(['- Alpha one.'])
+  })
+  it('a thread goes under the clause holding its last line', () => {
+    expect(clauseAt(clauses, 'new', 5)).toBe('new:4')
+    const p = placeOnClauses(file, clauses, [thread('a', 4, 5, ['- Beta two', '  continued.']), thread('b', 3, 3, ['- Alpha zero.']), thread('c', 1, 1, ['***functional specs***'])])
+    expect([...p.at.keys()]).toEqual(['new:4', 'new:3'])
+    expect(p.unplaced.map((t) => t.id)).toEqual(['c'])
+    expect([...p.outdated]).toEqual(['b'])
+  })
+  it('the diff view keeps a thread outside the hunks current while its lines read the same', () => {
+    const p = placeThreads(file, [thread('a', 3, 3, ['- Alpha one.'])])
+    expect(p.unplaced.map((t) => t.id)).toEqual(['a'])
+    expect(p.outdated.size).toBe(0)
   })
 })

@@ -84,7 +84,10 @@ src/
                       indexNotes() + resolveNoteLink() (relative + `[[wiki]]` links), splitRanges(), highlightTerms()
   lib/review.ts       diff reviewer: reviewHref() / parseReviewLocation() (`#/review/<host>/<id>`), fileTree() +
                       treeOrder(), splitRows() (side-by-side pairing), fileSignature() (Viewed resets on change),
-                      selectLine() / selectionCode(), placeThreads() (anchors, outdated), orphanThreads()
+                      selectLine() / selectionCode(), placeThreads() (anchors, outdated), orphanThreads(),
+                      placeOnClauses() / clauseAt() (threads on a .plain spec's clauses)
+  lib/plain.ts        PlainLang (.plain) specs: parsePlain() (clauses with their lines), diffPlain() (by clause:
+                      added / changed with a word diff / removed in place; specs using a changed definition)
   lib/outbox.ts       composer outbox (send with an undo delay): pure transitions (schedule / cancel / flush / retry),
                       reconcile() (dedupe optimistic bubbles against the transcript), the Outbox class (timer +
                       one-at-a-time sender), SEND_DELAYS (Settings → Send delay, `fleet.sendDelay`)
@@ -391,7 +394,10 @@ src/
   (cwd-relative), host, size · age; Download (`files/raw?download=1`), "Open on <host>" (opens it
   with that machine's default app, not in the browser), Copy path, Close (Esc). Content by kind:
   markdown rendered with `<Markdown>` (relative links open in the preview with Back; relative
-  images load via `files/raw`; Source toggle, the default when the mention has a line), text with
+  images load via `files/raw`; Source toggle, the default when the mention has a line), a
+  PlainLang `.plain` spec rendered with `<PlainView>` (index of sections and specs, terms as chips
+  that jump to their definition, acceptance tests per spec, import / requires chips open those
+  modules; same Source toggle), text with
   line numbers (the line highlighted and scrolled to; first 20k lines), image, PDF (iframe),
   else / over 5 MB an info panel with Download and Open. Markdown safety is unchanged: file
   nodes exist only with `parseMarkdown(text, { files: true })` and render as buttons.
@@ -446,6 +452,11 @@ src/
   `fleet.reviewViewed:<host>/<id>` as the diff's signature, so a new change unticks it). Desktop:
   file tree (`fleet.reviewTree`) | diff | the session itself as a pane (`fleet.reviewChat`) —
   review and conversation side by side.
+  A `.plain` spec (the diff carries both whole texts, `plain`) shows as **Spec** by default, Diff
+  one click away (`fleet.plainView`): `<PlainView>` with a Changes card (what changed per section
+  and spec, specs whose definitions changed; Highlight changes, Only what changed) and the clause
+  states in place. A clause is a comment target (the button left of it): its own lines on its side
+  (`old` for a removed one); threads show under the clause holding their last line, in either view.
   **Comments** (`useReview`, ../ARCHITECTURE.md → `…/review`): select code with the mouse → a
   "Comment on lines X–Y" button at the selection's end (`rowsToRange` over the rows' `data-*`;
   split view: the side the selection ends on), or click a line number (a "+" shows on the

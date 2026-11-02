@@ -1480,6 +1480,8 @@ export interface DiffFile {
   deletions: number
   truncated: boolean
   hunks: DiffHunk[]
+  /** a PlainLang (.plain) spec: its whole text at the base and now (null: not there, or too big) */
+  plain?: { old: string | null; new: string | null }
 }
 
 export interface DiffResponse {

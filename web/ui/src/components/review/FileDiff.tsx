@@ -2,9 +2,13 @@ import { ChevronDownIcon, ChevronRightIcon, CopyIcon, MessageSquareIcon } from '
 import { Fragment, memo, useMemo, type ReactNode } from 'react'
 
 import type { DiffFile, DiffHunk, DiffLine, ReviewThread } from '@/api/types'
+import { PlainView, type ClauseCommenting } from '@/components/plain/PlainView'
 import { Button } from '@/components/ui/button'
+import { usePersistentState } from '@/hooks/usePersistentState'
 import { copyWithToast } from '@/lib/clipboard'
-import { anchorKey, diffBar, fileAnchor, inSelection, lineNo, placeThreads, splitRows, unifiedSide, type LineSelection, type Side } from '@/lib/review'
+import { basename } from '@/lib/paths'
+import { clauseKey, diffPlain } from '@/lib/plain'
+import { allClauses, anchorKey, clauseAt, diffBar, fileAnchor, inSelection, lineNo, placeOnClauses, placeThreads, splitRows, unifiedSide, type LineSelection, type Side } from '@/lib/review'
 import { cn } from '@/lib/utils'
 
 export type DiffView = 'unified' | 'split'
@@ -172,6 +176,55 @@ function SplitHunk({ hunk, c }: { hunk: DiffHunk; c: Commenting }) {
   )
 }
 
+/** A .plain spec's card body: the module drawn with its clause diff; a clause is a comment target. */
+function SpecBody({ file, fileKey, selection, composing, onLine, threads, renderThread, renderComposer }: Pick<FileDiffProps, 'file' | 'fileKey' | 'selection' | 'composing' | 'onLine' | 'threads' | 'renderThread' | 'renderComposer'>) {
+  const diff = useMemo(() => diffPlain(file.plain?.old ?? null, file.plain?.new ?? ''), [file.plain])
+  const clauses = useMemo(() => allClauses(diff), [diff])
+  const placed = useMemo(() => placeOnClauses(file, clauses, threads), [file, clauses, threads])
+  const composerKey = composing && selection ? clauseAt(clauses, selection.side, selection.end) : null
+  const commenting = useMemo<ClauseCommenting>(
+    () => ({
+      selected: (c) => !!selection && selection.side === c.side && selection.start <= c.end && selection.end >= c.start,
+      onClause: (c, extend) => {
+        onLine(fileKey, c.side, c.start, extend)
+        if (c.end !== c.start) onLine(fileKey, c.side, c.end, true)
+      },
+      after: (c) => {
+        const key = clauseKey(c)
+        const ts = placed.at.get(key) ?? []
+        const withComposer = composerKey === key
+        if (!ts.length && !withComposer) return null
+        return (
+          <div className="-ml-3 overflow-hidden rounded-md border bg-background font-sans text-sm">
+            {ts.map((t) => (
+              <Fragment key={t.id}>{renderThread(t, placed.outdated.has(t.id))}</Fragment>
+            ))}
+            {withComposer ? renderComposer() : null}
+          </div>
+        )
+      },
+    }),
+    [selection, onLine, fileKey, placed, composerKey, renderThread, renderComposer],
+  )
+  return (
+    <>
+      {placed.unplaced.length ? (
+        <div className="border-b">
+          <p className="bg-muted/40 px-3 py-1 text-xs text-muted-foreground">Comments on lines before the first clause</p>
+          {placed.unplaced.map((t) => (
+            <Fragment key={t.id}>{renderThread(t, placed.outdated.has(t.id))}</Fragment>
+          ))}
+        </div>
+      ) : null}
+      <div className="px-4 py-4 pl-10 sm:px-8 sm:pl-12">
+        <PlainView diff={diff} name={basename(file.path).replace(/\.plain$/i, '')} diffed commenting={commenting} />
+      </div>
+    </>
+  )
+}
+
+const parsePlainView = (r: string) => (r === 'spec' || r === 'diff' ? r : undefined)
+
 export interface FileDiffProps {
   /** unique across checkouts (lib/review fileKey): what the callbacks and the selection carry */
   fileKey: string
@@ -233,6 +286,10 @@ export const FileDiff = memo(function FileDiff({
   }
   const Hunk = view === 'split' ? SplitHunk : UnifiedHunk
   const open = !collapsed && !viewed
+  // A .plain spec reads as a spec by default; Diff shows its lines.
+  const hasSpec = !!file.plain && (file.plain.new != null || file.plain.old != null)
+  const [plainView, setPlainView] = usePersistentState<'spec' | 'diff'>('fleet.plainView', 'spec', parsePlainView)
+  const spec = hasSpec && plainView === 'spec'
   return (
     <section
       id={fileAnchor(fileKey)}
@@ -259,6 +316,22 @@ export const FileDiff = memo(function FileDiff({
           <CopyIcon className="size-3.5" />
         </Button>
         <span className="flex-1" />
+        {hasSpec ? (
+          <span role="group" aria-label="Show as" className="flex shrink-0 rounded-md bg-muted p-0.5 text-xs">
+            {(['spec', 'diff'] as const).map((v) => (
+              <button
+                key={v}
+                type="button"
+                aria-pressed={plainView === v}
+                onClick={() => setPlainView(v)}
+                title={v === 'spec' ? 'The spec, readable, its changes marked by clause' : 'The changed lines'}
+                className={cn('cursor-pointer rounded px-2 py-0.5 capitalize', plainView === v ? 'bg-background font-medium text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground')}
+              >
+                {v}
+              </button>
+            ))}
+          </span>
+        ) : null}
         {threads.length ? (
           <span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground" title={`${threads.length} comment thread${threads.length === 1 ? '' : 's'}`}>
             <MessageSquareIcon className="size-3.5" />
@@ -271,7 +344,19 @@ export const FileDiff = memo(function FileDiff({
           Viewed
         </label>
       </header>
-      {open && placed.unplaced.length ? (
+      {open && spec ? (
+        <SpecBody
+          file={file}
+          fileKey={fileKey}
+          selection={selection}
+          composing={composing}
+          onLine={onLine}
+          threads={threads}
+          renderThread={renderThread}
+          renderComposer={renderComposer}
+        />
+      ) : null}
+      {open && !spec && placed.unplaced.length ? (
         <div className="border-b">
           <p className="bg-muted/40 px-3 py-1 text-xs text-muted-foreground">Comments on lines no longer in the diff</p>
           {placed.unplaced.map((t) => (
@@ -279,7 +364,7 @@ export const FileDiff = memo(function FileDiff({
           ))}
         </div>
       ) : null}
-      {open ? (
+      {open && !spec ? (
         <div className="overflow-x-auto">
           {file.binary ? (
             <p className="px-4 py-3 text-sm text-muted-foreground">Binary file not shown.</p>

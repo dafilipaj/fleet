@@ -1,4 +1,5 @@
 import type { DiffFile, DiffHunk, DiffLine, DiffRepo, ReviewThread } from '@/api/types'
+import { clauseKey, flatClauses, type Clause, type PlainDiff } from '@/lib/plain'
 
 /** `#/review/<host>/<id>`: the diff reviewer for that session. */
 export const reviewHref = (host: string, id: string) => `/review/${encodeURIComponent(host)}/${encodeURIComponent(id)}`
@@ -142,6 +143,9 @@ export const inSelection = (sel: LineSelection | null, path: string, side: Side,
 
 /** The text of the selected lines, as the diff shows them (lines of the other side skipped). */
 export function selectionCode(file: DiffFile, sel: LineSelection): string[] {
+  // A .plain spec carries its whole text: lines outside the hunks are commentable too.
+  const whole = file.plain?.[sel.side]
+  if (whole != null) return whole.replace(/\r\n?/g, '\n').split('\n').slice(sel.start - 1, sel.end)
   const out: string[] = []
   for (const h of file.hunks) for (const l of h.lines) {
     const n = lineNo(l, sel.side)
@@ -171,14 +175,20 @@ export function placeThreads(file: DiffFile, threads: ReviewThread[]): { at: Map
     const key = anchorKey(t.side, t.end)
     if (!present.has(key)) {
       unplaced.push(t)
-      outdated.add(t.id)
+      // A .plain spec's thread may sit on a clause the hunks do not show: outdated only if its lines changed.
+      if (!file.plain || !sameCode(file, t)) outdated.add(t.id)
       continue
     }
     at.set(key, [...(at.get(key) ?? []), t])
-    const now = selectionCode(file, t)
-    if (now.length !== t.code.length || now.some((x, i) => x !== t.code[i])) outdated.add(t.id)
+    if (!sameCode(file, t)) outdated.add(t.id)
   }
   return { at, unplaced, outdated }
+}
+
+/** Do the thread's lines still read as when it was made? */
+export function sameCode(file: DiffFile, t: ReviewThread): boolean {
+  const now = selectionCode(file, t)
+  return now.length === t.code.length && now.every((x, i) => x === t.code[i])
 }
 
 /** Threads on files the diff no longer shows. */
@@ -247,4 +257,38 @@ export function rowsToRange(rows: LineRow[], endSide?: Side): { side: Side; star
     .filter((n): n is number => n != null)
   if (!nums.length) return null
   return { side, start: Math.min(...nums), end: Math.max(...nums) }
+}
+
+/** Every clause of a diffed .plain module (sections, specs, acceptance tests), in page order. */
+export function allClauses(diff: PlainDiff): Clause[] {
+  const out: Clause[] = []
+  for (const list of Object.values(diff.mod.sections)) out.push(...flatClauses(list).map((x) => x.c))
+  for (const s of diff.mod.specs) out.push(...flatClauses(s.clauses).map((x) => x.c), ...flatClauses(s.tests).map((x) => x.c))
+  return out
+}
+
+/** The clause a line belongs to on a side: the one holding it, else the last one starting before it. */
+export function clauseAt(clauses: Clause[], side: Side, line: number): string | null {
+  let best: Clause | null = null
+  for (const c of clauses) {
+    if (c.side !== side) continue
+    if (c.start <= line && line <= c.end) return clauseKey(c)
+    if (c.start <= line && (!best || c.start > best.start)) best = c
+  }
+  return best ? clauseKey(best) : null
+}
+
+/** A .plain file's threads by the clause they end on (the Spec view's placeThreads). */
+export function placeOnClauses(file: DiffFile, clauses: Clause[], threads: ReviewThread[]): { at: Map<string, ReviewThread[]>; unplaced: ReviewThread[]; outdated: Set<string> } {
+  const at = new Map<string, ReviewThread[]>()
+  const unplaced: ReviewThread[] = []
+  const outdated = new Set<string>()
+  for (const t of threads) {
+    if (t.path !== file.path) continue
+    if (!sameCode(file, t)) outdated.add(t.id)
+    const key = clauseAt(clauses, t.side, t.end)
+    if (key == null) unplaced.push(t)
+    else at.set(key, [...(at.get(key) ?? []), t])
+  }
+  return { at, unplaced, outdated }
 }

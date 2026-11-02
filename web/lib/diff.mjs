@@ -19,6 +19,9 @@ export const MAX_TOTAL_LINES = 50000;
 const GIT_TIMEOUT_MS = 20000;
 /** Checkouts diffed for one session at most (its cwd's first). */
 export const MAX_ROOTS = 12;
+/** PlainLang specs: the diff carries their whole text, up to this size per side. */
+export const MAX_PLAIN_BYTES = 512 * 1024;
+const PLAIN_RE = /\.plain$/i;
 const MAX_BUFFER = 64 * 1024 * 1024;
 /** `?base=`: a branch, tag or sha; never an option. */
 const REF_RE = /^(?!-)[A-Za-z0-9._/@{}~^-]{1,200}$/;
@@ -218,6 +221,19 @@ export function createDiffer({ run, tmpDir = os.tmpdir(), home = os.homedir() })
       }
       total += hunks.reduce((s, h) => s + h.lines.length, 0);
       return { ...f, binary: p.binary, additions, deletions, truncated: cut, hunks };
+    });
+    // A .plain spec is read as a whole (the UI's spec view diffs clauses, not lines): both texts ride along.
+    await mapLimit(files.filter((f) => !f.binary && PLAIN_RE.test(f.path)), 4, async (f) => {
+      const blob = (rev, p) =>
+        git(root, ['cat-file', 'blob', `${rev}:${p}`]).then(
+          (r) => (r.stdout.length > MAX_PLAIN_BYTES ? null : r.stdout),
+          () => null,
+        );
+      const [before, after] = await Promise.all([
+        f.status === 'added' || baseSha === EMPTY_TREE ? null : blob(baseSha, f.oldPath ?? f.path),
+        f.status === 'deleted' ? null : blob(tree, f.path),
+      ]);
+      f.plain = { old: before, new: after };
     });
     return { files, stats, truncated };
   }

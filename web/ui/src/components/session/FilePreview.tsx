@@ -15,6 +15,7 @@ import { api, fileRawUrl, isAbortError } from '@/api/client'
 import type { FileStat } from '@/api/types'
 import { HostBadge } from '@/components/HostBadge'
 import { Markdown } from '@/components/Markdown'
+import { PlainView } from '@/components/plain/PlainView'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { FileLinksContext, type FileLinkApi } from '@/hooks/useFileLinks'
@@ -23,6 +24,7 @@ import { copyWithToast } from '@/lib/clipboard'
 import { relTime } from '@/lib/format'
 import { isLocalHref } from '@/lib/markdown'
 import { basename, resolveFrom } from '@/lib/paths'
+import { isPlainPath, undiffed } from '@/lib/plain'
 import { cn } from '@/lib/utils'
 
 /** Same cap as the server (lib/files.mjs PREVIEW_MAX_BYTES): bigger text is download-only. */
@@ -56,10 +58,13 @@ export function FilePreview({ host, id, file, onClose, desktop = false }: FilePr
   const cur = stack[stack.length - 1] ?? null
   // Markdown: rendered, or its source (the default when the mention points at a line).
   const [sourceFor, setSourceFor] = useState<{ f: FileStat; on: boolean } | null>(null)
-  const source = cur ? (sourceFor?.f === cur ? sourceFor.on : !!cur.line && cur.kind === 'markdown') : false
+  const textual = cur?.kind === 'markdown' || cur?.kind === 'text'
+  // Rendered by default: markdown, and PlainLang specs (served as text).
+  const plain = !!cur && textual && isPlainPath(cur.path)
+  const renders = cur?.kind === 'markdown' || plain
+  const source = cur ? (sourceFor?.f === cur ? sourceFor.on : !!cur.line && renders) : false
   const toggleSource = () => cur && setSourceFor({ f: cur, on: !source })
 
-  const textual = cur?.kind === 'markdown' || cur?.kind === 'text'
   const tooBig = textual && (cur?.size ?? 0) > PREVIEW_MAX_BYTES
   const [loaded, setLoaded] = useState<Loaded>(null)
   useEffect(() => {
@@ -147,6 +152,12 @@ export function FilePreview({ host, id, file, onClose, desktop = false }: FilePr
           <Loader2Icon className="size-4 animate-spin" /> Loading…
         </div>
       )
+    } else if (plain && !source) {
+      body = (
+        <div className={cn('mx-auto w-full px-4 py-4', desktop ? 'max-w-6xl pl-6' : 'max-w-3xl')}>
+          <PlainPreview text={text} name={basename(cur.path).replace(/\.plain$/i, '')} onOpenModule={previewLinks ? (m) => previewLinks.open(`./${m}.plain`, 'file') : undefined} />
+        </div>
+      )
     } else if (cur.kind === 'markdown' && !source) {
       body = (
         <div className={cn('mx-auto w-full px-4 py-4', desktop ? 'max-w-4xl' : 'max-w-3xl')} style={{ fontSize: 15, lineHeight: 1.55 }}>
@@ -200,7 +211,7 @@ export function FilePreview({ host, id, file, onClose, desktop = false }: FilePr
               <HostBadge host={host} />
               {meta ? <span className="text-xs text-dimmer tabular-nums">{meta}</span> : null}
               <span className="flex-1" />
-              {cur?.kind === 'markdown' && !tooBig ? (
+              {renders && !tooBig ? (
                 <Button variant="outline" size="sm" onClick={toggleSource} aria-pressed={source}>
                   {source ? 'Rendered' : 'Source'}
                 </Button>
@@ -223,6 +234,11 @@ export function FilePreview({ host, id, file, onClose, desktop = false }: FilePr
       </DialogContent>
     </Dialog>
   )
+}
+
+function PlainPreview({ text, name, onOpenModule }: { text: string; name: string; onOpenModule?: (m: string) => void }) {
+  const diff = useMemo(() => undiffed(text), [text])
+  return <PlainView diff={diff} name={name} diffed={false} index onOpenModule={onOpenModule} />
 }
 
 function Info({ text, host, downloadUrl, name, onOpen }: { text: string; host: string; downloadUrl: string; name: string; onOpen: () => void }) {

@@ -59,7 +59,7 @@ function chat(id) {
     { role: 'user', kind: 'user', ts: t - 38 * M, text: `Invoices with 3+ line items are off by a cent vs. the PDF. Find where rounding happens and fix it so the totals match.\n${PASTE}` },
     { role: 'assistant', kind: 'assistant', final: false, ts: t - 37 * M, text: 'Looking at how line totals and the invoice total are computed.' },
     { role: 'assistant', kind: 'assistant', final: false, ts: t - 35 * M, text: 'The API rounds every line before summing, the PDF renderer sums first and rounds once.' },
-    { role: 'assistant', kind: 'assistant', final: true, ts: t - 33 * M, text: `## Root cause\n\n\`src/billing/invoice_total.ts\` rounds **each line** to 2 decimals and then sums them. The PDF (\`src/pdf/totals.ts\`) sums the exact amounts and rounds once, so with 3+ lines the two can drift by a cent.\n\n| invoice | lines | API | PDF |\n|---|---|---|---|\n| INV-2026-0912 | 3 | 1250.00 | 1249.99 |\n| INV-2026-0927 | 4 | 88.40 | 88.41 |\n\n**Fix:** keep amounts in integer cents, sum exactly, round once at the end (banker's rounding, same as the PDF). I added a regression test in \`test/billing/invoice_total.test.ts\` with both invoices.\n\nThe plan is written up in \`docs/billing/rounding.md\`. Should I open the PR?` },
+    { role: 'assistant', kind: 'assistant', final: true, ts: t - 33 * M, text: `## Root cause\n\n\`src/billing/invoice_total.ts\` rounds **each line** to 2 decimals and then sums them. The PDF (\`src/pdf/totals.ts\`) sums the exact amounts and rounds once, so with 3+ lines the two can drift by a cent.\n\n| invoice | lines | API | PDF |\n|---|---|---|---|\n| INV-2026-0912 | 3 | 1250.00 | 1249.99 |\n| INV-2026-0927 | 4 | 88.40 | 88.41 |\n\n**Fix:** keep amounts in integer cents, sum exactly, round once at the end (banker's rounding, same as the PDF). I added a regression test in \`test/billing/invoice_total.test.ts\` with both invoices.\n\nThe plan is written up in \`docs/billing/rounding.md\`, the spec change in \`docs/specs/invoices.plain\`. Should I open the PR?` },
     { role: 'user', kind: 'user', ts: t - 20 * M, text: 'Yes — open the PR, link issue #1777 and ask Marta for review.' },
     { role: 'user', kind: 'command', name: '!', args: 'npm test -- billing', ts: t - 19 * M, text: '! npm test -- billing' },
     { role: 'assistant', kind: 'assistant', final: false, ts: t - 18 * M, text: 'All 214 billing tests pass. Pushing the branch and opening the PR.' },
@@ -335,7 +335,89 @@ const SKILLS = [
   { name: 'simplify', description: 'Review changed code for reuse and simplification', source: 'builtin' },
   { name: 'release-notes', description: 'Draft release notes from merged PRs', source: 'project' },
 ]
+const SPEC_OLD = `---
+description: Invoice totals — how an invoice's lines add up to its total, tax and the PDF.
+import:
+  - money
+requires:
+  - customers
+exported_concepts: [":Invoice:", ":InvoiceTotal:"]
+---
+
+> Root module of billing; the PDF renderer requires it for :InvoiceTotal:.
+
+***definitions***
+
+- :Invoice: is a bill to one :Customer: with lines, a :Currency: and a tax rate.
+
+- :Line: is one row of an :Invoice:: a description, an amount and a quantity.
+  - The amount may carry more decimals than the :Currency: has.
+
+- :InvoiceTotal: is the sum of an :Invoice:'s :Line: amounts × quantities, rounded per line to the :Currency:.
+> code: billing.invoice_total.invoiceTotal
+
+***implementation reqs***
+
+- Money is a JavaScript \`number\`.
+
+***functional specs***
+
+- \`GET /api/invoices/:id\` answers the :Invoice: with its :InvoiceTotal: and tax.
+  - The tax is the :InvoiceTotal: × the tax rate, rounded to the :Currency:.
+
+  ***acceptance tests***
+  - An :Invoice: of 3 lines of 416.665 EUR answers a total of 1250.01.
+
+- The PDF of an :Invoice: shows the same :InvoiceTotal: as the API.
+
+- A draft :Invoice: can be edited; a sent one cannot.
+  - Editing a sent :Invoice: answers 409 \`{"error": "invoice already sent"}\`.
+`
+const SPEC_NEW = `---
+description: Invoice totals — how an invoice's lines add up to its total, tax and the PDF, in minor units.
+import:
+  - money
+requires:
+  - customers
+exported_concepts: [":Invoice:", ":InvoiceTotal:"]
+---
+
+> Root module of billing; the PDF renderer requires it for :InvoiceTotal:.
+
+***definitions***
+
+- :Invoice: is a bill to one :Customer: with lines, a :Currency: and a tax rate.
+
+- :Line: is one row of an :Invoice:: a description, an amount and a quantity.
+  - The amount may carry more decimals than the :Currency: has.
+
+- :MinorUnits: is an amount in the :Currency:'s smallest unit (cents; 3 decimals for KWD and BHD), as a \`bigint\`.
+
+- :InvoiceTotal: is the sum of an :Invoice:'s :Line: amounts × quantities in :MinorUnits:, converted back once.
+> code: billing.invoice_total.invoiceTotal
+
+***implementation reqs***
+
+- Money is summed in :MinorUnits:; it is a \`number\` only at the API and PDF edges.
+
+***functional specs***
+
+- \`GET /api/invoices/:id\` answers the :Invoice: with its :InvoiceTotal: and tax.
+  - The tax is the :InvoiceTotal: × the tax rate, rounded once to the :Currency:.
+
+  ***acceptance tests***
+  - An :Invoice: of 3 lines of 416.665 EUR answers a total of 1249.99.
+  - A KWD :Invoice: keeps 3 decimals.
+
+- The PDF of an :Invoice: shows the same :InvoiceTotal: as the API.
+
+- A monthly statement sums up to 40000 :Line: items exactly.
+
+  ***acceptance tests***
+  - A statement of 40000 lines of 0.005 KWD answers 200.000.
+`
 const FILES = {
+  'docs/specs/invoices.plain': SPEC_NEW,
   'src/billing/invoice_total.ts': `import { Currency, toMinor, fromMinor } from './currency'\n\nexport interface Line {\n  description: string\n  amount: number\n  quantity: number\n}\n\n/**\n * The invoice total: every line in minor units (cents), summed exactly,\n * converted back once. Matches the PDF renderer (src/pdf/totals.ts).\n */\nexport function invoiceTotal(lines: Line[], cur: Currency) {\n  const cents = lines.reduce((s, l) => s + toMinor(l.amount * l.quantity, cur), 0n)\n  return fromMinor(cents, cur)\n}\n`,
   'docs/billing/rounding.md': `# Invoice rounding\n\n**Status:** in review · PR [acme/acme-api#482](https://github.com/acme/acme-api/pull/482)\n\n## Problem\nThe API rounds each line to 2 decimals before summing; the PDF sums exact amounts and rounds once. With 3+ lines the totals drift by up to a cent.\n\n## Decision\n- Keep money in **integer minor units** (\`bigint\` cents) end to end.\n- Round **once**, at the end, with banker's rounding.\n- Currencies with 0 or 3 decimals use \`Currency.minorUnits\`.\n\n## Rollout\n1. Ship the fix behind no flag (pure bug fix).\n2. Re-issue the 3 affected invoices (finance).\n3. Add a nightly check comparing API and PDF totals.\n`,
 }
@@ -357,10 +439,25 @@ function dfile(path, status, hunks) {
   const all = hunks.flatMap((h) => h.lines)
   return { path, oldPath: status === 'added' ? null : path, status, binary: false, truncated: false, additions: all.filter((l) => l.t === '+').length, deletions: all.filter((l) => l.t === '-').length, hunks }
 }
+// A whole-file line diff (LCS) as one hunk: for the .plain spec, whose diff carries both texts.
+function lineHunks(a, b) {
+  const A = a.replace(/\n$/, '').split('\n'), B = b.replace(/\n$/, '').split('\n')
+  const T = Array.from({ length: A.length + 1 }, () => new Uint16Array(B.length + 1))
+  for (let i = A.length - 1; i >= 0; i--) for (let j = B.length - 1; j >= 0; j--) T[i][j] = A[i] === B[j] ? T[i + 1][j + 1] + 1 : Math.max(T[i + 1][j], T[i][j + 1])
+  const rows = []
+  let i = 0, j = 0
+  while (i < A.length || j < B.length) {
+    if (i < A.length && j < B.length && A[i] === B[j]) { rows.push([' ', A[i++]]); j++ }
+    else if (j < B.length && (i === A.length || T[i][j + 1] >= T[i + 1][j])) rows.push(['+', B[j++]])
+    else rows.push(['-', A[i++]])
+  }
+  return [hunk(1, 1, rows)]
+}
 const API_WT = `${H}/Code/acme-api/.worktrees/fix-invoice-rounding`
 const WEB_WT = `${H}/Code/acme-web/.worktrees/invoice-pdf-totals`
 const DIFF_FILES = {
   [API_WT]: [
+    { ...dfile('docs/specs/invoices.plain', 'modified', lineHunks(SPEC_OLD, SPEC_NEW)), plain: { old: SPEC_OLD, new: SPEC_NEW } },
     dfile('src/billing/invoice_total.ts', 'modified', [hunk(1, 1, ROWS(`- import { Currency, roundMoney } from './currency'
 + import { Currency, toMinor, fromMinor } from './currency'
   
