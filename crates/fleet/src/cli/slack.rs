@@ -356,11 +356,10 @@ fn print_page(v: &Value, next: &str) {
     for m in &msgs {
         println!("{}\n", message_text(m, in_thread));
     }
+    // Both page back in time: a channel to older messages, a thread to earlier replies (Slack
+    // starts a thread at its latest replies and repeats its first message on every page).
     match v["nextCursor"].as_str().filter(|c| !c.is_empty()) {
-        Some(c) => println!(
-            "{} {next} --cursor {c}",
-            if in_thread { "newer:" } else { "older:" }
-        ),
+        Some(c) => println!("older: {next} --cursor {c}"),
         None => println!("(no more)"),
     }
 }
