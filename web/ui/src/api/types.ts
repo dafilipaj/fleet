@@ -235,6 +235,8 @@ export interface Host {
   home?: string
   /** Set when that host's server has a notes explorer (`web.notes.root`). */
   notes?: { name: string | null }
+  /** A shared shed (config `hosts.<name>.shared`, as the serving host sees it): out of the default view, the Inbox and the waiting count. Older servers omit it. */
+  shared?: boolean
   sessions: Session[]
 }
 

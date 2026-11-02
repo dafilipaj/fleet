@@ -373,8 +373,17 @@ pub struct HostRows {
 /// `list --json` on every configured host, in parallel, rows tagged with the
 /// host name *this* config knows it by.
 pub fn gather_all_hosts() -> Vec<HostRows> {
+    gather_hosts(None)
+}
+
+/// [`gather_all_hosts`] limited to shared (`Some(true)`) or own (`Some(false)`) hosts.
+fn gather_hosts(only_shared: Option<bool>) -> Vec<HostRows> {
     let cfg = config::get();
-    let names = cfg.ssh_host_names();
+    let names: Vec<String> = cfg
+        .ssh_host_names()
+        .into_iter()
+        .filter(|n| only_shared.is_none_or(|want| cfg.is_shared(n) == want))
+        .collect();
     let handles: Vec<_> = names
         .into_iter()
         .map(|name| {
@@ -409,8 +418,11 @@ pub fn gather_all_hosts() -> Vec<HostRows> {
     handles.into_iter().filter_map(|h| h.join().ok()).collect()
 }
 
-pub fn list_all_hosts(json: bool) -> Result<()> {
-    let all = gather_all_hosts();
+/// `list --all-hosts` (`only_shared`: `--shared` → `Some(true)`, `--mine` → `Some(false)`).
+/// JSON rows carry `shared` (their host's `hosts.<name>.shared`).
+pub fn list_all_hosts(json: bool, only_shared: Option<bool>) -> Result<()> {
+    let cfg = config::get();
+    let all = gather_hosts(only_shared);
     let mut any_ok = false;
     let mut rows = Vec::new();
     for h in &all {
@@ -431,7 +443,21 @@ pub fn list_all_hosts(json: bool) -> Result<()> {
         }
     }
     if json {
+        let rows: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|s| {
+                let mut v = serde_json::to_value(s).unwrap_or_default();
+                if let Some(o) = v.as_object_mut() {
+                    let shared = s.host.as_deref().is_some_and(|h| cfg.is_shared(h));
+                    o.insert("shared".into(), shared.into());
+                }
+                v
+            })
+            .collect();
         println!("{}", serde_json::to_string_pretty(&rows)?);
+    }
+    if all.is_empty() {
+        return Ok(());
     }
     if !any_ok {
         return Err(Error::exit(hosts::EXIT_UNREACHABLE, "no host answered"));

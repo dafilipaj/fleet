@@ -35,7 +35,7 @@ export interface BoardProps {
  * reordered and cards dragged between them (BoardColumns).
  */
 export function Board({ list, groups, columns, onMoveColumn, now, cursorKey, selectedKey, overlayInset, onOpen }: BoardProps) {
-  const { fleet, error, query, host, unreachable } = list
+  const { fleet, error, query, hostSet, unreachable } = list
   const boardRef = useRef<HTMLDivElement>(null)
 
   // The cursor card scrolls into view, clear of the flyout (↑/↓, ⌘K). A click moves the cursor
@@ -62,7 +62,7 @@ export function Board({ list, groups, columns, onMoveColumn, now, cursorKey, sel
 
   return (
     <div className="flex h-full min-w-0 flex-col">
-      {/* An unreachable host shows in the top bar (HostButtons), not here. */}
+      {/* An unreachable host shows in the top bar (HostRail), not here. */}
       {error ? (
         <div className="shrink-0 px-4 pt-2">
           <Alert variant="destructive">
@@ -97,7 +97,7 @@ export function Board({ list, groups, columns, onMoveColumn, now, cursorKey, sel
             onMoveColumn={onMoveColumn}
           />
         )}
-        {fleet ? <DormantSection now={now} host={host} query={query} desktop className="max-h-full w-72 shrink-0 overflow-y-auto rounded-xl border border-dashed p-2" /> : null}
+        {fleet ? <DormantSection now={now} hosts={hostSet} query={query} desktop className="max-h-full w-72 shrink-0 overflow-y-auto rounded-xl border border-dashed p-2" /> : null}
         {fleet && columns.length && overlayInset ? <div aria-hidden className="shrink-0" style={{ width: overlayInset }} /> : null}
       </div>
     </div>

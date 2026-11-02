@@ -2,7 +2,7 @@ import type { KeyboardEvent, Ref } from 'react'
 import { PlusIcon, SearchIcon, XIcon } from 'lucide-react'
 
 import { GroupsStatus } from '@/components/board/GroupsStatus'
-import { HostButtons } from '@/components/desktop/HostButtons'
+import { HostRail } from '@/components/desktop/HostRail'
 import { FocusToggle } from '@/components/FocusToggle'
 import { ModuleButtons } from '@/components/ModuleNav'
 import { SessionFilters } from '@/components/SessionFilters'
@@ -30,8 +30,8 @@ export interface TopBarProps {
 }
 
 /**
- * The desktop top bar, the same over the List and the Board: summary, session filters, search,
- * List | Board, modules, New. The desktop app's traffic lights sit over its left end.
+ * The desktop top bar, the same over the List and the Board: summary (own hosts), session filters,
+ * search, List | Board, the hosts (HostRail), modules, New. The desktop app's traffic lights sit over its left end.
  */
 export function TopBar({ list, now, view, onView, searchRef, onSearchNav, onNew, groups }: TopBarProps) {
   const { fleet, query, setQuery, summary, note } = list
@@ -76,7 +76,7 @@ export function TopBar({ list, now, view, onView, searchRef, onSearchNav, onNew,
           </span>
         </div>
       ) : null}
-      <SessionFilters list={list} />
+      <SessionFilters list={list} hostPicker={false} />
 
       <div className="relative w-64 min-w-40">
         <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-dimmer" />
@@ -110,10 +110,8 @@ export function TopBar({ list, now, view, onView, searchRef, onSearchNav, onNew,
       </div>
 
       <ViewToggle value={view} onChange={onView} />
-      {/* Each host's state and terminal (a popover per host). */}
-      <nav aria-label="Hosts" className="flex shrink-0 items-center gap-0.5 rounded-lg border border-border bg-card p-0.5">
-        <HostButtons now={now} />
-      </nav>
+      {/* The hosts: the host filter (Mine / Shared, multi-select) and each one's state and terminal. */}
+      <HostRail list={list} now={now} />
 
       <div className="ml-auto flex min-w-0 items-center gap-2">
         {groups ? <GroupsStatus state={groups} now={now} quiet /> : null}

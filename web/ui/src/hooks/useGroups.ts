@@ -131,8 +131,8 @@ export function useBoardColumns(
   sessions: Session[],
   groups: GroupsResponse | null,
   fleet: FleetResponse | null,
-  /** The host filter: dormant cards of other hosts are left out. */
-  host: string | null = null,
+  /** The host filter: dormant cards of other hosts are left out (null = every host). */
+  hosts: ReadonlySet<string> | null = null,
   /** The session search: dormant cards that do not match are left out. */
   query = '',
 ): { columns: BoardColumn[]; moveColumn: (id: string, before: string | null) => void } {
@@ -141,12 +141,12 @@ export function useBoardColumns(
   const sticky = useMemo(() => {
     if (!enabled) return null
     const dormantOf = (m: GroupMember) => {
-      if (host && m.host !== host) return null
+      if (hosts && !hosts.has(m.host)) return null
       const d = dormantMember(m, index)
       return d && matchesDormantMember(d, query) ? d : null
     }
     return stickyColumns(withStackColumns(boardColumns(sessions, effectiveGroups(groups, allSessions(fleet)).groups, dormantOf), sessions), order)
-  }, [enabled, sessions, groups, fleet, order, index, host, query])
+  }, [enabled, sessions, groups, fleet, order, index, hosts, query])
   if (sticky && (sticky.order.length !== order.length || sticky.order.some((id, i) => id !== order[i]))) setOrder(sticky.order)
   useEffect(() => {
     storage.set(ORDER_KEY, JSON.stringify(order))

@@ -25,7 +25,8 @@ import { useFlip } from '@/hooks/useFlip'
 import { useBoardColumns, useGroups, useViewMode } from '@/hooks/useGroups'
 import { useSettings } from '@/hooks/useSettings'
 import { useNow } from '@/hooks/useNow'
-import { ALL_HOSTS, useSessionList } from '@/hooks/useSessionList'
+import { useSessionList } from '@/hooks/useSessionList'
+import { DEFAULT_SELECTION, selectionLabel } from '@/lib/hosts'
 import { pullIntent } from '@/lib/gestures'
 import { allSessions, stackRuns, findStatusFilter } from '@/lib/sessions'
 import { cn } from '@/lib/utils'
@@ -33,23 +34,23 @@ import { cn } from '@/lib/utils'
 export function ListScreen() {
   const now = useNow(1000)
   const list = useSessionList(now)
-  const { fleet, error, query, setQuery, status, setStatus, setHostFilter, host, view, summary, unreachable, note } = list
+  const { fleet, error, query, setQuery, status, setStatus, selection, setSelection, hosts, hostSet, view, summary, unreachable, note } = list
   const [newOpen, setNewOpen] = useState(false)
   const [, navigate] = useLocation()
   const [mode, setMode] = useViewMode()
   const settings = useSettings()
   const board = mode === 'board'
   const groups = useGroups(board)
-  const { columns } = useBoardColumns(board, view.sessions, groups.groups, fleet, host, query)
+  const { columns } = useBoardColumns(board, view.sessions, groups.groups, fleet, hostSet, query)
   const rowsRef = useRef<HTMLDivElement>(null)
   useFlip(rowsRef, view.sessions.map((s) => `${s.host}/${s.session_id}`).join(' '))
   // The filter rows live in a drawer under the search field, closed by default: swipe down on
   // the header (or tap the handle) opens it, swipe up closes it. Active filters show on the handle.
   const [filtersOpen, setFiltersOpen] = useState(false)
-  const filterSummary = [status !== 'all' ? findStatusFilter(status).label : null, host].filter(Boolean).join(' · ')
+  const filterSummary = [status !== 'all' ? findStatusFilter(status).label : null, selectionLabel(selection, hosts)].filter(Boolean).join(' · ')
   const clearFilters = () => {
     setStatus('all')
-    setHostFilter(ALL_HOSTS)
+    setSelection(DEFAULT_SELECTION)
   }
   const touch = useRef<{ x: number; y: number } | null>(null)
   const onTouchStart = (e: TouchEvent) => {
@@ -250,8 +251,8 @@ export function ListScreen() {
             <EmptyState anySessions={allSessions(fleet).length > 0} />
           ) : null}
 
-          {fleet ? <DormantSection now={now} host={host} query={query} className="mt-6" /> : null}
-          {fleet ? <ClosedSection now={now} host={host} query={query} className="mt-4" /> : null}
+          {fleet ? <DormantSection now={now} hosts={hostSet} query={query} className="mt-6" /> : null}
+          {fleet ? <ClosedSection now={now} hosts={hostSet} query={query} className="mt-4" /> : null}
         </div>
       </main>
 

@@ -67,12 +67,12 @@ export function ArmButton({
  * long ago) with Resume (brings the tmux session back and resumes its Claude sessions), Forget
  * (two clicks) and Resume all (two clicks). Nothing when no host has dormant sessions. Collapsed
  * until expanded, like Recently closed; a search shows its matches expanded.
- * `host`: only that host (the list's host filter). `query`: the session search — only matching entries. `desktop`: the denser sidebar / board sizes.
+ * `hosts`: only those (the list's host filter; null = all). `query`: the session search — only matching entries. `desktop`: the denser sidebar / board sizes.
  */
-export function DormantSection({ now, host = null, query = '', desktop = false, className }: { now: number; host?: string | null; query?: string; desktop?: boolean; className?: string }) {
-  const { hosts, busy, resume, resumeAll, forget } = useDormant()
+export function DormantSection({ now, hosts: only = null, query = '', desktop = false, className }: { now: number; hosts?: ReadonlySet<string> | null; query?: string; desktop?: boolean; className?: string }) {
+  const { hosts: all, busy, resume, resumeAll, forget } = useDormant()
   const [open, setOpen] = useState(false)
-  const shown = (host ? hosts.filter((h) => h.host === host) : hosts).map((h) => searchDormant(h, query)).filter((h) => h.views.length > 0)
+  const shown = (only ? all.filter((h) => only.has(h.host)) : all).map((h) => searchDormant(h, query)).filter((h) => h.views.length > 0)
   if (!shown.length) return null
   const total = shown.reduce((n, h) => n + h.views.length, 0)
   const size = desktop ? 'sm' : 'lg'

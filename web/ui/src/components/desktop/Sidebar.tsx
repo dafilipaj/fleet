@@ -25,7 +25,7 @@ export interface SidebarProps {
 
 /** Desktop left column under the top bar (TopBar): the session list, dormant and recently closed. */
 export function Sidebar({ list, now, cursorKey, selectedKey }: SidebarProps) {
-  const { fleet, error, query, host, view, unreachable, setFrozen } = list
+  const { fleet, error, query, hostSet, view, unreachable, setFrozen } = list
   const listRef = useRef<HTMLDivElement>(null)
   useFlip(listRef, view.sessions.map(sessionKey).join(' '))
 
@@ -52,7 +52,7 @@ export function Sidebar({ list, now, cursorKey, selectedKey }: SidebarProps) {
             </AlertDescription>
           </Alert>
         ) : null}
-        {/* An unreachable host shows in the top bar (HostButtons), not here. */}
+        {/* An unreachable host shows in the top bar (HostRail), not here. */}
         {!fleet ? (
           <SessionListSkeleton />
         ) : view.sessions.length > 0 ? (
@@ -80,8 +80,8 @@ export function Sidebar({ list, now, cursorKey, selectedKey }: SidebarProps) {
             {allSessions(fleet).length > 0 ? 'Nothing matches.' : unreachable.length ? 'No sessions from the reachable hosts.' : 'No Claude sessions running.'}
           </div>
         )}
-        {fleet ? <DormantSection now={now} host={host} query={query} desktop className="mt-4" /> : null}
-        {fleet ? <ClosedSection now={now} host={host} query={query} desktop className="mt-3" /> : null}
+        {fleet ? <DormantSection now={now} hosts={hostSet} query={query} desktop className="mt-4" /> : null}
+        {fleet ? <ClosedSection now={now} hosts={hostSet} query={query} desktop className="mt-3" /> : null}
       </div>
 
     </div>

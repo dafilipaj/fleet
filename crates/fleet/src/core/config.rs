@@ -68,6 +68,10 @@ pub struct Host {
     /// (read by the web server only); TLS and `Host` keep the url's name. `None` → the url's.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub web_connect: Option<String>,
+    /// A shared shed (other people's sessions too): the web UI keeps its sessions out of the
+    /// default view, the Inbox and the waiting count; `list --mine` / `--shared` split on it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub shared: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -327,6 +331,15 @@ impl Config {
         let mut out = vec![me.clone()];
         out.extend(self.hosts.keys().filter(|k| **k != me).cloned());
         out
+    }
+
+    /// Whether `hosts.<name>.shared` is `true` (a shared shed, not one of the user's own).
+    pub fn is_shared(&self, name: &str) -> bool {
+        self.hosts
+            .get(name)
+            .and_then(|h| h.get("shared"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
     }
 
     /// Hosts fleet can run commands on: this machine plus every host with an
@@ -701,6 +714,19 @@ mod tests {
         );
         assert!(p.contains("hosts.c has neither"), "{p}");
         assert!(p.contains("http(s)"), "{p}");
+    }
+
+    #[test]
+    fn is_shared_reads_the_host_flag() {
+        let c: Config = serde_json::from_value(json!({
+            "self": "ws",
+            "hosts": { "ws": {}, "box": { "ssh": "box", "shared": true }, "odd": { "shared": "yes" } }
+        }))
+        .unwrap();
+        assert!(c.is_shared("box"));
+        assert!(!c.is_shared("ws"));
+        assert!(!c.is_shared("odd"));
+        assert!(!c.is_shared("missing"));
     }
 
     #[test]

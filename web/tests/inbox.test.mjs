@@ -82,6 +82,16 @@ test('sessionItems: waiting sessions on every reachable host, never the operator
   assert.equal(items[0].section, 'quick');
 });
 
+test('sessionItems: a shared host is left out', () => {
+  const items = sessionItems({
+    hosts: [
+      { name: 'laptop', ok: true, sessions: [{ session_id: 'a', status: 'waiting' }] },
+      { name: 'shed', ok: true, shared: true, sessions: [{ session_id: 'b', status: 'waiting' }] },
+    ],
+  });
+  assert.deepEqual(items.map((i) => i.meta.host), ['laptop']);
+});
+
 test('the scan answer: JSON array found in chatter, bad entries dropped, ids namespaced, mail links filled', () => {
   const raw = extractJsonArray('Here you go:\n[{"source":"slack","id":"C1:1.2","url":"https://x.slack.com/archives/C1/p12","title":"Q","effort":"quick","at":"2026-10-20T10:00:00Z"},{"source":"email","id":"abc","title":"Sign this","effort":"weird"},{"source":"fax","id":"z","title":"?"},{"source":"slack","id":"slack:C1:1.2","title":"dup"}]');
   const items = commsItems(raw, 7);

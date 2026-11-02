@@ -93,8 +93,8 @@ test('keepOrder: the frozen order holds, new sessions go on top, gone ones drop'
 })
 
 test('listView: host + status + search filters', () => {
-  expect(listView(fleet, { host: 'workstation' }).sessions.map((x) => x.session_id)).toEqual(['c'])
-  expect(listView(fleet, { host: 'workstation' }).counts.all).toBe(1)
+  expect(listView(fleet, { hosts: new Set(['workstation']) }).sessions.map((x) => x.session_id)).toEqual(['c'])
+  expect(listView(fleet, { hosts: new Set(['workstation']) }).counts.all).toBe(1)
   expect(listView(fleet, { status: 'waiting' }).sessions.map((x) => x.session_id)).toEqual(['b'])
   // counts ignore the status filter (the chips show every status)
   expect(listView(fleet, { status: 'waiting' }).counts.all).toBe(3)

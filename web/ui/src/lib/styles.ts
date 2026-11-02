@@ -25,9 +25,11 @@ const HOST_BADGE = [
   'text-host-3 border-host-3/30 bg-host-3/10',
 ]
 const HOST_DOT = ['bg-host-0', 'bg-host-1', 'bg-host-2', 'bg-host-3']
+const HOST_RING = ['border-host-0', 'border-host-1', 'border-host-2', 'border-host-3']
 
 export const hostBadgeClass = (host: string | null | undefined) => HOST_BADGE[hostColorSlot(host)]
 export const hostDotClass = (host: string | null | undefined) => HOST_DOT[hostColorSlot(host)]
+export const hostRingClass = (host: string | null | undefined) => HOST_RING[hostColorSlot(host)]
 
 // Context-window usage bands (ctxLevel): text + meter fill.
 export const CTX_TEXT: Record<CtxLevel, string> = {

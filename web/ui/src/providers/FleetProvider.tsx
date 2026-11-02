@@ -4,6 +4,7 @@ import { api, isAbortError } from '@/api/client'
 import type { FleetResponse } from '@/api/types'
 import { FleetContext, loadSnapshot, saveSnapshot, type FleetState } from '@/hooks/useFleet'
 import { usePoller } from '@/hooks/usePoller'
+import { setKnownHosts } from '@/lib/format'
 import { closedKey, withoutClosed } from '@/lib/sessions'
 
 export const FLEET_POLL_MS = 5000
@@ -14,6 +15,7 @@ const CLOSED_HIDE_MS = 20_000
 export function FleetProvider({ children, pollMs = FLEET_POLL_MS }: { children: ReactNode; pollMs?: number }) {
   const [snap, setSnap] = useState(() => {
     const s = loadSnapshot()
+    setKnownHosts(s?.fleet?.hosts)
     return { fleet: s?.fleet ?? null, at: s?.at ?? 0 }
   })
   const [error, setError] = useState<string | null>(null)
@@ -25,6 +27,7 @@ export function FleetProvider({ children, pollMs = FLEET_POLL_MS }: { children: 
     for (const [k, until] of closed.current) if (until <= now) closed.current.delete(k)
     const fleet = withoutClosed(data, closed.current, now)
     const at = data?.snapshotAt || now
+    setKnownHosts(fleet?.hosts)
     setSnap({ fleet, at })
     saveSnapshot({ fleet, at })
   }, [])

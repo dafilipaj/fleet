@@ -1,18 +1,21 @@
 import { useRef } from 'react'
-import { ListFilterIcon, ServerIcon } from 'lucide-react'
+import { ListFilterIcon, ServerIcon, UsersIcon } from 'lucide-react'
 
 import { HostDot } from '@/components/HostBadge'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { ALL_HOSTS, type SessionListState } from '@/hooks/useSessionList'
+import type { SessionListState } from '@/hooks/useSessionList'
+import { isShared, normalizeSelection, selectionLabel, type HostScope } from '@/lib/hosts'
 import { STATUS_FILTERS, visibleStatusFilters, type StatusFilterId } from '@/lib/sessions'
 import { cn } from '@/lib/utils'
 
@@ -36,12 +39,13 @@ const TOUCH = {
 /**
  * Sessions | Bots (| Slack | Apps) toggle, then status and host pickers behind one icon each.
  * `spread`: the pickers sit at the row's right end. `touch`: phone-sized (the mobile list).
+ * `hostPicker={false}`: no host menu (the desktop top bar has the HostRail instead).
  */
-export function SessionFilters({ list, spread = false, touch = false }: { list: SessionListState; spread?: boolean; touch?: boolean }) {
+export function SessionFilters({ list, spread = false, touch = false, hostPicker = true }: { list: SessionListState; spread?: boolean; touch?: boolean; hostPicker?: boolean }) {
   const seg = cn(segment, touch && TOUCH.segment)
   const trig = cn(trigger, touch && TOUCH.trigger)
   const item = touch ? TOUCH.item : undefined
-  const { fleet, status, setStatus, setHostFilter, hosts, hostNames, host, view, hostCounts } = list
+  const { fleet, status, setStatus, hostNames, view } = list
   const counts = fleet ? view.counts : null
   const kind = KINDS.includes(status) ? status : SESSIONS
   // The status picked under Sessions, restored when coming back from Bots / Slack / Apps.
@@ -110,35 +114,66 @@ export function SessionFilters({ list, spread = false, touch = false }: { list: 
         </DropdownMenuContent>
       </DropdownMenu>
 
-      {hostNames.length > 1 ? (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="ghost"
-              className={trig}
-              data-active={host != null}
-              aria-label={`Filter by host: ${host ?? 'All'}`}
-              title="Filter by host"
-            >
-              {host ? <HostDot host={host} /> : <ServerIcon className={touch ? "size-4" : "size-3.5"} />}
-              {host ?? null}
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-44">
-            <DropdownMenuLabel className="text-xs text-dimmer">Host</DropdownMenuLabel>
-            <DropdownMenuRadioGroup value={host ?? ALL_HOSTS} onValueChange={setHostFilter}>
-              <DropdownMenuRadioItem value={ALL_HOSTS} className={item}>All hosts</DropdownMenuRadioItem>
-              {hosts.map((h) => (
-                <DropdownMenuRadioItem key={h.name} value={h.name} className={item}>
-                  <HostDot host={h.name} />
-                  <span className={cn(h.ok === false && 'text-destructive')}>{h.name}</span>
-                  <span className={count}>{h.ok === false ? '!' : (hostCounts.get(h.name) ?? 0)}</span>
-                </DropdownMenuRadioItem>
-              ))}
-            </DropdownMenuRadioGroup>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      ) : null}
+      {hostPicker && hostNames.length > 1 ? <HostMenu list={list} trig={trig} item={item} touch={touch} /> : null}
     </div>
+  )
+}
+
+/**
+ * The host filter as a menu (the mobile list): Mine / Shared / All, then every host as a checkbox
+ * (multi-select; the menu stays open while ticking). Shared sheds are marked and listed last.
+ */
+function HostMenu({ list, trig, item, touch }: { list: SessionListState; trig: string; item?: string; touch: boolean }) {
+  const { selection, setSelection, hosts, hostSet, hostCounts } = list
+  const shown = hostSet ?? new Set(hosts.map((h) => h.name))
+  const norm = normalizeSelection(shown, hosts)
+  const scope = 'scope' in norm ? norm.scope : ''
+  const text = selectionLabel(selection, hosts)
+  const anyShared = hosts.some(isShared)
+  const toggle = (name: string, on: boolean) => {
+    const next = new Set(shown)
+    if (on) next.add(name)
+    else if (next.size > 1) next.delete(name)
+    setSelection(normalizeSelection(next, hosts))
+  }
+  const ordered = [...hosts.filter((h) => !isShared(h)), ...hosts.filter(isShared)]
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" className={trig} data-active={text != null} aria-label={`Filter by host: ${text ?? 'Mine'}`} title="Filter by host">
+          {shown.size === 1 ? <HostDot host={[...shown][0]} /> : <ServerIcon className={touch ? 'size-4' : 'size-3.5'} />}
+          {text}
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="min-w-48">
+        <DropdownMenuLabel className="text-xs text-dimmer">Hosts</DropdownMenuLabel>
+        {anyShared ? (
+          <>
+            <DropdownMenuRadioGroup value={scope} onValueChange={(v) => setSelection({ scope: v as HostScope })}>
+              <DropdownMenuRadioItem value="mine" className={item}>Mine</DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="shared" className={item}>
+                <UsersIcon className="size-3.5 text-dimmer" />
+                Shared
+              </DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="all" className={item}>All hosts</DropdownMenuRadioItem>
+            </DropdownMenuRadioGroup>
+            <DropdownMenuSeparator />
+          </>
+        ) : null}
+        {ordered.map((h) => (
+          <DropdownMenuCheckboxItem
+            key={h.name}
+            checked={shown.has(h.name)}
+            onCheckedChange={(on) => toggle(h.name, on === true)}
+            onSelect={(e) => e.preventDefault()}
+            className={item}
+          >
+            <HostDot host={h.name} shared={isShared(h)} />
+            <span className={cn(h.ok === false && 'text-destructive')}>{h.name}</span>
+            <span className={count}>{h.ok === false ? '!' : (hostCounts.get(h.name) ?? 0)}</span>
+          </DropdownMenuCheckboxItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }

@@ -17,10 +17,10 @@ import { cn } from '@/lib/utils'
  * never on the Board. Nothing when no host has any. `host`: only that host. `query`: the session
  * search — only matching entries, expanded.
  */
-export function ClosedSection({ now, host = null, query = '', desktop = false, className }: { now: number; host?: string | null; query?: string; desktop?: boolean; className?: string }) {
-  const { hosts, busy, resumeClosed, forgetClosed } = useDormant()
+export function ClosedSection({ now, hosts: only = null, query = '', desktop = false, className }: { now: number; hosts?: ReadonlySet<string> | null; query?: string; desktop?: boolean; className?: string }) {
+  const { hosts: all, busy, resumeClosed, forgetClosed } = useDormant()
   const [open, setOpen] = useState(false)
-  const shown = (host ? hosts.filter((h) => h.host === host) : hosts).map((h) => searchDormant(h, query)).filter((h) => h.closed.length > 0)
+  const shown = (only ? all.filter((h) => only.has(h.host)) : all).map((h) => searchDormant(h, query)).filter((h) => h.closed.length > 0)
   if (!shown.length) return null
   const total = shown.reduce((n, h) => n + h.closed.length, 0)
   const size = desktop ? 'sm' : 'lg'

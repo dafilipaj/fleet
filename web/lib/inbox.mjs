@@ -191,10 +191,11 @@ export function taskItems(body, now = Date.now()) {
   return out;
 }
 
-/** The merged `/api/fleet` body → sessions waiting for an answer, any host. Pure. */
+/** The merged `/api/fleet` body → sessions waiting for an answer, any host but a shared one. Pure. */
 export function sessionItems(fleetBody) {
   const out = [];
   for (const h of fleetBody?.hosts ?? []) {
+    if (h?.shared === true) continue; // a shared shed's sessions are not the user's to answer
     if (h?.ok === false) continue;
     for (const s of h?.sessions ?? []) {
       if (s?.status !== 'waiting' || s.operator || !s.session_id) continue;

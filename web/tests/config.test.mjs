@@ -38,6 +38,11 @@ test('expandHome expands ~ and ~/ only', () => {
   assert.equal(expandHome('~other/x', HOME), '~other/x');
 });
 
+test('normalizeConfig: hosts.<name>.shared lists the shared sheds', () => {
+  const c = normalizeConfig({ self: 'laptop', hosts: { laptop: {}, shed: { web: 'http://100.x.y.z:7777', shared: true }, ws: { shared: 'yes' } } }, { home: '/h', env: {} });
+  assert.deepEqual(c.sharedHosts, ['shed']);
+});
+
 test('configPath: FLEET_CONFIG > XDG_CONFIG_HOME > ~/.config', () => {
   assert.equal(configPath({ FLEET_CONFIG: '~/x.json' }, HOME), `${HOME}/x.json`);
   assert.equal(configPath({ XDG_CONFIG_HOME: '/xdg' }, HOME), '/xdg/fleet/config.json');

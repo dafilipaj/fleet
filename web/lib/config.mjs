@@ -294,7 +294,9 @@ export function normalizeConfig(
   const peerConnects = {}; // peer origin → host[:port] dialled instead (hosts.<name>.webConnect)
   const sshHosts = {}; // name → ssh destination (the "Open in editor" Remote-SSH links)
   const hostAddrs = {}; // name → the hostname of its web url (which machine a browser is on)
+  const sharedHosts = []; // hosts.<name>.shared: shared sheds, kept out of the default view and the Inbox
   for (const [name, host] of Object.entries(hosts)) {
+    if (isObject(host) && host.shared === true) sharedHosts.push(name);
     // `editorSsh`: the destination the browser's machine uses, for a host this server reaches over
     // the web only (no `ssh`) or under another alias.
     const dest = isObject(host) ? [host.editorSsh, host.ssh].find((v) => typeof v === 'string' && v.trim()) : null;
@@ -652,6 +654,7 @@ export function normalizeConfig(
     editor,
     editorSsh,
     hosts: [self.trim(), ...Object.keys(peers)],
+    sharedHosts,
     fleetBin: resolveFleetBin(raw, { env, home, fsImpl }),
     tmux: resolveBinary('tmux', { explicit: env.FLEET_TMUX || raw.tmux, env, home, fsImpl }),
     claude: typeof raw.claude === 'string' && raw.claude ? expandHome(raw.claude, home) : 'claude',

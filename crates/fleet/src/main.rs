@@ -119,6 +119,12 @@ enum Commands {
         /// Every configured host, in parallel
         #[arg(long, short = 'a')]
         all_hosts: bool,
+        /// Only the user's own hosts (not `hosts.<name>.shared`); implies --all-hosts
+        #[arg(long, conflicts_with = "shared")]
+        mine: bool,
+        /// Only shared hosts (`hosts.<name>.shared: true`); implies --all-hosts
+        #[arg(long)]
+        shared: bool,
     },
 
     /// Read what a session is currently showing
@@ -1273,6 +1279,8 @@ fn default_command() -> Commands {
         Commands::List {
             json: false,
             all_hosts: false,
+            mine: false,
+            shared: false,
         }
     }
 }
@@ -1321,6 +1329,8 @@ fn placement(c: &Commands) -> Placement {
         Commands::List {
             all_hosts: true, ..
         }
+        | Commands::List { mine: true, .. }
+        | Commands::List { shared: true, .. }
         | Commands::Doctor
         | Commands::Install { .. }
         | Commands::Exec { .. }
@@ -1424,9 +1434,19 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
     }
 
     match command {
-        Commands::List { json, all_hosts } => {
-            if all_hosts {
-                host_cmds::list_all_hosts(json)?;
+        Commands::List {
+            json,
+            all_hosts,
+            mine,
+            shared,
+        } => {
+            if all_hosts || mine || shared {
+                let only = match (mine, shared) {
+                    (true, _) => Some(false),
+                    (_, true) => Some(true),
+                    _ => None,
+                };
+                host_cmds::list_all_hosts(json, only)?;
             } else {
                 commands::list(json)?;
             }

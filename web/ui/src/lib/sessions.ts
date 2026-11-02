@@ -166,22 +166,23 @@ export function listView(
   fleet: FleetResponse | null | undefined,
   {
     query = '',
-    host = null,
+    hosts = null,
     status = 'all',
     slack = NO_SLACK,
-  }: { query?: string; host?: string | null; status?: StatusFilterId; slack?: ReadonlySet<string> },
+  }: { query?: string; hosts?: ReadonlySet<string> | null; status?: StatusFilterId; slack?: ReadonlySet<string> },
 ): ListView {
-  const matched = allSessions(fleet).filter((s) => (host == null || s.host === host) && matchesSearch(s, query))
+  const matched = allSessions(fleet).filter((s) => (hosts == null || hosts.has(s.host)) && matchesSearch(s, query))
   const visible = matched.filter((s) => !setAside(s, slack))
   const scope = (f: StatusFilter) => (SET_ASIDE.includes(f.id) ? matched : visible).filter((s) => f.match(s, slack))
   const counts = Object.fromEntries(STATUS_FILTERS.map((f) => [f.id, scope(f).length])) as Record<StatusFilterId, number>
   return { sessions: clusterByStack(scope(findStatusFilter(status)).sort(byLastPrompt)), counts }
 }
 
-/** Every session by status, job sessions included — the header's counters. */
-export function statusSummary(fleet: FleetResponse | null | undefined): Record<'waiting' | 'busy' | 'idle', number> {
+/** Every session by status, job sessions included — the header's counters. `hosts`: only those. */
+export function statusSummary(fleet: FleetResponse | null | undefined, hosts: ReadonlySet<string> | null = null): Record<'waiting' | 'busy' | 'idle', number> {
   const out = { waiting: 0, busy: 0, idle: 0 }
   for (const s of allSessions(fleet)) {
+    if (hosts && !hosts.has(s.host)) continue
     const k = statusMeta(s.status).key
     if (k === 'waiting' || k === 'busy' || k === 'idle') out[k] += 1
   }

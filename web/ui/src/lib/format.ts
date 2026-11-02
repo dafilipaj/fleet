@@ -54,8 +54,29 @@ export function sessionSubtitle(s: Pick<Session, 'title'>): string {
 
 export const HOST_COLOR_SLOTS = 4
 
-/** Stable colour slot 0..3 per host name, whatever the host is called. */
+// The configured hosts as the last /api/fleet listed them (FleetProvider keeps it current), sorted
+// by name so every server's UI agrees: their order gives each one its own colour while there are no more hosts than slots, and `shared`
+// marks a shared shed wherever a host name is drawn.
+let hostOrder: string[] = []
+let sharedHosts = new Set<string>()
+
+export function setKnownHosts(hosts: { name: string; shared?: boolean }[] | null | undefined): void {
+  hostOrder = (hosts ?? []).map((h) => h.name).sort()
+  sharedHosts = new Set((hosts ?? []).filter((h) => h.shared === true).map((h) => h.name))
+}
+
+/** Whether the fleet marks `host` as a shared shed (`hosts.<name>.shared`). */
+export function isSharedHost(host: string | null | undefined): boolean {
+  return host != null && sharedHosts.has(host)
+}
+
+/**
+ * Colour slot 0..3 per host: by its place among the configured hosts while they fit the slots
+ * (no two alike), else a stable hash of the name.
+ */
 export function hostColorSlot(host: string | null | undefined): number {
+  const i = host != null && hostOrder.length <= HOST_COLOR_SLOTS ? hostOrder.indexOf(host) : -1
+  if (i >= 0) return i
   let hash = 0
   for (const ch of String(host || '')) hash = (hash * 31 + (ch.codePointAt(0) ?? 0)) >>> 0
   return hash % HOST_COLOR_SLOTS

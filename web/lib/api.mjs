@@ -265,7 +265,10 @@ export function createApi({
     );
     // Editor links are added per request (handleFleet): they depend on where the browser is.
     // A member of a stack homed on another host gets that stack on its row here.
-    return { self: config.self, hosts: stampForeign([selfHost, ...peerHosts]) };
+    // `shared` is this server's call (hosts.<name>.shared), whatever a peer says of itself.
+    const shared = new Set(config.sharedHosts ?? []);
+    const hosts = stampForeign([selfHost, ...peerHosts]).map((h) => ({ ...h, shared: shared.has(h.name) }));
+    return { self: config.self, hosts };
   }
 
   // The merged fleet, served stale-while-revalidate so a page load never waits on

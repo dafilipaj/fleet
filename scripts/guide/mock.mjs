@@ -43,7 +43,7 @@ function fleet() {
   const all = SESSIONS()
   return {
     self: 'laptop', snapshotAt: now(),
-    hosts: HOSTS.map((h) => ({ name: h, ok: true, fetchedAt: now() - 1500, spawnDirs: SPAWN_DIRS[h], ...(h === 'devbox' ? { notes: { name: 'Team notes' } } : {}), sessions: all.filter((s) => s.host === h) })),
+    hosts: HOSTS.map((h) => ({ name: h, ok: true, fetchedAt: now() - 1500, spawnDirs: SPAWN_DIRS[h], ...(h === 'devbox' ? { shared: true, notes: { name: 'Team notes' } } : {}), sessions: all.filter((s) => s.host === h) })),
   }
 }
 const find = (host, id) => SESSIONS().find((s) => s.host === host && s.session_id === id)
