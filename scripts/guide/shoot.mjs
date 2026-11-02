@@ -72,6 +72,11 @@ const SHOTS = [
   ['d-review-select', DESKTOP, async (p) => { await p.go(U + REV, UNI); await p.eval(toCard('currency.ts')); await p.sleep(500); await p.eval(selectLines('currency.ts', 23, 25)); await p.sleep(800) }],
   ['d-review-compose', DESKTOP, async (p) => { await p.go(U + REV, UNI); await p.eval(toCard('currency.ts')); await p.sleep(500); await p.eval(selectLines('currency.ts', 23, 25)); await p.sleep(600); await p.click('Comment on lines', { sel: 'button' }); await p.type('Math.round on a float can still be off for x.xx5 amounts. Use a decimal string conversion here?', 900) }],
   ['d-review-split', { ...DESKTOP, dark: true }, async (p) => { await p.go(U + REV, { 'fleet.diffView': 'split', 'fleet.reviewChat': 'false', 'fleet.theme': 'dark' }); await p.eval(toCard('totals.ts', 'center')); await p.sleep(800) }],
+  // PlainLang specs: the reviewer's Spec view, a term's definition from another module, the preview
+  ['d-plain-review', DESKTOP, async (p) => { await p.go(U + REV, { ...UNI, 'fleet.reviewChat': 'false' }); await p.eval(toCard('invoices.plain')); await p.sleep(800) }],
+  ['d-plain-specs', DESKTOP, async (p) => { await p.go(U + REV, { ...UNI, 'fleet.reviewChat': 'false' }); await p.eval(`document.querySelector('article[id$="plain-1"]')?.scrollIntoView({ block: 'start' })`); await p.sleep(800) }],
+  ['d-plain-term', DESKTOP, async (p) => { await p.go(U + REV, { ...UNI, 'fleet.reviewChat': 'false' }); await p.eval(`document.querySelector('[id$="sec-definitions"]')?.scrollIntoView({ block: 'start' })`); await p.sleep(500); await p.click('=Customer', { sel: 'button', ms: 1500 }) }],
+  ['d-plain-preview', DESKTOP, async (p) => { await p.go(U + INV); await p.click('=docs/specs/invoices.plain', { ms: 1500 }); await p.click('=InvoiceTotal', { sel: 'button', nth: 1, ms: 1200 }) }],
   // mobile
   ['m-list', MOBILE, async (p) => { await p.go(U + '#/') }],
   ['m-filters', MOBILE, async (p) => { await p.go(U + '#/'); await p.swipe(195, 40, 195, 200) }],
@@ -89,6 +94,7 @@ const SHOTS = [
   ['m-jobs', MOBILE, async (p) => { await p.go(U + '#/bots') }],
   ['m-notes', MOBILE, async (p) => { await p.go(U + '#/notes/devbox/projects/billing.md') }],
   ['m-review', MOBILE, async (p) => { await p.go(U + REV, UNI); await p.eval(toCard('invoice_total.ts')); await p.sleep(800) }],
+  ['m-plain', MOBILE, async (p) => { await p.go(U + REV, UNI); await p.eval(`document.querySelector('article[id$="plain-1"]')?.scrollIntoView({ block: 'start' })`); await p.sleep(800) }],
   ['m-inbox', MOBILE, async (p) => { await p.go(U + '#/inbox') }],
   ['m-tasks', MOBILE, async (p) => { await p.go(U + '#/tasks') }],
   ['m-usage', MOBILE, async (p) => { await p.go(U + '#/usage') }],
