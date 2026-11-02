@@ -358,29 +358,42 @@ fn last_activity(file: &Path) -> Option<String> {
             .iter()
             .rev()
             .find(|b| b["type"] == "tool_use")?;
-        let name = b["name"].as_str()?;
-        let i = &b["input"];
-        let what = [
-            "description",
-            "command",
-            "pattern",
-            "file_path",
-            "url",
-            "query",
-            "prompt",
-        ]
-        .iter()
-        .find_map(|k| i[*k].as_str())
-        .map(|s| s.lines().next().unwrap_or("").trim().to_string());
-        let mut out = match what {
-            Some(w) if !w.is_empty() => format!("{name}: {w}"),
-            _ => name.to_string(),
-        };
-        if out.chars().count() > 100 {
-            out = out.chars().take(99).collect::<String>() + "…";
-        }
-        Some(out)
+        Some(tool_words(b["name"].as_str()?, &b["input"]))
     })
+}
+
+/// A tool call in a few words: `Bash: run the tests`; its name alone when its input says
+/// nothing short (Claude Code's inputs, and Codex's `function_call` arguments).
+pub(crate) fn tool_words(name: &str, input: &Value) -> String {
+    let what = [
+        "description",
+        "command",
+        "pattern",
+        "file_path",
+        "url",
+        "query",
+        "prompt",
+        "cmd",
+        "task_name",
+        "target",
+        "path",
+    ]
+    .iter()
+    .find_map(|k| input[*k].as_str());
+    call_words(name, what)
+}
+
+/// `name: what`, `what`'s first line, at most 100 characters.
+pub(crate) fn call_words(name: &str, what: Option<&str>) -> String {
+    let what = what.map(|s| s.lines().next().unwrap_or("").trim());
+    let mut out = match what {
+        Some(w) if !w.is_empty() => format!("{name}: {w}"),
+        _ => name.to_string(),
+    };
+    if out.chars().count() > 100 {
+        out = out.chars().take(99).collect::<String>() + "…";
+    }
+    out
 }
 
 #[cfg(test)]

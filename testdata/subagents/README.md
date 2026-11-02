@@ -28,5 +28,7 @@ sidecars' mtime 65 seconds after the process start (their launch: a stop never r
 meta) and every other sidecar's 120 seconds after it.
 
 `codex/` pins a parent and three child rollouts: running, finished in this Turn and finished
-in the preceding Turn. They verify that Codex remains unknown until counting and its
-process/child-rollout pairing bug are addressed; pi is also outside the counting scope.
+in the preceding Turn. The running and finished ones also say who they are (`agent_path`,
+`agent_nickname`, a role), their model (a `turn_context`, and a later `thread_settings_applied`
+in the finished one) and a tool call each: `exec`'s JavaScript calling
+`tools.exec_command({cmd: …})`, and a `spawn_agent` `function_call`. pi is outside the scope.
