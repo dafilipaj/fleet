@@ -156,6 +156,28 @@ in a turn, and counts in `finished` once that turn ended if it started in the cu
 (your last prompt's). `null` before the Session's first prompt. pi always returns `null`.
 See [architecture](architecture.md#subagent-counts) for the read strategy and known limits.
 
+`subagents.items` lists the Subagents the counts count, at most 20: the running ones, oldest
+start first, then the ones `finished` counts, latest end first (the running ones are kept
+when there are more). Each is an object; a field Fleet can't read is `null`:
+
+| field | Claude Code | Codex |
+| --- | --- | --- |
+| `id` | agent id | child thread id |
+| `parent` | `parentAgentId` | `parent_thread_id`, `null` when it is the Session's own |
+| `depth` | `spawnDepth` | `thread_spawn.depth` |
+| `state` | `running`, or how it ended: `stopped` when the meta says `stoppedByUser`, else the latest task notification (`failed`; `killed` or `stopped` is `stopped`; `completed`) or a successful `TaskStop` (`stopped`); `completed` without any | `running`, or its latest turn's end: `task_complete` is `completed`, `turn_aborted` is `stopped` |
+| `task` | `description` | the last part of `agent_path` |
+| `type` | `agentType` | `null` |
+| `name`, `role` | `null` | `agent_nickname`, `agent_role` |
+| `model` | the meta's `model` | the last `turn_context` or `thread_settings_applied` in the tail it reads |
+| `started_at`, `ended_at` | the log's first entry's time (a fork's after its `fork-context-ref` entry); the end the counts use | its latest turn's `task_started` and end |
+| `activity` | the last `tool_use` in the last 64 KiB of its log | the last `function_call` (its name and arguments) or `custom_tool_call` (`exec`: its first `tools.<name>` call and that call's `cmd`) in the tail it reads |
+
+Times are RFC 3339 UTC with milliseconds; text fields are trimmed and cut to 500 characters,
+`activity` to 100 (`Bash: run the tests`). Listing reads, per `list`, each running Claude Code
+Subagent's first log line (at most 1 MiB, to order them) and each listed one's last 64 KiB;
+each listed Codex child's first line (its `session_meta`, at most 1 MiB).
+
 ### Spawning
 
 Before anything opens, `spawn` checks that the directory exists, the name, model and effort are valid,

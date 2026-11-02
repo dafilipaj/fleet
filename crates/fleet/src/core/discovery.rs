@@ -108,9 +108,9 @@ pub struct Session {
     /// `turn_context`'s or `thread_settings_applied`'s, whichever is later); `null` when
     /// unknown, and always for pi.
     pub effort: Option<String>,
-    /// Claude Code 2.1.301+: tasks running now and tasks started and finished in
-    /// the current Turn. `None` when unknown, and always for Codex and pi.
-    pub subagents: Option<crate::core::subagents::Counts>,
+    /// Claude Code 2.1.301+ and Codex: subagents running now and ones started and finished
+    /// in the current Turn, counted and listed. `None` when unknown, and always for pi.
+    pub subagents: Option<crate::core::subagents::Subagents>,
     /// What a Busy Claude Code session is doing now, one short line: `"{tool}: {summary}"`
     /// of the tool call still waiting for its result (the summary the chat shows), or
     /// `Thinking`. `null` for any other Status, after `end_turn` or an interrupt, when the
@@ -508,7 +508,7 @@ fn claude_details(
     reg: &Reg,
 ) -> (
     Option<crate::core::context::LastReply>,
-    Option<crate::core::subagents::Counts>,
+    Option<crate::core::subagents::Subagents>,
     Option<String>,
 ) {
     let Some(path) = reg
@@ -530,7 +530,7 @@ fn claude_details(
     let activity = activity.filter(|_| reg.status.as_deref() == Some("busy"));
     (
         last,
-        scan.map(|s| s.counts(turn.as_deref(), &lifecycle)),
+        scan.map(|s| s.report(turn.as_deref(), &lifecycle, true)),
         activity,
     )
 }
@@ -670,9 +670,14 @@ fn harness_session(
         model: state.model.or_else(|| p.model_arg()),
         effort: state.effort,
         context: state.context,
-        subagents: children
-            .filter(|_| p.harness == Harness::Codex)
-            .map(|c| crate::core::subagents::codex(c, state.turn_start.as_deref())),
+        subagents: children.filter(|_| p.harness == Harness::Codex).map(|c| {
+            crate::core::subagents::codex_report(
+                c,
+                state.turn_start.as_deref(),
+                t.map(|t| t.session_id.as_str()),
+                true,
+            )
+        }),
         harness: p.harness,
         transcript: t.map(|t| t.path.display().to_string()),
         ..Default::default()
@@ -1778,7 +1783,7 @@ mod tests {
                 if version == "2.1.300" {
                     assert!(count.is_none());
                 } else {
-                    assert_eq!(count.unwrap().finished, expected, "{file}");
+                    assert_eq!(count.unwrap().counts.finished, expected, "{file}");
                 }
             }
         }
@@ -1862,7 +1867,10 @@ mod tests {
                     (Harness::Codex, Some(_)) => serde_json::json!({"running": 1, "finished": 1}),
                     _ => serde_json::Value::Null,
                 };
-                assert_eq!(row["subagents"], expected, "{agent:?} {name:?}");
+                let counts = row["subagents"].as_object().map(
+                    |o| serde_json::json!({"running": o["running"], "finished": o["finished"]}),
+                );
+                assert_eq!(counts.unwrap_or_default(), expected, "{agent:?} {name:?}");
                 assert!(row.as_object().unwrap().contains_key("activity"));
                 assert!(row["activity"].is_null());
             }

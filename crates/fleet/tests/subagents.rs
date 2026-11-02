@@ -87,7 +87,11 @@ fn list_cost_with_210_synthetic_metas() {
             1,
             "synthetic registry must be discovered"
         );
-        assert_eq!(rows[0]["subagents"], expected);
+        let s = &rows[0]["subagents"];
+        assert_eq!(
+            json!({"running": s["running"], "finished": s["finished"]}),
+            expected
+        );
         elapsed
     };
     let parked = project.join("sidecars-parked");

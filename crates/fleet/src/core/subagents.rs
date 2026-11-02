@@ -1,5 +1,5 @@
-//! Subagent counts: Claude Code's sidecars ([`scan`]) and Codex's child rollouts
-//! ([`codex`]). pi counts are not supported yet.
+//! Subagent counts, and the subagents they count ([`Subagents`]): Claude Code's sidecars
+//! ([`scan`]) and Codex's child rollouts ([`codex_report`]). pi is not supported yet.
 
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -14,6 +14,63 @@ use serde::{Deserialize, Serialize};
 pub struct Counts {
     pub running: u64,
     pub finished: Option<u64>,
+}
+
+/// `subagents` in `fleet list --json`: the counts, and the subagents they count.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Subagents {
+    #[serde(flatten)]
+    pub counts: Counts,
+    /// At most [`MAX_ITEMS`]: the running ones, oldest start first, then the ones that
+    /// ended in the Turn (the ones `finished` counts), latest end first.
+    #[serde(default)]
+    pub items: Vec<Item>,
+}
+
+/// How many subagents `items` lists at most.
+pub const MAX_ITEMS: usize = 20;
+/// How long a listed subagent's words may be, in characters.
+const MAX_WORDS: usize = 500;
+/// How much of a listed subagent's log is read for its last tool call.
+const ACTIVITY_TAIL: u64 = 64 * 1024;
+
+/// One subagent in `items`. Anything unknown is `None`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Item {
+    /// Claude Code's agent id; Codex's child thread id.
+    pub id: String,
+    /// The subagent that started it; `None` for one the session itself started.
+    pub parent: Option<String>,
+    /// 1 for one the session started, 2 for one a subagent started, …
+    pub depth: Option<u64>,
+    pub state: State,
+    /// What it was asked, short: Claude Code's description, the last part of Codex's
+    /// `agent_path`.
+    pub task: Option<String>,
+    /// Claude Code's agent type (`general-purpose`, `Explore`, …).
+    #[serde(rename = "type")]
+    pub agent_type: Option<String>,
+    /// Codex's nickname for the child (`Bohr`).
+    pub name: Option<String>,
+    /// Codex's role for the child.
+    pub role: Option<String>,
+    pub model: Option<String>,
+    /// RFC 3339 UTC. Codex: its latest turn's.
+    pub started_at: Option<String>,
+    /// RFC 3339 UTC; `None` while it runs.
+    pub ended_at: Option<String>,
+    /// Its last tool call, short: `Bash: run the tests`.
+    pub activity: Option<String>,
+}
+
+/// Running, or how it ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum State {
+    Running,
+    Completed,
+    Failed,
+    Stopped,
 }
 
 pub(crate) struct Scan {
@@ -36,6 +93,11 @@ struct Sidecar {
     revived: Option<SystemTime>,
     /// `stoppedByUser`: Claude Code never revives such a subagent, so it has ended.
     stopped_by_user: bool,
+    description: Option<String>,
+    agent_type: Option<String>,
+    model: Option<String>,
+    /// `spawnDepth`.
+    depth: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -48,6 +110,12 @@ struct Meta {
     revived_at: Option<serde_json::Value>,
     #[serde(rename = "stoppedByUser")]
     stopped_by_user: Option<serde_json::Value>,
+    description: Option<serde_json::Value>,
+    #[serde(rename = "agentType")]
+    agent_type: Option<serde_json::Value>,
+    model: Option<serde_json::Value>,
+    #[serde(rename = "spawnDepth")]
+    spawn_depth: Option<serde_json::Value>,
 }
 
 const MAX_META_BYTES: u64 = 1024 * 1024;
@@ -127,6 +195,13 @@ pub(crate) fn scan(
                 .and_then(serde_json::Value::as_u64)
                 .map(|ms| UNIX_EPOCH + Duration::from_millis(ms)),
             stopped_by_user: meta.stopped_by_user == Some(serde_json::Value::Bool(true)),
+            description: words(meta.description.as_ref()),
+            agent_type: words(meta.agent_type.as_ref()),
+            model: words(meta.model.as_ref()),
+            depth: meta
+                .spawn_depth
+                .as_ref()
+                .and_then(serde_json::Value::as_u64),
         });
     }
     Some(scan)
@@ -187,10 +262,22 @@ impl Scan {
 
     /// `lifecycle` is the parent Transcript's evidence from the same tail as `turn_start`.
     /// A nested subagent's owner transcript is searched too, once per owner per call.
+    #[cfg(test)]
     pub(crate) fn counts(self, turn_start: Option<&str>, lifecycle: &Lifecycle) -> Counts {
+        self.report(turn_start, lifecycle, false).counts
+    }
+
+    /// [`Self::counts`], and with `items` the subagents counted. Listing reads more: each
+    /// running one's first line (its start, to order them) and each listed one's tail.
+    pub(crate) fn report(
+        self,
+        turn_start: Option<&str>,
+        lifecycle: &Lifecycle,
+        items: bool,
+    ) -> Subagents {
         let mut owners: HashMap<String, Lifecycle> = HashMap::new();
-        let mut running = 0;
-        // `(end, log)` of each sidecar that ended.
+        let mut running = Vec::new();
+        // `(end, how, sidecar)` of each sidecar that ended.
         let mut settled = Vec::new();
         for s in self.sidecars {
             let owner = s.owner.as_ref().map(|owner| {
@@ -208,7 +295,7 @@ impl Scan {
             });
             // Claude Code never revives a subagent the user stopped.
             if !s.stopped_by_user && latest.and_then(|l| l.running).unwrap_or(!s.finished) {
-                running += 1;
+                running.push(s);
                 continue;
             }
             // A finished run ended at its meta's last write. An unfinished one ended with
@@ -217,22 +304,92 @@ impl Scan {
                 Some(at) if !s.finished => at,
                 _ => s.mtime,
             };
-            settled.push((end, s.log));
+            // A user stop wins: real metas carry it beside `finished: true`.
+            let how = if s.stopped_by_user {
+                State::Stopped
+            } else {
+                latest.and_then(|l| l.ended).unwrap_or(State::Completed)
+            };
+            settled.push((end, how, s));
         }
+        let turn = turn_start.and_then(timestamp);
+        // `(start, end, how, sidecar)` of the ones that ended in the Turn.
+        let mut done = Vec::new();
         let finished = if settled.is_empty() {
             Some(0)
         } else {
-            turn_start.and_then(timestamp).map(|turn| {
-                settled
-                    .iter()
-                    .filter(|(end, log)| {
-                        *end >= turn && first_timestamp(log).is_some_and(|start| start >= turn)
-                    })
-                    .count() as u64
+            turn.map(|turn| {
+                for (end, how, s) in settled {
+                    if end < turn {
+                        continue;
+                    }
+                    if let Some(start) = first_timestamp(&s.log).filter(|start| *start >= turn) {
+                        done.push((start, end, how, s));
+                    }
+                }
+                done.len() as u64
             })
         };
-        Counts { running, finished }
+        let counts = Counts {
+            running: running.len() as u64,
+            finished,
+        };
+        if !items {
+            return Subagents {
+                counts,
+                items: Vec::new(),
+            };
+        }
+        let mut running: Vec<_> = running
+            .into_iter()
+            .map(|s| (first_timestamp(&s.log), s))
+            .collect();
+        running.sort_by(|(a, s), (b, t)| (a.is_none(), a, &s.id).cmp(&(b.is_none(), b, &t.id)));
+        done.sort_by(|(_, a, _, s), (_, b, _, t)| (b, &s.id).cmp(&(a, &t.id)));
+        let items = running
+            .into_iter()
+            .map(|(start, s)| (start, None, State::Running, s))
+            .chain(
+                done.into_iter()
+                    .map(|(start, end, how, s)| (Some(start), Some(end), how, s)),
+            )
+            .take(MAX_ITEMS)
+            .map(|(start, end, state, s)| Item {
+                activity: tail(&s.log, ACTIVITY_TAIL).and_then(|(text, _)| claude_activity(&text)),
+                id: s.id,
+                parent: s.owner,
+                depth: s.depth,
+                state,
+                task: s.description,
+                agent_type: s.agent_type,
+                name: None,
+                role: None,
+                model: s.model,
+                started_at: start.map(rfc3339),
+                ended_at: end.map(rfc3339),
+            })
+            .collect();
+        Subagents { counts, items }
     }
+}
+
+/// The last tool call in a Claude Code log's `text`: an assistant entry's last `tool_use`.
+fn claude_activity(text: &str) -> Option<String> {
+    text.lines().rev().find_map(|line| {
+        if !line.contains("\"tool_use\"") {
+            return None;
+        }
+        let v: serde_json::Value = serde_json::from_str(line).ok()?;
+        let b = v["message"]["content"]
+            .as_array()?
+            .iter()
+            .rev()
+            .find(|b| b["type"] == "tool_use")?;
+        Some(super::background::tool_words(
+            b["name"].as_str()?,
+            &b["input"],
+        ))
+    })
 }
 
 /// How much of a Codex child's rollout is read for its last turn event. A turn that ended
@@ -248,45 +405,114 @@ struct ChildTurn {
     /// When that turn started: its `task_started`, or, once that has left the tail, the
     /// `started_at` its end carries (whole seconds).
     started: Option<SystemTime>,
+    /// When it ended, and how: `task_complete` completed, `turn_aborted` stopped.
+    ended: Option<(Option<SystemTime>, State)>,
+}
+
+/// [`codex_report`]'s counts alone.
+#[cfg(test)]
+pub(crate) fn codex(children: &[&Path], turn_start: Option<&str>) -> Counts {
+    codex_report(children, turn_start, None, false).counts
 }
 
 /// A Codex session's subagents from `children`, the rollouts of its descendant threads
 /// (`thread_spawn.parent_thread_id`, at any depth) that its process wrote. A child runs
 /// while its last turn does; one open between turns runs nothing, as the session's own Idle
 /// says. `finished`: the ones not running whose last turn started at or after `turn_start`,
-/// the last turn you started; `None` when that isn't known and one has ended.
-pub(crate) fn codex(children: &[&Path], turn_start: Option<&str>) -> Counts {
-    let mut running = 0;
-    let mut settled = Vec::new();
+/// the last turn you started; `None` when that isn't known and one has ended. With `items`,
+/// the subagents counted too, each listed one's first line read for who it is; `session`
+/// is the session's own thread id, the parent of the children it started.
+pub(crate) fn codex_report(
+    children: &[&Path],
+    turn_start: Option<&str>,
+    session: Option<&str>,
+    items: bool,
+) -> Subagents {
+    let turn = turn_start.and_then(timestamp);
+    let mut running = Vec::new();
+    let mut settled = 0;
+    let mut done = Vec::new();
     for path in children {
-        let Some(turn) = tail(path, CODEX_CHILD_TAIL).map(|(text, cut)| child_turn(&text, cut))
-        else {
+        let Some((text, cut)) = tail(path, CODEX_CHILD_TAIL) else {
             continue;
         };
-        if turn.running {
-            running += 1;
+        let child = child_turn(&text, cut);
+        let words = || {
+            if items {
+                child_words(&text)
+            } else {
+                Default::default()
+            }
+        };
+        if child.running {
+            running.push((child, *path, words()));
         } else {
-            settled.push(turn.started);
+            settled += 1;
+            if turn.is_some_and(|turn| child.started.is_some_and(|s| s >= turn)) {
+                done.push((child, *path, words()));
+            }
         }
     }
-    let finished = if settled.is_empty() {
-        Some(0)
-    } else {
-        turn_start.and_then(timestamp).map(|turn| {
-            settled
-                .iter()
-                .filter(|started| started.is_some_and(|s| s >= turn))
-                .count() as u64
-        })
+    let counts = Counts {
+        running: running.len() as u64,
+        finished: if settled == 0 {
+            Some(0)
+        } else {
+            turn.map(|_| done.len() as u64)
+        },
     };
-    Counts { running, finished }
+    if !items {
+        return Subagents {
+            counts,
+            items: Vec::new(),
+        };
+    }
+    // Ties, and children without a time, in path order: the same order every poll.
+    running.sort_by_key(|(c, path, _)| (c.started.is_none(), c.started, *path));
+    done.sort_by(|(a, p, _), (b, q, _)| {
+        let end = |c: &ChildTurn| c.ended.and_then(|(at, _)| at);
+        (end(b), p).cmp(&(end(a), q))
+    });
+    let items = running
+        .into_iter()
+        .chain(done)
+        .take(MAX_ITEMS)
+        .map(|(child, path, (model, activity))| {
+            // A first line Fleet can't read leaves the child listed by its file's id, so the
+            // list still holds every child the counts count.
+            let head = child_head(path).unwrap_or_default();
+            let spawn = &head["source"]["subagent"]["thread_spawn"];
+            let field = |key: &str| words(spawn.get(key).or_else(|| head.get(key)));
+            Item {
+                id: words(head.get("id")).unwrap_or_else(|| rollout_id(path)),
+                parent: field("parent_thread_id").filter(|p| Some(p.as_str()) != session),
+                depth: spawn["depth"].as_u64(),
+                state: child.ended.map_or(State::Running, |(_, how)| how),
+                task: field("agent_path").map(|p| {
+                    p.rsplit('/')
+                        .find(|part| !part.is_empty())
+                        .unwrap_or(&p)
+                        .to_owned()
+                }),
+                agent_type: None,
+                name: field("agent_nickname"),
+                role: field("agent_role"),
+                model,
+                started_at: child.started.map(rfc3339),
+                ended_at: child.ended.and_then(|(at, _)| at).map(rfc3339),
+                activity,
+            }
+        })
+        .collect();
+    Subagents { counts, items }
 }
 
 /// The last turn in a child rollout's tail, `cut` when it starts mid-file. A child opens
 /// with a zero-length copy of its parent's turn (`task_started`, then `turn_aborted`, in
 /// one millisecond) before its own, so only the last turn event decides.
 fn child_turn(text: &str, cut: bool) -> ChildTurn {
-    let mut ended: Option<Option<SystemTime>> = None;
+    let mut ended: Option<(Option<SystemTime>, State)> = None;
+    let mut started_at = None;
     for line in text.lines().rev() {
         if !["task_started", "task_complete", "turn_aborted"]
             .iter()
@@ -300,31 +526,220 @@ fn child_turn(text: &str, cut: bool) -> ChildTurn {
         if v["type"] != "event_msg" {
             continue;
         }
+        let at = v["timestamp"].as_str().and_then(timestamp);
         match v["payload"]["type"].as_str() {
             Some("task_started") => {
                 return ChildTurn {
                     running: ended.is_none(),
-                    started: v["timestamp"].as_str().and_then(timestamp),
+                    started: at,
+                    ended,
                 };
             }
-            Some("task_complete" | "turn_aborted") if ended.is_none() => {
-                let at = v["payload"]["started_at"].as_u64();
-                ended = Some(at.map(|s| UNIX_EPOCH + Duration::from_secs(s)));
+            Some(kind @ ("task_complete" | "turn_aborted")) if ended.is_none() => {
+                let how = if kind == "turn_aborted" {
+                    State::Stopped
+                } else {
+                    State::Completed
+                };
+                ended = Some((at, how));
+                let secs = v["payload"]["started_at"].as_u64();
+                started_at = secs.map(|s| UNIX_EPOCH + Duration::from_secs(s));
             }
             _ => {}
         }
     }
     match ended {
-        Some(started) => ChildTurn {
+        Some(_) => ChildTurn {
             running: false,
-            started,
+            started: started_at,
+            ended,
         },
         // No turn event: a turn that outgrew the tail, or a child yet to start one.
         None => ChildTurn {
             running: cut,
             started: None,
+            ended: None,
         },
     }
+}
+
+/// A Codex child's model and last tool call, from its rollout's tail: the last
+/// `turn_context` or `thread_settings_applied`, and the last `function_call` or
+/// `custom_tool_call`.
+fn child_words(text: &str) -> (Option<String>, Option<String>) {
+    let (mut model, mut activity) = (None, None);
+    for line in text.lines().rev() {
+        if model.is_some() && activity.is_some() {
+            break;
+        }
+        let settings =
+            line.contains("\"turn_context\"") || line.contains("thread_settings_applied");
+        let call = line.contains("\"function_call\"") || line.contains("\"custom_tool_call\"");
+        if !(settings && model.is_none() || call && activity.is_none()) {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let p = &v["payload"];
+        if model.is_none() {
+            model = match (v["type"].as_str(), p["type"].as_str()) {
+                (Some("turn_context"), _) => words(p.get("model")),
+                (Some("event_msg"), Some("thread_settings_applied")) => {
+                    words(p["thread_settings"].get("model"))
+                }
+                _ => None,
+            };
+        }
+        if activity.is_none() && v["type"] == "response_item" {
+            activity = codex_call(p);
+        }
+    }
+    (model, activity)
+}
+
+/// A Codex tool call in a few words. Codex 0.166 runs commands through `exec`, whose input
+/// is JavaScript calling `tools.<name>({cmd: "…"})`: its first such call says what it does.
+fn codex_call(p: &serde_json::Value) -> Option<String> {
+    let name = p["name"].as_str()?;
+    match p["type"].as_str()? {
+        "function_call" => {
+            let args = p["arguments"]
+                .as_str()
+                .and_then(|a| serde_json::from_str(a).ok());
+            Some(super::background::tool_words(
+                name,
+                &args.unwrap_or(serde_json::Value::Null),
+            ))
+        }
+        "custom_tool_call" => Some(
+            p["input"]
+                .as_str()
+                .and_then(exec_call)
+                .unwrap_or_else(|| name.to_owned()),
+        ),
+        _ => None,
+    }
+}
+
+/// `tools.<name>(…)`'s name and its `cmd` or `command` string, in `exec`'s JavaScript: the
+/// first such call outside a string literal, and the key inside that call's parentheses.
+fn exec_call(code: &str) -> Option<String> {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$';
+    let mut chars = code.char_indices().peekable();
+    let mut quote: Option<char> = None;
+    let mut prev = ' ';
+    // `(name, byte offset just inside its parenthesis)`.
+    let mut call = None;
+    while let Some((i, c)) = chars.next() {
+        if let Some(q) = quote {
+            if c == '\\' {
+                chars.next();
+            } else if c == q {
+                quote = None;
+            }
+        } else if matches!(c, '"' | '\'' | '`') {
+            quote = Some(c);
+        } else if !ident(prev) && prev != '.' && code[i..].starts_with("tools.") {
+            let rest = &code[i + "tools.".len()..];
+            let len = rest.find(|c: char| !ident(c)).unwrap_or(rest.len());
+            let after = rest[len..].trim_start();
+            if len > 0 && after.starts_with('(') {
+                let inside = code.len() - after.len() + 1;
+                call = Some((&rest[..len], inside));
+                break;
+            }
+        }
+        prev = c;
+    }
+    let (name, inside) = call?;
+    // The call's own arguments: up to its closing parenthesis, strings skipped.
+    let mut depth = 1;
+    let mut quote: Option<char> = None;
+    let mut prev = '(';
+    let mut what = None;
+    let mut chars = code[inside..].char_indices();
+    while let Some((i, c)) = chars.next() {
+        if let Some(q) = quote {
+            if c == '\\' {
+                chars.next();
+            } else if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '"' | '\'' | '`' => quote = Some(c),
+            '(' | '{' | '[' => depth += 1,
+            ')' | '}' | ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            _ if what.is_none() && !ident(prev) => {
+                let rest = &code[inside + i..];
+                what = ["cmd", "command"].iter().find_map(|key| {
+                    let value = rest.strip_prefix(key)?.trim_start().strip_prefix(':')?;
+                    js_string(value.trim_start())
+                });
+            }
+            _ => {}
+        }
+        prev = c;
+    }
+    Some(super::background::call_words(name, what.as_deref()))
+}
+
+/// A rollout's thread id from its file name, `rollout-<time>-<id>.jsonl`: the trailing UUID,
+/// or the whole stem when it doesn't end in one.
+fn rollout_id(path: &Path) -> String {
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let uuid = stem
+        .char_indices()
+        .rev()
+        .nth(35)
+        .map(|(i, _)| &stem[i..])
+        .filter(|tail| {
+            tail.bytes().enumerate().all(|(i, b)| match i {
+                8 | 13 | 18 | 23 => b == b'-',
+                _ => b.is_ascii_hexdigit(),
+            })
+        });
+    uuid.map_or_else(|| stem.clone(), str::to_owned)
+}
+
+/// The JavaScript string literal `text` starts with, its escapes undone.
+fn js_string(text: &str) -> Option<String> {
+    let mut chars = text.chars();
+    let quote = chars.next().filter(|q| matches!(q, '"' | '\'' | '`'))?;
+    let mut out = String::new();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.next()? {
+                'n' => out.push('\n'),
+                't' => out.push('\t'),
+                other => out.push(other),
+            },
+            c if c == quote => return Some(out),
+            c => out.push(c),
+        }
+    }
+    None
+}
+
+/// A Codex child rollout's `session_meta` payload: its first line, at most 1 MiB.
+fn child_head(path: &Path) -> Option<serde_json::Value> {
+    let mut line = Vec::new();
+    BufReader::new(open(path).ok()?)
+        .take(1024 * 1024)
+        .read_until(b'\n', &mut line)
+        .ok()?;
+    let mut v: serde_json::Value = serde_json::from_slice(&line).ok()?;
+    (v["type"] == "session_meta").then(|| v["payload"].take())
 }
 
 /// The last `max` bytes of a regular file, from its first whole line, and whether that
@@ -360,6 +775,8 @@ pub(crate) struct Lifecycle(HashMap<String, Latest>);
 #[derive(Debug, Clone, Copy)]
 struct Latest {
     at: Option<SystemTime>,
+    /// How it ended, when `running` is `Some(false)`.
+    ended: Option<State>,
     /// `Some(true)`: the run ended but the subagent did not (an interim or pending-input
     /// note). `Some(false)`: it ended (a terminal status or a successful `TaskStop`).
     /// `None`: a status Fleet doesn't know, which leaves it to the sidecar's `finished`.
@@ -383,8 +800,8 @@ impl Lifecycle {
         #[cfg(test)]
         tests::OBSERVED.with(|n| n.set(n.get() + 1));
         let at = entry["timestamp"].as_str().and_then(timestamp);
-        for (id, running) in evidence(entry).into_iter().rev() {
-            self.0.entry(id).or_insert(Latest { at, running });
+        for (id, running, ended) in evidence_ended(entry).into_iter().rev() {
+            self.0.entry(id).or_insert(Latest { at, ended, running });
         }
     }
 
@@ -408,7 +825,17 @@ impl Lifecycle {
 /// notification with a `<status>` in `v`, or for a successful `TaskStop` (ended) or
 /// `SendMessage` revive (running) of a subagent.
 /// Anything else, routing notices included, decides nothing.
+#[cfg(test)]
 fn evidence(v: &serde_json::Value) -> Vec<(String, Option<bool>)> {
+    evidence_ended(v)
+        .into_iter()
+        .map(|(id, running, _)| (id, running))
+        .collect()
+}
+
+/// [`evidence`], with how an ended one ended: a notification's `failed` failed, `killed`
+/// and `stopped` (and a `TaskStop`) stopped, `completed` completed.
+fn evidence_ended(v: &serde_json::Value) -> Vec<(String, Option<bool>, Option<State>)> {
     let attachment = &v["attachment"];
     let content = match v["type"].as_str() {
         Some("user") if v["origin"]["kind"] == "task-notification" => &v["message"]["content"],
@@ -423,9 +850,14 @@ fn evidence(v: &serde_json::Value) -> Vec<(String, Option<bool>)> {
             return results
                 .iter()
                 .find_map(stopped)
-                .map(|id| (id, Some(false)))
+                .map(|id| (id, Some(false), Some(State::Stopped)))
                 .into_iter()
-                .chain(results.iter().find_map(revived).map(|id| (id, Some(true))))
+                .chain(
+                    results
+                        .iter()
+                        .find_map(revived)
+                        .map(|id| (id, Some(true), None)),
+                )
                 .collect();
         }
         _ => return Vec::new(),
@@ -454,7 +886,13 @@ fn evidence(v: &serde_json::Value) -> Vec<(String, Option<bool>)> {
             } else {
                 None
             };
-            Some((n.task_id?.to_owned(), running))
+            let ended = match status {
+                _ if running != Some(false) => None,
+                "failed" => Some(State::Failed),
+                "killed" | "stopped" => Some(State::Stopped),
+                _ => Some(State::Completed),
+            };
+            Some((n.task_id?.to_owned(), running, ended))
         })
         .collect()
 }
@@ -646,19 +1084,41 @@ fn open(path: &Path) -> std::io::Result<File> {
     Ok(file)
 }
 
-/// One bounded line, only for candidates that ended in this Turn. A running task's
-/// log is never opened: a long, quiet tool does not mean the task has stopped.
+/// A subagent's start: its log's first entry's time, read within 1 MiB. A fork's log opens
+/// with a `fork-context-ref` entry that has none, so the entry after it is the first; no
+/// later line is ever searched for a more convenient time. Read for candidates that ended
+/// in this Turn, and, when listing, for running ones (never to decide that one stopped).
 fn first_timestamp(path: &Path) -> Option<SystemTime> {
     if !fs::metadata(path).ok()?.is_file() {
         return None;
     }
-    let mut line = Vec::new();
-    BufReader::new(open(path).ok()?)
-        .take(1024 * 1024)
-        .read_until(b'\n', &mut line)
-        .ok()?;
-    let v: serde_json::Value = serde_json::from_slice(&line).ok()?;
-    timestamp(v["timestamp"].as_str()?)
+    let mut reader = BufReader::new(open(path).ok()?).take(1024 * 1024);
+    for _ in 0..2 {
+        let mut line = Vec::new();
+        reader.read_until(b'\n', &mut line).ok()?;
+        let v: serde_json::Value = serde_json::from_slice(&line).ok()?;
+        if v["type"] != "fork-context-ref" {
+            return timestamp(v["timestamp"].as_str()?);
+        }
+    }
+    None
+}
+
+/// A short text field: trimmed, at most [`MAX_WORDS`] characters, `None` when empty.
+fn words(v: Option<&serde_json::Value>) -> Option<String> {
+    let text = v?.as_str()?.trim();
+    if text.is_empty() {
+        return None;
+    }
+    Some(if text.chars().count() > MAX_WORDS {
+        text.chars().take(MAX_WORDS - 1).collect::<String>() + "…"
+    } else {
+        text.to_owned()
+    })
+}
+
+fn rfc3339(t: SystemTime) -> String {
+    chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 #[cfg(test)]
@@ -756,6 +1216,363 @@ mod tests {
                 finished: None
             }
         );
+    }
+
+    fn ids(s: &Subagents) -> Vec<(&str, State)> {
+        s.items.iter().map(|i| (i.id.as_str(), i.state)).collect()
+    }
+
+    #[test]
+    fn items_list_the_counted_sidecars_running_first_then_the_turns_latest_end() {
+        let (_dir, path) = fixture();
+        let agents = path.with_extension("").join("subagents");
+        // A fork's log opens with an entry that has no time; the one after it is its start.
+        fs::write(
+            agents.join("agent-fork.jsonl"),
+            "{\"type\":\"fork-context-ref\",\"ref\":\"x\"}\n{\"type\":\"user\",\"timestamp\":\"2026-01-01T00:01:10Z\"}\n",
+        )
+        .unwrap();
+        // The last tool call, from the end of the log.
+        fs::write(
+            agents.join("agent-finished.jsonl"),
+            [
+                r#"{"type":"user","timestamp":"2026-01-01T00:01:10Z"}"#,
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/work/a.rs"}}]}}"#,
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"x"},{"type":"tool_use","name":"Bash","input":{"command":"cargo test\nmore","description":"Run the tests"}}]}}"#,
+                r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"ok"}]}}"#,
+            ]
+            .join("\n")
+                + "\n",
+        )
+        .unwrap();
+        let set = |name: &str, seconds: u64, text: Option<&str>| {
+            let meta = agents.join(format!("agent-{name}.meta.json"));
+            if let Some(text) = text {
+                fs::write(&meta, text).unwrap();
+            }
+            File::options()
+                .write(true)
+                .open(meta)
+                .unwrap()
+                .set_times(FileTimes::new().set_modified(
+                    UNIX_EPOCH + Duration::from_secs((START / 1000) as u64 + seconds),
+                ))
+                .unwrap();
+        };
+        // A user stop wins over `finished: true`; the latest end comes first.
+        set(
+            "stopped",
+            150,
+            Some(
+                r#"{"agentType":"Explore","description":"Look around","model":"claude-haiku-5-5","spawnDepth":1,"finished":true,"stoppedByUser":true}"#,
+            ),
+        );
+        set("fork", 130, None);
+        let mut lifecycle = Lifecycle::default();
+        lifecycle.observe(&serde_json::json!({"type": "user",
+            "origin": {"kind": "task-notification"}, "timestamp": "2026-01-01T00:02:10Z",
+            "message": {"content": "<task-notification><task-id>fork</task-id><status>failed</status></task-notification>"}}));
+        let s = scan(&path, Some("2.1.301"), Some(START)).unwrap();
+        let report = s.report(Some(TURN), &lifecycle, true);
+        assert_eq!(
+            report.counts,
+            Counts {
+                running: 2,
+                finished: Some(3)
+            }
+        );
+        // Running ones without a log have no start: last among the running, by id.
+        assert_eq!(
+            ids(&report),
+            [
+                ("nested", State::Running),
+                ("running", State::Running),
+                ("stopped", State::Stopped),
+                ("fork", State::Failed),
+                ("finished", State::Completed),
+            ]
+        );
+        let item = |id: &str| report.items.iter().find(|i| i.id == id).unwrap();
+        let nested = item("nested");
+        assert_eq!(
+            (
+                nested.parent.as_deref(),
+                nested.depth,
+                nested.started_at.as_deref()
+            ),
+            (Some("running"), Some(2), None)
+        );
+        let stopped = item("stopped");
+        assert_eq!(
+            (
+                stopped.task.as_deref(),
+                stopped.agent_type.as_deref(),
+                stopped.model.as_deref(),
+                stopped.parent.as_deref(),
+                stopped.depth
+            ),
+            (
+                Some("Look around"),
+                Some("Explore"),
+                Some("claude-haiku-5-5"),
+                None,
+                Some(1)
+            )
+        );
+        assert_eq!(
+            stopped.ended_at.as_deref(),
+            Some("2026-01-01T00:02:30.000Z")
+        );
+        assert_eq!(
+            item("fork").started_at.as_deref(),
+            Some("2026-01-01T00:01:10.000Z")
+        );
+        let finished = item("finished");
+        assert_eq!(finished.activity.as_deref(), Some("Bash: Run the tests"));
+        assert_eq!(
+            (finished.name.as_ref(), finished.role.as_ref()),
+            (None, None)
+        );
+        // Without the Turn, nothing ended can be placed, so only the running ones list.
+        let s = scan(&path, Some("2.1.301"), Some(START)).unwrap();
+        let report = s.report(None, &lifecycle, true);
+        assert_eq!(report.counts.finished, None);
+        assert_eq!(report.items.len(), 2);
+        // Counting alone lists nothing.
+        let s = scan(&path, Some("2.1.301"), Some(START)).unwrap();
+        assert!(s.report(Some(TURN), &lifecycle, false).items.is_empty());
+    }
+
+    #[test]
+    fn items_stop_at_twenty_keeping_the_running_ones_oldest_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("many.jsonl");
+        fs::write(&path, "").unwrap();
+        let agents = dir.path().join("many/subagents");
+        fs::create_dir_all(&agents).unwrap();
+        let turn = timestamp(TURN).unwrap();
+        for id in 0..25 {
+            let meta = agents.join(format!("agent-{id:02}.meta.json"));
+            fs::write(&meta, format!(r#"{{"finished":{}}}"#, id >= 18)).unwrap();
+            File::options()
+                .write(true)
+                .open(&meta)
+                .unwrap()
+                .set_times(FileTimes::new().set_modified(turn + Duration::from_secs(60 + id)))
+                .unwrap();
+            // Running ones start later the lower their id; finished ones in the Turn.
+            let start = chrono::DateTime::<chrono::Utc>::from(turn + Duration::from_secs(50 - id))
+                .to_rfc3339();
+            fs::write(
+                agents.join(format!("agent-{id:02}.jsonl")),
+                format!("{{\"timestamp\":\"{start}\"}}\n"),
+            )
+            .unwrap();
+        }
+        let s = scan(&path, Some("2.1.301"), Some(START)).unwrap();
+        let report = s.report(Some(TURN), &Lifecycle::default(), true);
+        assert_eq!(
+            report.counts,
+            Counts {
+                running: 18,
+                finished: Some(7)
+            }
+        );
+        let listed: Vec<&str> = report.items.iter().map(|i| i.id.as_str()).collect();
+        let running: Vec<String> = (0..18).rev().map(|id| format!("{id:02}")).collect();
+        assert_eq!(listed.len(), MAX_ITEMS);
+        assert_eq!(
+            listed[..18],
+            running.iter().map(String::as_str).collect::<Vec<_>>()[..]
+        );
+        // The two latest ends of the seven that finished.
+        assert_eq!(listed[18..], ["24", "23"]);
+    }
+
+    #[test]
+    fn codex_items_say_who_each_child_is_from_its_latest_turn() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/subagents/codex");
+        let path = |name: &str| root.join(format!("{name}.jsonl"));
+        let dir = tempfile::tempdir().unwrap();
+        // Started by `running`, its rollout opens with a copy of the parent's turn, aborted,
+        // then ran two turns of its own: the second, still running, is the one that counts.
+        let nested = dir.path().join("nested.jsonl");
+        fs::write(
+            &nested,
+            [
+                r#"{"type":"session_meta","payload":{"id":"nested","source":{"subagent":{"thread_spawn":{"parent_thread_id":"running","depth":2,"agent_path":"/root/review_diff/fix/"}}}}}"#,
+                r#"{"type":"event_msg","timestamp":"2026-01-01T00:00:50Z","payload":{"type":"task_started"}}"#,
+                r#"{"type":"event_msg","timestamp":"2026-01-01T00:00:50Z","payload":{"type":"turn_aborted"}}"#,
+                r#"{"type":"event_msg","timestamp":"2026-01-01T00:01:10Z","payload":{"type":"task_started"}}"#,
+                r#"{"type":"event_msg","timestamp":"2026-01-01T00:01:20Z","payload":{"type":"task_complete"}}"#,
+                r#"{"type":"event_msg","timestamp":"2026-01-01T00:01:30Z","payload":{"type":"task_started"}}"#,
+                r#"{"type":"response_item","payload":{"type":"function_call","name":"wait","arguments":"not json"}}"#,
+            ]
+            .join("\n")
+                + "\n",
+        )
+        .unwrap();
+        let aborted = dir.path().join("aborted.jsonl");
+        fs::write(
+            &aborted,
+            [
+                r#"{"type":"session_meta","payload":{"id":"aborted","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent","depth":1}}}}}"#,
+                r#"{"type":"event_msg","timestamp":"2026-01-01T00:01:05Z","payload":{"type":"task_started"}}"#,
+                r#"{"type":"event_msg","timestamp":"2026-01-01T00:02:30Z","payload":{"type":"turn_aborted"}}"#,
+            ]
+            .join("\n")
+                + "\n",
+        )
+        .unwrap();
+        let (running, finished, prior) = (path("running"), path("finished"), path("prior"));
+        let all = [
+            running.as_path(),
+            finished.as_path(),
+            prior.as_path(),
+            nested.as_path(),
+            aborted.as_path(),
+        ];
+        let report = codex_report(&all, Some(TURN), Some("parent"), true);
+        assert_eq!(
+            report.counts,
+            Counts {
+                running: 2,
+                finished: Some(2)
+            }
+        );
+        assert_eq!(
+            ids(&report),
+            [
+                ("running", State::Running),
+                ("nested", State::Running),
+                ("aborted", State::Stopped),
+                ("finished", State::Completed),
+            ]
+        );
+        let item = |id: &str| report.items.iter().find(|i| i.id == id).unwrap();
+        let r = item("running");
+        assert_eq!(
+            (
+                r.parent.as_deref(),
+                r.depth,
+                r.task.as_deref(),
+                r.name.as_deref(),
+                r.role.as_deref(),
+                r.model.as_deref(),
+                r.started_at.as_deref(),
+                r.ended_at.as_deref(),
+                r.agent_type.as_deref(),
+            ),
+            (
+                None,
+                Some(1),
+                Some("review_diff"),
+                Some("Bohr"),
+                Some("reviewer"),
+                Some("gpt-6-luna"),
+                Some("2026-01-01T00:01:00.000Z"),
+                None,
+                None,
+            )
+        );
+        assert_eq!(
+            r.activity.as_deref(),
+            Some(r#"exec_command: pnpm test --filter "rates""#)
+        );
+        let f = item("finished");
+        // The later settings event names the model; `function_call` arguments say what.
+        assert_eq!(
+            (
+                f.model.as_deref(),
+                f.activity.as_deref(),
+                f.ended_at.as_deref(),
+                f.role.as_deref()
+            ),
+            (
+                Some("gpt-6-sol"),
+                Some("spawn_agent: check_rates"),
+                Some("2026-01-01T00:02:00.000Z"),
+                None
+            )
+        );
+        let n = item("nested");
+        assert_eq!(
+            (
+                n.parent.as_deref(),
+                n.depth,
+                n.task.as_deref(),
+                n.started_at.as_deref(),
+                n.activity.as_deref()
+            ),
+            (
+                Some("running"),
+                Some(2),
+                Some("fix"),
+                Some("2026-01-01T00:01:30.000Z"),
+                Some("wait")
+            )
+        );
+        // Counting alone reads no child's first line and lists nothing.
+        assert!(codex_report(&all, Some(TURN), None, false).items.is_empty());
+        // A first line Fleet can't read still lists the child, by its file's id.
+        let headless = dir
+            .path()
+            .join("rollout-2026-01-01T00-01-00-01a19bb2-27cb-7ab0-9e30-752427c678fd.jsonl");
+        let text = fs::read_to_string(&running).unwrap();
+        fs::write(&headless, text.replacen("session_meta", "other", 1)).unwrap();
+        let report = codex_report(&[headless.as_path()], Some(TURN), None, true);
+        assert_eq!(
+            ids(&report),
+            [("01a19bb2-27cb-7ab0-9e30-752427c678fd", State::Running)]
+        );
+        assert_eq!(report.items[0].name, None);
+        assert_eq!(rollout_id(Path::new("/x/running.jsonl")), "running");
+    }
+
+    #[test]
+    fn exec_calls_are_named_by_their_first_tool_and_its_command() {
+        for (code, words) in [
+            (
+                "const r = await tools.exec_command({cmd:\"ls -la\",workdir:\"/w\"});",
+                "exec_command: ls -la",
+            ),
+            (
+                "await Promise.all([\n tools.exec_command({command: 'git status\\nmore'}),\n tools.exec_command({cmd:\"b\"})]);",
+                "exec_command: git status",
+            ),
+            (
+                "text(await tools.write_stdin({session_id: 3}));",
+                "write_stdin",
+            ),
+            ("tools.view_image({path:`a.png`})", "view_image"),
+        ] {
+            assert_eq!(exec_call(code).as_deref(), Some(words), "{code}");
+        }
+        for (code, words) in [
+            // `tools.` inside a string or another name is not a call; a command naming it
+            // is read whole.
+            (
+                "const s = 'tools.x(1)'; mytools.y(); tools.exec_command({cmd: \"cat tools.rs\"})",
+                "exec_command: cat tools.rs",
+            ),
+            // Only this call's own key: a later call's isn't its.
+            (
+                "tools.write_stdin({session_id: 3}); tools.exec_command({cmd:\"ls\"})",
+                "write_stdin",
+            ),
+            (
+                "tools.exec_command({ cmd : \"é ü 漢字\" })",
+                "exec_command: é ü 漢字",
+            ),
+            ("tools.exec_command({cmd:\"unterminated", "exec_command"),
+            ("tools.exec_command({mycmd:\"no\"})", "exec_command"),
+        ] {
+            assert_eq!(exec_call(code).as_deref(), Some(words), "{code}");
+        }
+        assert_eq!(exec_call("tools.exec_command"), None);
+        assert_eq!(exec_call("text(1)"), None);
+        assert_eq!(exec_call("tools.(x)"), None);
+        assert_eq!(js_string("\"unterminated"), None);
     }
 
     #[test]
@@ -1144,14 +1961,19 @@ mod tests {
         let ran = ChildTurn {
             running: true,
             started: at("2026-01-01T00:01:00.110Z"),
+            ended: None,
         };
         assert_eq!(child_turn(&own, false), ran);
-        for end in ["task_complete", "turn_aborted"] {
+        for (end, how) in [
+            ("task_complete", State::Completed),
+            ("turn_aborted", State::Stopped),
+        ] {
             let ended = format!("{own}\n{}", ev("2026-01-01T00:01:47Z", end));
             assert_eq!(
                 child_turn(&ended, false),
                 ChildTurn {
                     running: false,
+                    ended: Some((at("2026-01-01T00:01:47Z"), how)),
                     ..ran
                 },
                 "{end}"
@@ -1164,7 +1986,8 @@ mod tests {
                 child_turn(&alone, true),
                 ChildTurn {
                     running: false,
-                    started: at("2026-01-01T00:01:00Z")
+                    started: at("2026-01-01T00:01:00Z"),
+                    ended: Some((at("2026-01-01T00:01:47Z"), how)),
                 },
                 "{end}"
             );
@@ -1179,7 +2002,8 @@ mod tests {
             child_turn(quiet, true),
             ChildTurn {
                 running: true,
-                started: None
+                started: None,
+                ended: None,
             }
         );
         assert!(!child_turn(quiet, false).running);
@@ -1817,5 +2641,19 @@ mod tests {
             // logs and anything beyond the first line must never add more opens.
             assert_eq!(opened, expected);
         }
+        // Listing adds one read of each listed log's end, and nothing else.
+        let mut listed = expected.clone();
+        listed.extend((200..210).map(|id| agents.join(format!("agent-{id}.jsonl"))));
+        listed.sort();
+        OPENED.with(|opened| opened.borrow_mut().clear());
+        let report = scan(&path, Some("2.1.301"), Some(START)).unwrap().report(
+            Some(TURN),
+            &Lifecycle::default(),
+            true,
+        );
+        assert_eq!(report.items.len(), 10);
+        let mut opened = OPENED.with(|opened| opened.take());
+        opened.sort();
+        assert_eq!(opened, listed);
     }
 }
