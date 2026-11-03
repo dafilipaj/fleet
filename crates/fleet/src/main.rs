@@ -461,8 +461,8 @@ enum Commands {
         cmd: Option<VerandaCmd>,
     },
 
-    /// Subscription usage limits: Claude (session, weekly, per-model weekly, extra usage) and
-    /// the ChatGPT plan Codex is logged in with (session, weekly, credits)
+    /// Usage limits: Claude (session, weekly, per-model weekly, extra usage), the ChatGPT plan
+    /// Codex is logged in with (session, weekly, credits), and Codex's windows from its transcripts
     Usage {
         #[command(subcommand)]
         cmd: Option<UsageCmd>,

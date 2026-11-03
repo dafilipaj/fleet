@@ -31,7 +31,7 @@ A firstmate-style orchestrator for the many Claude Code sessions the user runs i
 | "what's in this stack / what are my siblings doing" | `fleet stack show <stack>` (`--json` to parse), `fleet stack list` |
 | "take this to another terminal" | `fleet handoff --file <brief.md> --dir <path> [--name <name>] [--tab] [--no-wait]` — see below |
 | "watch / notify me / anyone stuck" | `fleet watch [--interval 5] [--stuck 300] [--quiet] [--rows 1\|2\|auto] [--no-mouse]` |
-| "how much usage do I have left / my limits" | `fleet usage` (`--json` to parse) — session (5h), weekly, per-model weekly (e.g. Fable) and extra usage, with reset times |
+| "how much usage do I have left / my limits" | `fleet usage` (`--json` to parse) — Claude's session (5h), weekly, per-model weekly (e.g. Fable) and extra usage, and Codex's 5h and weekly windows, with reset times |
 | "why did it start on Codex / where would a session start now" | `fleet usage check [--harness claude\|codex\|pi] [--ctx manual\|auto\|bot]` — with `usage.enabled` in the config, a spawn whose subscription is at its limit starts on the fallback harness (marked `fallback` in `fleet list --json`); `--no-fallback` keeps the asked-for one, `fleet usage override <minutes>` turns the check off. See docs/architecture.md → Subscription fallback |
 | "start it although the machine is busy" | add `--ignore-load` — with `resources.enabled`, spawns on a machine under heavy load are refused until it recovers. See docs/architecture.md → Host load |
 | "my PRs / what should I review / what's waiting on me" | `fleet prs` (`--json` to parse; `--column waiting-on-me` etc.; `--refresh` to fetch now) — see Pull requests below |
