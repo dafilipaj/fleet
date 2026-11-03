@@ -514,8 +514,9 @@ export function createApi({
   }
 
   /**
-   * `slack` on a spawn: `{ url, minutes, mode?, task? }` — the session starts linked. Checked
-   * before anything opens; only the bridge's own host links its sessions.
+   * `slack` on a spawn: `{ url, minutes, mode?, task?, from? }` — the session starts linked. Checked
+   * before anything opens; only the bridge's own host links its sessions. `from`: the Slack user
+   * whose mention started it (`slack.spawn`) — the prompt is their request, not the owner's.
    */
   function spawnSlackRequest(raw, prompt) {
     if (raw == null) return null;
@@ -543,7 +544,8 @@ export function createApi({
     if (raw.mode != null && !MODES.includes(raw.mode)) throw new HttpError(`slack.mode must be one of: ${MODES.join(', ')}`, 400);
     if (raw.task != null && (typeof raw.task !== 'string' || raw.task.trim().length > MAX_TASK)) throw new HttpError(`slack.task must be a string of at most ${MAX_TASK} chars`, 400);
     if (prompt.trim().length > MAX_FIRST) throw new HttpError(`the prompt is too long for a session linked to Slack (max ${MAX_FIRST} chars)`, 400);
-    return { url, minutes, mode: raw.mode ?? undefined, task: raw.task?.trim() || undefined };
+    if (raw.from != null && (typeof raw.from !== 'string' || !/^[UW][A-Z0-9]+$/.test(raw.from))) throw new HttpError('slack.from must be a Slack user id (U…)', 400);
+    return { url, minutes, mode: raw.mode ?? undefined, task: raw.task?.trim() || undefined, ...(raw.from ? { firstFrom: raw.from } : {}) };
   }
 
   /** Link a session of this host: by the bridge here, else through the bridge's host (`slack.host`). */
@@ -578,6 +580,8 @@ export function createApi({
 
   async function localSpawn(req) {
     const body = await readJsonBody(req);
+    // `~/…`: this host's home — a caller on another host (a Slack mention's bridge) does not know it.
+    if (typeof body?.dir === 'string' && /^~(\/|$)/.test(body.dir.trim())) body.dir = path.join(os.homedir(), body.dir.trim().slice(1));
     const roots = spawnRoots(config); // hidden spawn dirs are allowed too
     const check = validateSpawnRequest(body, { spawnDirs: config.spawnDirs.map((d) => d.path) });
     if (!check.ok) throw new HttpError(check.error, 400);

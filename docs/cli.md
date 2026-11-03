@@ -173,6 +173,12 @@ Sessions on any host can be linked: the bridge lists and types into them through
 web server, and checks a reply's pane on the host it came from. A session asked to join a thread
 links itself (`fleet slack link <url> --for 2h`).
 
+**Starting a session from Slack**: with `slack.spawn` set on the bridge's server
+(`fleet config set slack.spawn.host <host>`, `.dir`, `.model`, `.minutes` (default `1d`), `.from`
+(`anyone` or user ids; default you only)), mentioning the app in a channel thread no session
+follows opens a new session on that host, linked to the thread, the message as its first request
+([architecture](architecture.md#slack-links)).
+
 ### Briefs
 
 A brief is a small markdown file per session — what it is doing, the resources it produced (PRs,

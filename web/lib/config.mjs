@@ -12,7 +12,7 @@
 //     stacks: { enabled, model },         (read by the CLI; the server only reports them)
 //     grouping: { enabled, model, host },   (enabled/model are read by the CLI)
 //     inbox: { host, scanMinutes, workHours, workDays, model, briefModel, briefMinutes, language, comms },
-//     slack: { host, owner, bridges },
+//     slack: { host, owner, bridges, spawn },
 //     tmux, fleetBin, claude, spawnDirs: [ { label, paths: { host: dir }, hidden? } ] }
 //
 // A missing config file is not an error: the server runs as a single local host
@@ -275,6 +275,49 @@ export function resolveUiDir(uiRaw, { webRoot = null, home = os.homedir() } = {}
  *               minNewChars, maxBriefChars, dir }, stacks: { sync, syncMinutes, generate, model },
  *     restore: { onBoot, markerFile }, configFile, configFound }
  */
+const SLACK_USER_RE = /^[UW][A-Z0-9]+$/;
+
+/**
+ * `slack.spawn`: a mention of this bridge's app in a thread no session follows opens a new
+ * session there, linked to that thread (lib/slack.mjs). Read only on the bridge's own server.
+ * `{ host?, dir?, model?, harness?, ghIdentity?, minutes?, mode?, task?, from? }` —
+ * `host` (default: this one) is where it opens, `dir` a spawn dir there (`~/…` is that host's
+ * home; none = its first), `minutes` the link's duration (default `1d`), `from` who may start one:
+ * `"anyone"` in a channel the app is in, or a list of Slack user ids (default: `[owner]`).
+ */
+function slackSpawn(raw) {
+  if (raw == null || raw === false) return null;
+  if (!isObject(raw)) throw new Error('config.slack.spawn must be an object { host, dir, model, harness, minutes, mode, task, from }');
+  const str = (k) => {
+    const v = raw[k];
+    if (v == null || v === '') return null;
+    if (typeof v !== 'string' || !v.trim()) throw new Error(`config.slack.spawn.${k} must be a string`);
+    return v.trim();
+  };
+  let from = null; // null = the owner only
+  if (raw.from != null) {
+    if (raw.from === 'anyone') from = 'anyone';
+    else if (Array.isArray(raw.from) && raw.from.every((u) => typeof u === 'string' && SLACK_USER_RE.test(u.trim()))) from = raw.from.map((u) => u.trim());
+    else throw new Error('config.slack.spawn.from must be "anyone" or a list of Slack user ids (U…)');
+  }
+  let minutes = '1d';
+  if (raw.minutes != null && raw.minutes !== '') {
+    if (typeof raw.minutes !== 'string' && typeof raw.minutes !== 'number') throw new Error('config.slack.spawn.minutes must be a duration like 1d, 2h, 90, or "forever"');
+    minutes = raw.minutes;
+  }
+  return {
+    host: str('host'),
+    dir: str('dir'),
+    model: str('model'),
+    harness: str('harness'),
+    ghIdentity: str('ghIdentity'),
+    mode: str('mode'),
+    task: str('task'),
+    minutes,
+    from,
+  };
+}
+
 export function normalizeConfig(
   raw = {},
   { env = process.env, home = os.homedir(), found = true, webRoot = null, fsImpl = fs } = {},
@@ -486,7 +529,7 @@ export function normalizeConfig(
       bridges[h] = b.trim();
     }
   }
-  const slack = { host: sl.host == null ? null : sl.host.trim(), owner: sl.owner == null ? null : sl.owner.trim(), bridges };
+  const slack = { host: sl.host == null ? null : sl.host.trim(), owner: sl.owner == null ? null : sl.owner.trim(), bridges, spawn: slackSpawn(sl.spawn) };
   slack.enabled = slack.host != null && slack.host === self.trim();
   if (env.FLEET_WEB_SLACK != null && env.FLEET_WEB_SLACK !== '' && /^(0|false|off|no)$/i.test(env.FLEET_WEB_SLACK)) slack.enabled = false;
 

@@ -184,6 +184,22 @@ if (config.slack.enabled) {
       });
       if (r.status !== 200) throw new Error(r.body?.error ?? `HTTP ${r.status} from ${host}`);
     },
+    // slack.spawn: a mention opens a session on `host` — this server, else that peer's (a spawn
+    // linked to Slack answers once the session is linked, ≤ ~1 min).
+    spawn: async (host, body) => {
+      const local = !host || host === config.self;
+      const loopback = ['0.0.0.0', '::', '', undefined, null].includes(config.bind) ? '127.0.0.1' : config.bind;
+      const base = local ? `http://${loopback.includes(':') ? `[${loopback}]` : loopback}:${config.port}` : config.peers[host];
+      if (!base) throw new Error(`${host} is not a peer with a web url`);
+      const r = await proxyToPeer(base, {
+        method: 'POST',
+        pathname: `/api/hosts/${encodeURIComponent(local ? config.self : host)}/spawn`,
+        body: JSON.stringify(body),
+        timeoutMs: 120000,
+      });
+      if (r.status !== 200) throw new Error(r.body?.error ?? `HTTP ${r.status} from ${host}`);
+      return r.body;
+    },
     file: path.join(fleetStateDir(process.env), 'slack-links.json'),
     download: createSlackDownload({ getToken: getBotToken }),
     log,

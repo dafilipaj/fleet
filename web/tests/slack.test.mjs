@@ -56,7 +56,7 @@ function fakeSlack() {
   return { call, calls, handlers };
 }
 
-function fixture(t, { status = 'idle', download = null } = {}) {
+function fixture(t, { status = 'idle', download = null, settings = { owner: 'UOWNER' }, spawn = null, self = null } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-slack-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const slack = fakeSlack();
@@ -67,10 +67,12 @@ function fixture(t, { status = 'idle', download = null } = {}) {
   const sent = [];
   let clock = 1_800_000_000_000;
   const bridge = createSlackBridge({
-    settings: { owner: 'UOWNER' },
+    settings,
+    self,
     call: slack.call,
     listSessions: async () => sessions,
     send: async (s, text) => void sent.push({ id: s.session_id, text }),
+    spawn,
     file: path.join(dir, 'slack-links.json'),
     download,
     now: () => clock,
@@ -706,6 +708,7 @@ test('a spawn linked to Slack: no prompt at launch, linked once it registers, th
   assert.equal((await post(bridge, 'workstation', { name: 'job', dir, prompt: 'x', slack: { url: URL_, minutes: 0 } })).status, 400);
   assert.equal(spawned.length, 0);
 
+  assert.equal((await post(bridge, 'workstation', { name: 'job', dir, prompt: 'x', slack: { url: URL_, minutes: 30, from: 'alex' } })).status, 400);
   const r = await post(bridge, 'workstation', { name: 'job', dir, prompt: 'Help Alex with this', slack: { url: URL_, minutes: 60, mode: 'proactive' } });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal(spawned[0].prompt, '');
@@ -752,4 +755,109 @@ test('relink: an ended link comes back on the same thread, with its instructions
   assert.equal(c.renewed, true);
   assert.equal(c.until, null);
   assert.equal((await fx.bridge.list()).links.length, 1);
+});
+
+const settle = () => new Promise((r) => setTimeout(r, 10));
+
+test('slack.spawn: a mention in a thread no session follows opens a session there, linked, the message its request', async (t) => {
+  const spawns = [];
+  const fx = fixture(t, {
+    settings: { owner: 'UOWNER', spawn: { host: 'laptop', dir: '~/Code/work', model: 'opus', minutes: '1d', from: null } },
+    spawn: async (host, body) => (spawns.push({ host, body }), { name: 'job', slack: { id: 'sl-abcdef' } }),
+  });
+  const mention = (ts, user, text, extra = {}) => ({ type: 'message', channel: 'C0123ABCDEF', ts, user, text, ...extra });
+
+  // Not the owner (default from), no mention, a DM, a bot: nothing opens.
+  await fx.bridge.handleEvent(mention('1792778200.000001', 'U1', '<@UBOT> fix it'));
+  await fx.bridge.handleEvent(mention('1792778200.000002', 'UOWNER', 'no mention here'));
+  await fx.bridge.handleEvent(mention('1792778200.000003', 'UOWNER', '<@UBOT> hi', { channel: 'D0123', channel_type: 'im' }));
+  await fx.bridge.handleEvent(mention('1792778200.000004', 'UOWNER', '<@UBOT> hi', { bot_id: 'B9' }));
+  await settle();
+  assert.equal(spawns.length, 0);
+
+  // The owner, in a reply: the thread's root is linked; the mention is the request; 👀 on it.
+  await fx.bridge.handleEvent(mention('1792778200.000005', 'UOWNER', '<@UBOT> why is <https://x.test|this> red?', { thread_ts: THREAD }));
+  await fx.bridge.handleEvent(mention('1792778200.000005', 'UOWNER', '<@UBOT> why is <https://x.test|this> red?', { thread_ts: THREAD })); // sent twice
+  await settle();
+  assert.equal(spawns.length, 1);
+  assert.equal(spawns[0].host, 'laptop');
+  const b = spawns[0].body;
+  assert.equal(b.dir, '~/Code/work');
+  assert.equal(b.model, 'opus');
+  assert.equal(b.prompt, 'why is this (https://x.test) red?');
+  assert.equal(b.slack.url, `${URL_}?thread_ts=${THREAD}`);
+  assert.equal(b.slack.minutes, '1d');
+  assert.equal(b.slack.from, 'UOWNER');
+  assert.match(b.slack.task, /Owner, who started this session from Slack/);
+  assert.ok(fx.slack.calls.some((c) => c.method === 'reactions.add' && c.params.timestamp === '1792778200.000005'));
+  assert.ok(fx.slack.calls.some((c) => c.method === 'chat.getPermalink' && c.params.message_ts === THREAD));
+
+  // A thread a session already follows: the mention goes to it, nothing opens.
+  await fx.bridge.link({ session: SID, url: URL_, minutes: 60, host: 'workstation' });
+  await fx.bridge.handleEvent(mention('1792778200.000006', 'UOWNER', '<@UBOT> and now?', { thread_ts: THREAD }));
+  await settle();
+  assert.equal(spawns.length, 1);
+  assert.equal((await fx.bridge.list()).links[0].pending, 1);
+  assert.equal((await fx.bridge.status()).spawn.host, 'laptop');
+});
+
+test('slack.spawn: from "anyone" or a list; a failed spawn is said in the thread', async (t) => {
+  let fail = true;
+  const spawns = [];
+  const fx = fixture(t, {
+    self: 'workstation',
+    settings: { owner: 'UOWNER', spawn: { minutes: '2h', from: 'anyone' } },
+    spawn: async (host, body) => {
+      spawns.push({ host, body });
+      if (fail) throw new Error('dir is not a spawn dir');
+      return { name: 'job' };
+    },
+  });
+  await fx.bridge.handleEvent({ type: 'message', channel: 'C0123ABCDEF', ts: '1792778300.000001', user: 'U1', text: '<@UBOT> look at this' });
+  await settle();
+  assert.equal(spawns.length, 1);
+  assert.equal(spawns[0].host, 'workstation', 'no host: the bridge\'s own');
+  assert.equal(spawns[0].body.dir, undefined);
+  const said = fx.slack.calls.find((c) => c.method === 'chat.postMessage');
+  assert.equal(said.params.thread_ts, '1792778300.000001', 'a top-level mention: its own thread');
+  assert.match(said.params.text, /Could not open a session on workstation: dir is not a spawn dir/);
+  // The same thread again after a failure: tried again.
+  fail = false;
+  await fx.bridge.handleEvent({ type: 'message', channel: 'C0123ABCDEF', ts: '1792778300.000002', thread_ts: '1792778300.000001', user: 'U2', text: '<@UBOT> again' });
+  await settle();
+  assert.equal(spawns.length, 2);
+
+  const listed = fixture(t, { settings: { owner: 'UOWNER', spawn: { from: ['U2'] } }, spawn: async (host, body) => (spawns.push({ host, body }), {}) });
+  await listed.bridge.handleEvent({ type: 'message', channel: 'C0123ABCDEF', ts: '1792778300.000003', user: 'UOWNER', text: '<@UBOT> x' });
+  await listed.bridge.handleEvent({ type: 'message', channel: 'C0123ABCDEF', ts: '1792778300.000004', user: 'U2', text: '<@UBOT> y' });
+  await settle();
+  assert.deepEqual(spawns.slice(2).map((s) => s.body.slack.from), ['U2']);
+});
+
+test('a session started by a colleague\'s mention: its intro says who asked, and that it is not the owner', async (t) => {
+  const fx = fixture(t);
+  const l = await fx.bridge.link({ session: SID, url: URL_, minutes: '1d', host: 'h', first: 'why is it red?', firstFrom: 'U1' });
+  assert.deepEqual(l.startedBy, { user: 'U1', name: 'Alex', owner: false });
+  await fx.bridge.tick();
+  assert.match(fx.sent[0].text, /Alex \(U1\) started this session from Slack[^\n]*colleague, not the owner[^\n]*\nwhy is it red\?$/);
+  assert.doesNotMatch(fx.sent[0].text, /this is the owner, not someone in Slack/);
+  await assert.rejects(fx.bridge.link({ session: OTHER, url: URL_, minutes: 5, host: 'h', firstFrom: 'nobody' }), /firstFrom must be a Slack user id/);
+
+  const own = fixture(t);
+  await own.bridge.link({ session: SID, url: URL_, minutes: '1d', host: 'h', first: '', firstFrom: 'UOWNER' });
+  await own.bridge.tick();
+  assert.match(own.sent[0].text, /The owner \(Owner, UOWNER\) started this session from Slack[^]*\(only the mention: read the thread/);
+});
+
+test('config slack.spawn: defaults, from, and what it refuses', () => {
+  const cfg = (spawn) => normalizeConfig({ self: 'workstation', slack: { host: 'workstation', owner: 'UOWNER', spawn } }, { env: {}, home: '/home/tester' }).slack;
+  assert.equal(cfg(undefined).spawn, null);
+  assert.deepEqual(cfg({ host: 'laptop', dir: '~/Code/project', model: 'opus' }).spawn, {
+    host: 'laptop', dir: '~/Code/project', model: 'opus', harness: null, ghIdentity: null, mode: null, task: null, minutes: '1d', from: null,
+  });
+  assert.equal(cfg({ from: 'anyone', minutes: 'forever' }).spawn.from, 'anyone');
+  assert.deepEqual(cfg({ from: ['U1'] }).spawn.from, ['U1']);
+  assert.throws(() => cfg({ from: 'everyone' }), /slack.spawn.from/);
+  assert.throws(() => cfg('yes'), /slack.spawn must be an object/);
+  assert.throws(() => cfg({ dir: 3 }), /slack.spawn.dir must be a string/);
 });
