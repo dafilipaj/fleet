@@ -1495,8 +1495,8 @@ lowest first by the same order, and no default.
 `fleet usage --json` keeps its original top-level fields, which describe **Claude** only
 (`account`, `limits`, `extra_usage`, `fetched_at`, `stale`, `error`, and `openai` for the ChatGPT
 plan's live read — see [architecture](architecture.md#subscription-usage)), and adds `providers`:
-one entry per provider, Claude first, in one shape. Codex's entry comes from its transcripts, not
-from `openai`:
+one entry per provider, Claude first, in one shape. Codex's entry is the ChatGPT read (`openai`)
+when that has numbers, else its transcripts; `source` says which:
 
 ```json
 {
@@ -1526,6 +1526,12 @@ from `openai`:
   says why); `error` for Claude when its read failed with nothing cached but the ChatGPT read
   succeeded (the command then exits 0); `no_data` (installed, but no limits recorded yet — no sessions, or only credits
   events); `not_installed` (no Codex home); `error`. `limits` is empty unless `ok` or `stale`.
+- **`source`**: `endpoint` (a live read: Claude's usage endpoint, or the ChatGPT plan's for
+  Codex, cached 60 s like Claude's) or `transcripts` (Codex's rollouts, as of its last turn).
+  From the ChatGPT read, Codex's entry has its `limits` (`session`, `weekly_all`, and
+  `weekly_scoped` ones such as `Weekly · Code review`), the plan as `ChatGPT Plus`, `observed_at`
+  equal to `fetched_at`, and `credits` from its `extra_usage` (`balance` as a decimal string).
+  A ChatGPT read with no limits (failed with nothing cached) leaves the transcripts' entry.
 - **`fetched_at`** is when fleet read the source; **`observed_at`** is when the provider recorded
   the numbers. They are equal for Claude (a live endpoint). For Codex, `observed_at` is the
   transcript event's time — as fresh as the last Codex turn on this host — so a UI should show

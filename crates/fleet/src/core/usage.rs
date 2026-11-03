@@ -141,6 +141,14 @@ pub struct ProviderUsage {
     pub error: Option<String>,
     /// Prepaid credits, when the provider reports them (Codex).
     pub credits: Option<Credits>,
+    /// Where the numbers come from: `endpoint` (a live read: Claude's usage endpoint, or the
+    /// ChatGPT plan's for Codex) or `transcripts` (Codex's rollouts, as of its last turn).
+    #[serde(default = "endpoint")]
+    pub source: String,
+}
+
+fn endpoint() -> String {
+    "endpoint".into()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -172,7 +180,32 @@ impl ProviderUsage {
             observed_at: Some(u.fetched_at.clone()),
             error: u.error.clone(),
             credits: None,
+            source: endpoint(),
         }
+    }
+
+    /// Codex's entry from the ChatGPT plan's live read (`Usage.openai`), when it has numbers.
+    /// The transcripts' entry ([`crate::core::usage_codex`]) stands in otherwise.
+    pub fn codex_from_openai(o: &Usage) -> Option<ProviderUsage> {
+        if o.limits.is_empty() {
+            return None;
+        }
+        Some(ProviderUsage {
+            id: "codex".into(),
+            label: "Codex".into(),
+            status: if o.stale { "stale" } else { "ok" }.into(),
+            plan: o.account.as_ref().and_then(|a| a.plan_label.clone()),
+            limits: o.limits.clone(),
+            fetched_at: Some(o.fetched_at.clone()),
+            observed_at: Some(o.fetched_at.clone()),
+            error: o.error.clone(),
+            credits: o.extra_usage.as_ref().map(|x| Credits {
+                has_credits: x.enabled,
+                unlimited: false,
+                balance: x.balance.map(|b| format!("{b}")),
+            }),
+            source: endpoint(),
+        })
     }
 }
 
@@ -186,7 +219,13 @@ pub struct Report {
 }
 
 impl Report {
+    /// `codex`: the transcripts' entry, used when the ChatGPT read (`claude.openai`) has no numbers.
     pub fn new(claude: Usage, codex: ProviderUsage) -> Report {
+        let codex = claude
+            .openai
+            .as_deref()
+            .and_then(ProviderUsage::codex_from_openai)
+            .unwrap_or(codex);
         Report {
             providers: vec![ProviderUsage::claude(&claude), codex],
             claude,
@@ -214,6 +253,7 @@ impl FailedReport {
             observed_at: None,
             error: Some(error.to_string()),
             credits: None,
+            source: endpoint(),
         };
         FailedReport {
             error: error.to_string(),
@@ -951,6 +991,7 @@ mod tests {
             observed_at: None,
             error: Some("no Codex sessions yet".into()),
             credits: None,
+            source: "transcripts".into(),
         };
         let v = serde_json::to_value(Report::new(claude.clone(), codex)).unwrap();
         let mut keys: Vec<_> = v.as_object().unwrap().keys().cloned().collect();
@@ -1012,6 +1053,57 @@ mod tests {
             "additional_rate_limits": null,
             "credits": {"has_credits": true, "unlimited": false, "balance": "4.5"}
         })
+    }
+
+    #[test]
+    fn codex_s_provider_entry_comes_from_the_chatgpt_read_when_it_has_numbers() {
+        let transcripts = || ProviderUsage {
+            id: "codex".into(),
+            label: "Codex".into(),
+            status: "ok".into(),
+            plan: Some("Plus".into()),
+            limits: vec![],
+            fetched_at: None,
+            observed_at: Some("2026-10-16T10:30:00Z".into()),
+            error: None,
+            credits: None,
+            source: "transcripts".into(),
+        };
+        let mut claude = parse(&sample(), None, now());
+        claude.openai = Some(Box::new(parse_openai(&openai_sample(), now())));
+        let r = Report::new(claude.clone(), transcripts());
+        let codex = &r.providers[1];
+        assert_eq!(
+            (
+                codex.id.as_str(),
+                codex.source.as_str(),
+                codex.status.as_str()
+            ),
+            ("codex", "endpoint", "ok")
+        );
+        assert_eq!(codex.plan.as_deref(), Some("ChatGPT Plus"));
+        assert_eq!(codex.observed_at, codex.fetched_at);
+        let kinds: Vec<_> = codex.limits.iter().map(|l| l.kind.as_str()).collect();
+        assert_eq!(kinds, ["session", "weekly_all"]);
+        let c = codex.credits.as_ref().unwrap();
+        assert_eq!((c.has_credits, c.balance.as_deref()), (true, Some("4.5")));
+        assert_eq!(r.providers[0].source, "endpoint");
+
+        // A ChatGPT read with no numbers (it failed, nothing cached), or none at all: the transcripts.
+        claude.openai = Some(Box::new(Usage {
+            provider: "openai".into(),
+            error: Some("not logged in".into()),
+            ..empty(now())
+        }));
+        assert_eq!(
+            Report::new(claude.clone(), transcripts()).providers[1].source,
+            "transcripts"
+        );
+        claude.openai = None;
+        assert_eq!(
+            Report::new(claude, transcripts()).providers[1].source,
+            "transcripts"
+        );
     }
 
     #[test]

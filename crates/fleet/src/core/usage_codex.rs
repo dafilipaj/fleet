@@ -151,6 +151,7 @@ fn get_at(home: &Path, now: DateTime<Utc>) -> ProviderUsage {
         observed_at: None,
         error: None,
         credits: None,
+        source: "transcripts".into(),
     };
     if !home.is_dir() {
         out.status = "not_installed".into();

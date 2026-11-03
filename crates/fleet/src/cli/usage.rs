@@ -240,6 +240,7 @@ mod tests {
             observed_at: Some("2026-10-16T10:30:00Z".into()),
             error: None,
             credits: None,
+            source: "transcripts".into(),
         };
         let text = render_codex(&p, now);
         for want in [
