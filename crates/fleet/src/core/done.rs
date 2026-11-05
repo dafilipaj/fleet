@@ -7,8 +7,14 @@
 //! Marks live in `$FLEET_DONE_STATE`, else `${XDG_STATE_HOME:-~/.local/state}/fleet/done.json`:
 //! `{ "marks": [{ sessionId, pane, tmuxSession, at, note }] }`. A mark stops counting when the
 //! user prompts the session after it (the conversation went on: the agent runs `fleet done`
-//! again when it is finished again); `fleet bots tick` drops those and the ones whose session
-//! is gone.
+//! again when it is finished again), or when the session's main thread makes a tool call after
+//! it (it went on working: the mark came too early, or from a subagent); `fleet bots tick` drops
+//! those and the ones whose session is gone.
+//!
+//! **Only the session itself.** A subagent's shell, and a `claude -p` started from the session's
+//! shell, inherit its `$TMUX_PANE`, so a mark from them would land on the session. For a Claude
+//! Code session `fleet done` refuses when the nearest `claude` process above it isn't the
+//! session's, or when its own call is in a subagent's transcript ([`find_caller`]).
 
 use std::path::PathBuf;
 
@@ -24,7 +30,8 @@ pub const INSTRUCTION: &str = "When your work here is finished and nothing waits
 (no question, review or decision for them), run `fleet done --note \"<one line: what you did>\"`, \
 then end with a short final message: what you did, and what the user may want to check. Fleet \
 then shows the session as done, and the user closes it. If anything needs the user, do not run \
-it: say what you need and stop.";
+it: say what you need and stop. A subagent never runs it: only the session itself, for its own \
+work.";
 
 /// `prompt` with [`INSTRUCTION`] below it (once).
 pub fn with_instruction(prompt: &str) -> String {
@@ -169,9 +176,184 @@ pub struct DoneRef {
     pub note: Option<String>,
 }
 
-/// Pure: `m` still stands for session `s` (`None` = gone): not prompted since.
+/// Pure: `m` still stands for session `s` (`None` = gone): not prompted since, and no tool
+/// call of its main thread since (the `fleet done` call itself is older than the mark).
 pub fn stands(m: &Mark, s: Option<&Session>) -> bool {
-    s.is_some_and(|s| s.prompted_at.is_none_or(|p| p <= m.at))
+    s.is_some_and(|s| {
+        s.prompted_at.is_none_or(|p| p <= m.at) && s.tool_call_at.is_none_or(|t| t <= m.at)
+    })
+}
+
+/// Who made a `fleet done` call that is still waiting for its result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Caller {
+    /// The session's main thread.
+    Session,
+    /// A subagent: its call is in its own transcript, or marked `isSidechain`.
+    Subagent,
+}
+
+/// How much of a transcript's tail [`find_caller`] reads.
+const MAIN_TAIL: u64 = 256 * 1024;
+const SIDECAR_TAIL: u64 = 64 * 1024;
+/// A sidecar not written for this long holds no call running now.
+const SIDECAR_FRESH: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Pure: `command` runs `fleet done` (not just mentions it inside a word).
+fn runs_fleet_done(command: &str) -> bool {
+    command.match_indices("fleet done").any(|(i, _)| {
+        let before = command[..i].chars().next_back();
+        let after = command[i + "fleet done".len()..].chars().next();
+        // `/` for a path to the binary (`~/.cargo/bin/fleet done`).
+        before.is_none_or(|c| c.is_whitespace() || ";&|(`$/".contains(c))
+            && after.is_none_or(|c| c.is_whitespace() || ";&|)`".contains(c))
+    })
+}
+
+/// Pure: the newest `fleet done` call in `text`, a transcript's JSONL tail, with no result
+/// yet. Lines that don't parse (a tail's cut first line) are skipped.
+pub fn pending_call(text: &str) -> Option<Caller> {
+    let mut pending: Vec<(String, Caller)> = Vec::new();
+    for line in text.lines() {
+        if !line.contains("fleet done") && !line.contains("tool_result") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(content) = v["message"]["content"].as_array() else {
+            continue;
+        };
+        for c in content {
+            match c["type"].as_str() {
+                Some("tool_use") if v["type"] == "assistant" => {
+                    let runs = c["input"]["command"].as_str().is_some_and(runs_fleet_done);
+                    if let (true, Some(id)) = (runs, c["id"].as_str()) {
+                        let who = if v["isSidechain"] == true {
+                            Caller::Subagent
+                        } else {
+                            Caller::Session
+                        };
+                        pending.push((id.to_string(), who));
+                    }
+                }
+                Some("tool_result") => {
+                    if let Some(id) = c["tool_use_id"].as_str() {
+                        pending.retain(|(p, _)| p != id);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    pending.last().map(|(_, who)| *who)
+}
+
+/// The last `max` bytes of `path`, whole lines only.
+fn tail_text(path: &std::path::Path, max: u64) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let size = f.metadata().ok()?.len();
+    let start = size.saturating_sub(max);
+    f.seek(SeekFrom::Start(start)).ok()?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf).into_owned();
+    Some(if start > 0 {
+        text.find('\n')
+            .map_or(String::new(), |i| text[i + 1..].to_string())
+    } else {
+        text
+    })
+}
+
+/// A subagent of the session whose transcript is `transcript` has a `fleet done` call running.
+fn subagent_call(transcript: &std::path::Path) -> bool {
+    let dir = transcript.with_extension("").join("subagents");
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    let now = std::time::SystemTime::now();
+    entries.flatten().any(|e| {
+        let p = e.path();
+        let sidecar = p.extension().is_some_and(|x| x == "jsonl")
+            && p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("agent-"));
+        let fresh = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .is_ok_and(|m| now.duration_since(m).unwrap_or_default() < SIDECAR_FRESH);
+        sidecar && fresh && tail_text(&p, SIDECAR_TAIL).is_some_and(|t| pending_call(&t).is_some())
+    })
+}
+
+/// Who runs this `fleet done`, from where its call is recorded. Claude Code writes a call to
+/// the transcript about a second after it starts, so this looks again until `wait` is up; a
+/// subagent's call is looked for first, as refusing is the safe side. `None` when the call
+/// shows nowhere in time (the mark is then made, as before).
+pub fn find_caller(transcript: &std::path::Path, wait: std::time::Duration) -> Option<Caller> {
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        if subagent_call(transcript) {
+            return Some(Caller::Subagent);
+        }
+        if let Some(c) = tail_text(transcript, MAIN_TAIL).and_then(|t| pending_call(&t)) {
+            return Some(c);
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+}
+
+/// The pid of the nearest `claude` process above this one: the Claude Code whose tool ran it.
+pub fn claude_ancestor() -> Option<i64> {
+    let mut pid = std::process::id() as i64;
+    for _ in 0..12 {
+        let out = std::process::Command::new("ps")
+            .args(["-o", "ppid=", "-p", &pid.to_string()])
+            .output()
+            .ok()?;
+        let ppid: i64 = String::from_utf8_lossy(&out.stdout).trim().parse().ok()?;
+        if ppid <= 1 {
+            return None;
+        }
+        let comm = std::process::Command::new("ps")
+            .args(["-o", "comm=", "-p", &ppid.to_string()])
+            .output()
+            .ok()?;
+        let comm = String::from_utf8_lossy(&comm.stdout).trim().to_string();
+        if std::path::Path::new(&comm)
+            .file_name()
+            .is_some_and(|n| n == "claude")
+        {
+            return Some(ppid);
+        }
+        pid = ppid;
+    }
+    None
+}
+
+/// Pure: why `fleet done` must not mark `s`, given the nearest `claude` above it and where
+/// its call was found; `None` when it may.
+pub fn refusal(s: &Session, ancestor: Option<i64>, caller: Option<Caller>) -> Option<String> {
+    if s.harness != Harness::Claude {
+        return None;
+    }
+    if let Some(a) = ancestor.filter(|a| *a != s.pid) {
+        return Some(format!(
+            "fleet done: run by another Claude Code (pid {a}) than the session in this pane \
+             (pid {}), such as a `claude -p` started from its shell; only the session itself \
+             reports that its work is finished",
+            s.pid
+        ));
+    }
+    (caller == Some(Caller::Subagent)).then(|| {
+        "fleet done: a subagent can't mark its session done; only the session itself reports \
+         that its work is finished. Finish with your report instead."
+            .to_string()
+    })
 }
 
 /// Put `done` on every row whose mark still stands. Read-only.
@@ -210,10 +392,10 @@ pub fn prune(rows: &[Session]) -> Result<Vec<String>> {
             .find(|r| r.session_id.as_deref() == Some(m.session_id.as_str()));
         let keep = stands(m, s);
         if !keep {
-            let why = if s.is_some() {
-                "prompted again"
-            } else {
-                "gone"
+            let why = match s {
+                None => "gone",
+                Some(s) if s.prompted_at.is_some_and(|p| p > m.at) => "prompted again",
+                Some(_) => "kept working",
             };
             log.push(format!("done: {} unmarked ({why})", m.tmux_session));
         }
@@ -244,6 +426,125 @@ mod tests {
             at,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_mark_stops_standing_once_the_main_thread_calls_a_tool_after_it() {
+        let m = mark_at(1_000);
+        let worked = |t| Session {
+            tool_call_at: Some(t),
+            ..row(Some(900))
+        };
+        // The `fleet done` call itself is older than the mark.
+        assert!(stands(&m, Some(&worked(990))));
+        // A subagent's mark: the parent goes on with a tool call when its result comes back.
+        assert!(!stands(&m, Some(&worked(1_200))));
+    }
+
+    fn call(id: &str, command: &str, sidechain: bool) -> String {
+        serde_json::json!({
+            "type": "assistant", "isSidechain": sidechain, "timestamp": "2026-11-05T10:00:00Z",
+            "message": {"content": [{"type": "tool_use", "id": id, "name": "Bash",
+                "input": {"command": command}}]}
+        })
+        .to_string()
+    }
+
+    fn result(id: &str) -> String {
+        serde_json::json!({
+            "type": "user",
+            "message": {"content": [{"type": "tool_result", "tool_use_id": id, "content": "ok"}]}
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn the_running_fleet_done_call_says_who_made_it() {
+        let done = r#"fleet done --note "fixed it""#;
+        assert_eq!(pending_call(&call("a", done, false)), Some(Caller::Session));
+        assert_eq!(pending_call(&call("a", done, true)), Some(Caller::Subagent));
+        // Answered: an earlier call, not this one.
+        assert_eq!(
+            pending_call(&[call("a", done, false), result("a")].join("\n")),
+            None
+        );
+        // Mentioning it is not running it; a cut first line is skipped.
+        assert_eq!(
+            pending_call(&call("a", "grep -r 'fleetdone' .", false)),
+            None
+        );
+        assert_eq!(
+            pending_call(&format!("{{\"cut\n{}", call("b", done, false))),
+            Some(Caller::Session)
+        );
+        assert!(runs_fleet_done("cd x && fleet done --cancel"));
+        assert!(runs_fleet_done("/Users/me/fleet/target/debug/fleet done --note x"));
+        assert!(!runs_fleet_done("echo fleet doner"));
+    }
+
+    fn transcript_with_sidecar(
+        main: &[String],
+        sidecar: Option<&[String]>,
+    ) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let t = dir.path().join("abc.jsonl");
+        std::fs::write(&t, main.join("\n") + "\n").unwrap();
+        if let Some(lines) = sidecar {
+            let sub = dir.path().join("abc").join("subagents");
+            std::fs::create_dir_all(&sub).unwrap();
+            std::fs::write(sub.join("agent-a1.jsonl"), lines.join("\n") + "\n").unwrap();
+        }
+        (dir, t)
+    }
+
+    #[test]
+    fn a_subagents_fleet_done_is_found_in_its_own_transcript() {
+        let done = "fleet done --note review finished";
+        let parent = [
+            call("p1", "ls", false),
+            result("p1"),
+            call("p2", "Agent: review", false),
+        ];
+        // The Subagent's call is in its sidecar, not in the session's transcript.
+        let (_d, t) = transcript_with_sidecar(&parent, Some(&[call("s1", done, false)]));
+        assert_eq!(
+            find_caller(&t, std::time::Duration::ZERO),
+            Some(Caller::Subagent)
+        );
+        // Its earlier, answered call doesn't count; the session's own call then does.
+        let mut own = parent.to_vec();
+        own.push(call("p3", done, false));
+        let (_d, t) = transcript_with_sidecar(&own, Some(&[call("s1", done, false), result("s1")]));
+        assert_eq!(
+            find_caller(&t, std::time::Duration::ZERO),
+            Some(Caller::Session)
+        );
+        // Nowhere in time: unknown, and the mark is made as before.
+        let (_d, t) = transcript_with_sidecar(&parent, None);
+        assert_eq!(find_caller(&t, std::time::Duration::ZERO), None);
+    }
+
+    #[test]
+    fn only_the_session_itself_may_mark_a_claude_session_done() {
+        let s = Session {
+            pid: 42,
+            ..row(None)
+        };
+        assert_eq!(refusal(&s, Some(42), Some(Caller::Session)), None);
+        assert_eq!(refusal(&s, None, None), None);
+        assert!(
+            refusal(&s, Some(42), Some(Caller::Subagent))
+                .unwrap()
+                .contains("subagent")
+        );
+        // A `claude -p` from the session's shell: another Claude Code above it.
+        assert!(refusal(&s, Some(77), None).unwrap().contains("claude -p"));
+        // Codex finds its session by $CODEX_THREAD_ID, so none of this applies.
+        let codex = Session {
+            harness: Harness::Codex,
+            ..s
+        };
+        assert_eq!(refusal(&codex, Some(77), Some(Caller::Subagent)), None);
     }
 
     #[test]

@@ -62,6 +62,10 @@ pub struct Session {
     /// Milliseconds since the epoch of the last human prompt ([`crate::core::prompted`]);
     /// `null` when unknown (no prompt yet, or a Codex / pi session).
     pub prompted_at: Option<i64>,
+    /// Milliseconds since the epoch of the main thread's last tool call
+    /// ([`crate::core::prompted::Last`]), for [`crate::core::done::stands`]. Not in `--json`.
+    #[serde(skip)]
+    pub tool_call_at: Option<i64>,
     pub tty: Option<String>,
     pub backend: Backend,
     /// Backend-specific control handle: iTerm session GUID or tmux pane id.
@@ -153,6 +157,7 @@ impl Default for Session {
             status: "unknown".into(),
             updated_at: None,
             prompted_at: None,
+            tool_call_at: None,
             tty: None,
             backend: Backend::Unknown,
             handle: None,
@@ -421,13 +426,13 @@ fn claude_session(
         Some(l) => (Some(l.context), l.effort, l.at),
         None => (None, None, None),
     };
-    let prompted_at = reg
+    let seen = reg
         .session_id
         .as_deref()
         .filter(|_| enrich)
-        .and_then(|sid| {
-            crate::core::prompted::for_session(&claude_home(), reg.cwd.as_deref(), sid)
-        });
+        .map(|sid| crate::core::prompted::last_for_session(&claude_home(), reg.cwd.as_deref(), sid))
+        .unwrap_or_default();
+    let (prompted_at, tool_call_at) = (seen.prompt, seen.tool_call);
     let mut status = reg.status.unwrap_or_else(|| "unknown".into());
     let mut updated_at = reg.status_updated_at.or(reg.updated_at);
     // `busy` / `shell` also while only subagents or background shells run: the main
@@ -468,6 +473,7 @@ fn claude_session(
         updated_at,
         background,
         prompted_at,
+        tool_call_at,
         title,
         tty: Some(tty),
         backend,
@@ -651,6 +657,7 @@ fn harness_session(
         waiting_for: state.waiting_for,
         updated_at: Some(t.map(|t| t.mtime_ms).unwrap_or(p.start_ms)),
         prompted_at: None,
+        tool_call_at: None,
         tty: Some(p.tty.clone()),
         backend,
         handle,

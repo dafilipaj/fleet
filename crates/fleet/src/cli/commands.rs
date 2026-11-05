@@ -409,6 +409,26 @@ pub fn done(note: Option<String>, cancel: bool) -> Result<()> {
             "fleet done runs inside the session's own tmux pane ($TMUX_PANE is not set)".into()
         })
     })?;
+    // Only the session itself (core::done): not a subagent, nor a `claude -p` from its shell.
+    if let Some(s) = crate::core::done::session_in(&rows, &pane) {
+        let caller = (s.harness == crate::core::harness::Harness::Claude)
+            .then(|| {
+                let sid = s.session_id.as_deref()?;
+                let t = crate::core::context::locate_transcript(
+                    &discovery::claude_home(),
+                    s.cwd.as_deref(),
+                    sid,
+                )?;
+                crate::core::done::find_caller(&t, std::time::Duration::from_secs(3))
+            })
+            .flatten();
+        let ancestor = (s.harness == crate::core::harness::Harness::Claude)
+            .then(crate::core::done::claude_ancestor)
+            .flatten();
+        if let Some(why) = crate::core::done::refusal(s, ancestor, caller) {
+            return Err(Error::Other(why));
+        }
+    }
     let m = crate::core::done::mark(&rows, &pane, note, cancel)?;
     if cancel {
         println!("{}: no longer marked done", m.tmux_session);
