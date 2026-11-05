@@ -77,17 +77,20 @@ fn read(home: &Path, cwd: Option<&str>, session_id: &str) -> Option<Last> {
 /// The last prompt in the transcript's tail, widening it until one is found.
 fn from_tail(path: &Path, size: u64) -> Option<Scanned> {
     let mut end = size;
+    let mut last = Last::default();
     for tail in TAILS {
         let start = size.saturating_sub(tail);
         let (e, found) = scan(path, start, size, start == 0)?;
         end = e;
+        last = found;
         // A tool call older than the last prompt never matters (a mark after the prompt is
         // newer still), so the widening stops at the prompt as before.
         if found.prompt.is_some() || start == 0 {
             return Some((end, found));
         }
     }
-    Some((end, Last::default()))
+    // No prompt in 8 MiB: keep what the widest scan found, its tool call included.
+    Some((end, last))
 }
 
 /// Scan `[start, size)`: (offset just past its last complete line, last prompt in it).
@@ -271,6 +274,30 @@ mod tests {
         .join("\n");
         assert_eq!(last_tool_call(&text), Some(ms(T2)));
         assert_eq!(last_tool_call(&assistant(T1)), None);
+    }
+
+    #[test]
+    fn a_tool_call_is_kept_when_no_prompt_is_in_the_widest_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("long.jsonl");
+        let mut f = File::create(&path).unwrap();
+        // A prompt, then more than 8 MiB of a long autonomous turn, then a tool call.
+        writeln!(f, "{}", user("go", T1, Some("human"))).unwrap();
+        let filler = assistant(T2);
+        for _ in 0..(TAILS[2] as usize / filler.len() + 10) {
+            writeln!(f, "{filler}").unwrap();
+        }
+        writeln!(f, "{}", tool_call(T3, false)).unwrap();
+        f.flush().unwrap();
+        let size = std::fs::metadata(&path).unwrap().len();
+        let (_, last) = from_tail(&path, size).unwrap();
+        assert_eq!(
+            last,
+            Last {
+                prompt: None,
+                tool_call: Some(ms(T3))
+            }
+        );
     }
 
     #[test]
