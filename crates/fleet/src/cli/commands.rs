@@ -410,21 +410,21 @@ pub fn done(note: Option<String>, cancel: bool) -> Result<()> {
         })
     })?;
     // Only the session itself (core::done): not a subagent, nor a `claude -p` from its shell.
-    if let Some(s) = crate::core::done::session_in(&rows, &pane) {
-        let caller = (s.harness == crate::core::harness::Harness::Claude)
-            .then(|| {
-                let sid = s.session_id.as_deref()?;
-                let t = crate::core::context::locate_transcript(
-                    &discovery::claude_home(),
-                    s.cwd.as_deref(),
-                    sid,
-                )?;
-                crate::core::done::find_caller(&t, std::time::Duration::from_secs(3))
-            })
-            .flatten();
-        let ancestor = (s.harness == crate::core::harness::Harness::Claude)
-            .then(crate::core::done::claude_ancestor)
-            .flatten();
+    if let Some(s) = crate::core::done::session_in(&rows, &pane)
+        && s.harness == crate::core::harness::Harness::Claude
+    {
+        let (ancestor, argvs) = crate::core::done::ancestry();
+        let own_args: Vec<String> = std::env::args().skip(1).collect();
+        let own = |cmd: &str| crate::core::done::is_own(cmd, &argvs, &own_args);
+        // A claude -p is refused by pid alone; otherwise find this call's own transcript.
+        let caller = ancestor.filter(|a| *a == s.pid).and_then(|_| {
+            let t = crate::core::context::locate_transcript(
+                &discovery::claude_home(),
+                s.cwd.as_deref(),
+                s.session_id.as_deref()?,
+            )?;
+            crate::core::done::find_caller(&t, std::time::Duration::from_secs(3), &own)
+        });
         if let Some(why) = crate::core::done::refusal(s, ancestor, caller) {
             return Err(Error::Other(why));
         }

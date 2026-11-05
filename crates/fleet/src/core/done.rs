@@ -210,9 +210,67 @@ fn runs_fleet_done(command: &str) -> bool {
     })
 }
 
-/// Pure: the newest `fleet done` call in `text`, a transcript's JSONL tail, with no result
-/// yet. Lines that don't parse (a tail's cut first line) are skipped.
-pub fn pending_call(text: &str) -> Option<Caller> {
+/// `t` without quotes, backslashes and whitespace, which quoting and `ps` change.
+fn bare(t: &str) -> String {
+    t.chars()
+        .filter(|c| !c.is_whitespace() && !"'\"\\".contains(*c))
+        .collect()
+}
+
+/// The command a tool shell's argv (as `ps -ww` prints it) was started for: Claude Code's
+/// `zsh -c '… && eval '<command>' < /dev/null && …'` gives the `eval` argument, a quote in it
+/// unescaped (2.1.318 writes `'"'"'`; `'\''` is read too); any other shell `-c <command>`
+/// gives what follows `-c`.
+fn shell_command(argv: &str) -> Option<String> {
+    if let Some(i) = argv.find("eval '") {
+        let mut out = String::new();
+        let mut rest = &argv[i + "eval '".len()..];
+        loop {
+            let end = rest.find('\'')?;
+            out.push_str(&rest[..end]);
+            rest = &rest[end + 1..];
+            match rest
+                .strip_prefix("\"'\"'")
+                .or_else(|| rest.strip_prefix("\\''"))
+            {
+                Some(r) => {
+                    out.push('\'');
+                    rest = r;
+                }
+                None => return Some(out),
+            }
+        }
+    }
+    argv.split_once(" -c ").map(|(_, c)| c.to_string())
+}
+
+/// What follows `fleet done` in a command line, bare: its flags and note.
+fn done_args(t: &str) -> Option<String> {
+    t.find("fleet done")
+        .map(|i| bare(&t[i + "fleet done".len()..]))
+}
+
+/// Pure: `command` is the call that started this process. `argvs` are the shells between it
+/// and Claude Code: one was started for exactly `command` ([`shell_command`]). With no shell
+/// between (`exec fleet done …` replaced it; `timeout 5 fleet done` isn't one), `own_args`
+/// (this process's arguments after the binary) must be what follows `fleet done`.
+pub fn is_own(command: &str, argvs: &[String], own_args: &[String]) -> bool {
+    let cmd = bare(command);
+    if cmd.is_empty() {
+        return false;
+    }
+    let shells: Vec<String> = argvs.iter().filter_map(|a| shell_command(a)).collect();
+    if shells.is_empty() {
+        let mine = bare(&own_args[own_args.len().min(1)..].join(" "));
+        return own_args.first().is_some_and(|a| a == "done") && done_args(command) == Some(mine);
+    }
+    shells.iter().any(|c| bare(c) == cmd)
+}
+
+/// Pure: who made the `fleet done` call in `text`, a transcript's JSONL tail, that is still
+/// waiting for its result and is this process's own (`own`, from [`is_own`]); the newest if
+/// several. Lines that don't parse (a tail's cut first line) are skipped.
+pub fn pending_call(text: &str, own: &dyn Fn(&str) -> bool) -> Option<Caller> {
     let mut pending: Vec<(String, Caller)> = Vec::new();
     for line in text.lines() {
         if !line.contains("fleet done") && !line.contains("tool_result") {
@@ -227,7 +285,9 @@ pub fn pending_call(text: &str) -> Option<Caller> {
         for c in content {
             match c["type"].as_str() {
                 Some("tool_use") if v["type"] == "assistant" => {
-                    let runs = c["input"]["command"].as_str().is_some_and(runs_fleet_done);
+                    let runs = c["input"]["command"]
+                        .as_str()
+                        .is_some_and(|cmd| runs_fleet_done(cmd) && own(cmd));
                     if let (true, Some(id)) = (runs, c["id"].as_str()) {
                         let who = if v["isSidechain"] == true {
                             Caller::Subagent
@@ -267,8 +327,8 @@ fn tail_text(path: &std::path::Path, max: u64) -> Option<String> {
     })
 }
 
-/// A subagent of the session whose transcript is `transcript` has a `fleet done` call running.
-fn subagent_call(transcript: &std::path::Path) -> bool {
+/// A subagent of the session whose transcript is `transcript` has this `fleet done` call running.
+fn subagent_call(transcript: &std::path::Path, own: &dyn Fn(&str) -> bool) -> bool {
     let dir = transcript.with_extension("").join("subagents");
     let Ok(entries) = std::fs::read_dir(dir) else {
         return false;
@@ -283,21 +343,27 @@ fn subagent_call(transcript: &std::path::Path) -> bool {
             .metadata()
             .and_then(|m| m.modified())
             .is_ok_and(|m| now.duration_since(m).unwrap_or_default() < SIDECAR_FRESH);
-        sidecar && fresh && tail_text(&p, SIDECAR_TAIL).is_some_and(|t| pending_call(&t).is_some())
+        sidecar
+            && fresh
+            && tail_text(&p, SIDECAR_TAIL).is_some_and(|t| pending_call(&t, own).is_some())
     })
 }
 
-/// Who runs this `fleet done`, from where its call is recorded. Claude Code writes a call to
-/// the transcript about a second after it starts, so this looks again until `wait` is up; a
-/// subagent's call is looked for first, as refusing is the safe side. `None` when the call
-/// shows nowhere in time (the mark is then made, as before).
-pub fn find_caller(transcript: &std::path::Path, wait: std::time::Duration) -> Option<Caller> {
+/// Who runs this `fleet done`, from where its own call (`own`) is recorded. Claude Code writes
+/// a call to the transcript about a second after it starts, so this looks again until `wait`
+/// is up; a subagent's transcripts are looked in first, as refusing is the safe side. `None`
+/// when the call shows nowhere in time (the mark is then made, as before).
+pub fn find_caller(
+    transcript: &std::path::Path,
+    wait: std::time::Duration,
+    own: &dyn Fn(&str) -> bool,
+) -> Option<Caller> {
     let deadline = std::time::Instant::now() + wait;
     loop {
-        if subagent_call(transcript) {
+        if subagent_call(transcript, own) {
             return Some(Caller::Subagent);
         }
-        if let Some(c) = tail_text(transcript, MAIN_TAIL).and_then(|t| pending_call(&t)) {
+        if let Some(c) = tail_text(transcript, MAIN_TAIL).and_then(|t| pending_call(&t, own)) {
             return Some(c);
         }
         if std::time::Instant::now() >= deadline {
@@ -307,32 +373,37 @@ pub fn find_caller(transcript: &std::path::Path, wait: std::time::Duration) -> O
     }
 }
 
-/// The pid of the nearest `claude` process above this one: the Claude Code whose tool ran it.
-pub fn claude_ancestor() -> Option<i64> {
+/// The processes above this one up to the nearest `claude`: that Claude Code's pid (`None`
+/// when there is none, as from a terminal), and the command line of each process between
+/// (the shell its tool ran this in), for [`is_own`].
+pub fn ancestry() -> (Option<i64>, Vec<String>) {
+    let ps = |field: &str, pid: i64| -> Option<String> {
+        let out = std::process::Command::new("ps")
+            .args(["-ww", "-o", field, "-p", &pid.to_string()])
+            .output()
+            .ok()?;
+        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+    let mut argvs = Vec::new();
     let mut pid = std::process::id() as i64;
     for _ in 0..12 {
-        let out = std::process::Command::new("ps")
-            .args(["-o", "ppid=", "-p", &pid.to_string()])
-            .output()
-            .ok()?;
-        let ppid: i64 = String::from_utf8_lossy(&out.stdout).trim().parse().ok()?;
+        let Some(ppid) = ps("ppid=", pid).and_then(|p| p.parse::<i64>().ok()) else {
+            break;
+        };
         if ppid <= 1 {
-            return None;
+            break;
         }
-        let comm = std::process::Command::new("ps")
-            .args(["-o", "comm=", "-p", &ppid.to_string()])
-            .output()
-            .ok()?;
-        let comm = String::from_utf8_lossy(&comm.stdout).trim().to_string();
+        let comm = ps("comm=", ppid).unwrap_or_default();
         if std::path::Path::new(&comm)
             .file_name()
             .is_some_and(|n| n == "claude")
         {
-            return Some(ppid);
+            return (Some(ppid), argvs);
         }
+        argvs.extend(ps("command=", ppid));
         pid = ppid;
     }
-    None
+    (None, argvs)
 }
 
 /// Pure: why `fleet done` must not mark `s`, given the nearest `claude` above it and where
@@ -458,27 +529,126 @@ mod tests {
         .to_string()
     }
 
+    fn pending_call_any(text: &str) -> Option<Caller> {
+        pending_call(text, &|_| true)
+    }
+
+    /// How Claude Code 2.1.318 starts a Bash call: its text inside `eval '…'`, quotes escaped.
+    fn tool_shell(command: &str) -> String {
+        format!(
+            "/bin/zsh -c source snap.sh 2>/dev/null || true && eval '{}' < /dev/null && pwd -P >| /tmp/cwd",
+            command.replace('\'', "'\\''")
+        )
+    }
+
+    #[test]
+    fn only_this_processs_own_call_counts() {
+        let note = r#"fleet done --note "it's fixed""#;
+        let argvs = vec![tool_shell(note)];
+        let none: [String; 0] = [];
+        assert_eq!(shell_command(&argvs[0]).as_deref(), Some(note));
+        // As 2.1.318 really quotes: recorded from a live tool shell.
+        let real = r#"/bin/zsh -c source s.sh && eval 'echo "it'"'"'s a '"'"'quoted'"'"' \"probe\" 7781" > /dev/null' < /dev/null && pwd -P >| /tmp/c"#;
+        let cmd = r#"echo "it's a 'quoted' \"probe\" 7781" > /dev/null"#;
+        assert_eq!(shell_command(real).as_deref(), Some(cmd));
+        assert!(is_own(note, &argvs, &none));
+        // Exact, not contained: a shorter call or a shorter note is another call.
+        assert!(!is_own("fleet done", &argvs, &none));
+        assert!(!is_own(r#"fleet done --note "it""#, &argvs, &none));
+        assert!(!is_own(
+            r#"fleet done --note "something else""#,
+            &argvs,
+            &none
+        ));
+        assert!(!is_own("", &argvs, &none));
+        // Another shell's `-c`.
+        assert!(is_own(
+            "fleet done --note x",
+            &["bash -c fleet done --note x".into()],
+            &none
+        ));
+        // `exec` replaced the shell: this process's own arguments say which call it is.
+        let args: Vec<String> = ["done", "--note", "mine"].map(String::from).to_vec();
+        assert!(is_own(
+            "exec ~/.cargo/bin/fleet done --note mine",
+            &[],
+            &args
+        ));
+        assert!(!is_own("exec fleet done --note mi", &[], &args));
+        assert!(!is_own("exec fleet done --note mine", &[], &[]));
+        let wrapper = vec!["timeout 5 fleet done --note mine".to_string()];
+        assert!(is_own("timeout 5 fleet done --note mine", &wrapper, &args));
+        assert!(!is_own("timeout 5 fleet done --note mi", &wrapper, &args));
+
+        let mine = vec![tool_shell("fleet done --note mine")];
+        let own = |c: &str| is_own(c, &mine, &none);
+        // A Subagent's call left unanswered earlier, even one contained in this one: not it.
+        let (_d, t) = transcript_with_sidecar(
+            &[call("p1", "fleet done --note mine", false)],
+            Some(&[
+                call("s1", "fleet done", false),
+                call("s2", "fleet done --note mi", false),
+            ]),
+        );
+        assert_eq!(
+            find_caller(&t, std::time::Duration::ZERO, &own),
+            Some(Caller::Session)
+        );
+        // The main thread's `sleep 2; fleet done` still running doesn't vouch for a Subagent's.
+        let (_d, t) = transcript_with_sidecar(
+            &[call("p1", "sleep 2; fleet done --note theirs", false)],
+            Some(&[call("s1", "fleet done --note mine", false)]),
+        );
+        assert_eq!(
+            find_caller(&t, std::time::Duration::ZERO, &own),
+            Some(Caller::Subagent)
+        );
+        // A Subagent's `exec fleet done`: found by this process's arguments.
+        let args: Vec<String> = ["done", "--note", "mine"].map(String::from).to_vec();
+        let exec_own = |c: &str| is_own(c, &[], &args);
+        let (_d, t) = transcript_with_sidecar(
+            &[call("p1", "ls", false)],
+            Some(&[call("s1", "exec fleet done --note mine", false)]),
+        );
+        assert_eq!(
+            find_caller(&t, std::time::Duration::ZERO, &exec_own),
+            Some(Caller::Subagent)
+        );
+        // Neither is this call: unknown, so the mark is made as before.
+        let (_d, t) =
+            transcript_with_sidecar(&[call("p1", "fleet done --note theirs", false)], None);
+        assert_eq!(find_caller(&t, std::time::Duration::ZERO, &own), None);
+    }
+
     #[test]
     fn the_running_fleet_done_call_says_who_made_it() {
         let done = r#"fleet done --note "fixed it""#;
-        assert_eq!(pending_call(&call("a", done, false)), Some(Caller::Session));
-        assert_eq!(pending_call(&call("a", done, true)), Some(Caller::Subagent));
+        assert_eq!(
+            pending_call_any(&call("a", done, false)),
+            Some(Caller::Session)
+        );
+        assert_eq!(
+            pending_call_any(&call("a", done, true)),
+            Some(Caller::Subagent)
+        );
         // Answered: an earlier call, not this one.
         assert_eq!(
-            pending_call(&[call("a", done, false), result("a")].join("\n")),
+            pending_call_any(&[call("a", done, false), result("a")].join("\n")),
             None
         );
         // Mentioning it is not running it; a cut first line is skipped.
         assert_eq!(
-            pending_call(&call("a", "grep -r 'fleetdone' .", false)),
+            pending_call_any(&call("a", "grep -r 'fleetdone' .", false)),
             None
         );
         assert_eq!(
-            pending_call(&format!("{{\"cut\n{}", call("b", done, false))),
+            pending_call_any(&format!("{{\"cut\n{}", call("b", done, false))),
             Some(Caller::Session)
         );
         assert!(runs_fleet_done("cd x && fleet done --cancel"));
-        assert!(runs_fleet_done("/Users/me/fleet/target/debug/fleet done --note x"));
+        assert!(runs_fleet_done(
+            "/Users/me/fleet/target/debug/fleet done --note x"
+        ));
         assert!(!runs_fleet_done("echo fleet doner"));
     }
 
@@ -508,7 +678,7 @@ mod tests {
         // The Subagent's call is in its sidecar, not in the session's transcript.
         let (_d, t) = transcript_with_sidecar(&parent, Some(&[call("s1", done, false)]));
         assert_eq!(
-            find_caller(&t, std::time::Duration::ZERO),
+            find_caller(&t, std::time::Duration::ZERO, &|_| true),
             Some(Caller::Subagent)
         );
         // Its earlier, answered call doesn't count; the session's own call then does.
@@ -516,12 +686,12 @@ mod tests {
         own.push(call("p3", done, false));
         let (_d, t) = transcript_with_sidecar(&own, Some(&[call("s1", done, false), result("s1")]));
         assert_eq!(
-            find_caller(&t, std::time::Duration::ZERO),
+            find_caller(&t, std::time::Duration::ZERO, &|_| true),
             Some(Caller::Session)
         );
         // Nowhere in time: unknown, and the mark is made as before.
         let (_d, t) = transcript_with_sidecar(&parent, None);
-        assert_eq!(find_caller(&t, std::time::Duration::ZERO), None);
+        assert_eq!(find_caller(&t, std::time::Duration::ZERO, &|_| true), None);
     }
 
     #[test]
