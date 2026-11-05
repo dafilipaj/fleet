@@ -6,6 +6,10 @@
 //! This is `prompted_at` in `fleet list --json` — a calmer ordering key than
 //! `updated_at`, which moves on every status change (each turn start and end).
 //!
+//! The same scan keeps the timestamp of the main thread's last tool call (an assistant
+//! entry with a `tool_use`, not a subagent's): `fleet done`'s mark stops standing once the
+//! session works on after it ([`crate::core::done::stands`]).
+//!
 //! **Cost.** The first read scans the transcript's tail (256 KiB, widened to 2 MiB
 //! and 8 MiB until a prompt is found); later reads scan only the bytes appended
 //! since, so a busy session's growing transcript is never re-read.
@@ -18,28 +22,56 @@ use std::sync::{LazyLock, Mutex};
 
 const TAILS: [u64; 3] = [256 * 1024, 2 * 1024 * 1024, 8 * 1024 * 1024];
 
-/// (bytes scanned, up to the last full line; last prompt in ms).
-type Scanned = (u64, Option<i64>);
+/// The two timestamps (ms) a scan keeps.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Last {
+    /// The last human prompt.
+    pub prompt: Option<i64>,
+    /// The main thread's last tool call.
+    pub tool_call: Option<i64>,
+}
+
+impl Last {
+    /// `self`, with `older` filling in what `self` lacks.
+    fn or(self, older: Last) -> Last {
+        Last {
+            prompt: self.prompt.or(older.prompt),
+            tool_call: self.tool_call.or(older.tool_call),
+        }
+    }
+}
+
+/// (bytes scanned, up to the last full line; what was last in them).
+type Scanned = (u64, Last);
 static CACHE: LazyLock<Mutex<HashMap<PathBuf, Scanned>>> = LazyLock::new(Default::default);
 
 /// `prompted_at` for a live Claude session, or None when its transcript holds no prompt.
 pub fn for_session(home: &Path, cwd: Option<&str>, session_id: &str) -> Option<i64> {
+    last_for_session(home, cwd, session_id).prompt
+}
+
+/// The last prompt and the main thread's last tool call of a live Claude session.
+pub fn last_for_session(home: &Path, cwd: Option<&str>, session_id: &str) -> Last {
+    read(home, cwd, session_id).unwrap_or_default()
+}
+
+fn read(home: &Path, cwd: Option<&str>, session_id: &str) -> Option<Last> {
     let path = super::context::locate_transcript(home, cwd, session_id)?;
     let size = std::fs::metadata(&path).ok()?.len();
     let cached = CACHE.lock().ok().and_then(|c| c.get(&path).copied());
     let (scanned, found) = match cached {
-        Some((done, at)) if done == size => return at,
-        // Appended since: scan only the new lines, keep the old prompt if none is new.
-        Some((done, at)) if done < size && size - done <= TAILS[2] => {
+        Some((done, last)) if done == size => return Some(last),
+        // Appended since: scan only the new lines, keep the old timestamps where none is new.
+        Some((done, last)) if done < size && size - done <= TAILS[2] => {
             let (end, new) = scan(&path, done, size, true)?;
-            (end, new.or(at))
+            (end, new.or(last))
         }
         _ => from_tail(&path, size)?,
     };
     if let Ok(mut c) = CACHE.lock() {
         c.insert(path, (scanned, found));
     }
-    found
+    Some(found)
 }
 
 /// The last prompt in the transcript's tail, widening it until one is found.
@@ -49,11 +81,13 @@ fn from_tail(path: &Path, size: u64) -> Option<Scanned> {
         let start = size.saturating_sub(tail);
         let (e, found) = scan(path, start, size, start == 0)?;
         end = e;
-        if found.is_some() || start == 0 {
+        // A tool call older than the last prompt never matters (a mark after the prompt is
+        // newer still), so the widening stops at the prompt as before.
+        if found.prompt.is_some() || start == 0 {
             return Some((end, found));
         }
     }
-    Some((end, None))
+    Some((end, Last::default()))
 }
 
 /// Scan `[start, size)`: (offset just past its last complete line, last prompt in it).
@@ -72,7 +106,13 @@ fn scan(path: &Path, start: u64, size: u64, aligned: bool) -> Option<Scanned> {
     } else {
         &text[..]
     };
-    Some((start + whole as u64, last_prompt(body)))
+    Some((
+        start + whole as u64,
+        Last {
+            prompt: last_prompt(body),
+            tool_call: last_tool_call(body),
+        },
+    ))
 }
 
 /// The timestamp (ms) of the last human prompt in `text`, newest first.
@@ -92,6 +132,30 @@ fn last_prompt(text: &str) -> Option<i64> {
             None => v["isCompactSummary"] != true && v["origin"].is_null(),
         };
         if !human {
+            return None;
+        }
+        chrono::DateTime::parse_from_rfc3339(v["timestamp"].as_str()?)
+            .ok()
+            .map(|t| t.timestamp_millis())
+    })
+}
+
+/// The timestamp (ms) of the main thread's last tool call in `text`: an assistant entry
+/// carrying a `tool_use`, not a subagent's (`isSidechain`, from older Claude Code).
+fn last_tool_call(text: &str) -> Option<i64> {
+    text.lines().rev().find_map(|line| {
+        if !line.contains("\"tool_use\"") || !line.contains("\"assistant\"") {
+            return None;
+        }
+        let v: serde_json::Value = serde_json::from_str(line).ok()?;
+        if v["type"] != "assistant" || v["isSidechain"] == true {
+            return None;
+        }
+        let calls = v["message"]["content"]
+            .as_array()?
+            .iter()
+            .any(|c| c["type"] == "tool_use");
+        if !calls {
             return None;
         }
         chrono::DateTime::parse_from_rfc3339(v["timestamp"].as_str()?)
@@ -127,6 +191,17 @@ mod tests {
     fn assistant(at: &str) -> String {
         serde_json::json!({"type": "assistant", "timestamp": at, "message": {"role": "assistant"}})
             .to_string()
+    }
+
+    fn tool_call(at: &str, sidechain: bool) -> String {
+        serde_json::json!({
+            "type": "assistant", "timestamp": at, "isSidechain": sidechain,
+            "message": {"role": "assistant", "content": [
+                {"type": "text", "text": "running it"},
+                {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "ls"}}
+            ]}
+        })
+        .to_string()
     }
 
     const T1: &str = "2026-10-25T10:00:00.000Z";
@@ -182,5 +257,58 @@ mod tests {
         assert_eq!(for_session(dir.path(), Some(cwd), sid), Some(ms(T1)));
         writeln!(f, "{}", &next[10..]).unwrap();
         assert_eq!(for_session(dir.path(), Some(cwd), sid), Some(ms(T3)));
+    }
+
+    #[test]
+    fn the_main_threads_last_tool_call_is_kept_and_a_subagents_is_not() {
+        let text = [
+            user("go", T1, Some("human")),
+            tool_call(T2, false),
+            tool_result(T2),
+            tool_call(T3, true),
+            assistant(T3),
+        ]
+        .join("\n");
+        assert_eq!(last_tool_call(&text), Some(ms(T2)));
+        assert_eq!(last_tool_call(&assistant(T1)), None);
+    }
+
+    #[test]
+    fn appended_tool_calls_are_picked_up_and_kept_with_the_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let (sid, cwd) = ("def", "/tmp/proj2");
+        let project = dir
+            .path()
+            .join("projects")
+            .join(crate::core::discovery::encode_cwd(cwd));
+        std::fs::create_dir_all(&project).unwrap();
+        let mut f = File::create(project.join(format!("{sid}.jsonl"))).unwrap();
+        writeln!(f, "{}", user("one", T1, Some("human"))).unwrap();
+        assert_eq!(
+            last_for_session(dir.path(), Some(cwd), sid),
+            Last {
+                prompt: Some(ms(T1)),
+                tool_call: None
+            }
+        );
+        writeln!(f, "{}", tool_call(T2, false)).unwrap();
+        assert_eq!(
+            last_for_session(dir.path(), Some(cwd), sid),
+            Last {
+                prompt: Some(ms(T1)),
+                tool_call: Some(ms(T2))
+            }
+        );
+        // A text-only reply after it keeps the call; a newer one replaces it.
+        writeln!(f, "{}", assistant(T3)).unwrap();
+        assert_eq!(
+            last_for_session(dir.path(), Some(cwd), sid).tool_call,
+            Some(ms(T2))
+        );
+        writeln!(f, "{}", tool_call(T3, false)).unwrap();
+        assert_eq!(
+            last_for_session(dir.path(), Some(cwd), sid).tool_call,
+            Some(ms(T3))
+        );
     }
 }
