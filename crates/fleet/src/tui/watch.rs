@@ -112,6 +112,8 @@ fn now_ms() -> i64 {
 fn tick(state: &mut State, stuck_secs: i64) -> (Vec<Session>, Vec<Ev>) {
     let mut rows = discover();
     enrich_iterm_tabs(&mut rows);
+    // The harness's own title, as `list` has it (the generated ones come from `state`).
+    crate::core::harness_title::stamp(&mut rows);
     let mut evs = Vec::new();
     let time = chrono::Local::now().format("%H:%M:%S").to_string();
     let mut push = |icon: &'static str, msg: String| {
@@ -1664,7 +1666,7 @@ mod tests {
         // Three sessions, three consecutive rows.
         assert!(s[2].contains("docs-refresh"), "{:?}", s[2]);
         assert!(s[3].contains("cache-warmup-scheduler"), "{:?}", s[3]);
-        assert!(s[4].contains("why-is-the"), "{:?}", s[4]);
+        assert!(s[4].contains("why is the"), "{:?}", s[4]);
         // Still numbered: the digits are how a phone client acts on a row.
         assert!(s[2].contains("▸1"), "{:?}", s[2]);
         // The prompt shares the line again, but the repeated base directory does
@@ -1733,7 +1735,7 @@ mod tests {
         assert!(s[3].contains("⧉ frontend"), "{:?}", s[3]);
         assert!(s[4].contains("refresh the install docs"), "{:?}", s[4]);
         // Three items in twelve rows — the events pane gives the row up.
-        assert!(s[8].contains("why-is"), "{:?}", s);
+        assert!(s[8].contains("why is"), "{:?}", s);
         assert_cells(&s, 32);
     }
 
@@ -1743,7 +1745,7 @@ mod tests {
         // One line per session, so all three land on consecutive rows.
         assert!(s[2].contains("docs-refresh"), "{:?}", s[2]);
         assert!(s[3].contains("cache-warmup"), "{:?}", s[3]);
-        assert!(s[4].contains("why-is-the"), "{:?}", s[4]);
+        assert!(s[4].contains("why is the"), "{:?}", s[4]);
         assert_cells(&s, 50);
     }
 
@@ -1947,14 +1949,14 @@ mod tests {
         assert!(!drawn.contains("app-9d"), "{drawn}");
     }
 
-    // …and until one exists the row still has to say *something*: the
-    // heuristic slug of the first prompt (`display_title`), not `app-9d`.
+    // …and until one exists the row still has to say *something*: the first
+    // prompt as written (`display_title`), not `app-9d`.
     #[test]
-    fn an_untitled_row_falls_back_to_the_heuristic_title() {
+    fn an_untitled_row_falls_back_to_the_first_prompt() {
         let mut rows = fixture();
         apply_titles(&mut rows, &HashMap::new());
         let drawn = screen_of(120, 20, None, &rows, &[]).join("\n");
-        assert!(drawn.contains("why-is-the-statusline-blank"), "{drawn}");
+        assert!(drawn.contains("why is the statusline blank"), "{drawn}");
     }
 
     // Titling is automatic, so the pass has to be a no-op in the steady state:

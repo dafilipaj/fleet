@@ -259,9 +259,9 @@ mod tests {
             title: Some("why is the statusline blank".into()),
             ..Default::default()
         };
-        // Untitled: the heuristic slug of the first prompt stands in.
+        // Untitled: the first prompt, as written, stands in.
         let out = plain_table(std::slice::from_ref(&s));
-        assert!(out.contains("why-is-the-statusline-blank"), "{out}");
+        assert!(out.contains("why is the statusline blank"), "{out}");
 
         s.gen_title = Some("statusline-blank".into());
         let out = plain_table(std::slice::from_ref(&s));

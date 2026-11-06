@@ -846,10 +846,13 @@ impl NameCache {
 
 /// Stamp each session with the title stored for it, so a view can draw headlines
 /// without generating anything. One disk read, no model call, no `claude` child.
+/// The harness's own title comes with it ([`crate::core::harness_title`]): what a
+/// transcript appended since the last call, read through its own cache.
 ///
 /// The `watch` loop keeps its own live copy (it has fresher titles than the file
 /// while a pass is in flight); every other view reads the cache through this.
 pub fn stamp_titles(rows: &mut [Session]) {
+    crate::core::harness_title::stamp(rows);
     let cache = NameCache::load();
     for r in rows {
         if let Some(title) = cache.title(&r.key()) {

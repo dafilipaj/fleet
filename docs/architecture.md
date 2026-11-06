@@ -314,11 +314,25 @@ One title per session, one source of truth (`core::title`):
 
 - **The Claude session name is the truth.** `/rename` sets it and Claude persists it in its
   session registry (`name`, `name_source: "user"`).
-- **`display_title`** is derived once, in core, and shipped in `list --json`: the Claude name when
-  someone chose it (`name_source` ≠ `derived`), else the generated title (`gen_title`), else a
-  slug of the first prompt, else Claude's derived `<cwd>-9d` name, else the short session id / pid.
-  The CLI, TUI and web UIs draw only this; the tmux name is at most metadata (details panel, the
-  TUI's terminal column).
+- **`display_title`** is derived once, in core, and shipped in `list --json`, the first of:
+  1. the name someone chose: the Claude name when `name_source` ≠ `derived`, or a Codex thread's
+     name (`$CODEX_HOME/session_index.jsonl`, a rename or Codex's own title);
+  2. the title the harness gave the session itself: Claude Code's last `{"type":"ai-title"}`
+     record in the transcript (`core::harness_title`);
+  3. the generated title (`gen_title`), once `fleet name` stored one;
+  4. the first prompt as written: its first non-blank line, whitespace collapsed, ≤ 80 characters
+     cut at a word with `…` (never a slug);
+  5. Claude's derived `<cwd>-9d` name, else the short session id / pid.
+
+  Steps 1 and 2 are the order Claude Code's own `/resume` picker titles a session by, so a live
+  session and its resume entry carry the same title. The CLI, TUI and web UIs draw only this; the tmux name is at most metadata (details
+  panel, the TUI's terminal column), and the harness's title doesn't rename it.
+- **Reading the harness's title** costs only what the transcript appended since the last call:
+  `~/.claude/fleet-harness-titles.json` keeps, per transcript, its inode, the bytes read (to the
+  last complete line) and the last title found. A first read scans the tail (256 KiB, 2 MiB,
+  8 MiB, then the whole file) until a title turns up; a shorter or replaced transcript is read
+  again; entries unused for a week are dropped. An unreadable transcript or cache, or a
+  malformed record, leaves the step out; it never fails `list`.
 - **The tmux session name is derived**: a slug of the title (lowercase kebab, common Latin
   accents folded, ≤ 48 chars), `-2`, `-3`… on a collision; a name already derived from the title
   (with or without its suffix) is left as is. It is synced on **every** rename — `fleet rename`,

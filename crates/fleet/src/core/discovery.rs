@@ -86,6 +86,12 @@ pub struct Session {
     /// titling pass, never by the registry, and deliberately independent of both
     /// `name` and `tab`: it is what the TUI puts on a row's first line.
     pub gen_title: Option<String>,
+    /// The title the harness gave the session itself (Claude Code's last `ai-title` record,
+    /// [`crate::core::harness_title`]), step 2 of the display title. Stamped with the
+    /// generated title ([`crate::core::naming::stamp_titles`]); `None` inside discovery.
+    /// Not in `--json`: `display_title` carries it.
+    #[serde(skip)]
+    pub harness_title: Option<String>,
     /// The one title every view draws — see [`crate::core::title::display_title`].
     /// Stamped by `list` (`None` inside discovery; [`Session::headline`] computes
     /// it live). Output only: views must not edit it, renames go through Claude.
@@ -167,6 +173,7 @@ impl Default for Session {
             waiting_for: None,
             title: None,
             gen_title: None,
+            harness_title: None,
             display_title: None,
             host: None,
             background: None,
@@ -215,10 +222,17 @@ impl Session {
     }
 
     /// What every view puts on a row: the session's one title,
-    /// [`crate::core::title::display_title`] — the chosen Claude name, else the
-    /// generated title, else a heuristic, else [`Session::label`].
+    /// [`crate::core::title::display_title`]: the chosen name, else the harness's own
+    /// title, else the generated title, else the first prompt, else [`Session::label`].
+    /// A row `list` stamped (another host's included, whose harness title doesn't travel)
+    /// keeps the title it was stamped with.
     pub fn headline(&self) -> String {
-        crate::core::title::display_title(self)
+        self.display_title
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| crate::core::title::display_title(self))
     }
 
     /// Short human label: derived name, else short sessionId, else pid.
@@ -486,6 +500,7 @@ fn claude_session(
         name: reg.name,
         cwd: reg.cwd,
         gen_title: None,
+        harness_title: None,
         display_title: None,
         host: None,
         model_at: model_at.filter(|_| context.as_ref().is_some_and(|c| c.model.is_some())),
@@ -1377,6 +1392,7 @@ impl Rung {
         match self {
             Rung::Exact => {
                 s.pid.to_string() == q
+                    || s.headline().to_lowercase() == q
                     || s.name.as_deref().is_some_and(|n| n.to_lowercase() == q)
                     || s.gen_title
                         .as_deref()
@@ -2173,6 +2189,31 @@ mod tests {
             gen_title: Some(title.into()),
             ..Default::default()
         }
+    }
+
+    // The title a row shows is a target as it is, though another's starts with it: the
+    // harness's own title and the first prompt are headlines too.
+    #[test]
+    fn a_shown_title_resolves_exactly_before_a_longer_one() {
+        let row = |pid: i64, title: &str| Session {
+            pid,
+            name: Some(format!("app-{pid}")),
+            name_source: Some("derived".into()),
+            harness_title: Some(title.into()),
+            ..Default::default()
+        };
+        let rows = vec![row(1, "Fix login"), row(2, "Fix login redirect")];
+        assert_eq!(resolve_in(rows.clone(), "fix login").map(|s| s.pid), Ok(1));
+        let prompt = Session {
+            pid: 3,
+            title: Some("Port the rates table".into()),
+            ..Default::default()
+        };
+        let rows = vec![prompt, row(4, "Port the rates table and its tests")];
+        assert_eq!(
+            resolve_in(rows, "Port the rates table").map(|s| s.pid),
+            Ok(3)
+        );
     }
 
     #[test]

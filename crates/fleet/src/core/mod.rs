@@ -14,6 +14,7 @@ pub mod gh_identity;
 pub mod git;
 pub mod grouping;
 pub mod harness;
+pub mod harness_title;
 pub mod hosts;
 pub mod input;
 pub mod jobs;

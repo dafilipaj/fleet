@@ -352,7 +352,8 @@ fn display_title_skips_a_derived_name_and_rename_json_reports() {
         .output()
         .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v[0]["display_title"], "why-is-the-statusline-blank");
+    // The first prompt as written, never a slug of it.
+    assert_eq!(v[0]["display_title"], "why is the statusline blank");
     assert_eq!(v[0]["name"], "app-9d");
 
     // Waiting on a prompt: held, nothing typed, exit 3, and the report says why.
