@@ -7,10 +7,11 @@
 //!   sets and what Claude persists in its session registry, so it survives a
 //!   fleet restart and is the same on every view.
 //! - **The display title is derived from it, once, here**
-//!   ([`display_title`]): the Claude name when someone chose one, else the
-//!   generated title, else a heuristic slug of the first prompt, else the
-//!   short id. `list --json` carries it as `display_title`; every UI draws only
-//!   that.
+//!   ([`display_title`]): the name someone chose, else the title the harness
+//!   gave the session itself, else the generated title, else the first prompt
+//!   as written, else the short id. `list --json` carries it as
+//!   `display_title`; every UI draws only that. The first two are the order
+//!   Claude Code's own `/resume` picker titles a session by, so the two agree.
 //! - **The tmux session name is derived too**: a slug of the title
 //!   ([`tmux_name_for`]), brought in line on every rename that goes through
 //!   [`apply_rename`] — a manual rename, `fleet name --apply` (auto-naming) and
@@ -39,6 +40,9 @@ use crate::error::{Error, Result};
 /// exists because the title goes out as `/rename <title>` into a live TUI.
 pub const MAX_TITLE: usize = 64;
 
+/// The longest first prompt [`display_title`] shows, its `…` included.
+pub const MAX_PROMPT_TITLE: usize = 80;
+
 /// The longest tmux session name derived from a title.
 pub const MAX_TMUX_SLUG: usize = 48;
 
@@ -55,24 +59,47 @@ pub fn chosen_name(s: &Session) -> Option<&str> {
 
 /// What every view calls this session — the one title.
 ///
-/// Precedence: the chosen Claude name, the generated title, a slug of the
-/// first prompt, Claude's derived name, the short session id, the pid.
+/// The first of these, trimmed, never blank (docs/architecture.md, "Session titles"):
+///
+/// 1. The name someone chose ([`chosen_name`]): a Claude Code `/rename`, `-n` or
+///    `fleet name --apply`; a Codex thread's name, its rename or its own title.
+/// 2. The title the harness gave the session itself (`harness_title`: Claude Code's
+///    last `ai-title`).
+/// 3. Fleet's generated title (`gen_title`), once `fleet name` has stored one.
+/// 4. The first prompt as written ([`prompt_title`]), never a slug of it.
+/// 5. [`Session::label`]: Claude's derived `<cwd>-9d` name, the short session id, the pid.
 pub fn display_title(s: &Session) -> String {
-    if let Some(n) = chosen_name(s) {
-        return n.to_string();
+    let given = |t: Option<&str>| {
+        t.map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+    };
+    chosen_name(s)
+        .map(str::to_string)
+        .or_else(|| given(s.harness_title.as_deref()))
+        .or_else(|| given(s.gen_title.as_deref()))
+        .or_else(|| s.title.as_deref().and_then(prompt_title))
+        .unwrap_or_else(|| s.label())
+}
+
+/// A first prompt as a title: its first non-blank line, whitespace collapsed, words and
+/// case kept, at most [`MAX_PROMPT_TITLE`] characters, cut at a word with `…`.
+pub fn prompt_title(prompt: &str) -> Option<String> {
+    let line = prompt
+        .lines()
+        .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+        .find(|l| !l.is_empty())?;
+    if line.chars().count() <= MAX_PROMPT_TITLE {
+        return Some(line);
     }
-    if let Some(g) = s
-        .gen_title
-        .as_deref()
-        .map(str::trim)
-        .filter(|g| !g.is_empty())
-    {
-        return g.to_string();
-    }
-    if let Some(h) = naming::heuristic_from(None, s.title.as_deref()) {
-        return h;
-    }
-    s.label()
+    let head: String = line.chars().take(MAX_PROMPT_TITLE - 1).collect();
+    let at_word = line.chars().nth(MAX_PROMPT_TITLE - 1) == Some(' ');
+    let cut = match head.rfind(' ') {
+        _ if at_word => head.as_str(),
+        Some(i) if i > 0 => head[..i].trim_end(),
+        _ => head.as_str(),
+    };
+    Some(format!("{cut}…"))
 }
 
 /// Fill `display_title` on every row (what `list --json` ships).
@@ -484,13 +511,171 @@ mod tests {
         let mut s = named("app-9d", "derived");
         s.gen_title = Some("  cache-warmup  ".into());
         assert_eq!(display_title(&s), "cache-warmup");
-        // No generated title: the first prompt, slugged.
+        // No generated title: the first prompt's first line, as written.
         s.gen_title = None;
         s.title = Some("# Fix the flaky login test\nmore".into());
-        assert_eq!(display_title(&s), "fix-the-flaky-login-test");
+        assert_eq!(display_title(&s), "# Fix the flaky login test");
         // Nothing at all: Claude's derived name is still better than an id.
         s.title = None;
         assert_eq!(display_title(&s), "app-9d");
+    }
+
+    #[test]
+    fn the_order_is_chosen_name_harness_title_generated_title_first_prompt_label() {
+        let mut s = Session {
+            pid: 7,
+            session_id: Some("0123456789abcdef".into()),
+            name: Some("fix-login".into()),
+            name_source: Some("user".into()),
+            harness_title: Some("Login redirect loop fix".into()),
+            gen_title: Some("login-flow-repair".into()),
+            title: Some("Let's resolve merge conflicts".into()),
+            ..Default::default()
+        };
+        assert_eq!(display_title(&s), "fix-login");
+        s.name_source = Some("derived".into());
+        assert_eq!(display_title(&s), "Login redirect loop fix");
+        // A blank one is no title: the next step stands.
+        s.harness_title = Some("   ".into());
+        assert_eq!(display_title(&s), "login-flow-repair");
+        s.harness_title = None;
+        assert_eq!(display_title(&s), "login-flow-repair");
+        s.gen_title = None;
+        assert_eq!(display_title(&s), "Let's resolve merge conflicts");
+        s.title = Some(" \n  ".into());
+        assert_eq!(
+            display_title(&s),
+            "fix-login",
+            "the derived name, as the label"
+        );
+        s.name = None;
+        assert_eq!(display_title(&s), "01234567");
+        // A Codex thread's name, its own title included, is a chosen name.
+        let codex = Session {
+            name: Some("Port the proposals list".into()),
+            name_source: Some("codex".into()),
+            title: Some("port proposals".into()),
+            harness: crate::core::harness::Harness::Codex,
+            ..Default::default()
+        };
+        assert_eq!(display_title(&codex), "Port the proposals list");
+    }
+
+    #[test]
+    fn a_stamped_title_stands_for_a_row_from_another_host() {
+        // `list --all-hosts`: another host's row arrives with its display title; the harness
+        // title it was chosen from doesn't travel.
+        let s = Session {
+            title: Some("Let's fix the login".into()),
+            display_title: Some("Login redirect loop fix".into()),
+            ..Default::default()
+        };
+        assert_eq!(s.headline(), "Login redirect loop fix");
+        let unstamped = Session {
+            display_title: None,
+            ..s
+        };
+        assert_eq!(unstamped.headline(), "Let's fix the login");
+    }
+
+    #[test]
+    fn the_first_prompt_keeps_its_words_and_case_and_is_cut_at_a_word() {
+        assert_eq!(
+            prompt_title("\n\n  Let's resolve   merge\tconflicts and push  \nsecond line")
+                .as_deref(),
+            Some("Let's resolve merge conflicts and push")
+        );
+        assert_eq!(prompt_title(" \n\t"), None);
+        let exact = "a".repeat(MAX_PROMPT_TITLE);
+        assert_eq!(prompt_title(&exact).as_deref(), Some(exact.as_str()));
+        let long = "Let's resolve merge conflicts in the proposals branch and then rerun every flaky acceptance test we have";
+        let t = prompt_title(long).unwrap();
+        assert_eq!(
+            t,
+            "Let's resolve merge conflicts in the proposals branch and then rerun every…"
+        );
+        assert!(t.chars().count() <= MAX_PROMPT_TITLE);
+        // Words fill the room exactly: no word is dropped.
+        let fit = format!("{} {}", "a".repeat(MAX_PROMPT_TITLE - 1), "b");
+        assert_eq!(
+            prompt_title(&fit).unwrap(),
+            format!("{}…", "a".repeat(MAX_PROMPT_TITLE - 1))
+        );
+        // One word longer than the room: cut inside it.
+        let word = "é".repeat(200);
+        assert_eq!(
+            prompt_title(&word).unwrap().chars().count(),
+            MAX_PROMPT_TITLE
+        );
+    }
+
+    /// Parity with Claude Code's own `/resume` picker, which titles a session by its last
+    /// `custom-title` record (a name someone chose, which Claude Code also keeps as the
+    /// registry's `name`), else its last `ai-title`: on the same transcripts, the display
+    /// title is that title.
+    #[test]
+    fn a_live_session_is_titled_as_the_resume_picker_titles_its_transcript() {
+        use crate::core::harness_title::{Cache, stamp_with};
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let cwd = "/work/app";
+        let proj = home
+            .join("projects")
+            .join(crate::core::discovery::encode_cwd(cwd));
+        std::fs::create_dir_all(&proj).unwrap();
+        let user = r#"{"type":"user","message":{"role":"user","content":"Let's resolve merge conflicts"}}"#;
+        let ai = |t: &str| format!(r#"{{"type":"ai-title","aiTitle":"{t}","sessionId":"s"}}"#);
+        let custom =
+            |t: &str| format!(r#"{{"type":"custom-title","customTitle":"{t}","sessionId":"s"}}"#);
+        // (session id, transcript lines, the registry's name if one was chosen, the picker's title)
+        let cases: [(&str, Vec<String>, Option<&str>, &str); 3] = [
+            (
+                "s-ai",
+                vec![
+                    user.into(),
+                    ai("Login redirect loop"),
+                    ai("Login redirect loop fix"),
+                ],
+                None,
+                "Login redirect loop fix",
+            ),
+            (
+                "s-custom",
+                vec![
+                    user.into(),
+                    ai("Login redirect loop fix"),
+                    custom("login-fix"),
+                ],
+                Some("login-fix"),
+                "login-fix",
+            ),
+            (
+                "s-retitled",
+                vec![user.into(), ai("Old"), custom("named"), ai("New")],
+                Some("named"),
+                "named",
+            ),
+        ];
+        let mut rows: Vec<Session> = cases
+            .iter()
+            .map(|(sid, lines, name, _)| {
+                std::fs::write(proj.join(format!("{sid}.jsonl")), lines.join("\n") + "\n").unwrap();
+                Session {
+                    pid: 1,
+                    session_id: Some(sid.to_string()),
+                    cwd: Some(cwd.into()),
+                    name: Some(name.unwrap_or("app-9d").into()),
+                    name_source: Some(if name.is_some() { "user" } else { "derived" }.into()),
+                    title: Some("Let's resolve merge conflicts".into()),
+                    ..Default::default()
+                }
+            })
+            .collect();
+        stamp_with(&mut rows, home, &mut Cache::at(home.join("cache.json")));
+        stamp_display_titles(&mut rows);
+        for (row, (sid, _, _, expected)) in rows.iter().zip(&cases) {
+            assert_eq!(row.display_title.as_deref(), Some(*expected), "{sid}");
+        }
     }
 
     #[test]
