@@ -535,7 +535,7 @@ mod tests {
             // Aliases, through fleet's model list.
             ("Sonnet 5.5", "sonnet"),
             ("Opus 5.5 (1M context)", "opus[1m]"),
-            ("Fable 5.1", "FABLE"),
+            ("Fable 5.2", "FABLE"),
             // The id itself: a model Claude Code has no label for.
             ("my-model", "my-model"),
             ("sonnet (claude-sonnet-5-5)", "sonnet"),
@@ -564,6 +564,8 @@ mod tests {
             ("Sonnet 5.1", SONNET),
             ("Opus 5.5 (1M context)", SONNET),
             ("Fable 5.1", "claude-opus-5-5"),
+            // `fable` is Fable 5.2 now: a switch to 5.1 is another model.
+            ("Fable 5.1", "fable"),
             ("Sonnet 4", "claude-sonnet-4-5-20250929"),
             ("claude-haiku-5-5", SONNET),
             ("Haiku 5.5", "sonnet"),

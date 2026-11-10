@@ -1497,7 +1497,7 @@ fn harness_list_gives_each_model_its_effort_levels() {
         claude_models,
         [
             row("", &all, "xhigh"),
-            row("claude-fable-5-1", &all, "high"),
+            row("claude-fable-5-2", &all, "medium"),
             row("claude-opus-5-5", &all, "xhigh"),
             row("claude-sonnet-5-5", &all, "medium"),
             row("claude-haiku-5-5", &all, "low"),

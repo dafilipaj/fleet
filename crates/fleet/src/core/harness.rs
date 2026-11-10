@@ -282,9 +282,10 @@ const CODEX_EFFORTS: [&str; 8] = [
 ];
 
 /// Claude's listed models: id, label, and the level a new session on it starts at by Claude
-/// Code's docs.
+/// Code's docs. Fable is Claude Code 2.1.322's: Fable 5.2, the `fable` alias, starting at
+/// `medium` (Fable 5.1 started at `high`; Claude Code moves a saved 5.1 pick to `fable`).
 const CLAUDE_LISTED: [(&str, &str, &str); 4] = [
-    ("claude-fable-5-1", "Fable 5.1", "high"),
+    ("claude-fable-5-2", "Fable 5.2", "medium"),
     ("claude-opus-5-5", "Opus 5.5", "medium"),
     ("claude-sonnet-5-5", "Sonnet 5.5", "medium"),
     ("claude-haiku-5-5", "Haiku 5.5", "medium"),
@@ -2955,8 +2956,9 @@ mod tests {
         w.iter().map(|s| s.to_string()).collect()
     }
 
-    // Claude's levels are fleet's table: every model low to max, starting at medium (Fable at
-    // high); the default entry takes the levels of the model it names, an alias resolved.
+    // Claude's levels are fleet's table: every model low to max, starting at medium; the
+    // default entry takes the levels of the model it names, an alias resolved. Fable 5.1 is no
+    // longer listed: a default naming it gets every level and no default level.
     #[test]
     fn claude_models_carry_their_effort_levels() {
         let all = words(&["low", "medium", "high", "xhigh", "max"]);
@@ -2965,7 +2967,7 @@ mod tests {
             efforts_of(&claude_models(None)),
             [
                 ("".into(), all.clone(), None),
-                ("claude-fable-5-1".into(), all.clone(), level("high")),
+                ("claude-fable-5-2".into(), all.clone(), level("medium")),
                 ("claude-opus-5-5".into(), all.clone(), level("medium")),
                 ("claude-sonnet-5-5".into(), all.clone(), level("medium")),
                 ("claude-haiku-5-5".into(), all.clone(), level("medium")),
@@ -2973,8 +2975,9 @@ mod tests {
         );
         for (default, starts) in [
             ("opus[1m]", level("medium")),
-            ("fable", level("high")),
-            ("claude-fable-5-1", level("high")),
+            ("fable", level("medium")),
+            ("claude-fable-5-2", level("medium")),
+            ("claude-fable-5-1", None),
             ("claude-sonnet-5-5[1m]", level("medium")),
             ("gpt-6", None),
             ("claude-opus-4-1", None),
@@ -2989,7 +2992,7 @@ mod tests {
         // In `harness list --json`: always there, `[]` and null where none is known.
         let v = serde_json::to_value(&claude_models(None)[1]).unwrap();
         assert_eq!(v["efforts"][4], "max", "{v}");
-        assert_eq!(v["default_effort"], "high", "{v}");
+        assert_eq!(v["default_effort"], "medium", "{v}");
         let v = serde_json::to_value(opt("x", "X")).unwrap();
         assert_eq!(
             (v["efforts"].clone(), v["default_effort"].clone()),
@@ -3013,7 +3016,7 @@ mod tests {
     fn starts(levels: [Option<&str>; 5]) -> Vec<(String, Option<String>)> {
         [
             "",
-            "claude-fable-5-1",
+            "claude-fable-5-2",
             "claude-opus-5-5",
             "claude-sonnet-5-5",
             "claude-haiku-5-5",
@@ -3038,12 +3041,12 @@ mod tests {
                 r#"{"env":{"ANTHROPIC_API_KEY":"sk-not-read"},"model":"opus",
                     "modelSettings":{"claude-opus-5-5":{"effortLevel":"xhigh"},
                       "claude-haiku-5-5":{"effortLevel":"turbo"},"claude-sonnet-5-5":{"other":1},
-                      "claude-fable-5-1":{"effortLevel":"max"}}}"#,
+                      "claude-fable-5-2":{"effortLevel":"max"}}}"#,
                 None
             ),
             starts([
                 Some("xhigh"),
-                Some("high"),
+                Some("medium"),
                 Some("xhigh"),
                 Some("medium"),
                 Some("medium")
@@ -3054,7 +3057,7 @@ mod tests {
                 claude_starts(text, None),
                 starts([
                     Some("medium"),
-                    Some("high"),
+                    Some("medium"),
                     Some("medium"),
                     Some("medium"),
                     Some("medium")
@@ -3076,12 +3079,12 @@ mod tests {
                     "claude-sonnet-5-5[1m]":{"effortLevel":"low"},"sonnet":{"effortLevel":"xhigh"},
                     "claude-haiku-5-5-20261001":{"effortLevel":"turbo"},
                     "haiku":{"effortLevel":"high"},
-                    "us.anthropic.claude-fable-5-1-v1:0":{"effortLevel":"low"}}}"#,
+                    "us.anthropic.claude-fable-5-2":{"effortLevel":"low"}}}"#,
                 None
             ),
             starts([
                 Some("high"),
-                Some("high"),
+                Some("medium"),
                 Some("high"),
                 Some("low"),
                 Some("high")
@@ -3105,7 +3108,7 @@ mod tests {
             claude_starts(r#"{"effortLevel":"max"}"#, None),
             starts([
                 Some("medium"),
-                Some("high"),
+                Some("medium"),
                 Some("medium"),
                 Some("medium"),
                 Some("medium")
@@ -3122,13 +3125,13 @@ mod tests {
                 r#"{"maxEffortLevel":"low","modelSettings":{
                     "claude-opus-5-5":{"effortLevel":"xhigh","maxEffortLevel":"xhigh"},
                     "opus":{"maxEffortLevel":"high"},
-                    "claude-fable-5-1":{"maxEffortLevel":"max"},
+                    "claude-fable-5-2":{"maxEffortLevel":"max"},
                     "claude-sonnet-5-5":{"maxEffortLevel":"turbo"}}}"#,
                 None
             ),
             starts([
                 Some("high"),
-                Some("high"),
+                Some("medium"),
                 Some("high"),
                 Some("low"),
                 Some("low")
@@ -3145,7 +3148,7 @@ mod tests {
             claude_starts(saved, Some(" ")),
             starts([
                 Some("xhigh"),
-                Some("high"),
+                Some("medium"),
                 Some("xhigh"),
                 Some("medium"),
                 Some("medium")

@@ -1464,9 +1464,10 @@ Each model carries its effort levels, `efforts` (lowest first: what [`fleet
 effort`](#switching-the-effort) can be given for it) and `default_effort` (the level a new
 session on it starts at, or `null`); `[]` and `null` where they are not known, and always for
 pi. Claude's are fleet's own table, hand-kept from Claude Code's model docs (as of 2.1.306) like
-the model list: `low`, `medium`, `high`, `xhigh`, `max` on every model, starting at `medium`
-(Fable 5.1 at `high`). Claude Code's user settings (the same `settings.json`; only the keys
-below are read from it) change the start as Claude Code 2.1.308 reads them:
+the model list (Fable 5.2, Opus 5.5, Sonnet 5.5, Haiku 5.5, as of Claude Code 2.1.322): `low`,
+`medium`, `high`, `xhigh`, `max` on every model, starting at `medium`. Claude Code's user
+settings (the same `settings.json`; only the keys below are read from it) change the start as
+Claude Code 2.1.308 reads them:
 
 - `modelSettings.<model>.effortLevel` (`low` to `xhigh`: what `/effort` saves; `auto` removes
   it) is that model's start. `<model>` counts for the listed model it names: its id, an alias
