@@ -643,12 +643,16 @@ fn parse_tabs(c: &str) -> Option<Vec<(String, bool)>> {
     if !c.starts_with('←') && !c.contains('☐') && !c.contains('☒') {
         return None;
     }
+    // The row's own arrows are at its ends ("←  ☐ Color  ☐ Fruits  ✔ Submit  →"); an arrow
+    // inside a header ("A→B→A") is the header's, so a tab ends only at the next box or Submit.
+    let row = c.trim_end();
+    let row = row.strip_suffix('→').unwrap_or(row);
     let mut tabs = Vec::new();
-    let mut rest = c;
+    let mut rest = row;
     while let Some(i) = rest.find(['☐', '☒']) {
         let touched = rest[i..].starts_with('☒');
         let after = &rest[i + '☐'.len_utf8()..];
-        let end = after.find(['☐', '☒', '✔', '→']).unwrap_or(after.len());
+        let end = after.find(['☐', '☒', '✔']).unwrap_or(after.len());
         tabs.push((after[..end].trim().to_string(), touched));
         rest = &after[end..];
     }
@@ -2533,6 +2537,24 @@ Ready to submit your answers?
         .unwrap();
         let single = color_form().replace("☐ Color  ☐ Fruits", "☐ Color");
         assert_eq!(why(&single, &renamed), Some(Detail::Options));
+    }
+
+    #[test]
+    fn an_arrow_in_a_header_is_the_header_s() {
+        // Found 2026-11-12: a question headed "A→B→A" read as "A", so its form was never
+        // the question's and could not be answered.
+        let screen = color_form().replace("☐ Fruits", "☐ A→B→A");
+        let f = parse_form(&screen).unwrap();
+        assert_eq!(
+            f.tabs,
+            [("Color".to_string(), false), ("A→B→A".to_string(), false)]
+        );
+        let mut qs = two();
+        qs[1].header = "A→B→A".into();
+        assert_eq!(why(&screen, &qs), None);
+        // The last tab before Submit, and a row with no Submit, end at the row's own arrow.
+        let last = color_form().replace("☐ Fruits  ✔ Submit  →", "☐ A→B→A  →");
+        assert_eq!(parse_form(&last).unwrap().tabs[1].0, "A→B→A");
     }
 
     #[test]
