@@ -15,6 +15,9 @@ const isSubmit = (e: React.KeyboardEvent) => e.key === 'Enter' && (e.metaKey || 
  * keep it for the review ("Start a review" / "Add review comment"). ⌘↵ does what GitHub does:
  * a review comment once a review is pending, else a single comment.
  */
+/** Where a new comment goes: the session, or a note on the PR. */
+export type CommentTarget = 'session' | 'note'
+
 export function CommentComposer({
   label,
   drafts,
@@ -23,6 +26,7 @@ export function CommentComposer({
   onAsk,
   asking = false,
   submitLabel = 'Add single comment',
+  target,
 }: {
   label: string
   drafts: number
@@ -33,7 +37,13 @@ export function CommentComposer({
   /** Opened to ask (the selection's "Ask" button): ⌘↵ asks. */
   asking?: boolean
   submitLabel?: string
+  /**
+   * Where the comment goes, when there is a choice: `session` (feedback the session acts on) or
+   * `note` (kept in Fleet on the PR, postable to GitHub). Shown as a toggle above the text.
+   */
+  target?: { value: CommentTarget; onChange: (t: CommentTarget) => void; note: string }
 }) {
+  const noting = target?.value === 'note'
   const [body, setBody] = useState('')
   const [busy, setBusy] = useState<false | 'single' | 'draft' | 'ask'>(false)
   const ask = async () => {
@@ -54,7 +64,31 @@ export function CommentComposer({
   }
   return (
     <div className="border-y bg-card px-3 py-2.5 font-sans">
-      <p className="mb-1.5 text-xs text-muted-foreground">{asking && onAsk ? 'Ask about' : 'Comment on'} {label}</p>
+      <div className="mb-1.5 flex flex-wrap items-center gap-2">
+        <p className="text-xs text-muted-foreground">{asking && onAsk ? 'Ask about' : 'Comment on'} {label}</p>
+        {target && !(asking && onAsk) ? (
+          <div role="radiogroup" aria-label="Comment goes to" className="ml-auto flex items-center gap-0.5 rounded-lg bg-muted p-0.5">
+            {(
+              [
+                ['session', 'To the session', 'Feedback the session acts on: sent now, or with the review'],
+                ['note', target.note, 'A note kept in Fleet on the PR: post it to GitHub when you want'],
+              ] as const
+            ).map(([v, text, title]) => (
+              <button
+                key={v}
+                type="button"
+                role="radio"
+                aria-checked={target.value === v}
+                title={title}
+                onClick={() => target.onChange(v)}
+                className={cn('h-7 rounded-md px-2 text-xs font-medium text-muted-foreground', target.value === v && 'bg-background text-foreground shadow-sm dark:bg-accent')}
+              >
+                {text}
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
       <Textarea
         ref={ref}
         value={body}
@@ -63,13 +97,13 @@ export function CommentComposer({
           if (isSubmit(e)) {
             e.preventDefault()
             if (asking && onAsk) void ask()
-            else void go(drafts > 0)
+            else void go(!noting && drafts > 0)
           } else if (e.key === 'Escape') {
             e.stopPropagation()
             onCancel()
           }
         }}
-        placeholder={asking && onAsk ? 'Ask Claude about these lines — answered on the side, not in the session…' : 'Ask, suggest a change… (the selected lines go with it)'}
+        placeholder={asking && onAsk ? 'Ask Claude about these lines — answered on the side, not in the session…' : noting ? 'A note on the PR (kept in Fleet until you post it)…' : 'Ask, suggest a change… (the selected lines go with it)'}
         className="min-h-20 bg-background text-sm"
       />
       <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
@@ -89,13 +123,15 @@ export function CommentComposer({
             Ask on the side
           </Button>
         ) : null}
-        <Button variant={drafts > 0 ? 'default' : 'outline'} size="sm" disabled={!body.trim() || !!busy} onClick={() => void go(true)}>
-          {busy === 'draft' ? <LoaderIcon className="animate-spin" /> : null}
-          {drafts > 0 ? 'Add review comment' : 'Start a review'}
-        </Button>
-        <Button variant={drafts > 0 ? 'outline' : 'default'} size="sm" disabled={!body.trim() || !!busy} onClick={() => void go(false)}>
+        {noting ? null : (
+          <Button variant={drafts > 0 ? 'default' : 'outline'} size="sm" disabled={!body.trim() || !!busy} onClick={() => void go(true)}>
+            {busy === 'draft' ? <LoaderIcon className="animate-spin" /> : null}
+            {drafts > 0 ? 'Add review comment' : 'Start a review'}
+          </Button>
+        )}
+        <Button variant={!noting && drafts > 0 ? 'outline' : 'default'} size="sm" disabled={!body.trim() || !!busy} onClick={() => void go(false)}>
           {busy === 'single' ? <LoaderIcon className="animate-spin" /> : null}
-          {submitLabel}
+          {noting ? 'Add note' : submitLabel}
         </Button>
       </div>
     </div>

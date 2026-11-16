@@ -599,6 +599,7 @@ function prReview(host, owner, repo, number, what, b) {
     return { host, id: null, cwd: `${H}/Code/${repo}`, pr, fingerprint: 'pr-fp', unchanged: false, repos: [{ ...r, label: `${owner}/${repo}`, branch: 'stripe-retry', head: 'c'.repeat(40) }] }
   }
   const note = (id, path, start, end, body, posted) => ({ id, root: null, path, side: 'new', start, end, code: [], status: 'draft', resolved: false, reviewId: null, createdAt: now() - 30 * M, entries: [{ body, sentAt: null, state: 'draft', replies: [] }], posted })
+  if (number !== 1310 && number !== 482) return { host, pr, threads: [], reviews: [], drafts: 0 }
   const threads = [note('c-0000a1', 'src/billing/currency.ts', 23, 25, 'Does `Math.round` here still lose a cent for x.xx5 amounts in 3-decimal currencies?', null), note('c-0000a2', 'src/billing/invoice_total.ts', 14, 15, 'Nice — summing in cents fixes #1777.', { url: `https://github.com/${owner}/${repo}/pull/${number}#discussion_r1`, at: now() - 10 * M })]
   return { host, pr, threads, reviews: [], drafts: 1 }
 }
@@ -610,14 +611,19 @@ function sideAsk(b, id = 'q-0000000001') {
 
 function diffs(host, id) {
   if (!(host === 'workstation' && id.endsWith('0001') && id.startsWith('a1'))) return { host, id, cwd: find(host, id)?.cwd ?? null, fingerprint: 'demo', unchanged: false, repos: [] }
-  const repo = (root, label, branch, base) => {
-    const files = DIFF_FILES[root]
+  const repo = (root, label, branch, base, extra = {}, files = DIFF_FILES[root]) => {
     const stats = { files: files.length, additions: files.reduce((a, f) => a + f.additions, 0), deletions: files.reduce((a, f) => a + f.deletions, 0) }
-    return { root, label, branch, head: '9f3c2a1', base: { ref: base, sha: '4e1d0b7c' }, tree: 'demo', fingerprint: `demo-${label}`, files, stats, truncated: false }
+    return { root, label, branch, head: '9f3c2a1', base: { ref: base, sha: '4e1d0b7c' }, tree: 'demo', fingerprint: `demo-${label}`, files, stats, truncated: false, source: 'worktree', ...extra }
   }
+  const pr = (repoName, number, title, state, headBranch) => ({ owner: 'acme', repo: repoName, number, title, url: `https://github.com/acme/${repoName}/pull/${number}`, state, headBranch, baseBranch: 'main', headOid: 'c'.repeat(40) })
   return {
     host, id, cwd: API_WT, fingerprint: 'demo', unchanged: false,
-    repos: [repo(API_WT, '~/Code/acme-api/.worktrees/fix-invoice-rounding', 'fix/invoice-rounding', 'origin/main'), repo(WEB_WT, '~/Code/acme-web/.worktrees/invoice-pdf-totals', 'fix/invoice-pdf-totals', 'origin/main')],
+    repos: [
+      repo(API_WT, '~/Code/acme-api/.worktrees/fix-invoice-rounding', 'fix/invoice-rounding', 'origin/main', { remote: 'acme/acme-api', pr: pr('acme-api', 482, 'Fix invoice rounding for 3-decimal currencies', 'open', 'fix/invoice-rounding'), local: { uncommitted: 2, unpushed: 0 } }),
+      repo(WEB_WT, '~/Code/acme-web/.worktrees/invoice-pdf-totals', 'fix/invoice-pdf-totals', 'origin/main', { remote: 'acme/acme-web', pr: pr('acme-web', 1322, 'Invoice PDF: totals from invoiceTotal', 'draft', 'fix/invoice-pdf-totals'), local: { uncommitted: 0, unpushed: 1 } }),
+      repo(`${H}/Code/acme-api`, 'acme/acme-api', 'perf/statement-totals', 'main', { key: 'pr:acme/acme-api#479', source: 'pr', remote: 'acme/acme-api', pr: pr('acme-api', 479, 'Cache invoice totals per monthly statement', 'open', 'perf/statement-totals') }, DIFF_FILES[API_WT].slice(0, 1)),
+      repo(`${H}/Code/acme-ops`, '~/Code/acme-ops', 'main', 'origin/main', { remote: 'acme/acme-ops', pr: null, local: { uncommitted: 1, unpushed: 0 } }, DIFF_FILES[WEB_WT].slice(0, 1)),
+    ],
   }
 }
 function review(host, id) {

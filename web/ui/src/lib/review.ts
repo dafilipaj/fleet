@@ -1,4 +1,4 @@
-import type { DiffFile, DiffHunk, DiffLine, DiffRepo, ReviewThread } from '@/api/types'
+import type { DiffFile, DiffHunk, DiffLine, DiffRepo, ReviewPr, ReviewThread } from '@/api/types'
 import { clauseKey, flatClauses, type Clause, type PlainDiff } from '@/lib/plain'
 
 /** `#/review/<host>/<id>`: the diff reviewer for that session. */
@@ -222,8 +222,45 @@ export const rangeText = (t: { start: number; end: number; side: Side }) =>
 /** A file's identity across checkouts. */
 export const fileKey = (root: string, path: string) => (root ? `${root}\u0000${path}` : path)
 
+/** The DOM id of an entry's heading in the diff list. */
+export const entryAnchor = (key: string) => `review-entry-${encodeURIComponent(key)}`
+
+/** A review entry's id: its root, or `pr:owner/repo#n` for a PR diffed without a worktree. */
+export const repoKey = (repo: Pick<DiffRepo, 'root' | 'key'>) => repo.key || repo.root
+
+/** `owner/repo#n` */
+export const prRefOf = (pr: Pick<ReviewPr, 'owner' | 'repo' | 'number'>) => `${pr.owner}/${pr.repo}#${pr.number}`
+
 /** A thread's file key; a thread from before roots belongs to the session's own checkout. */
-export const threadKey = (t: Pick<ReviewThread, 'root' | 'path'>, defaultRoot: string) => fileKey(t.root ?? defaultRoot, t.path)
+export const threadKey = (t: Pick<ReviewThread, 'root' | 'path' | 'pr'>, defaultRoot: string) => (t.pr ? fileKey(`pr:${t.pr.toLowerCase()}`, t.path) : fileKey(t.root ?? defaultRoot, t.path))
+
+/** Where an entry goes in the reviewer: with an open PR, merged / closed, or without a PR. */
+export type EntryBucket = 'pr' | 'done' | 'local'
+export const entryBucket = (repo: DiffRepo): EntryBucket => (!repo.pr ? 'local' : repo.pr.state === 'merged' || repo.pr.state === 'closed' ? 'done' : 'pr')
+
+export interface RepoGroup {
+  /** `owner/name`, else the checkout's label */
+  name: string
+  views: RepoView[]
+}
+
+/** The entries in sections (PRs, merged / closed, without a PR), each grouped by repository in first-seen order. */
+export function entrySections(views: RepoView[]): { bucket: EntryBucket; groups: RepoGroup[] }[] {
+  const order: EntryBucket[] = ['pr', 'done', 'local']
+  return order
+    .map((bucket) => {
+      const groups: RepoGroup[] = []
+      for (const v of views) {
+        if (entryBucket(v.repo) !== bucket) continue
+        const name = v.repo.remote || v.repo.label
+        const g = groups.find((x) => x.name.toLowerCase() === name.toLowerCase())
+        if (g) g.views.push(v)
+        else groups.push({ name, views: [v] })
+      }
+      return { bucket, groups }
+    })
+    .filter((s) => s.groups.length)
+}
 
 export interface RepoView {
   repo: DiffRepo
@@ -268,7 +305,7 @@ export function repoViews(repos: DiffRepo[], show?: Record<FileKind, boolean>): 
   return repos
     .filter((r) => r.error || r.files?.length)
     .map((repo) => {
-      const tree = fileTree(show ? (repo.files ?? []).filter((f) => show[fileKind(f.path)]) : (repo.files ?? []), repo.root)
+      const tree = fileTree(show ? (repo.files ?? []).filter((f) => show[fileKind(f.path)]) : (repo.files ?? []), repoKey(repo))
       const files: { key: string; file: DiffFile }[] = []
       const walk = (nodes: TreeNode[]) => nodes.forEach((n) => (n.kind === 'file' ? files.push({ key: n.key, file: n.file }) : walk(n.children)))
       walk(tree)

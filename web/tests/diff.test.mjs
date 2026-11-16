@@ -352,3 +352,42 @@ test('HTTP: …/diffs?root= — just that checkout; a path that is not a checkou
   assert.equal((await fetch(`${base}?root=relative/path`)).status, 400);
   assert.equal((await fetch(`${base}?root=${encodeURIComponent('/')}`)).status, 400);
 });
+
+test('diffAll with prs: a checkout carries what is local only; a PR without a worktree diffs from the clone under its own key', async (t) => {
+  const origin = repo(t);
+  origin.write('a.txt', 'one\n');
+  origin.git('add', '-A');
+  origin.git('commit', '-qm', 'init');
+  origin.git('checkout', '-qb', 'feature');
+  origin.write('a.txt', 'ONE\n');
+  origin.git('commit', '-qam', 'change');
+  origin.git('update-ref', 'refs/pull/3/head', 'feature');
+  origin.git('checkout', '-q', 'main');
+
+  const clone = repo(t);
+  clone.git('remote', 'add', 'origin', origin.dir);
+  clone.git('fetch', '-q', 'origin');
+  clone.git('checkout', '-q', '-b', 'work', 'origin/main');
+  clone.git('branch', '-q', '--set-upstream-to', 'origin/main');
+  clone.write('b.txt', 'b\n');
+  clone.git('add', '-A');
+  clone.git('commit', '-qm', 'local commit');
+  clone.write('c.txt', 'uncommitted\n');
+
+  const differ = createDiffer({ run, home: '/nonexistent' });
+  const prs = [{ key: 'pr:acme/api#3', clone: clone.dir, number: 3, baseBranch: 'main', headBranch: 'feature' }];
+  const all = await differ.diffAll([clone.dir], { prs, extra: 'x' });
+  assert.equal(all.repos.length, 2);
+  const [wt, pr] = all.repos;
+  assert.deepEqual(wt.local, { uncommitted: 1, unpushed: 1 });
+  assert.equal(pr.source, 'pr');
+  assert.equal(pr.key, 'pr:acme/api#3');
+  assert.equal(pr.local, undefined);
+  assert.deepEqual(pr.files.map((f) => f.path), ['a.txt']);
+  // The fingerprint covers the annotations: same diff, other `extra` → not unchanged.
+  assert.equal((await differ.diffAll([clone.dir], { prs, extra: 'x', since: all.fingerprint })).unchanged, true);
+  assert.equal((await differ.diffAll([clone.dir], { prs, extra: 'y', since: all.fingerprint })).unchanged, false);
+  assert.equal(await differ.branch(clone.dir), 'work');
+  assert.equal(await differ.worktreeOn(clone.dir, 'work'), clone.dir);
+  assert.equal(await differ.worktreeOn(clone.dir, 'nope'), null);
+});

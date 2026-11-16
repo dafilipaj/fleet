@@ -305,17 +305,54 @@ export function createDiffer({ run, tmpDir = os.tmpdir(), home = os.homedir() })
   }
 
   /**
-   * Every checkout's diff in one answer. `since`: the combined fingerprint of an earlier one —
-   * unchanged → { unchanged: true } without repos. A checkout that fails (deleted worktree)
-   * comes back as { root, error }.
+   * What a checkout has that its PR (or its upstream) does not yet: files changed in the working
+   * tree against HEAD (`uncommitted`), commits not on the upstream (`unpushed`, null without one).
    */
-  async function diffAll(rootList, { since = null } = {}) {
+  async function localState(meta) {
+    let uncommitted = 0;
+    if (meta.head && meta.tree) {
+      const out = await git(meta.root, ['diff', '--name-only', '-z', '--no-renames', meta.head, meta.tree]).then((r) => r.stdout, () => '');
+      uncommitted = out.split('\0').filter(Boolean).length;
+    } else if (meta.tree && meta.tree !== EMPTY_TREE) {
+      uncommitted = null;
+    }
+    let unpushed = null;
+    if (meta.head) {
+      const n = await git(meta.root, ['rev-list', '--count', '@{upstream}..HEAD']).then((r) => Number(r.stdout.trim()), () => NaN);
+      if (Number.isInteger(n)) unpushed = n;
+    }
+    return { uncommitted, unpushed };
+  }
+
+  /**
+   * Every checkout's diff in one answer, plus `prs` with no worktree here: each `{ key, clone,
+   * number, baseBranch, headBranch }` diffed from the clone like prDiff (`source: 'pr'`, `key`).
+   * `extra`: anything else the answer depends on (the PR annotations), folded into the
+   * fingerprint. `since`: the combined fingerprint of an earlier one — unchanged →
+   * { unchanged: true } without repos. A checkout that fails (deleted worktree) comes back as
+   * { root, error }.
+   */
+  async function diffAll(rootList, { since = null, prs = [], extra = '' } = {}) {
     const metas = await mapLimit(rootList, 4, (root) => snapshot(root, null).catch((err) => ({ root, error: err.message || String(err) })));
+    const prMetas = await mapLimit(prs, 2, (p) =>
+      prSnapshot(p.clone, { number: p.number, baseBranch: p.baseBranch, headBranch: p.headBranch })
+        .then((m) => ({ ...m, key: p.key, source: 'pr' }))
+        .catch((err) => ({ root: p.clone, key: p.key, source: 'pr', error: err.message || String(err) })),
+    );
+    const all = [...metas, ...prMetas];
     const fingerprint = createHash('sha1')
-      .update(metas.map((m) => `${m.root}=${m.fingerprint ?? 'error'}`).join('\n'))
+      .update(all.map((m) => `${m.key ?? m.root}=${m.fingerprint ?? 'error'}`).join('\n'))
+      .update(`\n${extra}`)
       .digest('hex');
     if (since && since === fingerprint) return { fingerprint, unchanged: true };
-    const repos = await mapLimit(metas, 4, async (m) => (m.error ? m : { ...m, ...(await filesOf(m).catch((err) => ({ error: err.message || String(err), files: [] }))) }));
+    const repos = await mapLimit(all, 4, async (m) => {
+      if (m.error) return m;
+      const [files, local] = await Promise.all([
+        filesOf(m).catch((err) => ({ error: err.message || String(err), files: [] })),
+        m.source === 'pr' ? null : localState(m).catch(() => null),
+      ]);
+      return { ...m, ...files, ...(local ? { local } : {}) };
+    });
     return { fingerprint, unchanged: false, repos };
   }
 
@@ -328,7 +365,14 @@ export function createDiffer({ run, tmpDir = os.tmpdir(), home = os.homedir() })
    * `refetch`. → the same shape as one checkout of diffAll: { root, branch, head, base, tree,
    * fingerprint, unchanged, files, stats, truncated }
    */
-  async function prDiff(root, { number, baseBranch, headBranch = null, since = null, refetch = false, fetchEveryMs = 60_000, now = Date.now() } = {}) {
+  async function prDiff(root, { since = null, ...opts } = {}) {
+    const meta = await prSnapshot(root, opts);
+    if (since && since === meta.fingerprint) return { ...meta, unchanged: true };
+    return { ...meta, unchanged: false, ...(await filesOf(meta)) };
+  }
+
+  /** prDiff's refs and fingerprint, without the files. */
+  async function prSnapshot(root, { number, baseBranch, headBranch = null, refetch = false, fetchEveryMs = 60_000, now = Date.now() } = {}) {
     if (!Number.isInteger(number) || number <= 0) throw new DiffError('invalid PR number', 400);
     if (!validRef(baseBranch)) throw new DiffError('invalid base branch', 400);
     const top = await revParse(root, ['--show-toplevel']);
@@ -350,9 +394,7 @@ export function createDiffer({ run, tmpDir = os.tmpdir(), home = os.homedir() })
     const baseTip = await revParse(top, ['--verify', '--quiet', `${baseRef}^{commit}`]);
     if (!head || !baseTip) throw new DiffError('the PR refs are missing after the fetch', 502);
     const mb = await git(top, ['merge-base', baseTip, head]).then((r) => r.stdout.trim(), () => null);
-    const meta = { root: top, branch: headBranch, head, base: { ref: baseBranch, sha: mb || baseTip }, tree: head, fingerprint: `${mb || baseTip}:${head}` };
-    if (since && since === meta.fingerprint) return { ...meta, unchanged: true };
-    return { ...meta, unchanged: false, ...(await filesOf(meta)) };
+    return { root: top, branch: headBranch, head, base: { ref: baseBranch, sha: mb || baseTip }, tree: head, fingerprint: `${mb || baseTip}:${head}` };
   }
 
   /**
@@ -365,7 +407,46 @@ export function createDiffer({ run, tmpDir = os.tmpdir(), home = os.homedir() })
     return top && path.resolve(top) === path.resolve(dir) ? top : null;
   }
 
-  return { diff, roots, diffAll, prDiff, checkout };
+  /** The GitHub `owner/name` of a checkout's origin, or null (cached: a remote seldom moves). */
+  const remotes = new Map();
+  async function remote(root) {
+    if (remotes.has(root)) return remotes.get(root);
+    const url = await git(root, ['config', '--get', 'remote.origin.url']).then((r) => r.stdout.trim(), () => '');
+    const slug = githubSlug(url);
+    if (remotes.size > 500) remotes.clear();
+    remotes.set(root, slug);
+    return slug;
+  }
+
+  /** The branch a checkout is on (null: detached / not a checkout). */
+  async function branch(root) {
+    return git(root, ['symbolic-ref', '--quiet', '--short', 'HEAD']).then((r) => r.stdout.trim() || null, () => null);
+  }
+
+  /** The checkout (main or linked worktree) of `root`'s repository that has `name` checked out, or null. */
+  async function worktreeOn(root, name) {
+    const out = await git(root, ['worktree', 'list', '--porcelain']).then((r) => r.stdout, () => '');
+    let at = null;
+    for (const line of out.split('\n')) {
+      if (line.startsWith('worktree ')) at = line.slice(9);
+      else if (line === `branch refs/heads/${name}` && at) return at;
+    }
+    return null;
+  }
+
+  /** `origin/main` → `main`: the default branch's name, or null. */
+  async function defaultBranch(root) {
+    const b = await defaultBase(root);
+    return b ? b.replace(/^origin\//, '') : null;
+  }
+
+  return { diff, roots, diffAll, prDiff, checkout, remote, branch, worktreeOn, defaultBranch };
+}
+
+/** A git remote url → GitHub `owner/name` (https, ssh, scp-like), else null. */
+export function githubSlug(url) {
+  const m = /^(?:https?:\/\/(?:[^@/]+@)?github\.com\/|ssh:\/\/git@github\.com\/|git@github\.com:)([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/.exec(String(url ?? '').trim());
+  return m ? `${m[1]}/${m[2]}` : null;
 }
 
 function cutHunks(hunks, max) {

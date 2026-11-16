@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 
-import type { DiffFile, DiffHunk, ReviewThread } from '@/api/types'
+import type { DiffFile, DiffHunk, DiffRepo, ReviewThread } from '@/api/types'
 
 import { diffPlain } from './plain'
-import { parsePrReviewLocation, prReviewHref, fileKind, kindCounts, allClauses, clauseAt, placeOnClauses, diffBar, fileKey, rowsToRange, fileSignature, fileTree, orphanThreads, orphanThreadsByKey, repoViews, threadKey, parseReviewLocation, placeThreads, reviewHref, selectLine, selectionCode, splitRows, treeOrder } from './review'
+import { parsePrReviewLocation, prReviewHref, fileKind, kindCounts, allClauses, clauseAt, placeOnClauses, diffBar, fileKey, rowsToRange, fileSignature, fileTree, orphanThreads, orphanThreadsByKey, repoViews, threadKey, repoKey, entrySections, entryBucket, parseReviewLocation, placeThreads, reviewHref, selectLine, selectionCode, splitRows, treeOrder } from './review'
 
 const file = (path: string, o: Partial<DiffFile> = {}): DiffFile => ({
   path,
@@ -232,5 +232,34 @@ describe('PR review locations', () => {
     expect(parsePrReviewLocation(href)).toEqual({ host: 'work station', owner: 'acme', repo: 'api.js', number: 12 })
     expect(parsePrReviewLocation('/review/laptop/abc')).toBeNull()
     expect(parsePrReviewLocation('/review/pr/h/o/r/x')).toBeNull()
+  })
+})
+
+describe('review entries: worktrees and PRs', () => {
+  const pr = (number: number, state: 'open' | 'draft' | 'merged' | 'closed') => ({ owner: 'acme', repo: 'api', number, title: `t${number}`, url: '', state, headBranch: `b${number}`, baseBranch: 'main', headOid: null })
+  const view = (repo: Partial<DiffRepo>) => ({ repo: { root: '/r', label: 'r', ...repo } as DiffRepo, tree: [], files: [] })
+
+  it('repoKey: a PR entry by its key, a checkout by its root', () => {
+    expect(repoKey({ root: '/clone', key: 'pr:acme/api#3' })).toBe('pr:acme/api#3')
+    expect(repoKey({ root: '/wt' })).toBe('/wt')
+  })
+
+  it('threadKey: a comment on a PR without a worktree lands on the PR entry, not the clone', () => {
+    expect(threadKey({ root: '/clone', path: 'a.rb', pr: 'acme/API#3' }, '/cwd')).toBe(fileKey('pr:acme/api#3', 'a.rb'))
+    expect(threadKey({ root: '/clone', path: 'a.rb' }, '/cwd')).toBe(fileKey('/clone', 'a.rb'))
+  })
+
+  it('entrySections: PRs first, then merged / closed, then without a PR, each grouped by repository', () => {
+    const s = entrySections([
+      view({ root: '/home', label: '.', remote: 'me/home', pr: null }),
+      view({ root: '/wt1', remote: 'acme/api', pr: pr(1, 'open') }),
+      view({ root: '/fl', remote: 'me/fleet', pr: pr(2, 'merged') }),
+      view({ root: '', key: 'pr:acme/api#4', source: 'pr', remote: 'acme/api', pr: pr(4, 'draft') }),
+      view({ root: '/x', label: 'x', remote: null }),
+    ])
+    expect(s.map((x) => x.bucket)).toEqual(['pr', 'done', 'local'])
+    expect(s[0].groups.map((g) => [g.name, g.views.length])).toEqual([['acme/api', 2]])
+    expect(s[2].groups.map((g) => g.name)).toEqual(['me/home', 'x'])
+    expect(entryBucket(s[1].groups[0].views[0].repo)).toBe('done')
   })
 })

@@ -44,6 +44,7 @@ lib/files.mjs         files mentioned in chat: resolve against the session cwd (
 lib/diff.mjs          the diff reviewer: a session's worktree (incl. untracked) as a git tree via a throwaway index, diffed against the merge-base with the default branch → files/hunks/lines
 lib/reviews.mjs       the diff reviewer's comment threads: prompts with `[review c-…]` markers typed into the session (single, or drafts submitted as one review), answers read back from its transcript, one JSON file per session under <state>/fleet/reviews
 lib/asks.mjs          the diff reviewer's side questions: a read-only `claude -p` fork of the session (--resume --fork-session --no-session-persistence), streamed (stream-json) into an in-memory ask the UI polls; never typed into the session
+lib/review-prs.mjs    the diff reviewer's entries: each checkout's GitHub repo + the PR on its branch (gh, cached), the brief's PRs → a checkout / worktree on their branch, else a diff from a clone
 lib/pr-notes.mjs      the diff reviewer over a PR without a session: notes kept per PR under <state>/fleet/pr-notes (thread-shaped), one posted to GitHub as a review comment via gh, or all handed to a session as its first prompt
 lib/complete.mjs      composer autocomplete: skills/commands (built-in, user, project, enabled plugins), the cwd's .md/.plain files, brain notes (~/.brainrc)
 lib/touched.mjs       absolute paths a session's tool calls touched, parsed incrementally from its transcript (for lib/files.mjs)

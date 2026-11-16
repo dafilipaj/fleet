@@ -25,6 +25,7 @@ import { SPEECH_KEY_NAME, createKeySource, createSpeaker, createTranscriber } fr
 import { createOperator } from './lib/operator.mjs';
 import { createCompleter } from './lib/complete.mjs';
 import { createDiffer } from './lib/diff.mjs';
+import { createReviewPrs } from './lib/review-prs.mjs';
 import { createReviews } from './lib/reviews.mjs';
 import { createAsks } from './lib/asks.mjs';
 import { createPrNotes } from './lib/pr-notes.mjs';
@@ -287,6 +288,7 @@ const transcripts = createTranscriptReader();
 // Files each session worked on: file links resolve against them, the diff reviewer finds the checkouts it edits.
 const touched = createTouchedIndex();
 
+const differ = createDiffer({ run });
 const handleApi = createApi({
   config,
   fleet,
@@ -306,7 +308,9 @@ const handleApi = createApi({
   files: createFiles({ home: os.homedir(), run, touched, roots: config.files.roots }),
   touched,
   completer: createCompleter({ home: os.homedir(), run }),
-  differ: createDiffer({ run }),
+  differ,
+  // The diff reviewer's entries: each checkout's repo + PR, the brief's PRs without a worktree.
+  reviewPrs: createReviewPrs({ gh: (args, opts) => run(ghBin, args, opts), differ, clones: () => cli.repos({ all: false }) }),
   // Diff reviewer side questions: a read-only `claude -p` fork of the session, kept in memory only.
   asks: createAsks({ bin: claudeBin }),
   // PR review notes (the reviewer on a PR without a session); posting one runs this host's gh.

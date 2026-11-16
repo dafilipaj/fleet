@@ -2,7 +2,7 @@ import { useCallback, useRef, useState } from 'react'
 import { toast } from 'sonner'
 
 import { ApiError, api, sessionErrorMessage, type PrKey } from '@/api/client'
-import type { PrDiffResponse, PrNotesState, ReviewAnchor } from '@/api/types'
+import type { PrDiffResponse, PrNote, PrNotesState, ReviewAnchor } from '@/api/types'
 import { usePoller } from '@/hooks/usePoller'
 
 /** A PR moves only on a push: poll its diff (the server fetches at most once a minute) this often. */
@@ -97,4 +97,79 @@ export function usePrNotes(host: string, pr: PrKey) {
     remove: (thread: string) => act('Could not delete the note', () => api.prNoteDelete(host, ref, thread)),
     post: (thread: string, headOid: string) => act('Could not post to GitHub', () => api.prNotePost(host, ref, thread, headOid)),
   }
+}
+
+/**
+ * The notes on a session's PRs (its review entries that have one), polled together: shown in
+ * the session's reviewer beside its own threads. Keyed by `owner/repo#n` (lower case).
+ */
+export function useSessionPrNotes(host: string, prs: PrKey[]) {
+  const sig = [...new Set(prs.map((p) => `${p.owner}/${p.repo}#${p.number}`))].sort().join(',')
+  const [state, setState] = useState<{ sig: string; notes: Record<string, PrNote[]> } | null>(null)
+
+  const poll = useCallback(
+    async (signal: AbortSignal) => {
+      if (!sig) return
+      const list = sig.split(',').map((ref) => {
+        const [slug, n] = ref.split('#')
+        const [owner, repo] = slug.split('/')
+        return { owner, repo, number: Number(n) }
+      })
+      const out: Record<string, PrNote[]> = {}
+      await Promise.all(
+        list.map(async (p) => {
+          try {
+            const r = await api.prNotes(host, { owner: p.owner, repo: p.repo, number: p.number }, { signal })
+            out[`${p.owner}/${p.repo}#${p.number}`.toLowerCase()] = r.threads
+          } catch (err) {
+            if (signal.aborted) throw err
+          }
+        }),
+      )
+      setState((prev) => (prev?.sig === sig && JSON.stringify(prev.notes) === JSON.stringify(out) ? prev : { sig, notes: out }))
+    },
+    [host, sig],
+  )
+  const refresh = usePoller(poll, PR_NOTES_POLL_MS)
+  const notes = state?.sig === sig ? state.notes : {}
+
+  const act = useCallback(
+    async (ref: string, label: string, fn: () => Promise<PrNotesState>) => {
+      try {
+        const r = await fn()
+        setState((prev) => ({ sig, notes: { ...(prev?.sig === sig ? prev.notes : {}), [ref.toLowerCase()]: r.threads } }))
+        return true
+      } catch (err) {
+        toast.error(label, { description: prError(err) })
+        return false
+      }
+    },
+    [sig],
+  )
+  const create = useCallback(
+    (pr: PrKey, anchor: ReviewAnchor, body: string, base: string | null) =>
+      act(`${pr.owner}/${pr.repo}#${pr.number}`, 'Could not save the note', () => api.prNoteCreate(host, pr, { ...anchor, body, base })),
+    [act, host],
+  )
+  /** The thread-card actions of one PR's notes, plus `post` (to GitHub). */
+  const actionsFor = useCallback(
+    (pr: PrKey, headOid: string | null) => {
+      const ref = `${pr.owner}/${pr.repo}#${pr.number}`
+      return {
+        reply: async () => false,
+        edit: (thread: string, body: string) => act(ref, 'Could not save the note', () => api.prNoteUpdate(host, pr, thread, { body })),
+        resolve: (thread: string, resolved: boolean) => act(ref, 'Could not update the note', () => api.prNoteUpdate(host, pr, thread, { resolved })),
+        remove: (thread: string) => act(ref, 'Could not delete the note', () => api.prNoteDelete(host, pr, thread)),
+        post: (thread: string) => {
+          if (!headOid) {
+            toast.error('The PR head is not known yet')
+            return Promise.resolve(false)
+          }
+          return act(ref, 'Could not post to GitHub', () => api.prNotePost(host, pr, thread, headOid))
+        },
+      }
+    },
+    [act, host],
+  )
+  return { notes, create, actionsFor, refresh }
 }

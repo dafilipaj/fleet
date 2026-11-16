@@ -1624,6 +1624,8 @@ export interface ReviewThread {
   id: string
   /** the checkout the path is in (null: comments made before the reviewer knew several) */
   root?: string | null
+  /** `owner/repo#n`: on a PR with no worktree here (the entry `pr:<ref>`) */
+  pr?: string
   /** how the prompt named the file (relative to the session cwd) */
   display?: string
   path: string
@@ -1650,6 +1652,8 @@ export interface ReviewState {
 
 export interface ReviewAnchor {
   root: string | null
+  /** `owner/repo#n`: a comment on a PR with no worktree here */
+  pr?: string
   path: string
   side: 'new' | 'old'
   start: number
@@ -1691,6 +1695,29 @@ export interface DiffRepo {
   truncated?: boolean
   /** the checkout could not be read (a removed worktree) */
   error?: string
+  /** `worktree`: a checkout the session works in (live, uncommitted included); `pr`: a PR of the session with no worktree here, diffed from a clone */
+  source?: 'worktree' | 'pr'
+  /** the entry's id when it is not its root (`pr:owner/repo#n` for a `pr` entry) */
+  key?: string
+  /** the GitHub `owner/name` of its origin (null: not on GitHub / unknown) */
+  remote?: string | null
+  /** the PR on its branch (null: none; absent: older server) */
+  pr?: ReviewPr | null
+  /** a checkout only: what it has that is not committed / not pushed yet (null: unknown) */
+  local?: { uncommitted: number | null; unpushed: number | null }
+}
+
+/** The PR a review entry belongs to, as the host's `gh` sees it. */
+export interface ReviewPr {
+  owner: string
+  repo: string
+  number: number
+  title: string
+  url: string
+  state: 'draft' | 'open' | 'merged' | 'closed' | null
+  headBranch: string | null
+  baseBranch: string | null
+  headOid: string | null
 }
 
 export interface DiffsResponse {

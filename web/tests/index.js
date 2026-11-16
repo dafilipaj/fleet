@@ -24,6 +24,7 @@ import './jobs.test.mjs';
 import './memos.test.mjs';
 import './diff.test.mjs';
 import './reviews.test.mjs';
+import './review-prs.test.mjs';
 import './focus.test.mjs';
 import './inbox.test.mjs';
 import './slack.test.mjs';

@@ -5,12 +5,13 @@ import { useLocation } from 'wouter'
 import { HostBadge } from '@/components/HostBadge'
 import { DiffStat, FileDiff, type DiffView } from '@/components/review/FileDiff'
 import { FileTree } from '@/components/review/FileTree'
-import { CommentComposer, ReviewThreadCard } from '@/components/review/ReviewThread'
+import { CommentComposer, ReviewThreadCard, type CommentTarget, type ThreadActions } from '@/components/review/ReviewThread'
+import { EntryHeader, EntryRow } from '@/components/review/ReviewEntry'
 import { SideAsks } from '@/components/review/SideAsks'
 import { api, type PrKey } from '@/api/client'
 import { watchForSpawned } from '@/api/spawnWatch'
 import { toast } from 'sonner'
-import { usePrDiff, usePrNotes } from '@/hooks/usePrReview'
+import { usePrDiff, usePrNotes, useSessionPrNotes } from '@/hooks/usePrReview'
 import { useAsks, type AskBody } from '@/hooks/useAsks'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Textarea } from '@/components/ui/textarea'
@@ -23,8 +24,8 @@ import { useNow } from '@/hooks/useNow'
 import { usePersistentState } from '@/hooks/usePersistentState'
 import { useSessionTitle } from '@/hooks/useTitles'
 import { relTime } from '@/lib/format'
-import { reviewHref, DEFAULT_KINDS, FILE_KINDS, fileAnchor, fileKey, fileSignature, kindCounts, orphanThreadsByKey, parsePrReviewLocation, parseReviewLocation, rangeText, repoViews, rowsToRange, selectLine, selectionCode, threadKey, type FileKind, type LineRow, type LineSelection, type Side } from '@/lib/review'
-import type { DiffRepo, PrNote, ReviewAnchor, ReviewThread, SideAsk } from '@/api/types'
+import { reviewHref, DEFAULT_KINDS, FILE_KINDS, entryAnchor, entryBucket, entrySections, fileAnchor, fileKey, fileSignature, kindCounts, orphanThreadsByKey, parsePrReviewLocation, parseReviewLocation, prRefOf, rangeText, repoKey, repoViews, rowsToRange, selectLine, selectionCode, threadKey, type EntryBucket, type FileKind, type LineRow, type LineSelection, type Side } from '@/lib/review'
+import type { DiffRepo, PrNote, ReviewAnchor, ReviewPr, ReviewThread, SideAsk } from '@/api/types'
 import { prHref } from '@/lib/prs'
 import { findSession, sessionHref } from '@/lib/sessions'
 import { storage } from '@/lib/storage'
@@ -36,6 +37,12 @@ const FRESH_MS = 10_000
 const NO_THREADS: ReviewThread[] = []
 const parseView = (r: string) => (r === 'split' || r === 'unified' ? r : undefined)
 const parseBool = (r: string) => (r === 'true' ? true : r === 'false' ? false : undefined)
+const parseTarget = (r: string) => (r === 'session' || r === 'note' ? r : undefined)
+const SECTION_TITLE: Record<EntryBucket, string> = { pr: 'Pull requests', done: 'Merged or closed', local: 'Without a PR' }
+
+/** A PR note shown in a session's reviewer: which PR it is on (its own actions). */
+type NoteThread = ReviewThread & { noteOf: { pr: ReviewPr } }
+const noteOf = (t: ReviewThread) => (t as Partial<NoteThread>).noteOf ?? null
 const KIND_NAMES = new Set<string>(FILE_KINDS.map((k) => k.kind))
 const DEFAULT_SHOWN = FILE_KINDS.filter((k) => DEFAULT_KINDS[k.kind]).map((k) => k.kind).join(',')
 /** The shown kinds, stored as `spec,code`; anything unknown falls back to the default. */
@@ -75,6 +82,13 @@ interface ReviewSource {
   hint: string
   empty: string
   headerActions?: ReactNode
+  /** A session's entries that have a PR: notes on them, and a worktree for one without. */
+  prs?: {
+    notes: Record<string, PrNote[]>
+    create: (pr: ReviewPr, anchor: ReviewAnchor, body: string, base: string | null) => Promise<boolean>
+    actionsFor: (pr: ReviewPr, headOid: string | null) => ThreadActions & { post: (thread: string) => Promise<boolean> }
+    setUp: (pr: ReviewPr) => Promise<boolean>
+  }
 }
 
 /**
@@ -109,7 +123,8 @@ function SessionReview({ host, id, root, layout }: { host: string; id: string; r
   const session = findSession(fleet, host, id)
   const plainSession = useMemo(() => ({ host, id }), [host, id])
   const { title } = useSessionTitle(session, `${host}/${id}`)
-  const { data, error, changedAt } = useDiff(host, id, root)
+  const useDiffRefresh = useDiff(host, id, root)
+  const { data, error, changedAt } = useDiffRefresh
   const fullReview = useReview(host, id, root)
   const cwd = session?.cwd
   const scoped = useMemo(() => {
@@ -121,6 +136,24 @@ function SessionReview({ host, id, root, layout }: { host: string; id: string; r
   const scopeRepo = root ? (data?.repos?.[0] ?? null) : null
   const scopeLabel = root ? (scopeRepo?.branch ?? scopeRepo?.label ?? root.split('/').pop() ?? root) : null
   const askStart = useCallback((body: AskBody) => api.ask(host, id, body).then((r) => r.ask), [host, id])
+  const entryPrs = useMemo(() => (data?.repos ?? []).flatMap((r) => (r.pr ? [r.pr] : [])), [data])
+  const prNotes = useSessionPrNotes(host, entryPrs)
+  const { refresh: refreshDiff } = useDiffRefresh
+  const setUp = useCallback(
+    async (pr: ReviewPr) => {
+      const ref = prRefOf(pr)
+      try {
+        const r = await api.prCheckout(host, ref)
+        toast.success(`${ref} is checked out`, { description: r.worktree.path })
+        refreshDiff()
+        return true
+      } catch (err) {
+        toast.error(`Could not set up a worktree for ${ref}`, { description: (err as Error)?.message })
+        return false
+      }
+    },
+    [host, refreshDiff],
+  )
   const source: ReviewSource = {
     kind: 'session',
     host,
@@ -150,6 +183,12 @@ function SessionReview({ host, id, root, layout }: { host: string; id: string; r
       run: (summary) => review.submit(summary),
     },
     hint: 'To comment: select code with the mouse, or click a line number (shift-click for a range). The comment goes to the session with those lines.',
+    prs: {
+      notes: prNotes.notes,
+      create: (pr, anchor, body, base) => prNotes.create(pr, anchor, body, base),
+      actionsFor: prNotes.actionsFor,
+      setUp,
+    },
     empty: root ? 'This checkout has no changes against its base branch.' : 'This session works in no git checkout yet. Checkouts show up here as the session edits files in them.',
     headerActions: root ? (
       <Button variant="ghost" size="sm" className="shrink-0" title="Review every checkout the session works in" onClick={() => navigate(reviewHref(host, id))}>
@@ -272,8 +311,18 @@ function ReviewView({ layout, source }: { layout: Layout; source: ReviewSource }
   const counts = useMemo(() => kindCounts(data?.repos ?? []), [data])
   const views = useMemo(() => repoViews(data?.repos ?? [], shown), [data, shown])
   // Every changed file's key, shown or not: a thread on a hidden file is not an orphan.
-  const allKeys = useMemo(() => new Set((data?.repos ?? []).flatMap((r) => (r.files ?? []).map((f) => fileKey(r.root, f.path)))), [data])
+  const allKeys = useMemo(() => new Set((data?.repos ?? []).flatMap((r) => (r.files ?? []).map((f) => fileKey(repoKey(r), f.path)))), [data])
   const hiddenCount = allKeys.size - views.reduce((n, v) => n + v.files.length, 0)
+  // Entries by section (PRs, merged / closed, without a PR), each by repository. With several
+  // sections, all but the first start folded: the PRs come first, local-only changes wait below.
+  const sections = useMemo(() => entrySections(views), [views])
+  const grouped = source.kind === 'session' || views.length > 1
+  const [sectionOpen, setSectionOpen] = useState<Partial<Record<EntryBucket, boolean>>>({})
+  const isOpen = (bucket: EntryBucket) => sectionOpen[bucket] ?? (sections.length < 2 || sections[0].bucket === bucket)
+  const openEntry = (key: string, bucket: EntryBucket) => {
+    setSectionOpen((o) => ({ ...o, [bucket]: true }))
+    requestAnimationFrame(() => document.getElementById(entryAnchor(key))?.scrollIntoView({ block: 'start', behavior: 'smooth' }))
+  }
   const clean = useMemo(() => (data?.repos ?? []).filter((r) => !r.error && !r.files?.length), [data])
   // Every file across checkouts, by key (root + path).
   const entries = useMemo(() => new Map(views.flatMap((v) => v.files.map((f) => [f.key, { ...f, repo: v.repo }] as const))), [views])
@@ -334,6 +383,8 @@ function ReviewView({ layout, source }: { layout: Layout; source: ReviewSource }
   const [active, setActive] = useState<string | null>(null)
   const openFile = (path: string) => {
     setActive(path)
+    const owner = entries.get(path)?.repo
+    if (owner) setSectionOpen((o) => ({ ...o, [entryBucket(owner)]: true }))
     setCollapsed((c) => {
       if (!c.has(path)) return c
       const next = new Set(c)
@@ -351,15 +402,26 @@ function ReviewView({ layout, source }: { layout: Layout; source: ReviewSource }
   const toSubmit = source.notes ? threads.filter((t) => !t.resolved).length : drafts
   // Threads made before the reviewer knew several checkouts belong to the session's own (the first).
   const defaultRoot = data?.repos?.[0]?.root ?? ''
+  // Notes on the session's PRs sit with the entry of their PR (a worktree on its branch, or the PR itself).
+  const prNotesByRef = source.prs?.notes
+  const noteThreads = useMemo(() => {
+    if (!prNotesByRef) return [] as NoteThread[]
+    return (data?.repos ?? []).flatMap((r) => {
+      if (!r.pr) return []
+      const ref = prRefOf(r.pr)
+      return (prNotesByRef[ref.toLowerCase()] ?? []).map((n): NoteThread => ({ ...n, root: r.root, pr: r.source === 'pr' ? ref : undefined, noteOf: { pr: r.pr! } }))
+    })
+  }, [data, prNotesByRef])
+  const allThreads = useMemo(() => (noteThreads.length ? [...threads, ...noteThreads] : threads), [threads, noteThreads])
   const byKey = useMemo(() => {
     const m = new Map<string, ReviewThread[]>()
-    for (const t of threads) {
+    for (const t of allThreads) {
       const k = threadKey(t, defaultRoot)
       m.set(k, [...(m.get(k) ?? []), t])
     }
     return m
-  }, [threads, defaultRoot])
-  const orphans = useMemo(() => (data ? orphanThreadsByKey(allKeys, threads, defaultRoot) : []), [data, allKeys, threads, defaultRoot])
+  }, [allThreads, defaultRoot])
+  const orphans = useMemo(() => (data ? orphanThreadsByKey(allKeys, allThreads, defaultRoot) : []), [data, allKeys, allThreads, defaultRoot])
   const [selection, setSelection] = useState<LineSelection | null>(null)
   const [composing, setComposing] = useState(false)
   // Opened from the selection's "Ask": the composer asks on the side by default.
@@ -379,11 +441,17 @@ function ReviewView({ layout, source }: { layout: Layout; source: ReviewSource }
   const side = useAsks(host, source.askStart)
   const askFiles = useRef(new Map<string, string>()) // ask id → file key, to jump back to its lines
   const notes = source.notes
+  const prActions = source.prs?.actionsFor
   const renderThread = useCallback(
-    (t: ReviewThread, outdated: boolean) => (
-      <ReviewThreadCard thread={t} outdated={outdated} actions={rv} note={notes ? { posted: (t as PrNote).posted ?? null, onPost: () => notes.post(t.id) } : undefined} />
-    ),
-    [rv, notes],
+    (t: ReviewThread, outdated: boolean) => {
+      const of = noteOf(t)
+      if (of && prActions) {
+        const a = prActions(of.pr, of.pr.headOid)
+        return <ReviewThreadCard thread={t} outdated={outdated} actions={a} note={{ posted: (t as PrNote).posted ?? null, onPost: () => a.post(t.id) }} />
+      }
+      return <ReviewThreadCard thread={t} outdated={outdated} actions={rv} note={notes ? { posted: (t as PrNote).posted ?? null, onPost: () => notes.post(t.id) } : undefined} />
+    },
+    [rv, notes, prActions],
   )
   // Select code with the mouse → a "Comment on lines …" button at the selection's end.
   const bodyRef = useRef<HTMLDivElement>(null)
@@ -422,6 +490,9 @@ function ReviewView({ layout, source }: { layout: Layout; source: ReviewSource }
 
   // selection.path is a file key (root + path).
   const sel = selection ? entries.get(selection.path) ?? null : null
+  // On an entry with a PR, a comment can go to the session or be a note on the PR.
+  const [target, setTarget] = usePersistentState<CommentTarget>('fleet.reviewCommentTarget', 'session', parseTarget)
+  const selPr = sel?.repo.pr && source.prs ? sel.repo.pr : null
   const renderComposer = () =>
     selection && sel ? (
       <CommentComposer
@@ -429,15 +500,14 @@ function ReviewView({ layout, source }: { layout: Layout; source: ReviewSource }
         label={rangeText(selection)}
         drafts={notes ? 0 : drafts}
         submitLabel={notes ? 'Add note' : undefined}
+        target={selPr ? { value: target, onChange: setTarget, note: `Note on #${selPr.number}` } : undefined}
         onCancel={closeComposer}
-        onSubmit={(body, draft) =>
-          rv.comment(
-            { root: sel.repo.root, path: sel.file.path, side: selection.side, start: selection.start, end: selection.end, code: selectionCode(sel.file, selection) },
-            body,
-            draft,
-            sel.repo.base?.sha ?? null,
-          )
-        }
+        onSubmit={(body, draft) => {
+          const anchor: ReviewAnchor = { root: sel.repo.root, path: sel.file.path, side: selection.side, start: selection.start, end: selection.end, code: selectionCode(sel.file, selection) }
+          if (selPr && target === 'note' && source.prs) return source.prs.create(selPr, anchor, body, sel.repo.base?.sha ?? null)
+          if (sel.repo.source === 'pr' && sel.repo.pr) anchor.pr = prRefOf(sel.repo.pr)
+          return rv.comment(anchor, body, draft, sel.repo.base?.sha ?? null)
+        }}
         asking={asking}
         onAsk={async (question) => {
           const a = await side.ask({ root: sel.repo.root, path: sel.file.path, side: selection.side, start: selection.start, end: selection.end, code: selectionCode(sel.file, selection), question })
@@ -482,7 +552,7 @@ function ReviewView({ layout, source }: { layout: Layout; source: ReviewSource }
                 ) : (
                   <>
                     <FolderGitIcon className="size-3 shrink-0" />
-                    <span className="shrink-0">{views.length} checkouts</span>
+                    <span className="shrink-0">{sections.reduce((n, x) => n + x.groups.length, 0) > 1 ? `${new Set(views.map((v) => (v.repo.remote || v.repo.label).toLowerCase())).size} repos · ` : ''}{views.length} branches</span>
                   </>
                 )}
                 <span className="text-dimmer">·</span>
@@ -591,34 +661,68 @@ function ReviewView({ layout, source }: { layout: Layout; source: ReviewSource }
           </p>
         </div>
       ) : null}
-      {views.map((v) => (
-        <section key={v.repo.root} aria-label={v.repo.label} className="space-y-3">
-          {views.length > 1 || v.repo.error ? <RepoHeader repo={v.repo} /> : null}
-          {v.repo.error ? <p className="rounded-lg border border-destructive/40 px-3 py-2 text-sm text-destructive">{v.repo.error}</p> : null}
-          {!v.files.length && !v.repo.error ? <p className="px-1 text-xs text-dimmer">All changed files here are filtered out.</p> : null}
-          {v.repo.truncated ? <p className="text-xs text-muted-foreground">The diff is very large: later files are listed without their lines.</p> : null}
-          {v.files.map(({ key, file }) => (
-            <FileDiff
-              key={key}
-              fileKey={key}
-              file={file}
-              view={view}
-              collapsed={collapsed.has(key)}
-              viewed={isViewed(key)}
-              fresh={isFresh(key)}
-              onToggleCollapsed={toggleCollapsed}
-              onToggleViewed={toggleViewed}
-              selection={selection?.path === key ? selection : null}
-              composing={composing && selection?.path === key}
-              onLine={onLine}
-              threads={byKey.get(key) ?? NO_THREADS}
-              renderThread={renderThread}
-              renderComposer={renderComposer}
-              session={plainSession}
-            />
-          ))}
-        </section>
-      ))}
+      {sections.map(({ bucket, groups }) => {
+        const open = isOpen(bucket)
+        const count = groups.reduce((n, g) => n + g.views.length, 0)
+        return (
+          <section key={bucket} aria-label={SECTION_TITLE[bucket]} className={cn('space-y-4', bucket !== 'pr' && sections.length > 1 && 'pt-2')}>
+            {sections.length > 1 ? (
+              <button
+                type="button"
+                aria-expanded={open}
+                onClick={() => setSectionOpen((o) => ({ ...o, [bucket]: !open }))}
+                className="flex w-full items-center gap-2 border-b pb-1 text-left text-xs font-semibold tracking-wide text-muted-foreground uppercase hover:text-foreground"
+              >
+                <ChevronLeftIcon className={cn('size-3.5 transition-transform', open ? '-rotate-90' : 'rotate-180')} />
+                {SECTION_TITLE[bucket]} <span className="font-normal text-dimmer">{count}</span>
+              </button>
+            ) : null}
+            {open
+              ? groups.map((g) => (
+                  <div key={g.name} className={cn('space-y-3', bucket !== 'pr' && sections.length > 1 && 'opacity-90')}>
+                    {grouped ? (
+                      <h2 className="flex items-center gap-2 px-1 pt-1 text-base font-bold" title={g.views[0].repo.root || undefined}>
+                        <FolderGitIcon className="size-4 shrink-0 text-muted-foreground" />
+                        <span className="truncate">{g.name}</span>
+                      </h2>
+                    ) : null}
+                    {g.views.map((v) => {
+                      const k = repoKey(v.repo)
+                      const pr = v.repo.pr
+                      return (
+                        <div key={k} className="space-y-3">
+                          {grouped || v.repo.error ? <EntryHeader repo={v.repo} entryKey={k} onSetUp={v.repo.source === 'pr' && pr && source.prs ? () => source.prs!.setUp(pr) : undefined} /> : null}
+                          {!v.files.length && !v.repo.error ? <p className="px-1 text-xs text-dimmer">All changed files here are filtered out.</p> : null}
+                          {v.repo.truncated ? <p className="text-xs text-muted-foreground">The diff is very large: later files are listed without their lines.</p> : null}
+                          {v.files.map(({ key, file }) => (
+                            <FileDiff
+                              key={key}
+                              fileKey={key}
+                              file={file}
+                              view={view}
+                              collapsed={collapsed.has(key)}
+                              viewed={isViewed(key)}
+                              fresh={isFresh(key)}
+                              onToggleCollapsed={toggleCollapsed}
+                              onToggleViewed={toggleViewed}
+                              selection={selection?.path === key ? selection : null}
+                              composing={composing && selection?.path === key}
+                              onLine={onLine}
+                              threads={byKey.get(key) ?? NO_THREADS}
+                              renderThread={renderThread}
+                              renderComposer={renderComposer}
+                              session={plainSession}
+                            />
+                          ))}
+                        </div>
+                      )
+                    })}
+                  </div>
+                ))
+              : null}
+          </section>
+        )
+      })}
       {orphans.length ? (
         <section aria-label="Comments on files no longer changed" className="overflow-hidden rounded-lg border">
           <p className="border-b bg-card px-3 py-1.5 text-xs text-muted-foreground">Comments on files no longer in the diff</p>
@@ -717,17 +821,45 @@ function ReviewView({ layout, source }: { layout: Layout; source: ReviewSource }
         <div className="flex min-h-0 flex-1">
           {showTree && files.length ? (
             <aside aria-label="Changed files" className="w-64 shrink-0 overflow-y-auto border-r px-1.5">
-              {views.map((v) => (
-                <div key={v.repo.root}>
-                  {views.length > 1 ? (
-                    <p className="mt-2 flex items-center gap-1.5 px-2 text-xs font-semibold text-muted-foreground" title={v.repo.root}>
-                      <FolderGitIcon className="size-3.5 shrink-0" />
-                      <span className="truncate">{v.repo.label}</span>
-                    </p>
-                  ) : null}
-                  <FileTree nodes={v.tree} viewed={isViewed} fresh={isFresh} active={active} onOpen={openFile} />
-                </div>
-              ))}
+              {sections.map(({ bucket, groups }) => {
+                const open = isOpen(bucket)
+                return (
+                  <div key={bucket} className="pb-1">
+                    {sections.length > 1 ? (
+                      <button
+                        type="button"
+                        aria-expanded={open}
+                        onClick={() => setSectionOpen((o) => ({ ...o, [bucket]: !open }))}
+                        className="mt-3 flex w-full items-center gap-1 px-1.5 text-left text-[0.6875rem] font-semibold tracking-wide text-muted-foreground uppercase hover:text-foreground"
+                      >
+                        <ChevronLeftIcon className={cn('size-3 transition-transform', open ? '-rotate-90' : 'rotate-180')} />
+                        {SECTION_TITLE[bucket]}
+                        <span className="font-normal text-dimmer">{groups.reduce((n, g) => n + g.views.length, 0)}</span>
+                      </button>
+                    ) : null}
+                    {open
+                      ? groups.map((g) =>
+                          grouped ? (
+                            <div key={g.name} className="mt-2 overflow-hidden rounded-lg border bg-card/40">
+                              <p className="flex items-center gap-1.5 border-b bg-muted/50 px-2 py-1.5 text-xs font-bold" title={g.views[0].repo.root || undefined}>
+                                <FolderGitIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                                <span className="truncate">{g.name}</span>
+                              </p>
+                              {g.views.map((v) => (
+                                <div key={repoKey(v.repo)} className="border-b px-0.5 py-1 last:border-b-0">
+                                  <EntryRow repo={v.repo} onOpen={() => openEntry(repoKey(v.repo), bucket)} />
+                                  <FileTree nodes={v.tree} viewed={isViewed} fresh={isFresh} active={active} onOpen={openFile} />
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            g.views.map((v) => <FileTree key={repoKey(v.repo)} nodes={v.tree} viewed={isViewed} fresh={isFresh} active={active} onOpen={openFile} />)
+                          ),
+                        )
+                      : null}
+                  </div>
+                )
+              })}
             </aside>
           ) : null}
           {body}
@@ -755,18 +887,4 @@ function BranchText({ repo }: { repo: DiffRepo }) {
   )
 }
 
-/** A checkout's heading in the diff list (several checkouts, or one that failed). */
-function RepoHeader({ repo }: { repo: DiffRepo }) {
-  return (
-    <div className="flex items-center gap-2 px-1 pt-2 text-sm" title={repo.root}>
-      <FolderGitIcon className="size-4 shrink-0 text-muted-foreground" />
-      <span className="truncate font-semibold">{repo.label}</span>
-      <span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
-        <GitBranchIcon className="size-3 shrink-0" />
-        <BranchText repo={repo} />
-      </span>
-      {repo.stats ? <DiffStat additions={repo.stats.additions} deletions={repo.stats.deletions} bar={false} /> : null}
-    </div>
-  )
-}
 

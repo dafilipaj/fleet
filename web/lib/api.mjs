@@ -20,6 +20,7 @@ import { checkInboxSettings } from './inbox.mjs';
 import { DEFAULT_MODELS, slackSpawn, spawnRoots } from './config.mjs';
 import { parseNameOutput } from './autoname.mjs';
 import { SESSION_ID_RE } from './briefs.mjs';
+import { parseBrief } from './brief-format.mjs';
 import { BEAD_ID_PARAM_RE } from './beads.mjs';
 import { displayPath, validThreadId } from './reviews.mjs';
 import { askPrompt, validAskId, ASK_TOOLS } from './asks.mjs';
@@ -183,6 +184,7 @@ export const DEFAULT_QUICK_REPLIES = [
  *   operator    lib/operator.mjs instance (GET/POST /api/operator; absent → 501)
  *   files       lib/files.mjs instance (files/stat|raw|open|plain; absent → 501)
  *   completer   lib/complete.mjs instance (…/complete: composer autocomplete; absent → 501)
+ *   reviewPrs   lib/review-prs.mjs (…/diffs: each checkout's repo + PR, the brief's PRs without a worktree)
  *   differ      lib/diff.mjs#createDiffer (…/diff, …/diffs: the diff reviewer; absent → 501)
  *   touched     lib/touched.mjs index — the files a session worked on (…/diffs finds their checkouts)
  *   reviews     lib/reviews.mjs#createReviews (…/review: comment threads sent to the session; absent → 501)
@@ -232,6 +234,7 @@ export function createApi({
   reviews = null,
   asks = null,
   prNotes = null,
+  reviewPrs = null,
   queue = null,
   notes = null,
   spawnDirs = null,
@@ -1505,24 +1508,57 @@ export function createApi({
           if (d[3] === 'diffs') {
             // Every checkout the session works in: its cwd's, then those of the files it worked on.
             // `?root=<checkout>`: just that one (the per-worktree / per-PR review in the brief).
+            // `?pr=owner/repo#n`: just that PR of the session (a brief PR with no worktree here).
             const only = url.searchParams.get('root');
+            const onlyPr = url.searchParams.get('pr');
             let roots;
             if (only) {
               const top = await differ.checkout?.(only);
               if (!top) throw new HttpError('root is not a git checkout on this host', 400);
               roots = [top];
+            } else if (onlyPr) {
+              roots = [];
             } else {
               const worked = (await touched?.get(session).catch(() => null))?.worked ?? [];
               roots = await differ.roots(cwd, worked);
             }
-            const all = await differ.diffAll(roots, { since: url.searchParams.get('since') });
+            // Each checkout's GitHub repo and PR; the brief's PRs without a checkout here diff from a clone.
+            let plan = null;
+            if (reviewPrs) {
+              const prUrls = only ? [] : onlyPr ? [onlyPr] : await briefPrUrls(session.session_id);
+              plan = await reviewPrs.plan(roots, prUrls).catch((err) => {
+                console.error(`review prs: ${err?.message ?? err}`);
+                return null;
+              });
+              if (plan) roots = plan.roots;
+            }
+            const annotation = (root) => {
+              const i = plan?.info.get(root);
+              return i ? { remote: i.remote ?? null, pr: i.pr ?? null } : {};
+            };
+            const extra = plan
+              ? JSON.stringify([
+                  roots.map((r) => annotation(r)),
+                  plan.prs.map((p) => p.pr),
+                  plan.missing.map((m) => [m.key, m.pr]),
+                ])
+              : '';
+            const all = await differ.diffAll(roots, { since: url.searchParams.get('since'), prs: plan?.prs ?? [], extra });
             const home = os.homedir();
             const label = (root) => {
               const rel = cwd ? path.relative(cwd, root) : '';
               if (cwd && rel && !rel.startsWith('..') && !path.isAbsolute(rel)) return rel;
               return root === home ? '~' : root.startsWith(`${home}/`) ? `~/${root.slice(home.length + 1)}` : root;
             };
-            if (all.repos) all.repos = all.repos.map((r) => ({ ...r, label: label(r.root) }));
+            if (all.repos) {
+              const byKey = new Map((plan?.prs ?? []).map((p) => [p.key, p.pr]));
+              all.repos = all.repos.map((r) =>
+                r.source === 'pr'
+                  ? { ...r, label: `${byKey.get(r.key)?.owner ?? ''}/${byKey.get(r.key)?.repo ?? ''}`, remote: byKey.get(r.key) ? `${byKey.get(r.key).owner}/${byKey.get(r.key).repo}` : null, pr: byKey.get(r.key) ?? null }
+                  : { ...r, source: 'worktree', label: label(r.root), ...annotation(r.root) },
+              );
+              for (const m of plan?.missing ?? []) all.repos.push({ root: '', key: m.key, source: 'pr', label: `${m.pr.owner}/${m.pr.repo}`, remote: `${m.pr.owner}/${m.pr.repo}`, pr: m.pr, branch: m.pr.headBranch, error: m.error });
+            }
             return { status: 200, body: { host: config.self, id: session.session_id, cwd, ...all } };
           }
           if (!cwd) throw new HttpError('this session has no working directory', 409);
@@ -1903,6 +1939,18 @@ export function createApi({
     }
   }
 
+  /** The PR links in a session's brief (none without briefs, or when it cannot be read). */
+  async function briefPrUrls(sessionId) {
+    if (!briefs?.store || !sessionId) return [];
+    const text = await briefs.store.read(sessionId).catch(() => null);
+    if (!text) return [];
+    try {
+      return parseBrief(text).resources.filter((r) => r.kind === 'PR' && r.url).map((r) => r.url);
+    } catch {
+      return [];
+    }
+  }
+
   /** The PR as this host's `fleet prs` knows it (its clone under the repos roots), or an HttpError. */
   async function findPr({ owner, repo, number }) {
     if (typeof cli?.prs !== 'function') throw new HttpError('pull requests are not available on this server', 501);
@@ -1915,8 +1963,11 @@ export function createApi({
     }
     const lc = (x) => String(x ?? '').toLowerCase();
     const pr = (list?.prs ?? []).find((p) => lc(p.owner) === lc(owner) && lc(p.repo) === lc(repo) && p.number === number);
-    if (!pr) throw new HttpError(`${owner}/${repo}#${number} is not in this host’s pull requests`, 404);
-    return pr;
+    if (pr) return pr;
+    // Not one that needs you (merged, someone else's…) but a session's: notes still work.
+    const known = await reviewPrs?.byNumber(`${owner}/${repo}`, number).catch(() => null);
+    if (!known) throw new HttpError(`${owner}/${repo}#${number} is not in this host’s pull requests`, 404);
+    return { ...known, author: '', draft: known.state === 'draft', local: null };
   }
 
   /**

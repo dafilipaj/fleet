@@ -115,8 +115,13 @@ export function parseAnchor(b) {
   if (side !== 'new' && side !== 'old') throw new ReviewError('side must be "new" or "old"', 400);
   if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end < start || end - start > 2000) throw new ReviewError('invalid line range', 400);
   if (!Array.isArray(code) || code.length > 2001 || !code.every((l) => typeof l === 'string' && l.length <= 4000)) throw new ReviewError('code must be an array of lines', 400);
-  return { root, path: p, side, start, end, code };
+  // A PR the session made that has no worktree here: the comment is on the PR's code.
+  const pr = b.pr ?? null;
+  if (pr != null && (typeof pr !== 'string' || !PR_REF_RE.test(pr))) throw new ReviewError('invalid pr', 400);
+  return { root, path: p, side, start, end, code, ...(pr ? { pr } : {}) };
 }
+
+const PR_REF_RE = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}#[1-9][0-9]{0,9}$/;
 
 /**
  * Which user turns carry which thread markers, and the assistant's answer to each:
@@ -284,7 +289,7 @@ export function createReviews({ dir, send, messages, now = () => Date.now(), ran
         const t = {
           id: newId(state),
           ...anchor,
-          display: displayPath(anchor.root, anchor.path, session.cwd ?? null),
+          display: anchor.pr ? `${anchor.path} in PR ${anchor.pr} (no worktree of it here)` : displayPath(anchor.root, anchor.path, session.cwd ?? null),
           base: typeof body.base === 'string' ? body.base.slice(0, 64) : null,
           createdAt: now(),
           status: draft ? 'draft' : 'sent',
