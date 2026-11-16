@@ -83,13 +83,31 @@ export function createReviewPrs({ gh, differ, clones = async () => [], now = Dat
       return prs.find((p) => p.state === 'open' || p.state === 'draft') ?? prs[0] ?? null;
     });
 
+  // The repos under the roots (`fleet repos`, ~1 s): loaded at start, served stale while a
+  // refresh runs, so a review never waits for it after the first time.
   let clonesAt = 0;
   let clonesList = null;
+  let clonesLoading = null;
+  function loadClones() {
+    if (!clonesLoading)
+      clonesLoading = clones()
+        .then(
+          (list) => {
+            clonesList = Array.isArray(list) ? list : [];
+            clonesAt = now();
+          },
+          () => {
+            clonesList ??= [];
+            clonesAt = now();
+          },
+        )
+        .finally(() => (clonesLoading = null));
+    return clonesLoading;
+  }
+  loadClones();
   async function cloneOf(slug) {
-    if (!clonesList || now() - clonesAt > 5 * 60_000) {
-      clonesList = await clones().catch(() => clonesList ?? []);
-      clonesAt = now();
-    }
+    if (!clonesList) await loadClones();
+    else if (now() - clonesAt > 5 * 60_000) loadClones();
     const name = lc(slug.split('/')[1]);
     for (const c of clonesList ?? []) {
       if (lc(c?.name) !== name || typeof c.path !== 'string') continue;
