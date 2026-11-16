@@ -246,7 +246,7 @@ export interface RepoGroup {
   views: RepoView[]
 }
 
-/** The entries in sections (PRs, merged / closed, without a PR), each grouped by repository in first-seen order. */
+/** The entries in sections (PRs, merged / closed, without a PR), each grouped by repository; a stable order (names, PR numbers), not the server's. */
 export function entrySections(views: RepoView[]): { bucket: EntryBucket; groups: RepoGroup[] }[] {
   const order: EntryBucket[] = ['pr', 'done', 'local']
   return order
@@ -259,6 +259,16 @@ export function entrySections(views: RepoView[]): { bucket: EntryBucket; groups:
         if (g) g.views.push(v)
         else groups.push({ name, views: [v] })
       }
+      // A stable order, whatever order the checkouts came in (the server lists the one edited last
+      // first): repositories by name, then PRs by number, then branches by name.
+      const entryOrder = (v: RepoView) => [v.repo.pr?.number ?? Number.MAX_SAFE_INTEGER, v.repo.branch ?? v.repo.label, repoKey(v.repo)] as const
+      for (const g of groups)
+        g.views.sort((a, b) => {
+          const [an, ab, ak] = entryOrder(a)
+          const [bn, bb, bk] = entryOrder(b)
+          return an - bn || ab.localeCompare(bb) || ak.localeCompare(bk)
+        })
+      groups.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()))
       return { bucket, groups }
     })
     .filter((s) => s.groups.length)

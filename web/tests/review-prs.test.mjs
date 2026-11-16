@@ -90,3 +90,21 @@ test('plan: a brief PR whose branch a session checkout is on is that checkout (n
   assert.equal(plan.prs.length, 0);
   assert.equal(plan.info.get('/wt').pr.number, 5);
 });
+
+test('plan: brief PRs come in the brief order however gh answers (a stable fingerprint)', async () => {
+  const prs = [ghPr(1, 'one'), ghPr(2, 'two'), ghPr(3, 'three'), ghPr(4, 'four')];
+  const f = fakes({ checkouts: { '/code/api': { remote: 'acme/api', branch: 'main' } }, prs });
+  // The first PR answers last, the last first.
+  const gh = async (args) => {
+    const n = Number(args[2]);
+    await new Promise((r) => setTimeout(r, (5 - n) * 15));
+    return f.gh(args);
+  };
+  const urls = prs.map((p) => p.url);
+  for (let i = 0; i < 2; i++) {
+    const rp = createReviewPrs({ gh, differ: f.differ, waitMs: 1000 });
+    const plan = await rp.plan(['/code/api'], i ? [...urls].reverse() : urls);
+    const keys = plan.prs.map((p) => p.key);
+    assert.deepEqual(keys, (i ? [4, 3, 2, 1] : [1, 2, 3, 4]).map((n) => `pr:acme/api#${n}`));
+  }
+});

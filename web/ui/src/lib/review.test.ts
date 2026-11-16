@@ -262,4 +262,15 @@ describe('review entries: worktrees and PRs', () => {
     expect(s[2].groups.map((g) => g.name)).toEqual(['me/home', 'x'])
     expect(entryBucket(s[1].groups[0].views[0].repo)).toBe('done')
   })
+
+  it('entrySections: the same order whatever order the entries come in', () => {
+    const vs = [
+      view({ root: '/b', remote: 'acme/web', pr: pr(9, 'open') }),
+      view({ root: '/a', remote: 'acme/api', pr: pr(7, 'open') }),
+      view({ root: '', key: 'pr:acme/api#3', source: 'pr', remote: 'acme/api', pr: pr(3, 'draft') }),
+    ]
+    const order = (list: typeof vs) => entrySections(list).flatMap((x) => x.groups.flatMap((g) => g.views.map((v) => v.repo.pr?.number)))
+    expect(order(vs)).toEqual([3, 7, 9])
+    expect(order([...vs].reverse())).toEqual([3, 7, 9])
+  })
 })

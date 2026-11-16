@@ -136,41 +136,41 @@ export function createReviewPrs({ gh, differ, clones = async () => [], now = Dat
     const missing = [];
     const seen = new Set();
     const urls = [...new Set(prUrls)].map(parsePrUrl).filter(Boolean).slice(0, MAX_SESSION_PRS);
-    await Promise.all(
+    // Looked up in parallel, applied in the brief's order: the same brief gives the same entries
+    // in the same order (and the same fingerprint) on every poll.
+    const found = await Promise.all(
       urls.map(async (u) => {
         const pr = await byNumber(u.repo, u.number);
-        if (!pr?.headBranch) return;
+        if (!pr?.headBranch) return null;
         const slug = `${pr.owner}/${pr.repo}`;
         const key = lc(prRef(pr));
-        if (seen.has(key)) return;
-        seen.add(key);
         // A checkout of the session already on its branch.
-        for (const [root, i] of info) {
-          if (i.remote && lc(i.remote) === lc(slug) && i.branch === pr.headBranch) {
-            i.pr = pr;
-            return;
-          }
-        }
+        for (const [root, i] of info) if (i.remote && lc(i.remote) === lc(slug) && i.branch === pr.headBranch) return { key, pr, root };
         // A worktree of the same repo on its branch (made later, e.g. "Set up worktree").
-        const sameRepo = [...info].find(([, i]) => i.remote && lc(i.remote) === lc(slug))?.[0] ?? null;
+        const sameRepo = roots.find((r) => info.get(r)?.remote && lc(info.get(r).remote) === lc(slug)) ?? null;
         const clone = sameRepo ?? (await cloneOf(slug));
-        if (!clone) {
-          missing.push({ key: `pr:${key}`, pr, error: `no local clone of ${slug} on this host` });
-          return;
-        }
+        if (!clone) return { key, pr, missing: `no local clone of ${slug} on this host` };
         const wt = await differ.worktreeOn(clone, pr.headBranch);
-        if (wt && !out.includes(wt)) {
-          out.push(wt);
-          info.set(wt, { remote: slug, branch: pr.headBranch, def: null, pr });
-          return;
-        }
-        if (wt) {
-          info.get(wt).pr = pr;
-          return;
-        }
-        prs.push({ key: `pr:${key}`, clone, number: pr.number, baseBranch: pr.baseBranch, headBranch: pr.headBranch, pr });
+        return wt ? { key, pr, worktree: wt } : { key, pr, clone };
       }),
     );
+    for (const f of found) {
+      if (!f || seen.has(f.key)) continue;
+      seen.add(f.key);
+      const { key, pr } = f;
+      if (f.root) {
+        info.get(f.root).pr = pr;
+      } else if (f.missing) {
+        missing.push({ key: `pr:${key}`, pr, error: f.missing });
+      } else if (f.worktree) {
+        if (!out.includes(f.worktree)) {
+          out.push(f.worktree);
+          info.set(f.worktree, { remote: `${pr.owner}/${pr.repo}`, branch: pr.headBranch, def: null, pr });
+        } else info.get(f.worktree).pr = pr;
+      } else {
+        prs.push({ key: `pr:${key}`, clone: f.clone, number: pr.number, baseBranch: pr.baseBranch, headBranch: pr.headBranch, pr });
+      }
+    }
     // Checkouts with no brief PR: the PR on their branch, if any (never for the default branch).
     await Promise.all(
       [...info].map(async ([, i]) => {
