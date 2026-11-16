@@ -94,6 +94,7 @@ export function EntryHeader({ repo, entryKey, onSetUp }: { repo: DiffRepo; entry
         ) : null}
       </div>
       {repo.error ? <p className="mt-1.5 text-xs text-destructive">{repo.error}</p> : null}
+      {repo.pending ? <p className="mt-1.5 animate-pulse text-xs text-muted-foreground">Fetching the PR from GitHub…</p> : null}
     </div>
   )
 }

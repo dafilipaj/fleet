@@ -110,6 +110,8 @@ export function splitRows(hunk: DiffHunk): SplitRow[] {
 
 /** A short content signature of a file's diff: "Viewed" is dropped when it changes. */
 export function fileSignature(file: DiffFile): string {
+  // A lite list's blob ids say the same, before and after the lines load.
+  if (file.sig) return `${file.status}:${file.oldPath ?? ''}:${file.sig}`
   let h = 5381
   const feed = (s: string) => {
     for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0
@@ -303,7 +305,7 @@ export function kindCounts(repos: DiffRepo[]): Record<FileKind, number> {
  */
 export function repoViews(repos: DiffRepo[], show?: Record<FileKind, boolean>): RepoView[] {
   return repos
-    .filter((r) => r.error || r.files?.length)
+    .filter((r) => r.error || r.pending || r.files?.length)
     .map((repo) => {
       const tree = fileTree(show ? (repo.files ?? []).filter((f) => show[fileKind(f.path)]) : (repo.files ?? []), repoKey(repo))
       const files: { key: string; file: DiffFile }[] = []

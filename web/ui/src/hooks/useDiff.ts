@@ -28,7 +28,7 @@ export function useDiff(host: string, id: string, root: string | null = null) {
     async (signal: AbortSignal) => {
       const since = last.current?.key === key ? last.current.fingerprint : null
       try {
-        const r = await api.diffs(host, id, since, { signal }, root)
+        const r = await api.diffs(host, id, since, { signal }, root, true)
         setError(null)
         if (r.unchanged && since) return
         last.current = { key, fingerprint: r.fingerprint }

@@ -729,7 +729,17 @@ function route(method, p, q, b) {
     if (what === 'beads') return beads(host, id)
     if (what.startsWith('beads/')) return bead(host, decodeURIComponent(what.slice(6)))
     if (what === 'brief') return brief(host, id)
-    if (what === 'diffs') return diffs(host, id)
+    if (what === 'diffs') {
+      const d = diffs(host, id)
+      // ?lite=1: the list without lines, like the real server; …/diffs/files fills them in.
+      if (q.get('lite') !== '1') return d
+      return { ...d, repos: d.repos.map((r) => ({ ...r, files: r.files?.map((f) => ({ ...f, hunks: [], plain: undefined, lazy: true, sig: `demo-${f.path}:${f.additions}` })) })) }
+    }
+    if (what === 'diffs/files') {
+      const repo = diffs(host, id).repos.find((r) => r.root === q.get('root'))
+      const want = new Set(q.getAll('path'))
+      return { host, root: q.get('root'), files: (repo?.files ?? []).filter((f) => want.has(f.path)), truncated: false }
+    }
     if (what === 'review') return review(host, id)
     if (what === 'ask') return { host, id, ask: sideAsk(b) }
     if (what === 'complete') { const kind = q.get('kind'); return kind === 'skills' ? { host, id, kind, skills: SKILLS } : kind === 'files' ? { host, id, kind, files: ['README.md', 'docs/billing/rounding.md', 'docs/onboarding/v3.md', 'CHANGELOG.md'] } : { host, id, kind, available: true, notes: [{ ref: 'billing', path: 'projects/billing.md', title: 'Billing' }] } }

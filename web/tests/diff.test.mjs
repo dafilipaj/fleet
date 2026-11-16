@@ -11,7 +11,7 @@ import path from 'node:path';
 import { createApi } from '../lib/api.mjs';
 import { createHttpServer } from '../lib/app.mjs';
 import { normalizeConfig } from '../lib/config.mjs';
-import { EMPTY_TREE, createDiffer, parseNameStatus, parsePatch, validRef } from '../lib/diff.mjs';
+import { EMPTY_TREE, createDiffer, parseNameStatus, parseNumstat, parsePatch, parseRaw, validRef } from '../lib/diff.mjs';
 import { run } from '../lib/run.mjs';
 
 function repo(t) {
@@ -376,7 +376,15 @@ test('diffAll with prs: a checkout carries what is local only; a PR without a wo
 
   const differ = createDiffer({ run, home: '/nonexistent' });
   const prs = [{ key: 'pr:acme/api#3', clone: clone.dir, number: 3, baseBranch: 'main', headBranch: 'feature' }];
-  const all = await differ.diffAll([clone.dir], { prs, extra: 'x' });
+  // The first answer does not wait for the network: the PR is pending until its fetch lands.
+  const first = await differ.diffAll([clone.dir], { prs, extra: 'x' });
+  assert.deepEqual(first.repos.map((r) => [r.key ?? null, r.pending ?? false]), [[null, false], ['pr:acme/api#3', true]]);
+  let all = first;
+  for (let i = 0; i < 100 && all.repos[1].pending; i++) {
+    await new Promise((r) => setTimeout(r, 30));
+    all = await differ.diffAll([clone.dir], { prs, extra: 'x' });
+  }
+  assert.notEqual(all.fingerprint, first.fingerprint);
   assert.equal(all.repos.length, 2);
   const [wt, pr] = all.repos;
   assert.deepEqual(wt.local, { uncommitted: 1, unpushed: 1 });
@@ -390,4 +398,78 @@ test('diffAll with prs: a checkout carries what is local only; a PR without a wo
   assert.equal(await differ.branch(clone.dir), 'work');
   assert.equal(await differ.worktreeOn(clone.dir, 'work'), clone.dir);
   assert.equal(await differ.worktreeOn(clone.dir, 'nope'), null);
+});
+
+test('parseRaw / parseNumstat: blob ids, renames by their new path, binary files', () => {
+  const a = 'a'.repeat(40);
+  const b = 'b'.repeat(40);
+  const z = '0'.repeat(40);
+  const raw = `:100644 100644 ${a} ${b} M\0x.txt\0:000000 100644 ${z} ${b} A\0new.txt\0:100644 100644 ${a} ${b} R090\0old.txt\0moved.txt\0`;
+  assert.deepEqual(parseRaw(raw), [
+    { status: 'modified', path: 'x.txt', oldPath: 'x.txt', sig: `${a}:${b}` },
+    { status: 'added', path: 'new.txt', oldPath: null, sig: `${z}:${b}` },
+    { status: 'renamed', path: 'moved.txt', oldPath: 'old.txt', sig: `${a}:${b}` },
+  ]);
+  const num = parseNumstat('3\t1\tx.txt\0-\t-\timg.png\0' + '2\t0\t\0old.txt\0moved.txt\0');
+  assert.deepEqual(num.get('x.txt'), { additions: 3, deletions: 1, binary: false });
+  assert.deepEqual(num.get('img.png'), { additions: 0, deletions: 0, binary: true });
+  assert.deepEqual(num.get('moved.txt'), { additions: 2, deletions: 0, binary: false });
+});
+
+test('lite: the list without lines, the same files and counts as the full diff; filesAt fills them in', async (t) => {
+  const r = repo(t);
+  r.write('a.txt', 'one\ntwo\n');
+  r.write('old.txt', 'stays the same\nacross the rename\nmostly\n');
+  r.write('spec.plain', '***definitions***\n\n- A thing.\n');
+  r.git('add', '-A');
+  r.git('commit', '-qm', 'init');
+  r.write('a.txt', 'one\nTWO\nthree\n');
+  r.git('mv', 'old.txt', 'new.txt');
+  r.write('spec.plain', '***definitions***\n\n- A better thing.\n');
+  r.write('untracked.txt', 'u\n');
+  const differ = createDiffer({ run, home: '/nonexistent' });
+  const full = await differ.diffAll([r.dir]);
+  const lite = await differ.diffAll([r.dir], { lite: true });
+  assert.equal(lite.fingerprint, full.fingerprint);
+  const [lr] = lite.repos;
+  const [fr] = full.repos;
+  assert.deepEqual(lr.stats, fr.stats);
+  assert.deepEqual(
+    lr.files.map((f) => [f.path, f.oldPath, f.status, f.additions, f.deletions, f.lazy, f.hunks.length, f.plain]),
+    fr.files.map((f) => [f.path, f.oldPath, f.status, f.additions, f.deletions, true, 0, undefined]),
+  );
+  assert.ok(lr.files.every((f) => /^[0-9a-f]{40}:[0-9a-f]{40}$/.test(f.sig)));
+  const some = await differ.filesAt(r.dir, { base: lr.base.sha, tree: lr.tree, paths: ['new.txt', 'old.txt', 'spec.plain'] });
+  assert.deepEqual(some.files.map((f) => [f.path, f.status]), [['new.txt', 'renamed'], ['spec.plain', 'modified']]);
+  assert.match(some.files[1].plain.new, /better/);
+  assert.deepEqual(some.files[1].hunks, fr.files.find((f) => f.path === 'spec.plain').hunks);
+  // A path is literal (no globs), the ids must be ids, and the count is capped.
+  assert.deepEqual((await differ.filesAt(r.dir, { base: lr.base.sha, tree: lr.tree, paths: ['*.txt'] })).files, []);
+  await assert.rejects(differ.filesAt(r.dir, { base: 'HEAD', tree: lr.tree, paths: ['a.txt'] }), { status: 400 });
+  await assert.rejects(differ.filesAt(r.dir, { base: lr.base.sha, tree: lr.tree, paths: Array.from({ length: 41 }, (_, i) => `f${i}`) }), { status: 400 });
+});
+
+test('HTTP: …/diffs?lite=1 and …/diffs/files — the list, then some files by base + tree', async (t) => {
+  const r = repo(t);
+  r.write('a.txt', 'one\n');
+  r.git('add', '-A');
+  r.git('commit', '-qm', 'init');
+  r.write('a.txt', 'ONE\n');
+  const id = 'aaaaaaaa-0000-0000-0000-000000000003';
+  const config = normalizeConfig({ self: 'laptop' }, { env: {}, home: '/home/tester' });
+  const fleet = { localHost: async () => ({ name: 'laptop', ok: true, sessions: [{ session_id: id, cwd: r.dir, status: 'idle', backend: 'tmux' }] }) };
+  const api = createApi({ config, fleet, backend: {}, transcripts: {}, spawner: {}, differ: createDiffer({ run, home: '/nonexistent-home' }), touched: { get: async () => ({ worked: [] }) }, warmFleet: false });
+  t.after(() => api.stop());
+  const server = createHttpServer({ handleApi: api, uiDir: null });
+  await new Promise((res) => server.listen(0, '127.0.0.1', res));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${server.address().port}/api/hosts/laptop/sessions/aaaaaaaa`;
+  const lite = await (await fetch(`${base}/diffs?lite=1`)).json();
+  const [e] = lite.repos;
+  assert.deepEqual(e.files.map((f) => [f.path, f.lazy, f.hunks.length]), [['a.txt', true, 0]]);
+  const q = `root=${encodeURIComponent(e.root)}&base=${e.base.sha}&tree=${e.tree}`;
+  const got = await (await fetch(`${base}/diffs/files?${q}&path=a.txt`)).json();
+  assert.deepEqual(got.files.map((f) => [f.path, f.hunks[0].lines.map((l) => l.t + l.text)]), [['a.txt', ['-one', '+ONE']]]);
+  assert.equal((await fetch(`${base}/diffs/files?${q}`)).status, 400, 'no path');
+  assert.equal((await fetch(`${base}/diffs/files?root=%2F&base=${e.base.sha}&tree=${e.tree}&path=a.txt`)).status, 400, 'not a checkout');
 });

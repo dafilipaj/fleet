@@ -86,7 +86,7 @@ const UPLOAD_ROUTE = /^\/api\/hosts\/([^/]+)\/uploads$/;
 const FILES_ROUTE = /^\/api\/hosts\/([^/]+)\/sessions\/([^/]+)\/files\/(stat|raw|open|plain)$/;
 const COMPLETE_ROUTE = /^\/api\/hosts\/([^/]+)\/sessions\/([^/]+)\/complete$/;
 const COMPLETE_KINDS = new Set(['skills', 'files', 'brain']);
-const DIFF_ROUTE = /^\/api\/hosts\/([^/]+)\/sessions\/([^/]+)\/(diffs?)$/;
+const DIFF_ROUTE = /^\/api\/hosts\/([^/]+)\/sessions\/([^/]+)\/(diffs?|diffs\/files)$/;
 const REVIEW_ROUTE = /^\/api\/hosts\/([^/]+)\/sessions\/([^/]+)\/review(?:\/(submit)|\/(threads)(?:\/([^/]+)(?:\/(reply))?)?)?$/;
 /** Side questions: POST …/sessions/:id/ask starts one in a fork of the session; GET / DELETE /asks/:ask polls / cancels it. */
 const ASK_ROUTE = /^\/api\/hosts\/([^/]+)\/sessions\/([^/]+)\/ask$/;
@@ -1505,6 +1505,19 @@ export function createApi({
           if (!differ) throw new HttpError('the diff reviewer is not available on this server', 501);
           const session = await resolveLocalSession(id);
           const cwd = typeof session.cwd === 'string' && session.cwd ? session.cwd : null;
+          if (d[3] === 'diffs/files') {
+            // The lazy reviewer: some files of an entry the list named, by its base + tree ids.
+            const root = url.searchParams.get('root');
+            const top = await differ.checkout?.(root);
+            if (!top) throw new HttpError('root is not a git checkout on this host', 400);
+            try {
+              const r = await differ.filesAt(top, { base: url.searchParams.get('base'), tree: url.searchParams.get('tree'), paths: url.searchParams.getAll('path') });
+              return { status: 200, body: { host: config.self, id: session.session_id, root: top, ...r } };
+            } catch (err) {
+              if (err?.status) throw new HttpError(err.message, err.status);
+              throw err;
+            }
+          }
           if (d[3] === 'diffs') {
             // Every checkout the session works in: its cwd's, then those of the files it worked on.
             // `?root=<checkout>`: just that one (the per-worktree / per-PR review in the brief).
@@ -1543,7 +1556,8 @@ export function createApi({
                   plan.missing.map((m) => [m.key, m.pr]),
                 ])
               : '';
-            const all = await differ.diffAll(roots, { since: url.searchParams.get('since'), prs: plan?.prs ?? [], extra });
+            // `?lite=1`: files without their lines (the lazy reviewer fetches those per file, …/diffs/files).
+            const all = await differ.diffAll(roots, { since: url.searchParams.get('since'), prs: plan?.prs ?? [], extra, lite: url.searchParams.get('lite') === '1' });
             const home = os.homedir();
             const label = (root) => {
               const rel = cwd ? path.relative(cwd, root) : '';

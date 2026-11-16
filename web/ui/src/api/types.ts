@@ -1583,6 +1583,10 @@ export interface DiffFile {
   hunks: DiffHunk[]
   /** a PlainLang (.plain) spec: its whole text at the base and now (null: not there, or too big) */
   plain?: { old: string | null; new: string | null }
+  /** from a lite list: the lines are not here yet (`hunks` empty) — fetch them with diffFiles */
+  lazy?: boolean
+  /** a lite list's blob ids of both sides: the same sig is the same diff */
+  sig?: string
 }
 
 export interface DiffResponse {
@@ -1703,6 +1707,8 @@ export interface DiffRepo {
   remote?: string | null
   /** the PR on its branch (null: none; absent: older server) */
   pr?: ReviewPr | null
+  /** a `pr` entry whose refs are being fetched for the first time: no files yet (the next poll has them) */
+  pending?: boolean
   /** a checkout only: what it has that is not committed / not pushed yet (null: unknown) */
   local?: { uncommitted: number | null; unpushed: number | null }
 }

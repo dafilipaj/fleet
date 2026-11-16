@@ -1,5 +1,5 @@
 import { ChevronDownIcon, ChevronRightIcon, CopyIcon, MessageSquareIcon } from 'lucide-react'
-import { Fragment, memo, useMemo, type ReactNode } from 'react'
+import { Fragment, memo, useEffect, useMemo, useRef, type ReactNode } from 'react'
 
 import type { DiffFile, DiffHunk, DiffLine, ReviewThread } from '@/api/types'
 import { PlainView, type ClauseCommenting } from '@/components/plain/PlainView'
@@ -231,6 +231,10 @@ const parsePlainView = (r: string) => (r === 'spec' || r === 'diff' ? r : undefi
 export interface FileDiffProps {
   /** unique across checkouts (lib/review fileKey): what the callbacks and the selection carry */
   fileKey: string
+  /** a lazy file (`file.lazy`): fetch its lines (called when its card nears the screen) */
+  onNeed?: (fileKey: string) => void
+  /** its last fetch failed: a Retry instead of the placeholder */
+  loadFailed?: boolean
   file: DiffFile
   view: DiffView
   collapsed: boolean
@@ -252,6 +256,39 @@ export interface FileDiffProps {
   session?: { host: string; id: string } | null
 }
 
+/** A card whose lines are not loaded yet: asks for them once it comes near the screen. */
+function LazyBody({ lines, failed, onNeed }: { lines: number; failed: boolean; onNeed: () => void }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const need = useRef(onNeed)
+  useEffect(() => {
+    need.current = onNeed
+  })
+  useEffect(() => {
+    const el = ref.current
+    if (!el || failed) return
+    if (typeof IntersectionObserver === 'undefined') return need.current()
+    const io = new IntersectionObserver((es) => es.some((e) => e.isIntersecting) && need.current(), { rootMargin: '1200px 0px' })
+    io.observe(el)
+    return () => io.disconnect()
+  }, [failed])
+  // Roughly the height the lines will take, so the scrollbar does not jump much.
+  const h = Math.min(Math.max(lines, 2), 40) * 24
+  return (
+    <div ref={ref} style={{ height: failed ? undefined : h }} className="flex items-start px-4 py-3 text-sm text-muted-foreground">
+      {failed ? (
+        <span className="flex items-center gap-2">
+          Could not load this file’s diff.
+          <Button variant="outline" size="xs" onClick={onNeed}>
+            Retry
+          </Button>
+        </span>
+      ) : (
+        <span className="animate-pulse">Loading the diff…</span>
+      )}
+    </div>
+  )
+}
+
 /** One file's card: the GitHub "Files changed" header (path, +/−, Viewed) over its hunks. */
 export const FileDiff = memo(function FileDiff({
   fileKey,
@@ -269,6 +306,8 @@ export const FileDiff = memo(function FileDiff({
   renderThread,
   renderComposer,
   session = null,
+  onNeed,
+  loadFailed = false,
 }: FileDiffProps) {
   const placed = useMemo(() => placeThreads(file, threads), [file, threads])
   const composerKey = composing && selection ? anchorKey(selection.side, selection.end) : null
@@ -363,7 +402,7 @@ export const FileDiff = memo(function FileDiff({
           session={session}
         />
       ) : null}
-      {open && !spec && placed.unplaced.length ? (
+      {open && !spec && !file.lazy && placed.unplaced.length ? (
         <div className="border-b">
           <p className="bg-muted/40 px-3 py-1 text-xs text-muted-foreground">Comments on lines no longer in the diff</p>
           {placed.unplaced.map((t) => (
@@ -373,7 +412,9 @@ export const FileDiff = memo(function FileDiff({
       ) : null}
       {open && !spec ? (
         <div className="overflow-x-auto">
-          {file.binary ? (
+          {file.lazy ? (
+            <LazyBody lines={file.additions + file.deletions} failed={loadFailed} onNeed={() => onNeed?.(fileKey)} />
+          ) : file.binary ? (
             <p className="px-4 py-3 text-sm text-muted-foreground">Binary file not shown.</p>
           ) : !file.hunks.length ? (
             <p className="px-4 py-3 text-sm text-muted-foreground">{file.truncated ? 'Diff too large to show.' : 'No content changes (mode or rename only).'}</p>

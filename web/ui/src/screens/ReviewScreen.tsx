@@ -19,13 +19,14 @@ import { Button } from '@/components/ui/button'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useFleet } from '@/hooks/useFleet'
 import { useDiff } from '@/hooks/useDiff'
+import { useLazyFiles } from '@/hooks/useLazyFiles'
 import { useReview } from '@/hooks/useReview'
 import { useNow } from '@/hooks/useNow'
 import { usePersistentState } from '@/hooks/usePersistentState'
 import { useSessionTitle } from '@/hooks/useTitles'
 import { relTime } from '@/lib/format'
 import { reviewHref, DEFAULT_KINDS, FILE_KINDS, entryAnchor, entryBucket, entrySections, fileAnchor, fileKey, fileSignature, kindCounts, orphanThreadsByKey, parsePrReviewLocation, parseReviewLocation, prRefOf, rangeText, repoKey, repoViews, rowsToRange, selectLine, selectionCode, threadKey, type EntryBucket, type FileKind, type LineRow, type LineSelection, type Side } from '@/lib/review'
-import type { DiffRepo, PrNote, ReviewAnchor, ReviewPr, ReviewThread, SideAsk } from '@/api/types'
+import type { DiffFile, DiffRepo, PrNote, ReviewAnchor, ReviewPr, ReviewThread, SideAsk } from '@/api/types'
 import { prHref } from '@/lib/prs'
 import { findSession, sessionHref } from '@/lib/sessions'
 import { storage } from '@/lib/storage'
@@ -82,6 +83,8 @@ interface ReviewSource {
   hint: string
   empty: string
   headerActions?: ReactNode
+  /** A lite diff: fetch a file's lines (`need`), its last fetch failed (`failed`). */
+  lazy?: { need: (repo: DiffRepo, file: DiffFile) => void; failed: (repo: DiffRepo, file: DiffFile) => boolean }
   /** A session's entries that have a PR: notes on them, and a worktree for one without. */
   prs?: {
     notes: Record<string, PrNote[]>
@@ -124,7 +127,14 @@ function SessionReview({ host, id, root, layout }: { host: string; id: string; r
   const plainSession = useMemo(() => ({ host, id }), [host, id])
   const { title } = useSessionTitle(session, `${host}/${id}`)
   const useDiffRefresh = useDiff(host, id, root)
-  const { data, error, changedAt } = useDiffRefresh
+  const { data: lite, error, changedAt } = useDiffRefresh
+  // The list comes first (lite); each file's lines load when its card nears the screen.
+  const lazy = useLazyFiles(host, id)
+  const { fill } = lazy
+  const data = useMemo(
+    () => (lite?.repos ? { ...lite, repos: lite.repos.map((r) => (r.files?.some((f) => f.lazy) ? { ...r, files: r.files.map((f) => fill(r, f)) } : r)) } : lite),
+    [lite, fill],
+  )
   const fullReview = useReview(host, id, root)
   const cwd = session?.cwd
   const scoped = useMemo(() => {
@@ -183,6 +193,7 @@ function SessionReview({ host, id, root, layout }: { host: string; id: string; r
       run: (summary) => review.submit(summary),
     },
     hint: 'To comment: select code with the mouse, or click a line number (shift-click for a range). The comment goes to the session with those lines.',
+    lazy: { need: lazy.need, failed: lazy.failed },
     prs: {
       notes: prNotes.notes,
       create: (pr, anchor, body, base) => prNotes.create(pr, anchor, body, base),
@@ -327,6 +338,19 @@ function ReviewView({ layout, source }: { layout: Layout; source: ReviewSource }
   // Every file across checkouts, by key (root + path).
   const entries = useMemo(() => new Map(views.flatMap((v) => v.files.map((f) => [f.key, { ...f, repo: v.repo }] as const))), [views])
   const files = useMemo(() => [...entries.values()], [entries])
+  // A card asks for its lines by key: one stable callback (the cards are memoised).
+  const entriesRef = useRef(entries)
+  useEffect(() => {
+    entriesRef.current = entries
+  }, [entries])
+  const lazyNeed = source.lazy?.need
+  const needFile = useCallback(
+    (key: string) => {
+      const e = entriesRef.current.get(key)
+      if (e && lazyNeed) lazyNeed(e.repo, e.file)
+    },
+    [lazyNeed],
+  )
   const signatures = useMemo(() => new Map(files.map((f) => [f.key, fileSignature(f.file)])), [files])
   const stats = useMemo(
     () => views.reduce((a, v) => ({ files: a.files + (v.repo.stats?.files ?? 0), additions: a.additions + (v.repo.stats?.additions ?? 0), deletions: a.deletions + (v.repo.stats?.deletions ?? 0) }), { files: 0, additions: 0, deletions: 0 }),
@@ -692,7 +716,7 @@ function ReviewView({ layout, source }: { layout: Layout; source: ReviewSource }
                       return (
                         <div key={k} className="space-y-3">
                           {grouped || v.repo.error ? <EntryHeader repo={v.repo} entryKey={k} onSetUp={v.repo.source === 'pr' && pr && source.prs ? () => source.prs!.setUp(pr) : undefined} /> : null}
-                          {!v.files.length && !v.repo.error ? <p className="px-1 text-xs text-dimmer">All changed files here are filtered out.</p> : null}
+                          {!v.files.length && !v.repo.error && !v.repo.pending ? <p className="px-1 text-xs text-dimmer">All changed files here are filtered out.</p> : null}
                           {v.repo.truncated ? <p className="text-xs text-muted-foreground">The diff is very large: later files are listed without their lines.</p> : null}
                           {v.files.map(({ key, file }) => (
                             <FileDiff
@@ -712,6 +736,8 @@ function ReviewView({ layout, source }: { layout: Layout; source: ReviewSource }
                               renderThread={renderThread}
                               renderComposer={renderComposer}
                               session={plainSession}
+                              onNeed={needFile}
+                              loadFailed={file.lazy ? (source.lazy?.failed(v.repo, file) ?? false) : false}
                             />
                           ))}
                         </div>

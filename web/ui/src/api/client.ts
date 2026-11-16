@@ -1,6 +1,7 @@
 // Typed client for the fleet web HTTP API. Same origin (the server serves this UI);
 // in dev, Vite proxies /api to a running server (see vite.config.ts).
 import type {
+  DiffFile,
   AutoNameRun,
   BeadDetail,
   BeadsResponse,
@@ -179,9 +180,15 @@ export const api = {
 
   /** Every checkout the session works in (cwd's + those of the files it worked on); `since` = the last fingerprint. */
   /** `root`: just that checkout (a review scoped to one worktree / PR). */
-  diffs: (host: string, id: string, since: string | null = null, o: Opts = {}, root: string | null = null) => {
-    const q = [since ? `since=${enc(since)}` : null, root ? `root=${enc(root)}` : null].filter(Boolean).join('&')
+  /** `lite`: files without their lines (fetch those with diffFiles); an older server sends them whole. */
+  diffs: (host: string, id: string, since: string | null = null, o: Opts = {}, root: string | null = null, lite = false) => {
+    const q = [since ? `since=${enc(since)}` : null, root ? `root=${enc(root)}` : null, lite ? 'lite=1' : null].filter(Boolean).join('&')
     return request<DiffsResponse>(`${sessionPath(host, id, 'diffs')}${q ? `?${q}` : ''}`, o)
+  },
+  /** Some files of a lite diff with their lines, by the entry's root, base and tree ids. */
+  diffFiles: (host: string, id: string, at: { root: string; base: string; tree: string; paths: string[] }, o: Opts = {}) => {
+    const q = [`root=${enc(at.root)}`, `base=${enc(at.base)}`, `tree=${enc(at.tree)}`, ...at.paths.map((p) => `path=${enc(p)}`)].join('&')
+    return request<{ host: string; root: string; files: DiffFile[]; truncated: boolean }>(`${sessionPath(host, id, 'diffs/files')}?${q}`, o)
   },
   // Prompt queue (server-side): sent one per run once the session is idle.
   queueAdd: (host: string, id: string, text: string, o: Opts = {}) =>

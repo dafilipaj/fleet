@@ -21,6 +21,8 @@ const GIT_TIMEOUT_MS = 20000;
 export const MAX_ROOTS = 12;
 /** PlainLang specs: the diff carries their whole text, up to this size per side. */
 export const MAX_PLAIN_BYTES = 512 * 1024;
+/** Files per lazy request (…/diffs/files) at most. */
+export const MAX_LAZY_PATHS = 40;
 const PLAIN_RE = /\.plain$/i;
 const MAX_BUFFER = 64 * 1024 * 1024;
 /** `?base=`: a branch, tag or sha; never an option. */
@@ -187,14 +189,19 @@ export function createDiffer({ run, tmpDir = os.tmpdir(), home = os.homedir() })
     return { root, branch: branchName, head, base: { ref: head ? baseRef : null, sha: baseSha }, tree, fingerprint: `${baseSha}:${tree}` };
   }
 
-  /** A snapshot's files → hunks → lines. */
-  async function filesOf(meta) {
+  /**
+   * A snapshot's files → hunks → lines. `paths`: only these (each file's path and, for a rename,
+   * its old one) — the lazy reviewer asks for a few files at a time.
+   */
+  async function filesOf(meta, { paths = null } = {}) {
     const { root, tree } = meta;
     const baseSha = meta.base.sha;
     const opts = ['--no-color', '--no-ext-diff', '-M', '--no-relative'];
+    const spec = paths ? ['--', ...paths] : [];
+    const lit = paths ? ['--literal-pathspecs'] : [];
     const [{ stdout: ns }, { stdout: patch }] = await Promise.all([
-      git(root, ['diff', ...opts, '--name-status', '-z', baseSha, tree]),
-      git(root, ['diff', ...opts, '-p', '-U3', baseSha, tree]),
+      git(root, [...lit, 'diff', ...opts, '--name-status', '-z', baseSha, tree, ...spec]),
+      git(root, [...lit, 'diff', ...opts, '-p', '-U3', baseSha, tree, ...spec]),
     ]);
     const names = parseNameStatus(ns);
     const parsed = parsePatch(patch);
@@ -305,6 +312,27 @@ export function createDiffer({ run, tmpDir = os.tmpdir(), home = os.homedir() })
   }
 
   /**
+   * A snapshot's files without their lines (the lazy reviewer's list): status, paths, +/−, and
+   * `sig` (the blob ids of both sides: equal sig ⇔ equal diff). `lazy: true`, `hunks: []`.
+   */
+  async function listOf(meta) {
+    const { root, tree } = meta;
+    const baseSha = meta.base.sha;
+    const opts = ['--no-color', '--no-ext-diff', '-M', '--no-relative', '-z'];
+    const [{ stdout: raw }, { stdout: num }] = await Promise.all([git(root, ['diff', ...opts, '--raw', '--abbrev=40', baseSha, tree]), git(root, ['diff', ...opts, '--numstat', baseSha, tree])]);
+    const counts = parseNumstat(num);
+    const stats = { files: 0, additions: 0, deletions: 0 };
+    const files = parseRaw(raw).map((f) => {
+      const c = counts.get(f.path) ?? { additions: 0, deletions: 0, binary: false };
+      stats.files++;
+      stats.additions += c.additions;
+      stats.deletions += c.deletions;
+      return { status: f.status, path: f.path, oldPath: f.oldPath, binary: c.binary, additions: c.additions, deletions: c.deletions, truncated: false, hunks: [], lazy: true, sig: f.sig };
+    });
+    return { files, stats, truncated: false };
+  }
+
+  /**
    * What a checkout has that its PR (or its upstream) does not yet: files changed in the working
    * tree against HEAD (`uncommitted`), commits not on the upstream (`unpushed`, null without one).
    */
@@ -332,10 +360,10 @@ export function createDiffer({ run, tmpDir = os.tmpdir(), home = os.homedir() })
    * { unchanged: true } without repos. A checkout that fails (deleted worktree) comes back as
    * { root, error }.
    */
-  async function diffAll(rootList, { since = null, prs = [], extra = '' } = {}) {
+  async function diffAll(rootList, { since = null, prs = [], extra = '', lite = false } = {}) {
     const metas = await mapLimit(rootList, 4, (root) => snapshot(root, null).catch((err) => ({ root, error: err.message || String(err) })));
     const prMetas = await mapLimit(prs, 2, (p) =>
-      prSnapshot(p.clone, { number: p.number, baseBranch: p.baseBranch, headBranch: p.headBranch })
+      prSnapshot(p.clone, { number: p.number, baseBranch: p.baseBranch, headBranch: p.headBranch, background: true })
         .then((m) => ({ ...m, key: p.key, source: 'pr' }))
         .catch((err) => ({ root: p.clone, key: p.key, source: 'pr', error: err.message || String(err) })),
     );
@@ -346,9 +374,9 @@ export function createDiffer({ run, tmpDir = os.tmpdir(), home = os.homedir() })
       .digest('hex');
     if (since && since === fingerprint) return { fingerprint, unchanged: true };
     const repos = await mapLimit(all, 4, async (m) => {
-      if (m.error) return m;
+      if (m.error || m.pending) return m;
       const [files, local] = await Promise.all([
-        filesOf(m).catch((err) => ({ error: err.message || String(err), files: [] })),
+        (lite ? listOf(m) : filesOf(m)).catch((err) => ({ error: err.message || String(err), files: [] })),
         m.source === 'pr' ? null : localState(m).catch(() => null),
       ]);
       return { ...m, ...files, ...(local ? { local } : {}) };
@@ -357,6 +385,7 @@ export function createDiffer({ run, tmpDir = os.tmpdir(), home = os.homedir() })
   }
 
   const prFetched = new Map(); // `${root}#${number}` → when its refs were last fetched (ms)
+  const prFetching = new Map(); // `${root}#${number}` → the fetch running now
 
   /**
    * A pull request's diff from a local clone, with no worktree and no checkout: its head and
@@ -372,7 +401,11 @@ export function createDiffer({ run, tmpDir = os.tmpdir(), home = os.homedir() })
   }
 
   /** prDiff's refs and fingerprint, without the files. */
-  async function prSnapshot(root, { number, baseBranch, headBranch = null, refetch = false, fetchEveryMs = 60_000, now = Date.now() } = {}) {
+  /**
+   * `background`: never wait for the network — a stale ref is served while the fetch runs, and
+   * a PR never fetched yet answers `{ pending: true }` (the next poll has it).
+   */
+  async function prSnapshot(root, { number, baseBranch, headBranch = null, refetch = false, fetchEveryMs = 60_000, now = Date.now(), background = false } = {}) {
     if (!Number.isInteger(number) || number <= 0) throw new DiffError('invalid PR number', 400);
     if (!validRef(baseBranch)) throw new DiffError('invalid base branch', 400);
     const top = await revParse(root, ['--show-toplevel']);
@@ -382,12 +415,27 @@ export function createDiffer({ run, tmpDir = os.tmpdir(), home = os.homedir() })
     const key = `${top}#${number}`;
     const have = await revParse(top, ['--verify', '--quiet', `${headRef}^{commit}`]);
     if (refetch || !have || now - (prFetched.get(key) ?? 0) > fetchEveryMs) {
-      try {
-        await git(top, ['fetch', '--quiet', '--no-tags', '--no-write-fetch-head', 'origin', `+refs/pull/${number}/head:${headRef}`, `+refs/heads/${baseBranch}:${baseRef}`], { timeout: 60_000 });
-        prFetched.set(key, now);
-      } catch (err) {
-        // Offline or no access: an earlier fetch still shows something.
-        if (!have) throw new DiffError(`could not fetch the PR: ${String(err?.message ?? err).split('\n').pop()}`, 502);
+      let p = prFetching.get(key);
+      if (!p) {
+        p = git(top, ['fetch', '--quiet', '--no-tags', '--no-write-fetch-head', 'origin', `+refs/pull/${number}/head:${headRef}`, `+refs/heads/${baseBranch}:${baseRef}`], { timeout: 60_000 })
+          .then(
+            () => {
+              prFetched.set(key, now);
+              return null;
+            },
+            (err) => {
+              // Offline or no access: an earlier fetch still shows something; retry after a while.
+              prFetched.set(key, now);
+              return String(err?.message ?? err).split('\n').pop();
+            },
+          )
+          .finally(() => prFetching.delete(key));
+        prFetching.set(key, p);
+      }
+      if (background && !have) return { root: top, branch: headBranch, pending: true, fingerprint: 'pending' };
+      if (!background) {
+        const failed = await p;
+        if (failed && !have) throw new DiffError(`could not fetch the PR: ${failed}`, 502);
       }
     }
     const head = await revParse(top, ['--verify', '--quiet', `${headRef}^{commit}`]);
@@ -405,6 +453,21 @@ export function createDiffer({ run, tmpDir = os.tmpdir(), home = os.homedir() })
     if (typeof dir !== 'string' || !path.isAbsolute(dir) || dir.includes('\0') || dir === home || dir === '/') return null;
     const top = await revParse(dir, ['--show-toplevel']);
     return top && path.resolve(top) === path.resolve(dir) ? top : null;
+  }
+
+  /**
+   * Some files of a diff the lazy list already named, by its base and tree ids (immutable, so
+   * the answer is too): → { files } with hunks (and .plain texts), in diff order.
+   */
+  async function filesAt(root, { base, tree, paths }) {
+    if (!validTree(base) || !validTree(tree)) throw new DiffError('invalid base or tree', 400);
+    if (!Array.isArray(paths) || !paths.length || paths.length > MAX_LAZY_PATHS) throw new DiffError(`1–${MAX_LAZY_PATHS} paths`, 400);
+    if (!paths.every((p) => typeof p === 'string' && p && p.length <= 4096 && !p.includes('\0') && !p.startsWith('/'))) throw new DiffError('invalid path', 400);
+    const top = await revParse(root, ['--show-toplevel']);
+    if (!top) throw new DiffError('not a git repository', 409);
+    const want = new Set(paths);
+    const { files, truncated } = await filesOf({ root: top, tree, base: { sha: base } }, { paths });
+    return { files: files.filter((f) => want.has(f.path)), truncated };
   }
 
   /** The GitHub `owner/name` of a checkout's origin, or null (cached: a remote seldom moves). */
@@ -440,7 +503,46 @@ export function createDiffer({ run, tmpDir = os.tmpdir(), home = os.homedir() })
     return b ? b.replace(/^origin\//, '') : null;
   }
 
-  return { diff, roots, diffAll, prDiff, checkout, remote, branch, worktreeOn, defaultBranch };
+  return { diff, roots, diffAll, prDiff, checkout, remote, branch, worktreeOn, defaultBranch, filesAt };
+}
+
+/** `git diff --raw -z --abbrev=40` → [{ status, path, oldPath, sig }] (sig: both blob ids). */
+export function parseRaw(out) {
+  const parts = out.split('\0');
+  const files = [];
+  for (let i = 0; i < parts.length; ) {
+    const head = parts[i++];
+    if (!head || !head.startsWith(':')) continue;
+    const [, , oldSha, newSha, code] = head.slice(1).split(' ');
+    const kind = STATUS[code?.[0]] ?? 'modified';
+    if (code?.[0] === 'R' || code?.[0] === 'C') {
+      const oldPath = parts[i++];
+      files.push({ status: kind, path: parts[i++], oldPath, sig: `${oldSha}:${newSha}` });
+    } else {
+      const p = parts[i++];
+      files.push({ status: kind, path: p, oldPath: kind === 'added' ? null : p, sig: `${oldSha}:${newSha}` });
+    }
+  }
+  return files;
+}
+
+/** `git diff --numstat -z` → Map(path → { additions, deletions, binary }) (a rename by its new path). */
+export function parseNumstat(out) {
+  const parts = out.split('\0');
+  const m = new Map();
+  for (let i = 0; i < parts.length; ) {
+    const head = parts[i++];
+    if (!head) continue;
+    const [a, d, p] = head.split('\t');
+    let file = p;
+    if (p === '') {
+      i++; // the old path
+      file = parts[i++];
+    }
+    const binary = a === '-' && d === '-';
+    m.set(file, { additions: binary ? 0 : Number(a) || 0, deletions: binary ? 0 : Number(d) || 0, binary });
+  }
+  return m;
 }
 
 /** A git remote url → GitHub `owner/name` (https, ssh, scp-like), else null. */

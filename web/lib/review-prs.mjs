@@ -11,7 +11,7 @@ const OPEN_TTL_MS = 3 * 60_000;
 const DONE_TTL_MS = 6 * 60 * 60_000;
 const NONE_TTL_MS = 5 * 60_000;
 const ERROR_TTL_MS = 5 * 60_000;
-const WAIT_MS = 2500;
+const WAIT_MS = 1000;
 const MAX_CACHE = 500;
 /** Brief PRs looked at per session at most. */
 export const MAX_SESSION_PRS = 8;
