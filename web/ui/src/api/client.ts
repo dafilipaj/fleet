@@ -140,6 +140,8 @@ export async function request<T>(path: string, { signal, method = 'GET', body, f
     data = null
   }
   if (!res.ok) {
+    // This server's web.auth wants a sign-in (a peer's 401 comes back without the header).
+    if (res.status === 401 && res.headers.get('x-fleet-auth') === 'login' && typeof window !== 'undefined') window.location.assign('/login')
     const msg = (data as { error?: string } | null)?.error
     throw new ApiError(msg || `HTTP ${res.status}`, res.status, data)
   }

@@ -44,12 +44,13 @@ import { SLACK_USER_TOKEN_NAME } from './lib/inbox-slack.mjs';
 import { createPromptQueue } from './lib/queue.mjs';
 import { TOKEN_NAMES, createSlackApi, createSlackBridge, createSlackDownload, createSocketClient } from './lib/slack.mjs';
 import { createGithubBridge } from './lib/github.mjs';
-import { fetchPeerHost, proxyToPeer, setPeerConnects, setPeerProxies } from './lib/peers.mjs';
+import { fetchPeerHost, proxyToPeer, setPeerConnects, setPeerProxies, setPeerTokens } from './lib/peers.mjs';
 import { createDormant } from './lib/dormant.mjs';
 import { createMemos } from './lib/memos.mjs';
 import { createApi } from './lib/api.mjs';
 import { createHttpServer } from './lib/app.mjs';
 import { createRequestGuard, listenAddresses, loopbackFor, machineNames } from './lib/guard.mjs';
+import { createAuth } from './lib/auth.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const NAME = 'fleet-web';
@@ -72,6 +73,7 @@ try {
 
 setPeerProxies(config.peerProxies);
 setPeerConnects(config.peerConnects);
+setPeerTokens(config.peerTokens);
 
 const cli = createFleetCli({ run, bin: config.fleetBin });
 const fleet = createFleet({ cli, self: config.self, ttlMs: 2000 });
@@ -368,7 +370,9 @@ const guard = createRequestGuard({
 
 // web.bind: one address, or a specific one (a tailnet IP) plus loopback (lib/guard.mjs).
 const addresses = listenAddresses(config.bind);
-const servers = addresses.map(() => createHttpServer({ handleApi, uiDir: config.uiDir, guard, log, logError }));
+// web.auth: a token on every request, loopback included (lib/auth.mjs); off unless configured.
+const auth = createAuth({ token: config.authToken });
+const servers = addresses.map(() => createHttpServer({ handleApi, uiDir: config.uiDir, guard, auth, log, logError }));
 for (const s of servers) {
   s.on('error', (err) => {
     // A tailnet address that is not up yet (EADDRNOTAVAIL): exit, launchd starts us again.
@@ -381,6 +385,7 @@ for (const [i, s] of servers.entries()) if (i > 0) s.listen(config.port, address
 servers[0].listen(config.port, addresses[0], () => {
   log(`[fleet-web] self=${config.self} listening on ${addresses.map((a) => `http://${a.includes(':') ? `[${a}]` : a}:${config.port}`).join(', ')}`);
   if (config.allowedHosts.length) log(`[fleet-web] allowedHosts=${config.allowedHosts.join(',')}`);
+  log(`[fleet-web] auth ${auth.enabled ? 'on (web.auth.tokenFile)' : 'off'}`);
   log(`[fleet-web] config=${config.configFile ?? '(none, defaults)'} peers=${Object.keys(config.peers).join(',') || '(none)'}`);
   log(`[fleet-web] fleet=${config.fleetBin} tmux=${config.tmux} ui=${config.uiDir ?? '(none)'}`);
   if (config.autoName.enabled) {

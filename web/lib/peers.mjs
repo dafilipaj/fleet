@@ -20,6 +20,18 @@ export function setPeerConnects(map) {
   peerConnects = map && typeof map === 'object' ? { ...map } : {};
 }
 
+// Peer origin → the token its web.auth asks for (hosts.<name>.webTokenFile), sent as a Bearer header.
+let peerTokens = {};
+
+export function setPeerTokens(map) {
+  peerTokens = map && typeof map === 'object' ? { ...map } : {};
+}
+
+function withAuth(target, headers = {}) {
+  const token = peerTokens[target.origin];
+  return token ? { ...headers, authorization: `Bearer ${token}` } : headers;
+}
+
 // The url to dial and the request options that keep the original name for TLS and Host.
 function dialTarget(target) {
   const connect = peerConnects[target.origin];
@@ -78,8 +90,9 @@ async function fetchWithTimeout(url, opts, timeoutMs) {
   try {
     const target = new URL(url);
     const agent = proxyAgentFor(target);
-    if (agent || peerConnects[target.origin]) return await requestViaAgent(target, { ...opts, signal: controller.signal }, agent);
-    return await fetch(url, { ...opts, signal: controller.signal });
+    const withToken = { ...opts, headers: withAuth(target, opts?.headers), signal: controller.signal };
+    if (agent || peerConnects[target.origin]) return await requestViaAgent(target, withToken, agent);
+    return await fetch(url, withToken);
   } finally {
     clearTimeout(timer);
   }
@@ -177,6 +190,7 @@ export function streamToPeer(baseUrl, { method = 'POST', pathname, search = '', 
   const target = new URL(`${baseUrl}${pathname}?${withLocalFlag(search)}`);
   const headers = { accept: 'application/json' };
   for (const h of ['content-type', 'content-length']) if (req.headers?.[h]) headers[h] = req.headers[h];
+  Object.assign(headers, withAuth(target));
   return new Promise((resolve) => {
     let settled = false;
     const done = (result) => {
@@ -247,7 +261,7 @@ export function streamFromPeer(baseUrl, { pathname, search = '', timeoutMs = 200
       resolve(result);
     };
     const { url, options } = dialTarget(target);
-    const out = (target.protocol === 'https:' ? https : http).request(url, { ...options, method: 'GET', agent: proxyAgentFor(target) }, (res) => {
+    const out = (target.protocol === 'https:' ? https : http).request(url, { ...options, method: 'GET', headers: withAuth(target, options.headers), agent: proxyAgentFor(target) }, (res) => {
       const headers = {};
       for (const h of PASS_HEADERS) if (res.headers[h] != null) headers[h] = res.headers[h];
       done({ status: res.statusCode ?? 502, headers, stream: res });

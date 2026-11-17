@@ -68,6 +68,10 @@ pub struct Host {
     /// (read by the web server only); TLS and `Host` keep the url's name. `None` → the url's.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub web_connect: Option<String>,
+    /// File holding the token this host's `web.auth` asks for, sent as a Bearer header (read by
+    /// the web server only). `None` → no token.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web_token_file: Option<String>,
     /// A shared shed (other people's sessions too): the web UI keeps its sessions out of the
     /// default view, the Inbox and the waiting count; `list --mine` / `--shared` split on it.
     #[serde(skip_serializing_if = "std::ops::Not::not")]

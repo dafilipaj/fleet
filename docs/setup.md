@@ -252,7 +252,12 @@ changes), builds the CLI into `~/.local/bin/fleet`, runs `fleet web build`, rest
 
 ## Security
 
-- **The web app has no authentication.** Anyone who reaches the port can read your sessions and
+- **Sharing the machine with other users?** Turn on `web.auth`: put a token in a mode-600 file
+  (`openssl rand -hex 32 > ~/.config/fleet/web-token; chmod 600 ~/.config/fleet/web-token`), set
+  `web.auth.tokenFile` to it, and give every other machine that peers with this one the same token
+  in a file of its own, as `hosts.<name>.webTokenFile`. Browsers sign in once at `/login`.
+  Loopback is open to every local user, so without it any of them can drive your sessions.
+- **Without `web.auth` the web app has no authentication.** Anyone who reaches the port can read your sessions and
   type into them. Keep it on the tailnet: set `web.bind` to the machine's Tailscale IP (or keep
   `0.0.0.0` behind a firewall that only admits the tailnet), and never port-forward it or publish
   it with Tailscale Funnel. Bound to the tailnet IP, the server also listens on loopback, so local

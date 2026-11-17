@@ -21,6 +21,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { readTokenFile } from './auth.mjs';
 import { DEFAULT_EDITOR, EDITORS } from './editor.mjs';
 
 export const DEFAULT_PORT = 7777;
@@ -379,6 +380,7 @@ export function normalizeConfig(
   const peers = {};
   const peerProxies = {}; // peer origin → HTTP proxy url (hosts.<name>.webProxy)
   const peerConnects = {}; // peer origin → host[:port] dialled instead (hosts.<name>.webConnect)
+  const peerTokens = {}; // peer origin → the token its web.auth asks for (hosts.<name>.webTokenFile)
   const sshHosts = {}; // name → ssh destination (the "Open in editor" Remote-SSH links)
   const hostAddrs = {}; // name → the hostname of its web url (which machine a browser is on)
   const sharedHosts = []; // hosts.<name>.shared: shared sheds, kept out of the default view and the Inbox
@@ -416,6 +418,10 @@ export function normalizeConfig(
       }
       peerConnects[new URL(peers[name]).origin] = host.webConnect;
     }
+    if (host.webTokenFile != null) {
+      if (typeof host.webTokenFile !== 'string' || !host.webTokenFile.trim()) throw new Error(`config.hosts.${name}.webTokenFile must be a path`);
+      peerTokens[new URL(peers[name]).origin] = readTokenFile(expandHome(host.webTokenFile.trim(), home), { fsImpl, label: `config.hosts.${name}.webTokenFile` });
+    }
   }
 
   const web = raw.web == null ? {} : raw.web;
@@ -437,6 +443,18 @@ export function normalizeConfig(
   if (web.allowedHosts != null) {
     if (!Array.isArray(web.allowedHosts) || web.allowedHosts.some((h) => typeof h !== 'string' || !h.trim())) throw new Error('config.web.allowedHosts must be an array of host names');
     allowedHosts.push(...web.allowedHosts.map((h) => h.trim().toLowerCase()));
+  }
+
+  // web.auth.tokenFile: every request needs this token, from loopback too (lib/auth.mjs).
+  let authToken = null;
+  let authTokenFile = null;
+  const auth = web.auth == null ? {} : web.auth;
+  if (!isObject(auth)) throw new Error('config.web.auth must be an object { tokenFile }');
+  const tokenFile = env.FLEET_WEB_TOKEN_FILE || auth.tokenFile;
+  if (tokenFile != null) {
+    if (typeof tokenFile !== 'string' || !tokenFile.trim()) throw new Error('config.web.auth.tokenFile must be a path');
+    authTokenFile = expandHome(tokenFile.trim(), home);
+    authToken = readTokenFile(authTokenFile, { fsImpl, label: 'config.web.auth.tokenFile' });
   }
 
   // web.editor: the "Open in editor" link scheme (lib/editor.mjs); null hides it.
@@ -782,6 +800,9 @@ export function normalizeConfig(
     selfWeb,
     peerProxies,
     peerConnects,
+    peerTokens,
+    authToken,
+    authTokenFile,
     sshHosts,
     hostAddrs,
     editor,

@@ -129,7 +129,9 @@ fleet tmux stale                        # idle shells nothing is using
 
 ## Security
 
-There is **no authentication** in the web app. It is meant to be reachable only over your
+The web app has **no authentication by default**; on a machine other people log in to, turn on
+`web.auth` (a token on every request, loopback included; see [docs/architecture.md](docs/architecture.md)).
+Without it, it is meant to be reachable only over your
 tailnet: bind it to the Tailscale interface (or firewall it) and never expose it publicly. A
 Host/Origin guard refuses DNS rebinding and cross-site requests from pages open in your browser
 ([docs/architecture.md](docs/architecture.md)), but it is not a login. Anyone

@@ -5,7 +5,8 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 
-import { HttpError, contentTypeFor, resolveStaticPath, sendJson } from './http.mjs';
+import { HttpError, contentTypeFor, readBody, resolveStaticPath, sendJson } from './http.mjs';
+import { loginPage } from './auth.mjs';
 import { BackendError } from './backends.mjs';
 
 const PLACEHOLDER_HTML = `<!doctype html>
@@ -54,7 +55,7 @@ function pipeResult(res, { status, headers = {}, stream }, logError, context) {
   });
 }
 
-export function createHttpServer({ handleApi, uiDir, guard = null, log = () => {}, logError = () => {} }) {
+export function createHttpServer({ handleApi, uiDir, guard = null, auth = null, log = () => {}, logError = () => {} }) {
   async function serveStatic(req, res, url) {
     if (!uiDir) {
       sendJson(res, 404, { error: 'not found' });
@@ -146,6 +147,34 @@ export function createHttpServer({ handleApi, uiDir, guard = null, log = () => {
         log(`[guard] refused ${req.method} ${req.url}: ${denied.error}`);
         sendJson(res, denied.status, { error: denied.error });
         return;
+      }
+      // Token auth (lib/auth.mjs, web.auth): off unless configured.
+      if (auth?.enabled) {
+        if (url.pathname === '/login' && req.method === 'POST') {
+          await auth.login(req, res, await readBody(req));
+          return;
+        }
+        if (url.pathname === '/logout' && req.method === 'POST') {
+          auth.logout(req, res);
+          return;
+        }
+        if (url.pathname === '/login') {
+          const html = loginPage();
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'content-length': Buffer.byteLength(html) });
+          res.end(req.method === 'HEAD' ? undefined : html);
+          return;
+        }
+        const refused = auth.check(req, url);
+        if (refused) {
+          if (refused.page) {
+            res.writeHead(302, { location: '/login', 'cache-control': 'no-store' });
+            res.end();
+          } else {
+            // The header tells the UI that this server (not a peer it proxies) wants a sign-in.
+            sendJson(res, refused.status, { error: refused.error }, { 'x-fleet-auth': 'login' });
+          }
+          return;
+        }
       }
       if (url.pathname.startsWith('/api/')) {
         const result = await handleApi(req, url);
