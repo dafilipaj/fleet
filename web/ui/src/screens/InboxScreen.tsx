@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import {
   BotIcon,
   CheckIcon,
+  ChevronDownIcon,
   ChevronLeftIcon,
   Columns3Icon,
   GitPullRequestIcon,
@@ -21,6 +22,14 @@ import { Markdown } from '@/components/Markdown'
 import { ChecksIcon } from '@/components/PrChip'
 import { ScreenHeader } from '@/components/ScreenHeader'
 import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useInbox } from '@/hooks/useInbox'
@@ -104,10 +113,11 @@ export function InboxScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane' 
       title="Scan Slack & email now and re-read GitHub, Productive and the sessions"
       onClick={() => void refresh()}
       disabled={refreshing || scanning || data?.enabled === false}
-      className={cn('shrink-0', !pane && '-my-1')}
+      aria-label={scanning ? 'Scanning…' : 'Scan now'}
+      className={cn('shrink-0', !pane && '-my-1 size-8 px-0')}
     >
       <RefreshCwIcon className={cn((refreshing || scanning) && 'animate-spin')} />
-      {scanning ? 'Scanning…' : 'Scan now'}
+      {pane ? (scanning ? 'Scanning…' : 'Scan now') : null}
     </Button>
   )
 
@@ -167,40 +177,66 @@ export function InboxScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane' 
     </h2>
   )
 
-  const viewControls = data?.items.length ? (
-    <div className="flex flex-wrap items-center gap-2">
-      <ToggleGroup
-        type="single"
-        value={groupBy}
-        onValueChange={(v) => v && setGroupBy(v as InboxGroupBy)}
-        spacing={0}
-        aria-label="Group by"
-        className="rounded-lg bg-muted p-0.5"
-      >
-        {INBOX_GROUP_BY.map((g) => (
-          <ToggleGroupItem key={g.id} value={g.id} className={segItem}>
-            {g.title}
-          </ToggleGroupItem>
-        ))}
-      </ToggleGroup>
-      <div className="flex-1" />
-      <ToggleGroup
-        type="single"
-        value={view}
-        onValueChange={(v) => v && setLayout(v as InboxLayout)}
-        spacing={0}
-        aria-label="Layout"
-        className="rounded-lg bg-muted p-0.5"
-      >
-        <ToggleGroupItem value="list" aria-label="List" title="List" className={segItem}>
-          <ListIcon /> List
+  // Header controls: segmented on the desktop pane; on mobile a group menu and icon-only toggles so they fit beside the title.
+  const groupTitleOf = INBOX_GROUP_BY.find((g) => g.id === groupBy)?.title ?? 'Section'
+  const groupPicker = pane ? (
+    <ToggleGroup
+      type="single"
+      value={groupBy}
+      onValueChange={(v) => v && setGroupBy(v as InboxGroupBy)}
+      spacing={0}
+      aria-label="Group by"
+      className="shrink-0 rounded-lg bg-muted p-0.5"
+    >
+      {INBOX_GROUP_BY.map((g) => (
+        <ToggleGroupItem key={g.id} value={g.id} className={segItem}>
+          {g.title}
         </ToggleGroupItem>
-        <ToggleGroupItem value="board" aria-label="Board" title="Board: one column per group" className={segItem}>
-          <Columns3Icon /> Board
-        </ToggleGroupItem>
-      </ToggleGroup>
-    </div>
-  ) : null
+      ))}
+    </ToggleGroup>
+  ) : (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="sm" aria-label={`Group by: ${groupTitleOf}`} title="Group by" className="-my-1 shrink-0 gap-1 px-2 text-muted-foreground">
+          {groupTitleOf}
+          <ChevronDownIcon className="size-3.5" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="min-w-36">
+        <DropdownMenuLabel className="text-xs text-dimmer">Group by</DropdownMenuLabel>
+        <DropdownMenuRadioGroup value={groupBy} onValueChange={(v) => setGroupBy(v as InboxGroupBy)}>
+          {INBOX_GROUP_BY.map((g) => (
+            <DropdownMenuRadioItem key={g.id} value={g.id}>
+              {g.title}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+  const viewToggle = (
+    <ToggleGroup
+      type="single"
+      value={view}
+      onValueChange={(v) => v && setLayout(v as InboxLayout)}
+      spacing={0}
+      aria-label="Layout"
+      className={cn('shrink-0 rounded-lg bg-muted p-0.5', !pane && '-my-1')}
+    >
+      <ToggleGroupItem value="list" aria-label="List" title="List" className={segItem}>
+        <ListIcon /> {pane ? 'List' : null}
+      </ToggleGroupItem>
+      <ToggleGroupItem value="board" aria-label="Board" title="Board: one column per group" className={segItem}>
+        <Columns3Icon /> {pane ? 'Board' : null}
+      </ToggleGroupItem>
+    </ToggleGroup>
+  )
+  const viewControls = data?.enabled === false ? null : (
+    <>
+      {groupPicker}
+      {viewToggle}
+    </>
+  )
 
   const list = groups.map((g) => (
     <section key={g.id} aria-label={g.title}>
@@ -232,7 +268,6 @@ export function InboxScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane' 
     ) : (
       <>
         {brief}
-        {viewControls}
         {board ? null : list}
         {data && !groups.length ? <p className="py-8 text-center text-sm text-muted-foreground">Nothing waits on you.</p> : null}
       </>
@@ -252,6 +287,7 @@ export function InboxScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane' 
             <InboxIcon className="size-4 text-muted-foreground" /> Inbox
           </h1>
           <div className="flex-1" />
+          {viewControls}
           {refreshButton}
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto">
@@ -274,7 +310,8 @@ export function InboxScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane' 
           <Button variant="ghost" size="icon" aria-label="Back" onClick={back} className="-my-1.5 size-11 shrink-0 rounded-xl">
             <ChevronLeftIcon className="size-6" />
           </Button>
-          <h1 className="flex-1 text-xl font-bold tracking-tight">Inbox</h1>
+          <h1 className="min-w-0 flex-1 truncate text-xl font-bold tracking-tight">Inbox</h1>
+          {viewControls}
           {refreshButton}
         </div>
       </ScreenHeader>
