@@ -209,7 +209,7 @@ export function InboxScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane' 
     </section>
   ))
   const columns = (
-    <div className="-mx-4 flex snap-x snap-mandatory gap-3 overflow-x-auto px-4 pb-2">
+    <div className="-mx-4 flex snap-x snap-mandatory scroll-px-4 gap-3 overflow-x-auto px-4 pb-2 md:justify-center-safe">
       {groups.map((g) => (
         <section key={g.id} aria-label={g.title} className="flex w-[min(20rem,85vw)] shrink-0 snap-start md:w-auto md:max-w-md md:min-w-72 md:flex-1 flex-col rounded-xl bg-muted/40 p-2">
           <div className="px-1 pt-0.5">{groupTitle(g)}</div>
@@ -231,12 +231,15 @@ export function InboxScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane' 
       skeleton
     ) : (
       <>
-        {board ? <div className="max-w-3xl">{brief}</div> : brief}
+        {brief}
         {viewControls}
-        {board ? columns : list}
+        {board ? null : list}
         {data && !groups.length ? <p className="py-8 text-center text-sm text-muted-foreground">Nothing waits on you.</p> : null}
       </>
     )
+
+  // The board breaks out of the reading column below it; everything above stays put on a switch.
+  const wide = board && data?.enabled !== false && groups.length ? columns : null
 
   if (pane) {
     return (
@@ -252,9 +255,12 @@ export function InboxScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane' 
           {refreshButton}
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className={cn('mx-auto w-full space-y-5 px-4 pt-3 pb-6', !board && 'max-w-3xl')}>
-            {status}
-            {body}
+          <div className="w-full space-y-5 px-4 pt-3 pb-6">
+            <div className="mx-auto max-w-3xl space-y-5">
+              {status}
+              {body}
+            </div>
+            {wide}
           </div>
         </div>
       </section>
@@ -272,9 +278,12 @@ export function InboxScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane' 
           {refreshButton}
         </div>
       </ScreenHeader>
-      <div className={cn('mx-auto w-full space-y-5 px-4 pt-3 pb-[max(1.5rem,env(safe-area-inset-bottom))]', !board && 'max-w-lg md:max-w-2xl')}>
-        {status}
-        {body}
+      <div className="w-full space-y-5 px-4 pt-3 pb-[max(1.5rem,env(safe-area-inset-bottom))]">
+        <div className="mx-auto max-w-lg space-y-5 md:max-w-2xl">
+          {status}
+          {body}
+        </div>
+        {wide}
       </div>
     </div>
   )
