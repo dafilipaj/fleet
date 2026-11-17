@@ -23,3 +23,24 @@ export function installViewportHeight(): void {
   window.addEventListener('orientationchange', sync)
   sync()
 }
+
+/**
+ * No pinch zoom on touch screens. iOS ignores `user-scalable=no` and only partly honours
+ * `touch-action`, so also cancel WebKit's gesture events (the pinch itself). Touch devices only:
+ * a Mac trackpad pinch fires the same events and desktop keeps its zoom.
+ */
+export function installNoPinchZoom(): void {
+  if (!window.matchMedia?.('(pointer: coarse)').matches) return
+  const cancel = (e: Event) => e.preventDefault()
+  for (const type of ['gesturestart', 'gesturechange', 'gestureend']) {
+    document.addEventListener(type, cancel, { passive: false })
+  }
+  // Two-finger touchmove: the pinch on browsers without gesture events.
+  document.addEventListener(
+    'touchmove',
+    (e) => {
+      if (e.touches.length > 1) e.preventDefault()
+    },
+    { passive: false },
+  )
+}

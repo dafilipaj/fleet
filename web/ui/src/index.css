@@ -311,6 +311,8 @@
     @apply font-sans;
     -webkit-text-size-adjust: 100%;
     -webkit-tap-highlight-color: transparent;
+    /* An app, not a page: no pinch or double-tap zoom on touch screens (see installNoPinchZoom). */
+    touch-action: pan-x pan-y;
   }
   body {
     @apply bg-background text-foreground antialiased;
