@@ -142,7 +142,7 @@ export function createKeySource({ name = KEY_NAME, env = process.env, platform =
  *   keepDir   a recording that fails to transcribe is saved here, so a long dictation is not lost
  * @returns {{ enabled(), transcribe(req, hint, durationMs?): Promise<{ text, model }>, transcribeAudio(audio, type, prompt, durationMs?): Promise<{ text, model }> }}
  */
-export function createTranscriber({ getKey, keepDir = null, now = () => new Date(), model = DEFAULT_TRANSCRIBE_MODEL, maxBytes = TRANSCRIBE_MAX_BYTES, fetch = globalThis.fetch, timeoutMs = 60 * 1000, log = () => {} }) {
+export function createTranscriber({ getKey, keepDir = null, now = () => new Date(), model = DEFAULT_TRANSCRIBE_MODEL, maxBytes = TRANSCRIBE_MAX_BYTES, fetch = globalThis.fetch, timeoutMs = 120 * 1000, log = () => {} }) {
   async function enabled() {
     return Boolean(await getKey());
   }

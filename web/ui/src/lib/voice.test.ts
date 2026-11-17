@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 
-import { appendTranscript, emptyRecordingReason, formatElapsed, micUnavailableReason, peakOf, pickMimeType } from './voice'
+import { STALE_MS, appendTranscript, emptyRecordingReason, formatElapsed, hearsNothing, micUnavailableReason, peakOf, pickMimeType, staleTakes } from './voice'
 
 test('appendTranscript joins with exactly one space and ignores empty transcripts', () => {
   expect(appendTranscript('', 'Pozdrav.')).toBe('Pozdrav.')
@@ -39,4 +39,20 @@ test('emptyRecordingReason holds back slipped taps and silence, trusts an unmeas
 test('peakOf is the loudest sample, either sign', () => {
   expect(peakOf(new Float32Array([0, 0.1, -0.3, 0.2]))).toBeCloseTo(0.3)
   expect(peakOf([])).toBe(0)
+})
+
+test('staleTakes offers takes no tab is recording, oldest first, never the active one', () => {
+  const now = 1_000_000
+  const old = { id: 'a', startedAt: 2, heartbeat: now - STALE_MS - 1 }
+  const older = { id: 'b', startedAt: 1, heartbeat: now - STALE_MS - 5000 }
+  const live = { id: 'c', startedAt: 3, heartbeat: now - 1000 }
+  expect(staleTakes([old, live, older], now, null).map((t) => t.id)).toEqual(['b', 'a'])
+  expect(staleTakes([old, older], now, 'a').map((t) => t.id)).toEqual(['b'])
+})
+
+test('hearsNothing warns only after a while of measured silence', () => {
+  expect(hearsNothing({ elapsedMs: 1000, peak: 0 })).toBe(false)
+  expect(hearsNothing({ elapsedMs: 3000, peak: 0 })).toBe(true)
+  expect(hearsNothing({ elapsedMs: 3000, peak: 0.2 })).toBe(false)
+  expect(hearsNothing({ elapsedMs: 3000, peak: null })).toBe(false)
 })

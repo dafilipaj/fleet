@@ -162,7 +162,7 @@ export function OperatorScreen({ layout = 'screen' }: { layout?: 'screen' | 'pan
     () => ['operator', ...sessions.map((s) => sessionTitle(s))].join(', ').slice(0, 380),
     [sessions],
   )
-  const voice = useVoice({ onText: (t) => void send(t), hint })
+  const voice = useVoice({ onText: (t) => void send(t), hint, label: 'Operator', confirm: true })
   useEffect(() => {
     voiceRef.current.busy = voice.state !== 'idle'
   }, [voice.state])

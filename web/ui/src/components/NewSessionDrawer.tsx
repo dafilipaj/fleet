@@ -246,6 +246,7 @@ function NewSessionForm({
   const { attach, onPaste, progress } = useAttach({ host, textarea: promptRef, setValue: setPrompt })
   // Voice: the transcript is appended to the prompt (the repo name helps the spelling).
   const voice = useVoice({
+    label: 'New session prompt',
     hint: dir?.path.split('/').pop() ?? '',
     onText: (t) => {
       setPrompt((cur) => appendTranscript(cur, t))

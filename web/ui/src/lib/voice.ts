@@ -51,6 +51,25 @@ export function peakOf(samples: ArrayLike<number>): number {
   return max
 }
 
+/** Operator prompts: the transcript waits this long, cancellable, before it is sent. */
+export const CONFIRM_MS = 5000
+/** A recording tab touches its take this often… */
+export const HEARTBEAT_MS = 5000
+/** …and a take untouched this long is no longer being recorded: it is offered again. */
+export const STALE_MS = 30 * 1000
+/** After this long without a sound the recorder warns that the mic hears nothing. */
+export const SILENCE_WARN_MS = 2500
+
+/** Takes left on this device by an earlier visit (not the one being recorded), oldest first. */
+export function staleTakes<T extends { id: string; heartbeat: number; startedAt: number }>(takes: T[], now: number, activeId: string | null): T[] {
+  return takes.filter((t) => t.id !== activeId && now - t.heartbeat > STALE_MS).sort((a, b) => a.startedAt - b.startedAt)
+}
+
+/** Whether the recorder should say the mic hears nothing (an unmeasured level never warns). */
+export function hearsNothing({ elapsedMs, peak }: { elapsedMs: number; peak: number | null }): boolean {
+  return peak !== null && elapsedMs >= SILENCE_WARN_MS && peak < SILENCE_PEAK
+}
+
 /** mm:ss */
 export function formatElapsed(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000))

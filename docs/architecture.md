@@ -537,7 +537,7 @@ JSON over HTTP, errors as `{ "error": "..." }`. At a high level:
 | POST | `/api/groups/run` | `{}` → run the grouping pass now (on the grouping host) → the same shape; 501 when grouping is off |
 | POST | `/api/groups/edit` | `{ op: "rename", id, label }` or `{ op: "move", host, session, to }` / `{ op: "move", host, session, label }` (a new group) / `{ op: "create", label }` / `{ op: "delete", id }` (empty groups) → `fleet group --rename/--move/--create/--delete` on the grouping host (proxied there) → the same shape; 400 bad body, 409 refused (unknown id, taken label), 501 when grouping is off |
 | POST | `/api/hosts/:host/uploads?name=<file>` | raw file body → stored under that host's `web.uploads.dir` → `{ host, path, name, size }` (absolute `path`; 413 over `web.uploads.maxMB`); streamed through to a peer |
-| POST | `/api/transcribe?hint=<words>` | raw audio body (webm / ogg / mp4 / mp3 / wav, ≤ 25 MB) → `{ text, model }` via OpenAI `gpt-4o-transcribe`; always this server, never proxied. `hint` (≤ 400 chars: session name, repo) steers spelling. Key: `$OPENAI_SPEECH_TO_TEXT_API_KEY`, else the macOS Keychain item of that name (never the config file). 501 without a key, 415 non-audio, 413 too large, 502 upstream errors (including a bad key), 429 rate limit |
+| POST | `/api/transcribe?hint=<words>&ms=<duration>` | raw audio body (webm / ogg / mp4 / mp3 / wav, ≤ 25 MB) → `{ text, model }` via OpenAI `gpt-4o-transcribe`; always this server, never proxied. `hint` (≤ 400 chars: session name, repo) steers spelling. `ms` (optional): the recording's length; text with more words than that audio can hold is made up (silence) and comes back empty, like a prompt echo. Key: `$OPENAI_SPEECH_TO_TEXT_API_KEY`, else the macOS Keychain item of that name (never the config file). 501 without a key, 415 non-audio, 413 too large, 502 upstream errors (including a bad key), 429 rate limit |
 | PUT | `/api/memos/recordings/:rec/segments/:n` | voice memos, always this server: one segment's raw audio (≤ 25 MB) is stored under `web.memos.audioDir`, then transcribed → `{ stored: true, transcribed, error? }` (a failed transcription keeps the audio; `finish` retries it). `:rec` is the client's recording id (`[a-z0-9-]`, 8–64), `:n` 0-based. 501 without a transcription key |
 | POST | `/api/memos/recordings/:rec/finish` | `{ segments, startedAt, durationMs }` → transcribes what is missing, titles it (`claude -p`, else `Memo <date> <time>`), writes `web.memos.dir/<date>-<slug>.md` → the memo (below). Idempotent: again updates the same file. 409 a segment was never uploaded |
 | GET | `/api/memos` | `{ dir, memos: [{ id, title, created, durationSec, status: done\|partial, words, preview }] }`, newest first (only files with a `recording` frontmatter key) |
@@ -668,6 +668,20 @@ for every device: each server sends `/api/operator` to the first host of the lis
 gets `/clear`. Claude Code then starts a new session (a new session id, an empty transcript), so
 the next conversation starts fresh and the app shows no history. A cleared session has no context
 until it is used, which keeps it from being cleared again.
+
+## Voice prompts
+
+Every mic button — the operator, a session's composer, the new-session prompt — opens the same
+full-screen recorder (`providers/VoiceProvider.tsx`, `components/VoiceOverlay.tsx`; a centred
+card on a desktop, a Radix dialog so it stacks over the new-session dialog). It shows the mic
+opening, then a timer and a live level, and warns when the mic hears nothing; the stop button is
+large for use in a car, and the screen is kept awake while recording. A take shorter than 0.4 s
+or silent is not sent. Its audio goes to IndexedDB (`fleet-voice`) a second at a time as it is
+recorded, so a failed transcription offers Retry / Keep for later / Discard, and a take an
+earlier visit left behind (a failure, a closed app) is offered again at the next start, for
+review. The text goes into the field that opened the recorder at once; the operator, which sends
+it, shows it for 5 s with Cancel first (Cancel opens it for editing, its buttons armed after a
+moment so a second tap cannot send it).
 
 ## Voice memos
 

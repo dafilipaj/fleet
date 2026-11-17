@@ -121,6 +121,7 @@ export function Composer({
   // Voice prompts: the mic records, the server transcribes, the text is appended.
   const { voice: voiceEnabled } = useSettings()
   const voice = useVoice({
+    label: 'Message',
     hint: voiceHint,
     onText: (t) => {
       caretToEnd.current = true

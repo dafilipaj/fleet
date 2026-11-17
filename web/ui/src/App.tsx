@@ -12,6 +12,7 @@ import { PrefsProvider } from '@/providers/PrefsProvider'
 import { PrsProvider } from '@/providers/PrsProvider'
 import { SettingsProvider } from '@/providers/SettingsProvider'
 import { SpeechProvider } from '@/providers/SpeechProvider'
+import { VoiceProvider } from '@/providers/VoiceProvider'
 import { TasksProvider } from '@/providers/TasksProvider'
 import { useAppErrors } from '@/hooks/useAppErrors'
 import { usePreventFileNavigation } from '@/hooks/useAttach'
@@ -59,6 +60,7 @@ function FleetApp() {
       <PrefsProvider>
       <SettingsProvider>
       <SpeechProvider>
+      <VoiceProvider>
         <FleetProvider>
         <DormantProvider>
         <PrsProvider>
@@ -129,6 +131,7 @@ function FleetApp() {
         </PrsProvider>
         </DormantProvider>
         </FleetProvider>
+      </VoiceProvider>
       </SpeechProvider>
       </SettingsProvider>
       </PrefsProvider>
@@ -144,12 +147,14 @@ function EmbedApp() {
       <PrefsProvider>
       <SettingsProvider>
       <SpeechProvider>
+      <VoiceProvider>
         <FleetProvider>
           <TooltipProvider>
             <Router hook={useHashLocation}>{embed ? <EmbedScreen params={embed} /> : null}</Router>
             <Toaster position="top-center" />
           </TooltipProvider>
         </FleetProvider>
+      </VoiceProvider>
       </SpeechProvider>
       </SettingsProvider>
       </PrefsProvider>
