@@ -28,7 +28,7 @@ export function itemTarget(item: Pick<InboxItem, 'href' | 'url'>): { href: strin
   return null
 }
 
-const SOURCE_LABELS: Record<string, string> = { github: 'GitHub', productive: 'Productive', sessions: 'Sessions', comms: 'Slack & email' }
+const SOURCE_LABELS: Record<string, string> = { github: 'GitHub', productive: 'Productive', sessions: 'Sessions', slack: 'Slack', comms: 'Slack & email' }
 
 export interface SourceLine {
   key: string
@@ -43,8 +43,9 @@ export function sourceLines(sources: InboxResponse['sources'] | undefined, now =
   return (Object.entries(sources) as [string, InboxSource | undefined][])
     .filter((e): e is [string, InboxSource] => e[1] != null)
     .map(([key, s]) => {
-      const label = SOURCE_LABELS[key] ?? key
-      if (s.running) return { key, label, text: 'scanning…', warn: false }
+      // With the Slack poller the connector scan reads mail only.
+      const label = key === 'comms' && sources.slack ? 'Email' : (SOURCE_LABELS[key] ?? key)
+      if (s.running && key !== 'slack') return { key, label, text: 'scanning…', warn: false }
       if (!s.ok || s.error) return { key, label, text: s.error || 'failed', warn: true }
       const ago = s.at ? relTime(s.at, now) : ''
       const next = s.nextAt && s.nextAt > now ? ` · next ${clockTime(s.nextAt, now)}` : ''

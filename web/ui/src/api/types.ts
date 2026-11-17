@@ -1837,6 +1837,10 @@ export interface InboxSettings {
   language?: string
   /** the scan's own rules; null = the default (`defaultScanRules`) */
   scanRules?: string | null
+  /** the Slack poller (with a Slack user token): how often, the model that sorts new conversations, the user's extra rules for it */
+  slackMinutes?: number
+  slackModel?: string
+  slackRules?: string | null
 }
 
 /** Model calls over a span: token counts as `claude -p` reports them, cost as its API-price estimate. */
@@ -1851,13 +1855,15 @@ export interface InboxUsageTotals {
 
 export interface InboxUsageSpan {
   scan: InboxUsageTotals
+  /** the Slack poller's sort (older servers omit it) */
+  slack?: InboxUsageTotals
   brief: InboxUsageTotals
   total: InboxUsageTotals
 }
 
 /** One model call of the inbox. */
 export interface InboxUsageRun {
-  kind: 'scan' | 'brief'
+  kind: 'scan' | 'slack' | 'brief'
   /** ms epoch, when it started */
   at: number
   model: string
@@ -1892,7 +1898,8 @@ export interface InboxResponse {
   settings?: InboxSettings & { defaultScanRules?: string }
   /** the inbox's own model calls (Settings → Inbox); absent on older servers */
   usage?: InboxUsage
-  sources: { github?: InboxSource; productive?: InboxSource; sessions?: InboxSource; comms?: InboxSource }
+  /** `slack`: the Slack poller (only with a Slack user token); then `comms` reads mail only */
+  sources: { github?: InboxSource; productive?: InboxSource; sessions?: InboxSource; slack?: InboxSource; comms?: InboxSource }
   /** sorted: section order, then `at` newest first */
   items: InboxItem[]
 }

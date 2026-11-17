@@ -27,6 +27,7 @@ import './reviews.test.mjs';
 import './review-prs.test.mjs';
 import './focus.test.mjs';
 import './inbox.test.mjs';
+import './inbox-slack.test.mjs';
 import './slack.test.mjs';
 import './github.test.mjs';
 import './peers.test.mjs';

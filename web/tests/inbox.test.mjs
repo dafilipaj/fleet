@@ -307,3 +307,46 @@ test('createAgentAsk: connectors limited to the tools, or none (mcp: false); usa
   assert.ok(seen[1].includes('--strict-mcp-config'));
   assert.ok(!seen[1].includes('--allowed-tools'));
 });
+
+test('with a Slack token: the poller feeds Slack items, the connector scan reads mail only, its old Slack items are dropped', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-inbox-'));
+  const t0 = new Date(2026, 9, 20, 9).getTime();
+  const msgTs = ((t0 - 5 * 60e3) / 1000).toFixed(6);
+  const slackApi = async (method, p) => {
+    if (method === 'auth.test') return { user_id: 'UME', url: 'https://x.slack.com/' };
+    if (method === 'users.info') return { user: { real_name: 'Ana' } };
+    if (method === 'search.messages') return { messages: { matches: p.query.startsWith('to:me') ? [{ ts: msgTs, user: 'U1', permalink: 'https://x.slack.com/archives/D1/p1', channel: { id: 'D1', is_im: true } }] : [], paging: { pages: 1 } } };
+    if (method === 'conversations.history') return { messages: [{ user: 'U1', ts: msgTs, text: 'možeš?' }] };
+    throw new Error(method);
+  };
+  const agentCalls = [];
+  fs.writeFileSync(path.join(dir, 'inbox.json'), JSON.stringify({ comms: { at: null, items: [{ id: 'slack:C9:1', source: 'slack', kind: 'message', section: 'waiting', title: 'old', at: 1 }], error: null } }));
+  const inbox = createInbox({
+    settings: { host: 'workstation', scanMinutes: 30, workHours: [8, 19], workDays: [1, 2, 3, 4, 5], model: 'haiku', briefModel: 'haiku', briefMinutes: 45, language: 'English', comms: true, slackMinutes: 2, slackModel: 'sonnet' },
+    cli: { prs: async () => ({ prs: [] }), tasks: async () => ({ tasks: [] }) },
+    getFleet: async () => ({ hosts: [] }),
+    ask: async () => '- x',
+    agent: async (o) => {
+      agentCalls.push(o);
+      if (o.mcp === false) return { text: '[{"key":"slack:D1","needsMe":true,"title":"Ana pita","effort":"quick"}]', costUsd: 0.001, usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } };
+      return { text: '[]', costUsd: 0.002 };
+    },
+    slackApi,
+    file: path.join(dir, 'inbox.json'),
+    now: () => t0,
+    setTimer: () => null,
+  });
+  assert.equal(inbox.response().items.some((i) => i.id === 'slack:C9:1'), false); // the scan's Slack item is not shown
+  await inbox.pass();
+  await inbox.pollSlack();
+  await flush();
+  const r = inbox.response();
+  assert.deepEqual(r.items.filter((i) => i.source === 'slack').map((i) => i.id), ['slack:D1']);
+  const sort = agentCalls.find((c) => c.mcp === false);
+  assert.equal(sort.model, 'sonnet');
+  const scan = agentCalls.find((c) => c.tools?.length);
+  assert.ok(scan.tools.every((t) => t.includes('Gmail')));
+  assert.match(scan.prompt, /Slack is handled elsewhere/);
+  assert.equal(r.usage.today.slack.runs, 1);
+  assert.equal(r.sources.slack.ok, true);
+});

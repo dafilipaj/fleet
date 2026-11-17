@@ -40,6 +40,7 @@ import { createBeads } from './lib/beads.mjs';
 import { createBriefStore, createBriefs, createClaudeAsk, gitInfo } from './lib/briefs.mjs';
 import { createStacks } from './lib/stacks.mjs';
 import { createAgentAsk, createInbox } from './lib/inbox.mjs';
+import { SLACK_USER_TOKEN_NAME } from './lib/inbox-slack.mjs';
 import { createPromptQueue } from './lib/queue.mjs';
 import { TOKEN_NAMES, createSlackApi, createSlackBridge, createSlackDownload, createSocketClient } from './lib/slack.mjs';
 import { createGithubBridge } from './lib/github.mjs';
@@ -148,6 +149,10 @@ const stacks = createStacks({
   log,
 });
 // Inbox: the live to-do list, run by the `inbox.host` server only (the others proxy to it).
+// Its Slack poller reads Slack as the user (FLEET_INBOX_SLACK_TOKEN, env or Keychain) — only when
+// the token is there at start; without it the connector scan reads Slack too.
+const inboxSlackToken = config.inbox.enabled ? await createKeySource({ name: SLACK_USER_TOKEN_NAME, run })() : null;
+const inboxSlackApi = inboxSlackToken ? createSlackApi({ getToken: async () => inboxSlackToken }) : null;
 const inbox = config.inbox.enabled
   ? createInbox({
       settings: config.inbox,
@@ -156,6 +161,7 @@ const inbox = config.inbox.enabled
       // The brief: no connectors, no tools — through the JSON runner so its tokens are counted.
       ask: ((agent) => ({ prompt, model }) => agent({ prompt, model, mcp: false }))(createAgentAsk({ bin: claudeBin, run, timeoutMs: 2 * 60 * 1000 })),
       agent: createAgentAsk({ bin: claudeBin, run }),
+      slackApi: inboxSlackApi,
       file: path.join(fleetStateDir(process.env), 'inbox.json'),
       log,
     })
@@ -408,7 +414,7 @@ servers[0].listen(config.port, addresses[0], () => {
   if (inbox) {
     inbox.start();
     const ib = config.inbox;
-    log(`[fleet-web] inbox on (${ib.comms ? `Slack + mail every ${ib.scanMinutes}m in work hours, ${ib.model}` : 'no Slack + mail'}; brief ${ib.briefModel}, ≥ ${ib.briefMinutes}m apart)`);
+    log(`[fleet-web] inbox on (${inboxSlackApi ? `Slack poller every ${ib.slackMinutes}m, ${ib.slackModel}; ` : ''}${ib.comms ? `${inboxSlackApi ? 'mail' : 'Slack + mail'} every ${ib.scanMinutes}m in work hours, ${ib.model}` : 'no connector scan'}; brief ${ib.briefModel}, ≥ ${ib.briefMinutes}m apart)`);
   } else if (config.inbox.host) {
     log(`[fleet-web] inbox: served by ${config.inbox.host}`);
   }

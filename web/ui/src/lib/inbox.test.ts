@@ -69,3 +69,9 @@ test('dueChip', () => {
 test('briefMarkdown makes in-app links absolute and leaves the rest', () => {
   expect(briefMarkdown('[a](#/s/laptop/x) [b](https://x.y/1)', 'http://h:7777')).toBe('[a](http://h:7777/#/s/laptop/x) [b](https://x.y/1)')
 })
+
+test('sourceLines: with the Slack poller the scan is "Email", and a Slack poll never shows as scanning', () => {
+  const lines = sourceLines({ slack: { at: 1000, ok: true, error: null, count: 1, running: true }, comms: { at: 1000, ok: true, error: null, count: 0 } }, 61_000)
+  expect(lines.map((l) => l.label)).toEqual(['Slack', 'Email'])
+  expect(lines[0].text).toBe('1m ago')
+})

@@ -9,9 +9,12 @@
 // - productive  `fleet --local tasks --json` (REST, no model): due / overdue tasks, tasks in
 //               progress you touched lately
 // - sessions    the merged fleet (no model): sessions on any host waiting for your answer
-// - comms       Slack + Gmail through the claude.ai connectors — one `claude -p` with read-only
-//               tools, every `scanMinutes` in work hours, fed the items it found last time so
-//               ids stay stable and answered threads drop off
+// - slack       with a Slack user token (lib/inbox-slack.mjs): a poller every `slackMinutes`
+//               that closes answered conversations itself and has a model (no tools) sort only
+//               the ones with new messages
+// - comms       Gmail (and Slack, without the token) through the claude.ai connectors — one
+//               `claude -p` with read-only tools, every `scanMinutes` in work hours, fed the items
+//               it found last time so ids stay stable and answered threads drop off
 //
 // Quick wins are mostly decided without a model (a small PR review, a waiting session, an
 // approved PR to merge); the scan rates Slack and mail itself. The brief (a few bullets over the
@@ -26,6 +29,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { MODEL_ID_RE } from './config.mjs';
+import { createSlackPoller, emptySlackState } from './inbox-slack.mjs';
 
 export const SECTIONS = ['quick', 'waiting', 'mine'];
 /** Tasks in progress count as "your work" when touched this recently. */
@@ -47,6 +51,9 @@ export const COMMS_TOOLS = [
   'mcp__claude_ai_Gmail__search_threads',
   'mcp__claude_ai_Gmail__get_thread',
 ];
+/** The scan's tools when the Slack poller runs: Gmail only. */
+export const EMAIL_TOOLS = COMMS_TOOLS.filter((t) => t.includes('Gmail'));
+
 /** Denied outright (a deny wins over any permission mode the user's settings pick). */
 export const DENIED_TOOLS = [
   'Bash', 'Edit', 'Write', 'Read', 'WebFetch', 'WebSearch', 'Task', 'NotebookEdit',
@@ -89,6 +96,20 @@ export function checkInboxSettings(body) {
     if (!Number.isInteger(n) || n < 5 || n > 24 * 60) return { error: 'briefMinutes must be a whole number of minutes, 5–1440' };
     out.briefMinutes = n;
   }
+  if (body?.slackMinutes != null) {
+    const n = Number(body.slackMinutes);
+    if (!Number.isInteger(n) || n < 1 || n > 120) return { error: 'slackMinutes must be a whole number of minutes, 1–120' };
+    out.slackMinutes = n;
+  }
+  if (body?.slackModel != null) {
+    if (typeof body.slackModel !== 'string' || !MODEL_ID_RE.test(body.slackModel)) return { error: 'slackModel must be a model id (e.g. haiku, sonnet, opus)' };
+    out.slackModel = body.slackModel;
+  }
+  if (body && 'slackRules' in body) {
+    const r = body.slackRules == null ? '' : body.slackRules;
+    if (typeof r !== 'string' || r.length > MAX_SCAN_RULES) return { error: `slackRules must be text, at most ${MAX_SCAN_RULES} characters` };
+    out.slackRules = r.trim() || null;
+  }
   if (body?.comms != null) {
     if (typeof body.comms !== 'boolean') return { error: 'comms must be true or false' };
     out.comms = body.comms;
@@ -108,7 +129,7 @@ export function checkInboxSettings(body) {
 }
 
 /** The knobs Settings → Inbox shows and may change. */
-export const SETTING_KEYS = ['scanMinutes', 'workHours', 'workDays', 'model', 'briefModel', 'briefMinutes', 'comms', 'language', 'scanRules'];
+export const SETTING_KEYS = ['scanMinutes', 'workHours', 'workDays', 'model', 'briefModel', 'briefMinutes', 'comms', 'language', 'scanRules', 'slackMinutes', 'slackModel', 'slackRules'];
 export const MAX_SCAN_RULES = 8000;
 
 /** Done by hand comes back on newer activity for these; the others stay away until their source drops them. */
@@ -273,7 +294,7 @@ export const DEFAULT_SCAN_RULES = [
 ].join('\n');
 
 /** The scan's prompt. Pure. */
-export function commsPrompt({ since, previous = [], done = [], now = Date.now(), rules = null }) {
+export function commsPrompt({ since, previous = [], done = [], now = Date.now(), rules = null, emailOnly = false }) {
   const sinceDate = localDate(since);
   const handled = done.length
     ? ['', 'The user marked these done — leave them out unless a newer message came after the time given:', ...done.map((d) => `- ${d.id} (done at ${new Date(d.itemAt).toISOString()})`)]
@@ -290,6 +311,7 @@ export function commsPrompt({ since, previous = [], done = [], now = Date.now(),
     `Now: ${new Date(now).toISOString()}. Look at activity since ${new Date(since).toISOString()} (search with after:/newer_than: from ${sinceDate}).`,
     '',
     String(rules ?? '').trim() || DEFAULT_SCAN_RULES,
+    ...(emailOnly ? ['', 'Slack is handled elsewhere: skip it entirely, look at Gmail only (source "email").'] : []),
     ...prev,
     ...handled,
     '',
@@ -470,6 +492,8 @@ export function createAgentAsk({ bin = 'claude', run, timeoutMs = 6 * 60 * 1000,
 export const USAGE_DAYS = 31;
 export const USAGE_RUNS = 30;
 
+/** What the inbox calls a model for: the connector scan, the Slack sort, the brief. */
+export const USAGE_KINDS = ['scan', 'slack', 'brief'];
 const zeroUsage = () => ({ runs: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 });
 const addUsage = (into, r) => {
   into.runs += r.runs ?? 1;
@@ -481,7 +505,7 @@ const addUsage = (into, r) => {
 export function recordUsage(log, { kind, at, model, ok = true, costUsd = null, usage = null, turns = null, durationMs = null }) {
   const days = { ...(log?.days ?? {}) };
   const date = localDate(at);
-  const day = { scan: zeroUsage(), brief: zeroUsage(), ...(days[date] ?? {}) };
+  const day = { scan: zeroUsage(), slack: zeroUsage(), brief: zeroUsage(), ...(days[date] ?? {}) };
   day[kind] = addUsage({ ...zeroUsage(), ...day[kind] }, { ...(usage ?? {}), costUsd: costUsd ?? 0 });
   days[date] = day;
   // Keep the last USAGE_DAYS days before the newest run (a late, old entry never wipes the rest).
@@ -492,14 +516,14 @@ export function recordUsage(log, { kind, at, model, ok = true, costUsd = null, u
   return { days, runs: [run, ...(log?.runs ?? [])].slice(0, USAGE_RUNS) };
 }
 
-/** The usage log → { today, week, month: { scan, brief, total } each, runs }. Pure. */
+/** The usage log → { today, week, month: { scan, slack, brief, total } each, runs }. Pure. */
 export function usageSummary(log, now = Date.now()) {
   const span = (n) => {
-    const out = { scan: zeroUsage(), brief: zeroUsage(), total: zeroUsage() };
+    const out = { scan: zeroUsage(), slack: zeroUsage(), brief: zeroUsage(), total: zeroUsage() };
     for (let i = 0; i < n; i++) {
       const d = log?.days?.[localDate(now - i * DAY_MS)];
       if (!d) continue;
-      for (const k of ['scan', 'brief']) if (d[k]) {
+      for (const k of USAGE_KINDS) if (d[k]) {
         addUsage(out[k], d[k]);
         addUsage(out.total, d[k]);
       }
@@ -520,9 +544,10 @@ export function loadState(file) {
       brief: s.brief ?? null,
       dismissed: s.dismissed && typeof s.dismissed === 'object' ? s.dismissed : {},
       usage: s.usage && typeof s.usage === 'object' ? s.usage : { days: {}, runs: [] },
+      slack: s.slack && typeof s.slack === 'object' ? { ...emptySlackState(), ...s.slack } : emptySlackState(),
     };
   } catch {
-    return { firstSeen: {}, comms: { at: null, items: [], error: null }, brief: null, dismissed: {}, usage: { days: {}, runs: [] } };
+    return { firstSeen: {}, comms: { at: null, items: [], error: null }, brief: null, dismissed: {}, usage: { days: {}, runs: [] }, slack: emptySlackState() };
   }
 }
 
@@ -543,6 +568,8 @@ function saveState(file, state) {
  *   ask        ({ prompt, model }) => Promise<string | { text, costUsd, usage }>   (the brief; an
  *              object answer is counted in the usage log)
  *   agent      ({ prompt, model, tools }) => Promise<{ text, costUsd, usage }>   (createAgentAsk)
+ *   slackApi   (method, params) => body with the user's Slack token (lib/slack.mjs createSlackApi), or
+ *              null: no Slack poller, the connector scan reads Slack too
  *   file       the state file
  *   passMs     how often the no-model sources are read
  */
@@ -552,6 +579,7 @@ export function createInbox({
   getFleet,
   ask,
   agent,
+  slackApi = null,
   file,
   passMs = 2 * 60 * 1000,
   now = Date.now,
@@ -566,7 +594,33 @@ export function createInbox({
     sessions: { at: null, ok: true, error: null, count: 0 },
     ...(settings.comms ? { comms: { at: state.comms.at, ok: !state.comms.error, error: state.comms.error ?? null, count: state.comms.items.length, nextAt: null, running: false } } : {}),
   };
-  const lists = { github: [], productive: [], sessions: [] };
+  const lists = { github: [], productive: [], sessions: [], slack: [] };
+  const slack = slackApi
+    ? createSlackPoller({
+        api: slackApi,
+        state: state.slack,
+        rules: () => settings.slackRules,
+        classify: async ({ prompt }) => {
+          const t = now();
+          const model = settings.slackModel ?? 'haiku';
+          try {
+            const r = await agent({ prompt, model, mcp: false });
+            note('slack', t, model, r);
+            return r;
+          } catch (err) {
+            note('slack', t, model, { ok: false });
+            throw err;
+          }
+        },
+        now,
+        log,
+      })
+    : null;
+  if (slack) {
+    sources.slack = { at: state.slack.at, ok: true, error: null, count: 0 };
+    lists.slack = slack.items();
+  }
+  let slackPolling = null;
   let items = [];
   let updatedAt = null;
   let timer = null;
@@ -587,7 +641,8 @@ export function createInbox({
 
   function merge() {
     const t = now();
-    const all = [...lists.sessions, ...lists.github, ...lists.productive, ...(settings.comms ? state.comms.items : [])];
+    const comms = settings.comms ? state.comms.items.filter((i) => !slack || i.source !== 'slack') : [];
+    const all = [...lists.sessions, ...lists.github, ...lists.productive, ...lists.slack, ...comms];
     const live = new Set();
     for (const i of all) {
       live.add(i.id);
@@ -638,12 +693,13 @@ export function createInbox({
     sources.comms.running = true;
     scanning = (async () => {
       try {
-        const previous = state.comms.items.filter((i) => !state.dismissed[i.id]);
-        const done = state.comms.items.filter((i) => state.dismissed[i.id]).map((i) => ({ id: i.id, itemAt: state.dismissed[i.id].itemAt }));
+        const own = state.comms.items.filter((i) => !slack || i.source !== 'slack');
+        const previous = own.filter((i) => !state.dismissed[i.id]);
+        const done = own.filter((i) => state.dismissed[i.id]).map((i) => ({ id: i.id, itemAt: state.dismissed[i.id].itemAt }));
         const model = settings.model;
         let res;
         try {
-          res = await agent({ prompt: commsPrompt({ since, previous, done, now: started, rules: settings.scanRules }), model, tools: COMMS_TOOLS });
+          res = await agent({ prompt: commsPrompt({ since, previous, done, now: started, rules: settings.scanRules, emailOnly: Boolean(slack) }), model, tools: slack ? EMAIL_TOOLS : COMMS_TOOLS });
         } catch (err) {
           note('scan', started, model, { ok: false });
           throw err;
@@ -652,9 +708,9 @@ export function createInbox({
         const raw = extractJsonArray(text);
         note('scan', started, model, { ...res, ok: Boolean(raw) });
         if (!raw) throw new Error(`the scan answered no JSON array: ${String(text).slice(0, 160)}`);
-        state.comms = { at: started, items: commsItems(raw, started), error: null };
+        state.comms = { at: started, items: commsItems(raw, started).filter((i) => !slack || i.source !== 'slack'), error: null };
         Object.assign(sources.comms, { at: started, ok: true, error: null, count: state.comms.items.length });
-        log(`[inbox] scan: ${state.comms.items.length} item(s) from Slack + mail in ${Math.round((now() - started) / 1000)}s${costUsd != null ? `, $${costUsd.toFixed(3)}` : ''}`);
+        log(`[inbox] scan: ${state.comms.items.length} item(s) from ${slack ? 'mail' : 'Slack + mail'} in ${Math.round((now() - started) / 1000)}s${costUsd != null ? `, $${costUsd.toFixed(3)}` : ''}`);
       } catch (err) {
         // A failed scan keeps the last items and waits for the next slot (no retry storm).
         state.comms = { ...state.comms, at: started, error: String(err?.message ?? err).slice(0, 300) };
@@ -712,12 +768,45 @@ export function createInbox({
         readSource('sessions', async () => sessionItems(await getFleet())),
       ]);
       merge();
+      if (slackDue(now()) || (refresh && slack)) pollSlack();
       if (scanDue(now())) scan();
       maybeBrief();
     })().finally(() => {
       passing = null;
     });
     return passing;
+  }
+
+  function slackDue(t) {
+    if (!slack || slackPolling) return false;
+    const every = (settings.slackMinutes ?? 2) * 60 * 1000;
+    // A pass comes every passMs: poll on the pass closest to the interval, not the one after it.
+    return !state.slack.at || t - state.slack.at >= every - passMs / 2;
+  }
+
+  /** The Slack poller in the background: answered conversations leave, new ones are sorted. */
+  function pollSlack() {
+    if (slackPolling) return slackPolling;
+    const started = now();
+    sources.slack.running = true;
+    slackPolling = (async () => {
+      try {
+        const r = await slack.poll();
+        lists.slack = r.items;
+        Object.assign(sources.slack, { at: started, ok: true, error: r.errors ? `${r.errors} conversation(s) could not be read` : null, count: r.items.length });
+        if (r.classified) log(`[inbox] slack: ${r.items.length} open, ${r.classified} sorted, ${r.fetched} read in ${Math.round((now() - started) / 1000)}s`);
+      } catch (err) {
+        // Keep the last list; the next pass tries again.
+        Object.assign(sources.slack, { ok: false, error: String(err?.message ?? err).slice(0, 300) });
+        log(`[inbox] slack poll failed: ${sources.slack.error}`);
+      } finally {
+        sources.slack.running = false;
+        slackPolling = null;
+        merge();
+        maybeBrief();
+      }
+    })();
+    return slackPolling;
   }
 
   function schedule() {
@@ -796,6 +885,7 @@ export function createInbox({
     // Tests.
     pass,
     scan,
+    pollSlack,
     maybeBrief,
   };
 }

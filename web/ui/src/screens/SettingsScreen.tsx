@@ -373,19 +373,59 @@ function InboxSchedule() {
   const withCurrent = <T extends number | string>(opts: readonly T[], v: T | undefined) =>
     v == null || opts.includes(v) ? [...opts] : [...opts, v]
   const comms = cur.comms !== false
+  const poller = Boolean(data?.sources.slack)
   return (
     <>
-      <Section title="Slack & email scan">
+      {poller ? (
+        <Section title="Slack">
+          <p className="pt-2 text-xs text-dimmer">
+            Read as you with the Slack user token. A conversation leaves the list as soon as you answer it or react to it, with no model; only conversations with new messages from others go to the model.
+          </p>
+          <Stacked label="Check every" hint="Any time of day; free when nothing is new">
+            <ToggleGroup
+              type="single"
+              value={String(cur.slackMinutes ?? 2)}
+              onValueChange={(v) => v && void save({ slackMinutes: Number(v) })}
+              disabled={saving}
+              spacing={0}
+              aria-label="Slack interval"
+              className="w-full rounded-lg bg-muted p-1"
+            >
+              {withCurrent([2, 5, 10, 30] as readonly number[], cur.slackMinutes ?? 2)
+                .sort((a, b) => a - b)
+                .map((m) => (
+                  <ToggleGroupItem key={m} value={String(m)} className={segItem}>
+                    {SCAN_EVERY_LABELS[m] ?? `${m}m`}
+                  </ToggleGroupItem>
+                ))}
+            </ToggleGroup>
+          </Stacked>
+          <Stacked label="Model" hint="Sorts only the conversations with new messages, from a short digest (no tools)">
+            <ModelPick value={cur.slackModel ?? 'haiku'} options={withCurrent(INBOX_MODELS as readonly string[], cur.slackModel ?? 'haiku')} disabled={saving} onChange={(slackModel) => void save({ slackModel })} label="Slack model" />
+          </Stacked>
+          <RulesEditor
+            key={`slack:${cur.slackRules ?? ''}`}
+            label="Your rules"
+            hintOwn="Added to the model's instructions (they win over its defaults)"
+            hintDefault="Optional: e.g. which channels never need you, who always does"
+            value={cur.slackRules ?? null}
+            fallback=""
+            disabled={saving}
+            onSave={(slackRules) => save({ slackRules })}
+          />
+        </Section>
+      ) : null}
+      <Section title={poller ? 'Email scan' : 'Slack & email scan'}>
         {cur.comms != null ? (
           <div className="flex items-center justify-between gap-4 py-3">
             <div>
-              <div className="text-sm">Scan Slack & email</div>
-              <div className="text-xs text-dimmer">Off: GitHub, Productive and sessions only (no model calls but the brief)</div>
+              <div className="text-sm">{poller ? 'Scan email' : 'Scan Slack & email'}</div>
+              <div className="text-xs text-dimmer">Through the claude.ai connectors; off: no connector scan</div>
             </div>
             <Switch checked={comms} disabled={saving} onCheckedChange={(v) => void save({ comms: v })} aria-label="Scan Slack and email" />
           </div>
         ) : null}
-        <Stacked label="Every" hint={`On ${data?.host}; one model call per scan`}>
+        <Stacked label="Every" hint={`On ${data?.host}; one model call with tools per scan`}>
           <ToggleGroup
             type="single"
             value={String(cur.scanMinutes)}
@@ -441,12 +481,21 @@ function InboxSchedule() {
           </ToggleGroup>
         </Stacked>
         {cur.model ? (
-          <Stacked label="Model" hint="Sonnet reads threads more carefully; it costs several times Haiku">
+          <Stacked label="Model" hint="It reads with tools, turn by turn: Sonnet costs several times Haiku here">
             <ModelPick value={cur.model} options={withCurrent(INBOX_MODELS as readonly string[], cur.model)} disabled={saving} onChange={(model) => void save({ model })} label="Scan model" />
           </Stacked>
         ) : null}
         {cur.defaultScanRules ? (
-          <ScanRules key={cur.scanRules ?? ''} value={cur.scanRules ?? null} fallback={cur.defaultScanRules} disabled={saving} onSave={(scanRules) => save({ scanRules })} />
+          <RulesEditor
+            key={`scan:${cur.scanRules ?? ''}`}
+            label="Rules"
+            hintOwn="Your own rules (the read-only rule, the time window and the answer format stay fixed)"
+            hintDefault="The default rules; edit to change what counts and how answered threads are told apart"
+            value={cur.scanRules ?? null}
+            fallback={cur.defaultScanRules}
+            disabled={saving}
+            onSave={(scanRules) => save({ scanRules })}
+          />
         ) : null}
       </Section>
       {cur.briefModel ? (
@@ -501,13 +550,29 @@ function ModelPick({ value, options, disabled, onChange, label }: { value: strin
   )
 }
 
-/** The scan's rules: what counts as waiting on you and how it tells a conversation is answered. Empty = the default. */
-function ScanRules({ value, fallback, disabled, onSave }: { value: string | null; fallback: string; disabled: boolean; onSave: (v: string | null) => Promise<void> }) {
+/** Editable model rules (the scan's, or the Slack sort's extra ones). Empty or the fallback = the default (null). */
+function RulesEditor({
+  label,
+  hintOwn,
+  hintDefault,
+  value,
+  fallback,
+  disabled,
+  onSave,
+}: {
+  label: string
+  hintOwn: string
+  hintDefault: string
+  value: string | null
+  fallback: string
+  disabled: boolean
+  onSave: (v: string | null) => Promise<void>
+}) {
   const [draft, setDraft] = useState(value ?? fallback)
   const dirty = draft.trim() !== (value ?? fallback).trim()
   return (
-    <Stacked label="Rules" hint={value ? 'Your own rules (the read-only rule, the time window and the answer format stay fixed)' : 'The default rules; edit to change what counts and how answered threads are told apart'}>
-      <Textarea value={draft} onChange={(e) => setDraft(e.target.value)} disabled={disabled} className="max-h-96 font-mono text-xs" aria-label="Scan rules" />
+    <Stacked label={label} hint={value ? hintOwn : hintDefault}>
+      <Textarea value={draft} onChange={(e) => setDraft(e.target.value)} disabled={disabled} className="max-h-96 font-mono text-xs" aria-label={label} />
       <div className="flex gap-2">
         <Button size="sm" disabled={disabled || !dirty} onClick={() => void onSave(draft)}>
           Save
@@ -519,7 +584,7 @@ function ScanRules({ value, fallback, disabled, onSave }: { value: string | null
         ) : null}
         {value ? (
           <Button size="sm" variant="ghost" disabled={disabled} onClick={() => void onSave(null)}>
-            Reset to default
+            {fallback ? 'Reset to default' : 'Clear'}
           </Button>
         ) : null}
       </div>
@@ -538,6 +603,7 @@ function InboxUsagePanel({ usage }: { usage: InboxUsage }) {
     ['7 days', usage.week],
     ['30 days', usage.month],
   ]
+  const hasSlack = Boolean(usage.month.slack?.runs)
   return (
     <Section title="Usage">
       <p className="pt-2 text-xs text-dimmer">Tokens as Claude Code reports them (cache reads included); cost is its API-price estimate — on a subscription it counts against your limits instead.</p>
@@ -546,6 +612,7 @@ function InboxUsagePanel({ usage }: { usage: InboxUsage }) {
           <tr className="text-left text-xs text-dimmer">
             <th className="py-1 font-normal" />
             <th className="py-1 text-right font-normal">Scans</th>
+            {hasSlack ? <th className="py-1 text-right font-normal">Slack</th> : null}
             <th className="py-1 text-right font-normal">Briefs</th>
             <th className="py-1 text-right font-normal">Tokens</th>
             <th className="py-1 text-right font-normal">Output</th>
@@ -557,6 +624,7 @@ function InboxUsagePanel({ usage }: { usage: InboxUsage }) {
             <tr key={label} className="border-t border-border/60">
               <td className="py-1.5">{label}</td>
               <td className="py-1.5 text-right">{s.scan.runs}</td>
+              {hasSlack ? <td className="py-1.5 text-right">{s.slack?.runs ?? 0}</td> : null}
               <td className="py-1.5 text-right">{s.brief.runs}</td>
               <td className="py-1.5 text-right">{fmtTokens(allTokens(s.total))}</td>
               <td className="py-1.5 text-right">{fmtTokens(s.total.output)}</td>

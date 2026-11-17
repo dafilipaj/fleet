@@ -11,7 +11,7 @@
 //            stacks: { syncMinutes } },
 //     stacks: { enabled, model },         (read by the CLI; the server only reports them)
 //     grouping: { enabled, model, host },   (enabled/model are read by the CLI)
-//     inbox: { host, scanMinutes, workHours, workDays, model, briefModel, briefMinutes, language, comms, scanRules },
+//     inbox: { host, scanMinutes, workHours, workDays, model, briefModel, briefMinutes, language, comms, scanRules, slackMinutes, slackModel, slackRules },
 //     slack: { host, owner, owners, bridges, spawn },
 //     tmux, fleetBin, claude, spawnDirs: [ { label, paths: { host: dir }, hidden? } ] }
 //
@@ -61,6 +61,9 @@ export const DEFAULT_INBOX = Object.freeze({
   briefMinutes: 45, // at least this long between two briefs (only when the items changed)
   language: 'English', // the brief's language
   comms: true, // false: no Slack + email scan (no model calls but the brief)
+  slackMinutes: 2, // the Slack poller (with the FLEET_INBOX_SLACK_TOKEN user token), any time
+  slackModel: 'haiku', // sorts the Slack conversations with new messages (no tools)
+  slackRules: null, // the user's extra rules for that sort
   scanRules: null, // the scan's rules (what counts, how to tell it is answered); null = inbox.mjs DEFAULT_SCAN_RULES
 });
 
@@ -527,7 +530,7 @@ export function normalizeConfig(
   if (!isObject(ib)) throw new Error('config.inbox must be an object { host, scanMinutes, workHours, workDays, … }');
   if (ib.host != null && (typeof ib.host !== 'string' || !ib.host.trim())) throw new Error('config.inbox.host must be a host name');
   const inbox = { ...DEFAULT_INBOX, host: ib.host == null ? null : ib.host.trim() };
-  for (const key of ['scanMinutes', 'briefMinutes']) {
+  for (const key of ['scanMinutes', 'briefMinutes', 'slackMinutes']) {
     if (ib[key] == null) continue;
     const n = Number(ib[key]);
     if (!Number.isFinite(n) || n < 1) throw new Error(`config.inbox.${key} must be a number >= 1: ${ib[key]}`);
@@ -546,7 +549,7 @@ export function normalizeConfig(
     }
     inbox.workDays = ib.workDays;
   }
-  for (const key of ['model', 'briefModel']) {
+  for (const key of ['model', 'briefModel', 'slackModel']) {
     if (ib[key] == null) continue;
     if (typeof ib[key] !== 'string' || !MODEL_ID_RE.test(ib[key])) throw new Error(`config.inbox.${key} must be a model id (letters, digits and ._[]-)`);
     inbox[key] = ib[key];
@@ -555,9 +558,10 @@ export function normalizeConfig(
     if (typeof ib.language !== 'string' || !ib.language.trim()) throw new Error('config.inbox.language must be a non-empty string');
     inbox.language = ib.language.trim();
   }
-  if (ib.scanRules != null) {
-    if (typeof ib.scanRules !== 'string') throw new Error('config.inbox.scanRules must be text (or null for the default)');
-    inbox.scanRules = ib.scanRules.trim() || null;
+  for (const key of ['scanRules', 'slackRules']) {
+    if (ib[key] == null) continue;
+    if (typeof ib[key] !== 'string') throw new Error(`config.inbox.${key} must be text (or null for the default)`);
+    inbox[key] = ib[key].trim() || null;
   }
   if (ib.comms != null && typeof ib.comms !== 'boolean') throw new Error('config.inbox.comms must be true or false');
   if (ib.comms != null) inbox.comms = ib.comms;
