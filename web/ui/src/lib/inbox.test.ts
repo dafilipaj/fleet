@@ -1,7 +1,7 @@
 import { expect, test } from 'vitest'
 
 import type { InboxItem } from '@/api/types'
-import { briefMarkdown, dueChip, inboxSections, isNewItem, itemTarget, sourceLines } from './inbox'
+import { briefMarkdown, dueChip, inboxGroups, inboxSections, isNewItem, itemProject, itemTarget, sourceLines } from './inbox'
 
 const item = (over: Partial<InboxItem>): InboxItem => ({
   id: 'pr:x',
@@ -74,4 +74,36 @@ test('sourceLines: with the Slack poller the scan is "Email", and a Slack poll n
   const lines = sourceLines({ slack: { at: 1000, ok: true, error: null, count: 1, running: true }, comms: { at: 1000, ok: true, error: null, count: 0 } }, 61_000)
   expect(lines.map((l) => l.label)).toEqual(['Slack', 'Email'])
   expect(lines[0].text).toBe('1m ago')
+})
+
+test('inboxGroups by source keeps the fixed source order', () => {
+  const g = inboxGroups([item({ id: 'a', source: 'slack' }), item({ id: 'b', source: 'github' }), item({ id: 'c', source: 'slack' })], 'source')
+  expect(g.map((x) => [x.title, x.items.map((i) => i.id)])).toEqual([
+    ['GitHub', ['b']],
+    ['Slack', ['a', 'c']],
+  ])
+})
+
+test('inboxGroups by project puts the biggest group first, ties by name', () => {
+  const g = inboxGroups(
+    [
+      item({ id: 'a', meta: { repo: 'acme/web' } }),
+      item({ id: 'b', source: 'productive', meta: { project: 'Billing' } }),
+      item({ id: 'c', meta: { repo: 'acme/web' } }),
+      item({ id: 'd', source: 'session' }),
+    ],
+    'project',
+  )
+  expect(g.map((x) => [x.title, x.items.length])).toEqual([
+    ['web', 2],
+    ['Billing', 1],
+    ['Sessions', 1],
+  ])
+})
+
+test('itemProject: Slack channels by name, every DM together', () => {
+  expect(itemProject(item({ source: 'slack', meta: { channel: '#general' } }))).toBe('#general')
+  expect(itemProject(item({ source: 'slack', meta: { channel: 'DM with Ana' } }))).toBe('Slack DMs')
+  expect(itemProject(item({ source: 'slack', meta: { channel: 'group DM' } }))).toBe('Slack DMs')
+  expect(itemProject(item({ source: 'email', meta: {} }))).toBe('Email')
 })

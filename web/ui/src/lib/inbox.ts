@@ -16,6 +16,59 @@ export function inboxSections(items: InboxItem[]): { id: InboxSection; title: st
   return INBOX_SECTIONS.map((s) => ({ ...s, items: items.filter((i) => i.section === s.id) })).filter((s) => s.items.length)
 }
 
+export type InboxGroupBy = 'section' | 'source' | 'project'
+export type InboxLayout = 'list' | 'board'
+
+export const INBOX_GROUP_BY: { id: InboxGroupBy; title: string }[] = [
+  { id: 'section', title: 'Section' },
+  { id: 'source', title: 'Source' },
+  { id: 'project', title: 'Project' },
+]
+
+const SOURCE_ORDER: { id: InboxItem['source']; title: string }[] = [
+  { id: 'github', title: 'GitHub' },
+  { id: 'productive', title: 'Productive' },
+  { id: 'slack', title: 'Slack' },
+  { id: 'email', title: 'Email' },
+  { id: 'session', title: 'Sessions' },
+]
+
+/** Where an item belongs by project: its repo, Productive project or Slack channel (all DMs together). */
+export function itemProject(item: Pick<InboxItem, 'source' | 'meta'>): string {
+  const m = item.meta
+  if (m.repo) return m.repo.split('/').pop() || m.repo
+  if (m.project) return m.project
+  if (m.channel) return /^(group )?DM\b/.test(m.channel) ? 'Slack DMs' : m.channel
+  if (item.source === 'session') return 'Sessions'
+  if (item.source === 'email') return 'Email'
+  return 'Other'
+}
+
+export interface InboxGroup {
+  id: string
+  title: string
+  items: InboxItem[]
+}
+
+/**
+ * The items grouped for the list or the board, the server's order kept within each group; empty groups dropped.
+ * Sections and sources keep their fixed order; projects go biggest first (ties by name).
+ */
+export function inboxGroups(items: InboxItem[], by: InboxGroupBy): InboxGroup[] {
+  if (by === 'section') return inboxSections(items)
+  if (by === 'source') {
+    return SOURCE_ORDER.map((s) => ({ id: s.id, title: s.title, items: items.filter((i) => i.source === s.id) })).filter((g) => g.items.length)
+  }
+  const byName = new Map<string, InboxItem[]>()
+  for (const it of items) {
+    const k = itemProject(it)
+    byName.set(k, [...(byName.get(k) ?? []), it])
+  }
+  return [...byName.entries()]
+    .map(([k, its]) => ({ id: k, title: k, items: its }))
+    .sort((a, b) => b.items.length - a.items.length || a.title.localeCompare(b.title))
+}
+
 /** First seen after the viewer's previous visit, and less than an hour ago. */
 export function isNewItem(item: Pick<InboxItem, 'firstSeen'>, lastVisit: number, now = Date.now()): boolean {
   return item.firstSeen > lastVisit && now - item.firstSeen < NEW_MS

@@ -3,8 +3,10 @@ import {
   BotIcon,
   CheckIcon,
   ChevronLeftIcon,
+  Columns3Icon,
   GitPullRequestIcon,
   InboxIcon,
+  ListIcon,
   MailIcon,
   MessageSquareIcon,
   RefreshCwIcon,
@@ -20,15 +22,31 @@ import { ChecksIcon } from '@/components/PrChip'
 import { ScreenHeader } from '@/components/ScreenHeader'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useInbox } from '@/hooks/useInbox'
 import { useNow } from '@/hooks/useNow'
 import { useSwipeBack } from '@/hooks/useSwipeBack'
 import { relTime } from '@/lib/format'
-import { briefMarkdown, dueChip, inboxSections, isNewItem, itemTarget, sourceLines } from '@/lib/inbox'
+import {
+  INBOX_GROUP_BY,
+  briefMarkdown,
+  dueChip,
+  inboxGroups,
+  isNewItem,
+  itemTarget,
+  sourceLines,
+  type InboxGroupBy,
+  type InboxLayout,
+} from '@/lib/inbox'
 import { storage } from '@/lib/storage'
 import { cn } from '@/lib/utils'
 
 const LAST_VISIT_KEY = 'fleet.inboxLastVisit'
+const LAYOUT_KEY = 'fleet.inboxLayout'
+const GROUP_BY_KEY = 'fleet.inboxGroupBy'
+
+const segItem =
+  'h-7 gap-1 rounded-md px-2.5 text-xs text-muted-foreground data-[state=on]:bg-background data-[state=on]:text-foreground data-[state=on]:shadow-sm dark:data-[state=on]:bg-accent [&_svg:not([class*=size-])]:size-3.5'
 
 const SOURCE_ICON: Record<InboxItem['source'], typeof InboxIcon> = {
   github: GitPullRequestIcon,
@@ -55,6 +73,21 @@ export function InboxScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane' 
     mark()
     return mark
   }, [])
+
+  const [view, setViewState] = useState<InboxLayout>(() => (storage.get(LAYOUT_KEY) === 'board' ? 'board' : 'list'))
+  const [groupBy, setGroupByState] = useState<InboxGroupBy>(() => {
+    const v = storage.get(GROUP_BY_KEY)
+    return INBOX_GROUP_BY.some((g) => g.id === v) ? (v as InboxGroupBy) : 'section'
+  })
+  const setLayout = (v: InboxLayout) => {
+    setViewState(v)
+    storage.set(LAYOUT_KEY, v)
+  }
+  const setGroupBy = (v: InboxGroupBy) => {
+    setGroupByState(v)
+    storage.set(GROUP_BY_KEY, v)
+  }
+  const board = view === 'board'
 
   const back = () => {
     if (!pane && window.history.length > 1) window.history.back()
@@ -124,7 +157,67 @@ export function InboxScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane' 
     </div>
   )
 
-  const sections = inboxSections(data?.items ?? [])
+  const groups = inboxGroups(data?.items ?? [], groupBy)
+  const rows = (items: InboxItem[]) =>
+    items.map((it) => <InboxRow key={it.id} item={it} now={now} fresh={isNewItem(it, lastVisit, now)} onDone={() => void dismiss(it.id)} />)
+  const groupTitle = (g: { title: string; items: InboxItem[] }) => (
+    <h2 className="mb-2 flex items-baseline gap-2 text-sm font-semibold">
+      <span className="min-w-0 truncate">{g.title}</span>
+      <span className="text-xs font-normal text-dimmer tabular-nums">{g.items.length}</span>
+    </h2>
+  )
+
+  const viewControls = data?.items.length ? (
+    <div className="flex flex-wrap items-center gap-2">
+      <ToggleGroup
+        type="single"
+        value={groupBy}
+        onValueChange={(v) => v && setGroupBy(v as InboxGroupBy)}
+        spacing={0}
+        aria-label="Group by"
+        className="rounded-lg bg-muted p-0.5"
+      >
+        {INBOX_GROUP_BY.map((g) => (
+          <ToggleGroupItem key={g.id} value={g.id} className={segItem}>
+            {g.title}
+          </ToggleGroupItem>
+        ))}
+      </ToggleGroup>
+      <div className="flex-1" />
+      <ToggleGroup
+        type="single"
+        value={view}
+        onValueChange={(v) => v && setLayout(v as InboxLayout)}
+        spacing={0}
+        aria-label="Layout"
+        className="rounded-lg bg-muted p-0.5"
+      >
+        <ToggleGroupItem value="list" aria-label="List" title="List" className={segItem}>
+          <ListIcon /> List
+        </ToggleGroupItem>
+        <ToggleGroupItem value="board" aria-label="Board" title="Board: one column per group" className={segItem}>
+          <Columns3Icon /> Board
+        </ToggleGroupItem>
+      </ToggleGroup>
+    </div>
+  ) : null
+
+  const list = groups.map((g) => (
+    <section key={g.id} aria-label={g.title}>
+      {groupTitle(g)}
+      <div className="space-y-2">{rows(g.items)}</div>
+    </section>
+  ))
+  const columns = (
+    <div className="-mx-4 flex snap-x snap-mandatory gap-3 overflow-x-auto px-4 pb-2">
+      {groups.map((g) => (
+        <section key={g.id} aria-label={g.title} className="flex w-[min(20rem,85vw)] shrink-0 snap-start md:w-auto md:max-w-md md:min-w-72 md:flex-1 flex-col rounded-xl bg-muted/40 p-2">
+          <div className="px-1 pt-0.5">{groupTitle(g)}</div>
+          <div className="space-y-2">{rows(g.items)}</div>
+        </section>
+      ))}
+    </div>
+  )
   const body =
     data?.enabled === false ? (
       <div className="space-y-1 rounded-lg border border-dashed p-4 text-sm">
@@ -138,21 +231,10 @@ export function InboxScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane' 
       skeleton
     ) : (
       <>
-        {brief}
-        {sections.map((s) => (
-          <section key={s.id} aria-label={s.title}>
-            <h2 className="mb-2 flex items-baseline gap-2 text-sm font-semibold">
-              {s.title}
-              <span className="text-xs font-normal text-dimmer tabular-nums">{s.items.length}</span>
-            </h2>
-            <div className="space-y-2">
-              {s.items.map((it) => (
-                <InboxRow key={it.id} item={it} now={now} fresh={isNewItem(it, lastVisit, now)} onDone={() => void dismiss(it.id)} />
-              ))}
-            </div>
-          </section>
-        ))}
-        {data && !sections.length ? <p className="py-8 text-center text-sm text-muted-foreground">Nothing waits on you.</p> : null}
+        {board ? <div className="max-w-3xl">{brief}</div> : brief}
+        {viewControls}
+        {board ? columns : list}
+        {data && !groups.length ? <p className="py-8 text-center text-sm text-muted-foreground">Nothing waits on you.</p> : null}
       </>
     )
 
@@ -170,7 +252,7 @@ export function InboxScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane' 
           {refreshButton}
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto w-full max-w-3xl space-y-5 px-4 pt-3 pb-6">
+          <div className={cn('mx-auto w-full space-y-5 px-4 pt-3 pb-6', !board && 'max-w-3xl')}>
             {status}
             {body}
           </div>
@@ -190,7 +272,7 @@ export function InboxScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane' 
           {refreshButton}
         </div>
       </ScreenHeader>
-      <div className="mx-auto w-full max-w-lg space-y-5 px-4 pt-3 pb-[max(1.5rem,env(safe-area-inset-bottom))] md:max-w-2xl">
+      <div className={cn('mx-auto w-full space-y-5 px-4 pt-3 pb-[max(1.5rem,env(safe-area-inset-bottom))]', !board && 'max-w-lg md:max-w-2xl')}>
         {status}
         {body}
       </div>
@@ -220,6 +302,7 @@ function InboxRow({ item: it, now, fresh, onDone }: { item: InboxItem; now: numb
       {m.checks ? <ChecksIcon checks={m.checks as PullRequest['checks']} className="size-3" /> : null}
       {m.draft ? <span>draft</span> : null}
       {m.project ? <span className="min-w-0 truncate">{m.project}</span> : null}
+      {m.channel ? <span className="min-w-0 truncate">{m.channel}</span> : null}
       {m.status ? <span className="rounded border px-1 leading-4">{m.status}</span> : null}
       {due ? <span className={due.overdue ? 'text-status-error' : 'text-status-waiting'}>{due.label}</span> : null}
       {m.host && it.source === 'session' ? <span>{m.host}</span> : null}

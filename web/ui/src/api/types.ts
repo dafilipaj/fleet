@@ -1817,6 +1817,8 @@ export interface InboxItem {
     status?: string
     host?: string
     sessionId?: string
+    /** Slack: `#channel`, `DM with …`, `group DM` */
+    channel?: string
   }
 }
 
