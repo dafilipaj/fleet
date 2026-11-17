@@ -149,7 +149,7 @@ export function SessionRow({ session: s, now, selected, cursor, inStack }: Sessi
         <span className="ml-auto flex shrink-0 items-center gap-2">
           <ContextMeter context={s.context} />
           <span className="tabular-nums">{relTime(s.updated_at, now)}</span>
-          <HostBadge host={s.host} className="h-4.5 px-1" />
+          <HostBadge host={s.host} className="h-4.5 px-1 text-[0.625rem]" />
         </span>
       </div>
     </Link>
