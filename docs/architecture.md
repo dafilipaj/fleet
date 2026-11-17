@@ -55,9 +55,7 @@ Pure logic plus thin process wrappers; no printing. Everything a future front-en
 ### CLI and TUI
 
 `crates/fleet/src/cli` parses arguments and renders text or JSON; `crates/fleet/src/tui` is the
-`watch` dashboard (ratatui). Neither contains discovery or backend logic. `cli/mcp.rs` (`fleet
-mcp`) is another view: an MCP server whose tools are generated from the clap command tree, each call
-re-running the binary with the matching argv — so the CLI stays the one contract.
+`watch` dashboard (ratatui). Neither contains discovery or backend logic.
 
 ### Host dispatch
 

@@ -148,7 +148,7 @@ footer { padding-block: 36px 64px; font-size: 13px; color: var(--muted); display
       <div class="cell"><span class="k">Fleet.app</span><p>Tauri ljuska oko istog UI-ja: Dock, ⌘-Tab, pravi meniji, <kbd>⌘N</kbd>, Attach u iTerm. Ista ljuska pakira i druge web appove.</p></div>
       <div class="cell"><span class="k">fleet · CLI</span><p><code>list</code>, <code>peek</code>, <code>send</code>, <code>spawn</code>, <code>handoff</code>… s <code>-H &lt;host&gt;</code> na bilo kojoj mašini.</p></div>
       <div class="cell"><span class="k">fleet watch · TUI</span><p>Živi dashboard u terminalu; javi kad sesija završi ili zapne.</p></div>
-      <div class="cell"><span class="k">fleet mcp · skill</span><p>Cijeli CLI kao MCP alati, pa agenti sami upravljaju flotom.</p></div>
+      <div class="cell"><span class="k">fleet skill</span><p>Skill koji uči Claudea upravljati flotom.</p></div>
     </div>
     <p class="prose">Tri harnessa: <b>Claude Code</b>, <b>Codex</b> i <b>pi</b>. Svi se nađu, prikazuju i voze isto; harness i model biraš kod spawna. Svi screenshotovi u ovom vodiču su s izmišljenim demo podacima (firma „Acme”, hostovi <code>laptop</code>, <code>workstation</code>, <code>devbox</code>).</p>
   </div>
@@ -607,7 +607,6 @@ fleet doctor                           # dostupnost hostova, verzije, config</co
   <div class="body">
     <h2>Agenti upravljaju flotom sami</h2>
     <div class="cols c2">
-      <div class="cell"><span class="k">fleet mcp</span><p>Svaka CLI komanda kao MCP tool, generiran iz CLI definicija. stdio za Claude Code, <code>--http</code> sa bearer tokenom za ostale.</p></div>
       <div class="cell"><span class="k">fleet skill install</span><p>Skill koji uči Claudea kad i kako koristiti fleet: „what's my fleet doing”, „spawn a session to…”, „take this to another terminal”.</p></div>
       <div class="cell"><span class="k">GitHub identiteti</span><p>Sesija može na GitHubu raditi kao GitHub App umjesto tebe: na zahtjev („komentiraj kao bot”), ili od spawna za cijelu sesiju (botovi). Chip na sesiji kaže koji.</p></div>
       <div class="cell"><span class="k">fleet done</span><p>Agent sam javi da je gotov; uputa ide u svaki bot prompt i može stajati u <code>CLAUDE.md</code>.</p></div>

@@ -100,7 +100,6 @@ Building the whole setup from scratch (always-on Mac, Tailscale, ssh, tmux, phon
 | git repos | `repos` · `repos sync` · `repos install-service` — fetch + fast-forward every repo under `~/Code`, on a timer |
 | bots | `bots` · `bots show\|run\|enable\|disable` · `bots check\|forget` · `bots install-service` — agent sessions a host starts from a recipe (prompt + schedule, or a GitHub trigger: a new branch matching a pattern), like Claude Code routines; everything a bot session spawns joins its run. `jobs` is the old name, still an alias |
 | web | `web serve` · `web build` · `web install-service` |
-| agents | `mcp` — every command above as an MCP tool, for Claude Code and other agents |
 
 Global flags: `-H, --host <name>`, `--local`, `--json` (where it applies). Full reference:
 [docs/cli.md](docs/cli.md).

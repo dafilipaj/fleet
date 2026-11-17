@@ -1031,13 +1031,6 @@ fn edit_remote(r: &Remote, q: &str, json: bool) -> Result<i32> {
 
 /// Ask on the controlling terminal. `Err` (exit 3) when there is none.
 fn confirm(prompt: &str) -> Result<bool> {
-    // `fleet mcp` runs commands with no one at the terminal to answer.
-    if crate::core::tools::env_flag("FLEET_NO_TTY") {
-        return Err(Error::exit(
-            EXIT_NOTHING,
-            "no terminal to confirm on (use -f)",
-        ));
-    }
     let tty = std::fs::OpenOptions::new()
         .read(true)
         .write(true)

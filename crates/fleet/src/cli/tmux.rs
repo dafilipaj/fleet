@@ -712,10 +712,6 @@ pub fn new(name: Option<&str>, detach: bool, dir: Option<&str>, cmd: &[String]) 
 
 /// Ask on the controlling terminal. `Err` when there is none.
 fn confirm(prompt: &str) -> Result<bool> {
-    // `fleet mcp` runs commands with no one at the terminal to answer.
-    if crate::core::tools::env_flag("FLEET_NO_TTY") {
-        return Err(Error::exit(3, "no terminal to confirm on (use -f)"));
-    }
     let tty = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
