@@ -6,7 +6,6 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 
 import { HttpError, contentTypeFor, readBody, resolveStaticPath, sendJson } from './http.mjs';
-import { loginPage } from './auth.mjs';
 import { BackendError } from './backends.mjs';
 
 const PLACEHOLDER_HTML = `<!doctype html>
@@ -158,20 +157,18 @@ export function createHttpServer({ handleApi, uiDir, guard = null, auth = null, 
           auth.logout(req, res);
           return;
         }
-        if (url.pathname === '/login') {
-          const html = loginPage();
-          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'content-length': Buffer.byteLength(html) });
-          res.end(req.method === 'HEAD' ? undefined : html);
+        const refused = await auth.check(req, url);
+        if (!refused && url.pathname === '/login') {
+          await auth.loginForm(req, res);
           return;
         }
-        const refused = auth.check(req, url);
         if (refused) {
           if (refused.page) {
             res.writeHead(302, { location: '/login', 'cache-control': 'no-store' });
             res.end();
           } else {
             // The header tells the UI that this server (not a peer it proxies) wants a sign-in.
-            sendJson(res, refused.status, { error: refused.error }, { 'x-fleet-auth': 'login' });
+            sendJson(res, refused.status, { error: refused.error }, refused.status === 401 ? { 'x-fleet-auth': 'login' } : {});
           }
           return;
         }

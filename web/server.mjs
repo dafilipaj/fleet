@@ -50,7 +50,7 @@ import { createMemos } from './lib/memos.mjs';
 import { createApi } from './lib/api.mjs';
 import { createHttpServer } from './lib/app.mjs';
 import { createRequestGuard, listenAddresses, loopbackFor, machineNames } from './lib/guard.mjs';
-import { createAuth } from './lib/auth.mjs';
+import { createAuth, createKeychainSecret, MIN_PASSWORD_LENGTH, MIN_TOKEN_LENGTH } from './lib/auth.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const NAME = 'fleet-web';
@@ -73,7 +73,6 @@ try {
 
 setPeerProxies(config.peerProxies);
 setPeerConnects(config.peerConnects);
-setPeerTokens(config.peerTokens);
 
 const cli = createFleetCli({ run, bin: config.fleetBin });
 const fleet = createFleet({ cli, self: config.self, ttlMs: 2000 });
@@ -370,8 +369,23 @@ const guard = createRequestGuard({
 
 // web.bind: one address, or a specific one (a tailnet IP) plus loopback (lib/guard.mjs).
 const addresses = listenAddresses(config.bind);
-// web.auth: a token on every request, loopback included (lib/auth.mjs); off unless configured.
-const auth = createAuth({ token: config.authToken });
+// web.auth: a token on every request, loopback included (lib/auth.mjs); off unless configured. The
+// token and the phone password live in the Keychain only.
+const auth = createAuth({
+  enabled: Boolean(config.authKeychain),
+  getToken: createKeychainSecret({ service: config.authKeychain, run, minLength: MIN_TOKEN_LENGTH, log }),
+  getPassword: createKeychainSecret({ service: config.authPasswordKeychain, run, minLength: MIN_PASSWORD_LENGTH, log }),
+  log,
+});
+// Peers whose web.auth wants a token (hosts.<name>.webTokenKeychain): read now and, while one is
+// missing (a locked Keychain), again every 30 s.
+const peerTokenSources = Object.entries(config.peerTokenKeychains).map(([origin, service]) => [origin, createKeychainSecret({ service, run, minLength: MIN_TOKEN_LENGTH, log })]);
+async function loadPeerTokens() {
+  const entries = await Promise.all(peerTokenSources.map(async ([origin, get]) => [origin, await get()]));
+  setPeerTokens(Object.fromEntries(entries.filter(([, t]) => t)));
+  if (entries.some(([, t]) => !t)) setTimeout(loadPeerTokens, 30 * 1000).unref();
+}
+if (peerTokenSources.length) loadPeerTokens().catch((err) => logError(err, 'peer tokens'));
 const servers = addresses.map(() => createHttpServer({ handleApi, uiDir: config.uiDir, guard, auth, log, logError }));
 for (const s of servers) {
   s.on('error', (err) => {
@@ -385,7 +399,7 @@ for (const [i, s] of servers.entries()) if (i > 0) s.listen(config.port, address
 servers[0].listen(config.port, addresses[0], () => {
   log(`[fleet-web] self=${config.self} listening on ${addresses.map((a) => `http://${a.includes(':') ? `[${a}]` : a}:${config.port}`).join(', ')}`);
   if (config.allowedHosts.length) log(`[fleet-web] allowedHosts=${config.allowedHosts.join(',')}`);
-  log(`[fleet-web] auth ${auth.enabled ? 'on (web.auth.tokenFile)' : 'off'}`);
+  log(`[fleet-web] auth ${auth.enabled ? `on (Keychain ${config.authKeychain}${config.authPasswordKeychain ? `, password ${config.authPasswordKeychain}` : ''})` : 'off'}`);
   log(`[fleet-web] config=${config.configFile ?? '(none, defaults)'} peers=${Object.keys(config.peers).join(',') || '(none)'}`);
   log(`[fleet-web] fleet=${config.fleetBin} tmux=${config.tmux} ui=${config.uiDir ?? '(none)'}`);
   if (config.autoName.enabled) {

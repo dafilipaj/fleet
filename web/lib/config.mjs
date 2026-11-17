@@ -21,7 +21,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { readTokenFile } from './auth.mjs';
 import { DEFAULT_EDITOR, EDITORS } from './editor.mjs';
 
 export const DEFAULT_PORT = 7777;
@@ -380,7 +379,7 @@ export function normalizeConfig(
   const peers = {};
   const peerProxies = {}; // peer origin → HTTP proxy url (hosts.<name>.webProxy)
   const peerConnects = {}; // peer origin → host[:port] dialled instead (hosts.<name>.webConnect)
-  const peerTokens = {}; // peer origin → the token its web.auth asks for (hosts.<name>.webTokenFile)
+  const peerTokenKeychains = {}; // peer origin → Keychain service of the token its web.auth asks for (hosts.<name>.webTokenKeychain)
   const sshHosts = {}; // name → ssh destination (the "Open in editor" Remote-SSH links)
   const hostAddrs = {}; // name → the hostname of its web url (which machine a browser is on)
   const sharedHosts = []; // hosts.<name>.shared: shared sheds, kept out of the default view and the Inbox
@@ -418,9 +417,9 @@ export function normalizeConfig(
       }
       peerConnects[new URL(peers[name]).origin] = host.webConnect;
     }
-    if (host.webTokenFile != null) {
-      if (typeof host.webTokenFile !== 'string' || !host.webTokenFile.trim()) throw new Error(`config.hosts.${name}.webTokenFile must be a path`);
-      peerTokens[new URL(peers[name]).origin] = readTokenFile(expandHome(host.webTokenFile.trim(), home), { fsImpl, label: `config.hosts.${name}.webTokenFile` });
+    if (host.webTokenKeychain != null) {
+      if (typeof host.webTokenKeychain !== 'string' || !host.webTokenKeychain.trim()) throw new Error(`config.hosts.${name}.webTokenKeychain must be a Keychain service name`);
+      peerTokenKeychains[new URL(peers[name]).origin] = host.webTokenKeychain.trim();
     }
   }
 
@@ -445,17 +444,18 @@ export function normalizeConfig(
     allowedHosts.push(...web.allowedHosts.map((h) => h.trim().toLowerCase()));
   }
 
-  // web.auth.tokenFile: every request needs this token, from loopback too (lib/auth.mjs).
-  let authToken = null;
-  let authTokenFile = null;
-  const auth = web.auth == null ? {} : web.auth;
-  if (!isObject(auth)) throw new Error('config.web.auth must be an object { tokenFile }');
-  const tokenFile = env.FLEET_WEB_TOKEN_FILE || auth.tokenFile;
-  if (tokenFile != null) {
-    if (typeof tokenFile !== 'string' || !tokenFile.trim()) throw new Error('config.web.auth.tokenFile must be a path');
-    authTokenFile = expandHome(tokenFile.trim(), home);
-    authToken = readTokenFile(authTokenFile, { fsImpl, label: 'config.web.auth.tokenFile' });
-  }
+  // web.auth: every request needs the token in this Keychain item, from loopback too (lib/auth.mjs);
+  // passwordKeychain: a second, typeable secret for /login (a phone).
+  const auth = web.auth == null ? null : web.auth;
+  if (auth != null && !isObject(auth)) throw new Error('config.web.auth must be an object { keychain, passwordKeychain }');
+  const keychainName = (v, key) => {
+    if (v == null) return null;
+    if (typeof v !== 'string' || !v.trim()) throw new Error(`config.web.auth.${key} must be a Keychain service name`);
+    return v.trim();
+  };
+  const authKeychain = auth ? keychainName(auth.keychain, 'keychain') : null;
+  const authPasswordKeychain = auth ? keychainName(auth.passwordKeychain, 'passwordKeychain') : null;
+  if (auth && !authKeychain) throw new Error('config.web.auth.keychain is required (the Keychain service holding the token)');
 
   // web.editor: the "Open in editor" link scheme (lib/editor.mjs); null hides it.
   let editor = DEFAULT_EDITOR;
@@ -800,9 +800,9 @@ export function normalizeConfig(
     selfWeb,
     peerProxies,
     peerConnects,
-    peerTokens,
-    authToken,
-    authTokenFile,
+    peerTokenKeychains,
+    authKeychain,
+    authPasswordKeychain,
     sshHosts,
     hostAddrs,
     editor,

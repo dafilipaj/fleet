@@ -94,16 +94,20 @@ Requests for another host are proxied once to that peer with `?local=1`, and req
 `?local=1` are never proxied again, so there are no loops. Either machine's URL shows everything.
 
 **Token auth (`web.auth`, off by default).** On a machine other people log in to, the network is
-not a boundary: every local user reaches loopback. With `web.auth.tokenFile` set (a file of at least
-32 characters, mode 600, e.g. `openssl rand -hex 32`; `$FLEET_WEB_TOKEN_FILE` wins over it), every
+not a boundary: every local user reaches loopback. With `web.auth.keychain` set (the service name of
+a macOS Keychain item holding a token of at least 32 characters, e.g. `openssl rand -hex 32`), every
 request needs the token, from loopback too: an `Authorization: Bearer <token>` header (peers, curl,
 the operator's `./api`, which hands curl the header on stdin so the token never shows in `ps`) or
 the `fleet_auth` cookie a browser gets from `/login` (HttpOnly, SameSite=Lax, a year; it holds an
-HMAC of the token, so a new token signs every browser out; `POST /logout` clears it). `/api/health`
-stays open. A refused API call is **401** with `x-fleet-auth: login`, which sends the UI to
-`/login`; a page navigation is redirected there. Peers reach such a host with
-`hosts.<name>.webTokenFile` (lib/auth.mjs, lib/peers.mjs). The `ssh` path (the CLI) is unaffected:
-ssh is its own auth.
+HMAC of the token, so a new token signs every browser out; `POST /logout` clears it).
+`web.auth.passwordKeychain` (optional, at least 8 characters) is a second secret `/login` accepts,
+one a person can type on a phone; it never works as a Bearer token. After 5 wrong logins in 15
+minutes `/login` answers **429** until the oldest ages out. The secrets come from the Keychain only
+(`security find-generic-password -s <service> -w`, retried every 30 s while missing): until the token
+is readable (a locked Keychain) the server fails closed with **503**. `/api/health` stays open. A
+refused API call is **401** with `x-fleet-auth: login`, which sends the UI to `/login`; a page
+navigation is redirected there. Peers reach such a host with `hosts.<name>.webTokenKeychain`
+(lib/auth.mjs, lib/peers.mjs). The `ssh` path (the CLI) is unaffected: ssh is its own auth.
 
 Without it the server has no auth; it relies on the network (tailnet) for access control. That only holds
 when it listens on the tailnet alone: `web.bind` `0.0.0.0` (the default with a config) also
@@ -159,9 +163,9 @@ server. Path: `$FLEET_CONFIG`, else `${XDG_CONFIG_HOME:-~/.config}/fleet/config.
 | `hosts.<name>.webConnect` | `host` or `host:port` the web server dials for that host's `web` url instead of the url's own name (directly, or through `webProxy`), while TLS (SNI, the certificate check) and `Host` keep the url's name; for a name the proxy cannot resolve, e.g. a coordination server's extra DNS records behind a userspace `tailscaled`. Default: the url's own address. The CLI goes over `ssh` and ignores it |
 | `hosts.<name>.shared` | `true`: a shared shed (other people's sessions run there too), not one of the user's own hosts. The web UI shows it in its own group of the top bar's host rail and leaves it out of the default view ("Mine"), the Inbox and the waiting count; `/api/fleet` stamps each host with `shared` from the serving host's config; `fleet list --mine` / `--shared` split on it. Default `false` |
 | `hosts.<name>.editorSsh` | ssh destination the browser's machine uses for that host in "Open in editor" links, when it differs from `ssh` or `ssh` is unset (a web-only peer); default `ssh` |
-| `hosts.<name>.webTokenFile` | file holding the token that host's `web.auth` asks for (mode 600); sent as a Bearer header on every request to it (peer fetches, proxying, streams). The CLI goes over `ssh` and ignores it |
+| `hosts.<name>.webTokenKeychain` | Keychain service of the token that host's `web.auth` asks for; sent as a Bearer header on every request to it (peer fetches, proxying, streams). The CLI goes over `ssh` and ignores it |
 | `web.port` / `web.bind` | web server listen address; with no config at all it binds `127.0.0.1` only. A specific address (a tailnet IP) also listens on loopback; see [Web server](#web-server-web) above |
-| `web.auth` | `{ tokenFile }`: every request needs this token, loopback included (see [Web server](#web-server-web) above). Unset = no auth |
+| `web.auth` | `{ keychain, passwordKeychain? }`: Keychain services of the token every request needs (loopback included) and of an optional login password (see [Web server](#web-server-web) above). Unset = no auth |
 | `web.allowedHosts` | more names a browser may reach this server by (a reverse proxy's or DNS name not among the hosts' `web` urls), or `["*"]` for any; the Host check above. Default `[]` |
 | `web.dir` | where the web app lives (repo checkout or install dir), detected by `init` |
 | `web.node` | `node` binary that runs the web app; `null` → `/opt/homebrew/bin/node`, `/usr/local/bin/node`, then `PATH` |
@@ -209,7 +213,7 @@ Rules: `~` is expanded at use time; unknown keys are preserved when the CLI rewr
 the single host `local`, and remote features say "run `fleet init`"; a present but invalid file is
 an error.
 
-Env overrides for the web server: `FLEET_WEB_PORT` (or `PORT`), `FLEET_WEB_BIND`, `FLEET_WEB_TOKEN_FILE`, `FLEET_WEB_UI`,
+Env overrides for the web server: `FLEET_WEB_PORT` (or `PORT`), `FLEET_WEB_BIND`, `FLEET_WEB_UI`,
 `FLEET_WEB_AUTONAME`, `FLEET_WEB_GROUPING`, `FLEET_WEB_BRIEFS`, `FLEET_BRIEFS_DIR`, `FLEET_STACKS_DIR`, `FLEET_BIN`, `FLEET_TMUX` — see [web/README.md](../web/README.md).
 
 ## Session discovery

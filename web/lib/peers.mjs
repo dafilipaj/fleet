@@ -20,7 +20,7 @@ export function setPeerConnects(map) {
   peerConnects = map && typeof map === 'object' ? { ...map } : {};
 }
 
-// Peer origin → the token its web.auth asks for (hosts.<name>.webTokenFile), sent as a Bearer header.
+// Peer origin → the token its web.auth asks for (hosts.<name>.webTokenKeychain), sent as a Bearer header.
 let peerTokens = {};
 
 export function setPeerTokens(map) {
