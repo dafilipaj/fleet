@@ -774,9 +774,11 @@ read again: a DM's channel history, a channel message's thread (`conversations.r
 conversation is **closed without a model** when the newest message from a person is the user's or
 the user reacted to it; bots, joins and topic changes do not count. An open conversation whose
 newest message from someone else is new since its last verdict goes into one model call with no
-tools (batches of 15): a digest of its messages since the user's last one (≤ 8, names resolved,
-≤ 500 chars each) → `needsMe`, title, ask, effort; `slackRules` is added to its instructions.
-Verdicts are kept per conversation and newest message, so nothing is sorted twice. Ids:
+tools (batches of 15): a digest of its root and last 8 human messages, the user's own included as
+"me" (names resolved, ≤ 500 chars each), so an ask the user already answered reads as answered →
+`needsMe`, title, ask, effort; `slackRules` is added to its instructions. Verdicts are kept per
+conversation and newest message, so nothing is sorted twice (`VERDICT_VERSION` redoes old ones once
+where the user had replied). Ids:
 `slack:<channel>:<root ts>` (a thread or channel message), `slack:<channel>` (a DM's top level).
 A conversation quiet for 14 days drops off. The token needs the user scopes `search:read`,
 `channels:history`, `groups:history`, `im:history`, `mpim:history`, `im:read`, `mpim:read`,

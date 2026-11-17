@@ -41,6 +41,7 @@ test('conversationState: closed when the user wrote last or reacted; open with w
   assert.equal(st.lastOther.ts, '3');
   assert.deepEqual(st.since.map((m) => m.ts), ['3']);
   assert.equal(st.answeredBefore, true);
+  assert.deepEqual(st.human.map((m) => m.ts), ['1', '2', '3']);
 });
 
 test('plainText: names, @me, links, clipped', () => {
@@ -135,12 +136,14 @@ test('a thread the user posted in is watched: a new question there is sorted', a
   const { api } = fakeSlack({ search, channels });
   const clock = { t: T0 };
   let asked = 0;
+  let lastPrompt = '';
   const poller = createSlackPoller({
     api,
     state: emptySlackState(),
     now: () => clock.t,
-    classify: async () => {
+    classify: async ({ prompt }) => {
       asked++;
+      lastPrompt = prompt;
       return { text: JSON.stringify([{ key: `slack:C1:${root}`, needsMe: true, title: 'Rok?', effort: 'medium' }]) };
     },
   });
@@ -152,6 +155,33 @@ test('a thread the user posted in is watched: a new question there is sorted', a
   const r = await poller.poll();
   assert.equal(asked, 1);
   assert.deepEqual(r.items.map((i) => [i.id, i.section, i.meta.channel]), [[`slack:C1:${root}`, 'waiting', '#dev']]);
+  // The model sees the user's own reply, not only what came after it.
+  assert.match(lastPrompt, /\] me: evo plana/);
+  assert.match(lastPrompt, /\] Bo: a rok\?/);
+});
+
+test('a verdict made before the digest kept the user\'s replies is redone once where the user had replied', async () => {
+  const root = ts(100);
+  const key = `slack:C1:${root}`;
+  const channels = { [`C1:${root}`]: [{ user: 'U1', ts: root, text: 'ok?' }, { user: ME, ts: ts(90), text: 'ok je' }, { user: 'U2', ts: ts(80), text: 'super' }] };
+  const { api } = fakeSlack({ search: {}, channels });
+  const state = emptySlackState();
+  state.convs[key] = { key, channel: 'C1', root, dm: false, label: '#dev', open: true, lastTs: ts(80), answeredBefore: true, digest: [] };
+  state.verdicts[key] = { needsMe: true, title: 'ok?', ask: '', effort: 'quick', lastTs: ts(80) }; // no `v`: an old verdict
+  let asked = 0;
+  const poller = createSlackPoller({
+    api,
+    state,
+    now: () => T0,
+    classify: async () => {
+      asked++;
+      return { text: JSON.stringify([{ key, needsMe: false }]) };
+    },
+  });
+  assert.equal((await poller.poll()).items.length, 0);
+  assert.equal(asked, 1);
+  await poller.poll();
+  assert.equal(asked, 1);
 });
 
 test('a model that answers no array fails the poll, keeping the last list', async () => {

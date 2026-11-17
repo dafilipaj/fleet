@@ -31,6 +31,8 @@ export const TRACK_MS = 3 * DAY_MS;
 export const MAX_TRACKED = 40;
 /** Messages per conversation in the model's digest, and characters per message. */
 export const DIGEST_MESSAGES = 8;
+/** Bumped when the digest changes so much that old verdicts no longer hold (2: the user's replies kept). */
+export const VERDICT_VERSION = 2;
 export const DIGEST_CHARS = 500;
 /** Conversations per model call. */
 export const CLASSIFY_BATCH = 15;
@@ -75,7 +77,7 @@ export function conversationState(messages, me) {
   if ((last.reactions ?? []).some((r) => (r.users ?? []).includes(me))) return { open: false, reason: 'reacted' };
   let mine = -1;
   for (let i = human.length - 1; i >= 0; i--) if (human[i].user === me) { mine = i; break; }
-  return { open: true, lastOther: last, since: human.slice(mine + 1), answeredBefore: mine >= 0 };
+  return { open: true, lastOther: last, since: human.slice(mine + 1), answeredBefore: mine >= 0, human };
 }
 
 /** Message text for the model: user ids → names, the user → @me, links shortened, clipped. Pure. */
@@ -105,7 +107,8 @@ export function classifyPrompt({ convs, meName, rules = null, now = Date.now() }
   ].join('\n'));
   return [
     `You sort Slack conversations for the to-do inbox of ${meName} (written "me" / "@me" below). Now: ${new Date(now).toISOString()}.`,
-    'In each conversation below the newest messages are from other people and the user has not answered them yet. Decide for each whether it waits on the user to act or answer.',
+    'In each conversation below the newest message is from someone else; the user\'s own messages are shown as "me". Decide for each whether it waits on the user to act or answer now.',
+    'Read the user\'s earlier messages: when "me" already answered what was asked and what came after is an acknowledgement, agreement, a joke or talk among others, needsMe = false.',
     'needsMe = true when someone asks the user something, asks them for a review, decision, approval or action, or clearly expects the user\'s reply.',
     'needsMe = false for FYI and announcements, talk between other people that does not need the user, closers ("thanks", "ok", "np", 👍), things someone else already took over or answered, and automated posts.',
     ...(String(rules ?? '').trim() ? ['', 'The user\'s own rules (they win):', String(rules).trim()] : []),
@@ -255,12 +258,13 @@ export function createSlackPoller({ api, classify, state, rules = () => null, no
         delete state.convs[c.key];
         return;
       }
-      const ids = new Set(st.since.map((m) => m.user));
+      const ids = new Set(st.human.slice(-DIGEST_MESSAGES).map((m) => m.user));
       if (c.root) ids.add(messages.find((m) => m.ts === c.root)?.user);
       for (const id of ids) await nameOf(id);
       if (c.dm && c.label === 'DM') c.label = `DM with ${state.names[st.lastOther.user] ?? st.lastOther.user}`;
       const rootMsg = c.root ? messages.find((m) => m.ts === c.root) : null;
-      const tail = st.since.slice(-DIGEST_MESSAGES);
+      // The user's own replies stay in: without them an answered question looks open.
+      const tail = st.human.slice(-DIGEST_MESSAGES);
       const digest = [...(rootMsg && !tail.includes(rootMsg) ? [rootMsg] : []), ...tail].map((m) => ({
         at: tsMs(m.ts),
         who: m.user === me ? 'me' : (state.names[m.user] ?? m.user),
@@ -287,7 +291,11 @@ export function createSlackPoller({ api, classify, state, rules = () => null, no
     for (const key of Object.keys(state.verdicts)) if (!state.convs[key]) delete state.verdicts[key];
 
     // A verdict only for what has a new message from someone else since the last one.
-    const pending = Object.values(state.convs).filter((c) => state.verdicts[c.key]?.lastTs !== c.lastTs);
+    // Verdicts from before the digest kept the user's replies are redone where the user had replied.
+    const pending = Object.values(state.convs).filter((c) => {
+      const v = state.verdicts[c.key];
+      return v?.lastTs !== c.lastTs || (c.answeredBefore && v.v !== VERDICT_VERSION);
+    });
     let classified = 0;
     for (let i = 0; i < pending.length; i += CLASSIFY_BATCH) {
       const batch = pending.slice(i, i + CLASSIFY_BATCH);
@@ -295,7 +303,7 @@ export function createSlackPoller({ api, classify, state, rules = () => null, no
       const raw = extractArray(res?.text);
       if (!raw) throw new Error(`the Slack sort answered no JSON array: ${String(res?.text ?? '').slice(0, 160)}`);
       const v = readVerdicts(raw, batch.map((c) => c.key));
-      for (const c of batch) if (v[c.key]) state.verdicts[c.key] = { ...v[c.key], lastTs: c.lastTs };
+      for (const c of batch) if (v[c.key]) state.verdicts[c.key] = { ...v[c.key], lastTs: c.lastTs, v: VERDICT_VERSION };
       classified += batch.length;
     }
     state.at = started;
