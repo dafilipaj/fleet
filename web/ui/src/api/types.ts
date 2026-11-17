@@ -1821,11 +1821,64 @@ export interface InboxItem {
 }
 
 /** GET /api/inbox — served by the inbox host (`inbox.host`), proxied from everywhere else. */
-/** When the Slack & email scan runs: every `scanMinutes`, on `workDays` (0 = Sunday) within `workHours` [from, to). */
+/** Settings → Inbox: when the Slack & email scan runs (every `scanMinutes`, on `workDays` (0 = Sunday) within `workHours` [from, to)), its model and rules, and the brief's. */
 export interface InboxSettings {
   scanMinutes: number
   workHours: [number, number]
   workDays: number[]
+  /** the Slack & email scan's model (older servers omit it, and the fields below) */
+  model?: string
+  briefModel?: string
+  /** at least this long between two briefs */
+  briefMinutes?: number
+  /** false: no Slack & email scan */
+  comms?: boolean
+  /** the brief's language */
+  language?: string
+  /** the scan's own rules; null = the default (`defaultScanRules`) */
+  scanRules?: string | null
+}
+
+/** Model calls over a span: token counts as `claude -p` reports them, cost as its API-price estimate. */
+export interface InboxUsageTotals {
+  runs: number
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  costUsd: number
+}
+
+export interface InboxUsageSpan {
+  scan: InboxUsageTotals
+  brief: InboxUsageTotals
+  total: InboxUsageTotals
+}
+
+/** One model call of the inbox. */
+export interface InboxUsageRun {
+  kind: 'scan' | 'brief'
+  /** ms epoch, when it started */
+  at: number
+  model: string
+  ok: boolean
+  costUsd: number | null
+  turns: number | null
+  durationMs: number | null
+  input?: number
+  output?: number
+  cacheRead?: number
+  cacheWrite?: number
+}
+
+export interface InboxUsage {
+  today: InboxUsageSpan
+  /** the last 7 days, today included */
+  week: InboxUsageSpan
+  /** the last 30 days */
+  month: InboxUsageSpan
+  /** newest first, the last 30 */
+  runs: InboxUsageRun[]
 }
 
 export interface InboxResponse {
@@ -1836,7 +1889,9 @@ export interface InboxResponse {
   updatedAt: number | null
   brief: { text: string; at: number; model: string } | null
   /** the inbox host's scan schedule (Settings → Inbox); absent on older servers / when off */
-  settings?: InboxSettings
+  settings?: InboxSettings & { defaultScanRules?: string }
+  /** the inbox's own model calls (Settings → Inbox); absent on older servers */
+  usage?: InboxUsage
   sources: { github?: InboxSource; productive?: InboxSource; sessions?: InboxSource; comms?: InboxSource }
   /** sorted: section order, then `at` newest first */
   items: InboxItem[]

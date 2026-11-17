@@ -11,7 +11,7 @@
 //            stacks: { syncMinutes } },
 //     stacks: { enabled, model },         (read by the CLI; the server only reports them)
 //     grouping: { enabled, model, host },   (enabled/model are read by the CLI)
-//     inbox: { host, scanMinutes, workHours, workDays, model, briefModel, briefMinutes, language, comms },
+//     inbox: { host, scanMinutes, workHours, workDays, model, briefModel, briefMinutes, language, comms, scanRules },
 //     slack: { host, owner, owners, bridges, spawn },
 //     tmux, fleetBin, claude, spawnDirs: [ { label, paths: { host: dir }, hidden? } ] }
 //
@@ -61,6 +61,7 @@ export const DEFAULT_INBOX = Object.freeze({
   briefMinutes: 45, // at least this long between two briefs (only when the items changed)
   language: 'English', // the brief's language
   comms: true, // false: no Slack + email scan (no model calls but the brief)
+  scanRules: null, // the scan's rules (what counts, how to tell it is answered); null = inbox.mjs DEFAULT_SCAN_RULES
 });
 
 /** Where brief files live: $FLEET_BRIEFS_DIR, else ${XDG_STATE_HOME:-~/.local/state}/fleet/briefs. */
@@ -553,6 +554,10 @@ export function normalizeConfig(
   if (ib.language != null) {
     if (typeof ib.language !== 'string' || !ib.language.trim()) throw new Error('config.inbox.language must be a non-empty string');
     inbox.language = ib.language.trim();
+  }
+  if (ib.scanRules != null) {
+    if (typeof ib.scanRules !== 'string') throw new Error('config.inbox.scanRules must be text (or null for the default)');
+    inbox.scanRules = ib.scanRules.trim() || null;
   }
   if (ib.comms != null && typeof ib.comms !== 'boolean') throw new Error('config.inbox.comms must be true or false');
   if (ib.comms != null) inbox.comms = ib.comms;

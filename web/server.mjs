@@ -153,7 +153,8 @@ const inbox = config.inbox.enabled
       settings: config.inbox,
       cli,
       getFleet: async () => fleetAccess.peekFleet() ?? (await fleetAccess.buildFleet()),
-      ask: createClaudeAsk({ bin: claudeBin, run }),
+      // The brief: no connectors, no tools — through the JSON runner so its tokens are counted.
+      ask: ((agent) => ({ prompt, model }) => agent({ prompt, model, mcp: false }))(createAgentAsk({ bin: claudeBin, run, timeoutMs: 2 * 60 * 1000 })),
       agent: createAgentAsk({ bin: claudeBin, run }),
       file: path.join(fleetStateDir(process.env), 'inbox.json'),
       log,

@@ -18,7 +18,7 @@ import {
 import { useLocation, useRoute } from 'wouter'
 
 import { api } from '@/api/client'
-import type { InboxSettings } from '@/api/types'
+import type { InboxSettings, InboxUsage, InboxUsageSpan, InboxUsageTotals } from '@/api/types'
 import { ModelsEditor } from '@/components/ModelsEditor'
 import { ReposEditor } from '@/components/ReposEditor'
 import { ScreenHeader } from '@/components/ScreenHeader'
@@ -27,6 +27,7 @@ import { SpawnDirsEditor } from '@/components/SpawnDirsEditor'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
 import { Switch } from '@/components/ui/switch'
+import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useInbox } from '@/hooks/useInbox'
 import { useIsDesktop } from '@/hooks/useMediaQuery'
@@ -53,7 +54,7 @@ const SECTIONS: { id: SectionId; label: string; hint: string; icon: ReactNode }[
   { id: 'models', label: 'Models', hint: 'Default model and effort per harness', icon: <BotIcon /> },
   { id: 'start-dirs', label: 'Start directories', hint: 'Where new sessions can start', icon: <FolderOpenIcon /> },
   { id: 'repos', label: 'Git repos', hint: 'Repos fleet keeps in sync', icon: <GitBranchIcon /> },
-  { id: 'inbox', label: 'Inbox', hint: 'When Slack and email are scanned', icon: <InboxIcon /> },
+  { id: 'inbox', label: 'Inbox', hint: 'Scan schedule, model, rules and usage', icon: <InboxIcon /> },
   { id: 'slack', label: 'Slack', hint: 'Sessions started from a mention', icon: <MessageSquareIcon /> },
   { id: 'status', label: 'Status', hint: 'Hosts and diagnostics', icon: <ActivityIcon /> },
 ]
@@ -338,9 +339,11 @@ function ThemePicker() {
 
 const SCAN_EVERY = [15, 30, 60, 120, 240] as const
 const SCAN_EVERY_LABELS: Record<number, string> = { 15: '15m', 30: '30m', 60: '1h', 120: '2h', 240: '4h' }
+const BRIEF_EVERY = [15, 30, 45, 60, 120] as const
+const INBOX_MODELS = ['haiku', 'sonnet', 'opus'] as const
 const HOURS = Array.from({ length: 25 }, (_, h) => h)
 
-/** Settings → Inbox: when the Slack & email scan runs (saved in the inbox host's config, live at once). */
+/** Settings → Inbox: what the Slack & email scan does and when, its model, and what the inbox spends (saved in the inbox host's config, live at once). */
 function InboxSchedule() {
   const { data, reload } = useInbox()
   const [saving, setSaving] = useState(false)
@@ -367,62 +370,218 @@ function InboxSchedule() {
   }
   const [from, to] = cur.workHours
   const select = 'h-8 rounded-lg border bg-card px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50'
+  const withCurrent = <T extends number | string>(opts: readonly T[], v: T | undefined) =>
+    v == null || opts.includes(v) ? [...opts] : [...opts, v]
+  const comms = cur.comms !== false
   return (
-    <Section title="Inbox">
-      <Stacked label="Scan Slack & email every" hint={`On ${data?.host}; costs one small model call per scan`}>
-        <ToggleGroup
-          type="single"
-          value={String(cur.scanMinutes)}
-          onValueChange={(v) => v && void save({ scanMinutes: Number(v) })}
-          disabled={saving}
-          spacing={0}
-          aria-label="Scan interval"
-          className="w-full rounded-lg bg-muted p-1"
-        >
-          {(SCAN_EVERY.includes(cur.scanMinutes as (typeof SCAN_EVERY)[number]) ? SCAN_EVERY : [...SCAN_EVERY, cur.scanMinutes].sort((a, b) => a - b)).map((m) => (
-            <ToggleGroupItem key={m} value={String(m)} className={segItem}>
-              {SCAN_EVERY_LABELS[m] ?? `${m}m`}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
-      </Stacked>
-      <Stacked label="Between" hint="Local time on the inbox host; outside it only Scan now scans">
-        <div className="flex items-center gap-2 text-sm">
-          <select aria-label="From" value={from} disabled={saving} className={select} onChange={(e) => void save({ workHours: [Number(e.target.value), to] })}>
-            {HOURS.filter((h) => h < to).map((h) => (
-              <option key={h} value={h}>
-                {String(h).padStart(2, '0')}:00
-              </option>
+    <>
+      <Section title="Slack & email scan">
+        {cur.comms != null ? (
+          <div className="flex items-center justify-between gap-4 py-3">
+            <div>
+              <div className="text-sm">Scan Slack & email</div>
+              <div className="text-xs text-dimmer">Off: GitHub, Productive and sessions only (no model calls but the brief)</div>
+            </div>
+            <Switch checked={comms} disabled={saving} onCheckedChange={(v) => void save({ comms: v })} aria-label="Scan Slack and email" />
+          </div>
+        ) : null}
+        <Stacked label="Every" hint={`On ${data?.host}; one model call per scan`}>
+          <ToggleGroup
+            type="single"
+            value={String(cur.scanMinutes)}
+            onValueChange={(v) => v && void save({ scanMinutes: Number(v) })}
+            disabled={saving || !comms}
+            spacing={0}
+            aria-label="Scan interval"
+            className="w-full rounded-lg bg-muted p-1"
+          >
+            {withCurrent(SCAN_EVERY as readonly number[], cur.scanMinutes)
+              .sort((a, b) => a - b)
+              .map((m) => (
+                <ToggleGroupItem key={m} value={String(m)} className={segItem}>
+                  {SCAN_EVERY_LABELS[m] ?? `${m}m`}
+                </ToggleGroupItem>
+              ))}
+          </ToggleGroup>
+        </Stacked>
+        <Stacked label="Between" hint="Local time on the inbox host; outside it only Scan now scans">
+          <div className="flex items-center gap-2 text-sm">
+            <select aria-label="From" value={from} disabled={saving} className={select} onChange={(e) => void save({ workHours: [Number(e.target.value), to] })}>
+              {HOURS.filter((h) => h < to).map((h) => (
+                <option key={h} value={h}>
+                  {String(h).padStart(2, '0')}:00
+                </option>
+              ))}
+            </select>
+            <span className="text-dimmer">–</span>
+            <select aria-label="To" value={to} disabled={saving} className={select} onChange={(e) => void save({ workHours: [from, Number(e.target.value)] })}>
+              {HOURS.filter((h) => h > from).map((h) => (
+                <option key={h} value={h}>
+                  {String(h).padStart(2, '0')}:00
+                </option>
+              ))}
+            </select>
+          </div>
+        </Stacked>
+        <Stacked label="On">
+          <ToggleGroup
+            type="multiple"
+            value={cur.workDays.map(String)}
+            onValueChange={(v) => v.length && void save({ workDays: v.map(Number) })}
+            disabled={saving}
+            spacing={0}
+            aria-label="Scan days"
+            className="w-full rounded-lg bg-muted p-1"
+          >
+            {[1, 2, 3, 4, 5, 6, 0].map((d) => (
+              <ToggleGroupItem key={d} value={String(d)} className={segItem}>
+                {WEEKDAYS[d]}
+              </ToggleGroupItem>
             ))}
-          </select>
-          <span className="text-dimmer">–</span>
-          <select aria-label="To" value={to} disabled={saving} className={select} onChange={(e) => void save({ workHours: [from, Number(e.target.value)] })}>
-            {HOURS.filter((h) => h > from).map((h) => (
-              <option key={h} value={h}>
-                {String(h).padStart(2, '0')}:00
-              </option>
-            ))}
-          </select>
-        </div>
-      </Stacked>
-      <Stacked label="On">
-        <ToggleGroup
-          type="multiple"
-          value={cur.workDays.map(String)}
-          onValueChange={(v) => v.length && void save({ workDays: v.map(Number) })}
-          disabled={saving}
-          spacing={0}
-          aria-label="Scan days"
-          className="w-full rounded-lg bg-muted p-1"
-        >
-          {[1, 2, 3, 4, 5, 6, 0].map((d) => (
-            <ToggleGroupItem key={d} value={String(d)} className={segItem}>
-              {WEEKDAYS[d]}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
-      </Stacked>
+          </ToggleGroup>
+        </Stacked>
+        {cur.model ? (
+          <Stacked label="Model" hint="Sonnet reads threads more carefully; it costs several times Haiku">
+            <ModelPick value={cur.model} options={withCurrent(INBOX_MODELS as readonly string[], cur.model)} disabled={saving} onChange={(model) => void save({ model })} label="Scan model" />
+          </Stacked>
+        ) : null}
+        {cur.defaultScanRules ? (
+          <ScanRules key={cur.scanRules ?? ''} value={cur.scanRules ?? null} fallback={cur.defaultScanRules} disabled={saving} onSave={(scanRules) => save({ scanRules })} />
+        ) : null}
+      </Section>
+      {cur.briefModel ? (
+        <Section title="Brief">
+          <Stacked label="Model">
+            <ModelPick value={cur.briefModel} options={withCurrent(INBOX_MODELS as readonly string[], cur.briefModel)} disabled={saving} onChange={(briefModel) => void save({ briefModel })} label="Brief model" />
+          </Stacked>
+          <Stacked label="At most every" hint="Only when the list changed; outside work hours once a day">
+            <ToggleGroup
+              type="single"
+              value={String(cur.briefMinutes)}
+              onValueChange={(v) => v && void save({ briefMinutes: Number(v) })}
+              disabled={saving}
+              spacing={0}
+              aria-label="Brief interval"
+              className="w-full rounded-lg bg-muted p-1"
+            >
+              {withCurrent(BRIEF_EVERY as readonly number[], cur.briefMinutes)
+                .sort((a, b) => a - b)
+                .map((m) => (
+                  <ToggleGroupItem key={m} value={String(m)} className={segItem}>
+                    {SCAN_EVERY_LABELS[m] ?? `${m}m`}
+                  </ToggleGroupItem>
+                ))}
+            </ToggleGroup>
+          </Stacked>
+        </Section>
+      ) : null}
       {error ? <p className="py-2 text-xs text-status-error">{error}</p> : null}
+      {data?.usage ? <InboxUsagePanel usage={data.usage} /> : null}
+    </>
+  )
+}
+
+function ModelPick({ value, options, disabled, onChange, label }: { value: string; options: string[]; disabled: boolean; onChange: (v: string) => void; label: string }) {
+  return (
+    <ToggleGroup
+      type="single"
+      value={value}
+      onValueChange={(v) => v && v !== value && onChange(v)}
+      disabled={disabled}
+      spacing={0}
+      aria-label={label}
+      className="w-full rounded-lg bg-muted p-1"
+    >
+      {options.map((m) => (
+        <ToggleGroupItem key={m} value={m} className={cn(segItem, 'capitalize')}>
+          {m}
+        </ToggleGroupItem>
+      ))}
+    </ToggleGroup>
+  )
+}
+
+/** The scan's rules: what counts as waiting on you and how it tells a conversation is answered. Empty = the default. */
+function ScanRules({ value, fallback, disabled, onSave }: { value: string | null; fallback: string; disabled: boolean; onSave: (v: string | null) => Promise<void> }) {
+  const [draft, setDraft] = useState(value ?? fallback)
+  const dirty = draft.trim() !== (value ?? fallback).trim()
+  return (
+    <Stacked label="Rules" hint={value ? 'Your own rules (the read-only rule, the time window and the answer format stay fixed)' : 'The default rules; edit to change what counts and how answered threads are told apart'}>
+      <Textarea value={draft} onChange={(e) => setDraft(e.target.value)} disabled={disabled} className="max-h-96 font-mono text-xs" aria-label="Scan rules" />
+      <div className="flex gap-2">
+        <Button size="sm" disabled={disabled || !dirty} onClick={() => void onSave(draft)}>
+          Save
+        </Button>
+        {dirty ? (
+          <Button size="sm" variant="ghost" disabled={disabled} onClick={() => setDraft(value ?? fallback)}>
+            Cancel
+          </Button>
+        ) : null}
+        {value ? (
+          <Button size="sm" variant="ghost" disabled={disabled} onClick={() => void onSave(null)}>
+            Reset to default
+          </Button>
+        ) : null}
+      </div>
+    </Stacked>
+  )
+}
+
+const fmtTokens = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n))
+const fmtUsd = (n: number) => `$${n < 1 ? n.toFixed(3) : n.toFixed(2)}`
+const allTokens = (t: InboxUsageTotals) => t.input + t.output + t.cacheRead + t.cacheWrite
+
+/** What the inbox's own model calls spent: today, 7 and 30 days, and the last calls. */
+function InboxUsagePanel({ usage }: { usage: InboxUsage }) {
+  const spans: [string, InboxUsageSpan][] = [
+    ['Today', usage.today],
+    ['7 days', usage.week],
+    ['30 days', usage.month],
+  ]
+  return (
+    <Section title="Usage">
+      <p className="pt-2 text-xs text-dimmer">Tokens as Claude Code reports them (cache reads included); cost is its API-price estimate — on a subscription it counts against your limits instead.</p>
+      <table className="my-2 w-full text-sm tabular-nums">
+        <thead>
+          <tr className="text-left text-xs text-dimmer">
+            <th className="py-1 font-normal" />
+            <th className="py-1 text-right font-normal">Scans</th>
+            <th className="py-1 text-right font-normal">Briefs</th>
+            <th className="py-1 text-right font-normal">Tokens</th>
+            <th className="py-1 text-right font-normal">Output</th>
+            <th className="py-1 text-right font-normal">Cost</th>
+          </tr>
+        </thead>
+        <tbody>
+          {spans.map(([label, s]) => (
+            <tr key={label} className="border-t border-border/60">
+              <td className="py-1.5">{label}</td>
+              <td className="py-1.5 text-right">{s.scan.runs}</td>
+              <td className="py-1.5 text-right">{s.brief.runs}</td>
+              <td className="py-1.5 text-right">{fmtTokens(allTokens(s.total))}</td>
+              <td className="py-1.5 text-right">{fmtTokens(s.total.output)}</td>
+              <td className="py-1.5 text-right">{fmtUsd(s.total.costUsd)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {usage.runs.length ? (
+        <details className="py-2 text-xs">
+          <summary className="cursor-pointer text-dimmer">Last {usage.runs.length} calls</summary>
+          <ul className="mt-2 space-y-1 tabular-nums">
+            {usage.runs.map((r, i) => (
+              <li key={`${r.at}-${i}`} className="flex gap-2">
+                <span className="w-24 shrink-0 text-dimmer">{new Date(r.at).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })}</span>
+                <span className="w-10 shrink-0">{r.kind}</span>
+                <span className="w-14 shrink-0 text-dimmer">{r.model}</span>
+                <span className="w-14 shrink-0 text-right">{fmtTokens((r.input ?? 0) + (r.output ?? 0) + (r.cacheRead ?? 0) + (r.cacheWrite ?? 0))}</span>
+                <span className="w-14 shrink-0 text-right">{r.costUsd != null ? fmtUsd(r.costUsd) : '–'}</span>
+                <span className="text-dimmer">{r.durationMs != null ? `${Math.round(r.durationMs / 1000)}s` : ''}{r.turns ? ` · ${r.turns} turns` : ''}{r.ok ? '' : ' · failed'}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
     </Section>
   )
 }

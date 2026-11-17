@@ -25,6 +25,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { MODEL_ID_RE } from './config.mjs';
+
 export const SECTIONS = ['quick', 'waiting', 'mine'];
 /** Tasks in progress count as "your work" when touched this recently. */
 export const RECENT_TASK_MS = 3 * 24 * 3600 * 1000;
@@ -77,9 +79,37 @@ export function checkInboxSettings(body) {
     if (!Array.isArray(d) || !d.length || !d.every((x) => Number.isInteger(x) && x >= 0 && x <= 6)) return { error: 'workDays must be weekdays 0–6 (0 = Sunday), at least one' };
     out.workDays = [...new Set(d)].sort();
   }
-  if (!Object.keys(out).length) return { error: 'nothing to change (scanMinutes, workHours, workDays)' };
+  for (const key of ['model', 'briefModel']) {
+    if (body?.[key] == null) continue;
+    if (typeof body[key] !== 'string' || !MODEL_ID_RE.test(body[key])) return { error: `${key} must be a model id (e.g. haiku, sonnet, opus)` };
+    out[key] = body[key];
+  }
+  if (body?.briefMinutes != null) {
+    const n = Number(body.briefMinutes);
+    if (!Number.isInteger(n) || n < 5 || n > 24 * 60) return { error: 'briefMinutes must be a whole number of minutes, 5–1440' };
+    out.briefMinutes = n;
+  }
+  if (body?.comms != null) {
+    if (typeof body.comms !== 'boolean') return { error: 'comms must be true or false' };
+    out.comms = body.comms;
+  }
+  if (body?.language != null) {
+    if (typeof body.language !== 'string' || !body.language.trim() || body.language.length > 40) return { error: 'language must be a short name, e.g. English' };
+    out.language = body.language.trim();
+  }
+  if (body && 'scanRules' in body) {
+    // '' or null → back to DEFAULT_SCAN_RULES.
+    const r = body.scanRules == null ? '' : body.scanRules;
+    if (typeof r !== 'string' || r.length > MAX_SCAN_RULES) return { error: `scanRules must be text, at most ${MAX_SCAN_RULES} characters` };
+    out.scanRules = r.trim() && r.trim() !== DEFAULT_SCAN_RULES ? r.trim() : null;
+  }
+  if (!Object.keys(out).length) return { error: `nothing to change (${SETTING_KEYS.join(', ')})` };
   return { ok: out };
 }
+
+/** The knobs Settings → Inbox shows and may change. */
+export const SETTING_KEYS = ['scanMinutes', 'workHours', 'workDays', 'model', 'briefModel', 'briefMinutes', 'comms', 'language', 'scanRules'];
+export const MAX_SCAN_RULES = 8000;
 
 /** Done by hand comes back on newer activity for these; the others stay away until their source drops them. */
 const REAPPEAR_SOURCES = new Set(['slack', 'email', 'session']);
@@ -221,8 +251,29 @@ export function sessionItems(fleetBody) {
 
 // ------------------------------------------------------------------ the Slack + mail scan
 
+/**
+ * What the scan looks for and how it decides an item is still open — the part of the prompt the
+ * user may rewrite (Settings → Inbox, `inbox.scanRules`). The frame around it (read only, the
+ * time window, the previous items, the answer format) is fixed.
+ */
+export const DEFAULT_SCAN_RULES = [
+  'Slack — what waits on the user to act or answer:',
+  '- direct and group messages to the user whose latest message is not from the user',
+  '- @mentions of the user (or their user groups) in channels and threads the user has not answered since',
+  '- threads the user started or took part in where someone asked the user something new',
+  'Find candidates with slack_search_public_and_private (e.g. `to:me`, mentions of the user), and find what the user already answered with `from:me` over the same window.',
+  '',
+  'Deciding whether a conversation still waits on the user — check the latest messages, never the snippet alone:',
+  '- a direct or group DM (channel id starting with D, or a group DM): people answer there in the channel, not in a thread. Read it with slack_read_channel from the item\'s ts (oldest=<ts>); a thread with no replies says nothing.',
+  '- a channel thread: read it with slack_read_thread, every page (follow the cursor) — the newest replies come last.',
+  '- it is done when the newest message from a person is the user\'s, when the user reacted to the ask (✅ 👍 👀 or alike), or when someone else clearly took it over. Bots and automated posts do not count as an answer to the user, nor as a new ask.',
+  '- a message older than 7 days the user never answered stays only if it is clearly still wanted.',
+  '',
+  'Gmail — search_threads for `in:inbox newer_than:3d -category:promotions -category:social -category:updates -category:forums`; keep only mail from a person that asks the user for something (no newsletters, notifications, calendar invites, automated mail). A thread whose latest message is from the user is done.',
+].join('\n');
+
 /** The scan's prompt. Pure. */
-export function commsPrompt({ since, previous = [], done = [], now = Date.now() }) {
+export function commsPrompt({ since, previous = [], done = [], now = Date.now(), rules = null }) {
   const sinceDate = localDate(since);
   const handled = done.length
     ? ['', 'The user marked these done — leave them out unless a newer message came after the time given:', ...done.map((d) => `- ${d.id} (done at ${new Date(d.itemAt).toISOString()})`)]
@@ -230,26 +281,20 @@ export function commsPrompt({ since, previous = [], done = [], now = Date.now() 
   const prev = previous.length
     ? [
         '',
-        'Open items from the previous scan — check each again: keep it (same id) while it still waits on the user, drop it once the user answered or it no longer needs them:',
-        ...previous.map((i) => `- ${JSON.stringify({ id: i.id, url: i.url, from: i.from, title: i.title })}`),
+        'Open items from the previous scan — check EACH again by reading its conversation as above (they may be older than the window): keep it (same id, latest `at`) only while it still waits on the user; drop it once the user answered or it no longer needs them:',
+        ...previous.map((i) => `- ${JSON.stringify({ id: i.id, url: i.url, from: i.from, title: i.title, at: new Date(i.at).toISOString() })}`),
       ]
     : [];
   return [
     'You keep the user\'s live to-do inbox from Slack and Gmail. Read only: never send, react, draft, label or change anything.',
     `Now: ${new Date(now).toISOString()}. Look at activity since ${new Date(since).toISOString()} (search with after:/newer_than: from ${sinceDate}).`,
     '',
-    'Slack — what waits on the user to act or answer:',
-    '- direct and group messages to the user whose latest message is not from the user',
-    '- @mentions of the user (or their user groups) in channels and threads the user has not replied to since',
-    '- threads the user started or took part in where someone asked the user something new',
-    'Use slack_search_public_and_private (e.g. `to:me`, mentions of the user); open a thread with slack_read_thread only when the snippet does not tell whether it still waits on the user.',
-    '',
-    'Gmail — search_threads for `in:inbox newer_than:3d -category:promotions -category:social -category:updates -category:forums`; keep only mail from a person that asks the user for something (no newsletters, notifications, calendar invites, automated mail).',
+    String(rules ?? '').trim() || DEFAULT_SCAN_RULES,
     ...prev,
     ...handled,
     '',
     'Answer with ONLY a JSON array (no prose, no code fence), one object per thing that still waits on the user:',
-    '{"source":"slack"|"email","id":"slack:<channel id>:<thread root ts>" or "email:<gmail thread id>","url":"<the message permalink exactly as a tool returned it; for mail leave empty>","from":"<person>","title":"<what they want, ≤ 80 chars, in the message\'s language>","ask":"<one sentence: what exactly the user should do>","effort":"quick"|"medium"|"deep","at":"<ISO time of the latest message>"}',
+    '{"source":"slack"|"email","id":"slack:<channel id>:<thread root ts, or the message ts in a DM>" or "email:<gmail thread id>","url":"<the message permalink exactly as a tool returned it; for mail leave empty>","from":"<person>","title":"<what they want, ≤ 80 chars, in the message\'s language>","ask":"<one sentence: what exactly the user should do>","effort":"quick"|"medium"|"deep","at":"<ISO time of the latest message>"}',
     'quick = done in under ~5 minutes (a yes/no, a short answer, a link, a quick look). Leave out everything that does not need the user. An empty array is fine.',
   ].join('\n');
 }
@@ -368,17 +413,31 @@ export function fingerprint(items) {
   return crypto.createHash('sha1').update(key).digest('hex').slice(0, 16);
 }
 
+/** `claude -p --output-format json` usage → { input, output, cacheRead, cacheWrite } (token counts). Pure. */
+export function readUsage(out) {
+  const u = out?.usage ?? {};
+  const n = (v) => (Number.isFinite(v) ? v : 0);
+  return {
+    input: n(u.input_tokens),
+    output: n(u.output_tokens),
+    cacheRead: n(u.cache_read_input_tokens),
+    cacheWrite: n(u.cache_creation_input_tokens),
+  };
+}
+
 /**
- * A `claude -p` that may use the claude.ai connectors (unlike briefs' ask, which runs with
- * `--strict-mcp-config`), limited to `tools`. → { text, costUsd }.
+ * A `claude -p` that may use the claude.ai connectors, limited to `tools` (`mcp: false` → no
+ * connectors and no tools, `--strict-mcp-config`: a plain answer, e.g. the brief). → { text,
+ * costUsd, usage, turns, durationMs }.
  */
 export function createAgentAsk({ bin = 'claude', run, timeoutMs = 6 * 60 * 1000, cwd = os.tmpdir(), env = process.env }) {
   if (typeof run !== 'function') throw new TypeError('run must be a function');
-  return async function agent({ prompt, model = 'haiku', tools = [] }) {
+  return async function agent({ prompt, model = 'haiku', tools = [], mcp = true }) {
     const args = [
       '-p', '--model', model, '--no-session-persistence', '--output-format', 'json',
       '--permission-mode', 'default',
-      '--allowed-tools', tools.join(','),
+      ...(mcp && tools.length ? ['--allowed-tools', tools.join(',')] : []),
+      ...(mcp ? [] : ['--strict-mcp-config']),
       '--disallowed-tools', DENIED_TOOLS.join(','),
     ];
     let stdout;
@@ -392,11 +451,62 @@ export function createAgentAsk({ bin = 'claude', run, timeoutMs = 6 * 60 * 1000,
     try {
       out = JSON.parse(stdout);
     } catch {
-      return { text: stdout, costUsd: null };
+      return { text: stdout, costUsd: null, usage: null, turns: null, durationMs: null };
     }
     if (out?.is_error) throw new Error(`\`claude -p\` failed: ${String(out.result ?? out.subtype ?? 'error').slice(0, 200)}`);
-    return { text: String(out?.result ?? ''), costUsd: typeof out?.total_cost_usd === 'number' ? out.total_cost_usd : null };
+    return {
+      text: String(out?.result ?? ''),
+      costUsd: typeof out?.total_cost_usd === 'number' ? out.total_cost_usd : null,
+      usage: readUsage(out),
+      turns: Number.isFinite(out?.num_turns) ? out.num_turns : null,
+      durationMs: Number.isFinite(out?.duration_ms) ? out.duration_ms : null,
+    };
   };
+}
+
+// ------------------------------------------------------------------ usage
+
+/** Days of usage kept in the state file, and the last runs listed. */
+export const USAGE_DAYS = 31;
+export const USAGE_RUNS = 30;
+
+const zeroUsage = () => ({ runs: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 });
+const addUsage = (into, r) => {
+  into.runs += r.runs ?? 1;
+  for (const k of ['input', 'output', 'cacheRead', 'cacheWrite', 'costUsd']) into[k] += r[k] ?? r.usage?.[k] ?? 0;
+  return into;
+};
+
+/** One model call into the usage log `{ days: { date: { scan, brief } }, runs: [...] }` (old days dropped). Pure (returns a new log). */
+export function recordUsage(log, { kind, at, model, ok = true, costUsd = null, usage = null, turns = null, durationMs = null }) {
+  const days = { ...(log?.days ?? {}) };
+  const date = localDate(at);
+  const day = { scan: zeroUsage(), brief: zeroUsage(), ...(days[date] ?? {}) };
+  day[kind] = addUsage({ ...zeroUsage(), ...day[kind] }, { ...(usage ?? {}), costUsd: costUsd ?? 0 });
+  days[date] = day;
+  // Keep the last USAGE_DAYS days before the newest run (a late, old entry never wipes the rest).
+  const newest = Math.max(at, ...(log?.runs ?? []).map((r) => r.at ?? 0));
+  const oldest = localDate(newest - (USAGE_DAYS - 1) * DAY_MS);
+  for (const d of Object.keys(days)) if (d < oldest) delete days[d];
+  const run = { kind, at, model, ok, costUsd, turns, durationMs, ...(usage ?? {}) };
+  return { days, runs: [run, ...(log?.runs ?? [])].slice(0, USAGE_RUNS) };
+}
+
+/** The usage log → { today, week, month: { scan, brief, total } each, runs }. Pure. */
+export function usageSummary(log, now = Date.now()) {
+  const span = (n) => {
+    const out = { scan: zeroUsage(), brief: zeroUsage(), total: zeroUsage() };
+    for (let i = 0; i < n; i++) {
+      const d = log?.days?.[localDate(now - i * DAY_MS)];
+      if (!d) continue;
+      for (const k of ['scan', 'brief']) if (d[k]) {
+        addUsage(out[k], d[k]);
+        addUsage(out.total, d[k]);
+      }
+    }
+    return out;
+  };
+  return { today: span(1), week: span(7), month: span(30), runs: log?.runs ?? [] };
 }
 
 // ------------------------------------------------------------------ the store
@@ -409,9 +519,10 @@ export function loadState(file) {
       comms: s.comms && Array.isArray(s.comms.items) ? s.comms : { at: null, items: [], error: null },
       brief: s.brief ?? null,
       dismissed: s.dismissed && typeof s.dismissed === 'object' ? s.dismissed : {},
+      usage: s.usage && typeof s.usage === 'object' ? s.usage : { days: {}, runs: [] },
     };
   } catch {
-    return { firstSeen: {}, comms: { at: null, items: [], error: null }, brief: null, dismissed: {} };
+    return { firstSeen: {}, comms: { at: null, items: [], error: null }, brief: null, dismissed: {}, usage: { days: {}, runs: [] } };
   }
 }
 
@@ -429,8 +540,9 @@ function saveState(file, state) {
  *   settings   config.inbox
  *   cli        lib/fleet-cli.mjs — prs(), tasks()
  *   getFleet   () => Promise<the merged /api/fleet body>
- *   ask        ({ prompt, model }) => Promise<string>   (briefs' createClaudeAsk)
- *   agent      ({ prompt, model, tools }) => Promise<{ text, costUsd }>   (createAgentAsk)
+ *   ask        ({ prompt, model }) => Promise<string | { text, costUsd, usage }>   (the brief; an
+ *              object answer is counted in the usage log)
+ *   agent      ({ prompt, model, tools }) => Promise<{ text, costUsd, usage }>   (createAgentAsk)
  *   file       the state file
  *   passMs     how often the no-model sources are read
  */
@@ -492,6 +604,11 @@ export function createInbox({
     persist();
   }
 
+  /** One model call into the usage log (saved with the next persist). */
+  function note(kind, at, model, r = {}) {
+    state.usage = recordUsage(state.usage, { kind, at, model, ok: r.ok ?? true, costUsd: r.costUsd ?? null, usage: r.usage ?? null, turns: r.turns ?? null, durationMs: r.durationMs ?? (now() - at) });
+  }
+
   function persist() {
     try {
       saveState(file, state);
@@ -523,8 +640,17 @@ export function createInbox({
       try {
         const previous = state.comms.items.filter((i) => !state.dismissed[i.id]);
         const done = state.comms.items.filter((i) => state.dismissed[i.id]).map((i) => ({ id: i.id, itemAt: state.dismissed[i.id].itemAt }));
-        const { text, costUsd } = await agent({ prompt: commsPrompt({ since, previous, done, now: started }), model: settings.model, tools: COMMS_TOOLS });
+        const model = settings.model;
+        let res;
+        try {
+          res = await agent({ prompt: commsPrompt({ since, previous, done, now: started, rules: settings.scanRules }), model, tools: COMMS_TOOLS });
+        } catch (err) {
+          note('scan', started, model, { ok: false });
+          throw err;
+        }
+        const { text, costUsd } = res;
         const raw = extractJsonArray(text);
+        note('scan', started, model, { ...res, ok: Boolean(raw) });
         if (!raw) throw new Error(`the scan answered no JSON array: ${String(text).slice(0, 160)}`);
         state.comms = { at: started, items: commsItems(raw, started), error: null };
         Object.assign(sources.comms, { at: started, ok: true, error: null, count: state.comms.items.length });
@@ -561,7 +687,9 @@ export function createInbox({
     briefing = (async () => {
       try {
         const listed = items;
-        const text = linkBrief(cleanBrief(await ask({ prompt: briefPrompt({ items: listed, language: settings.language, now: t }), model: settings.briefModel })), listed);
+        const answer = await ask({ prompt: briefPrompt({ items: listed, language: settings.language, now: t }), model: settings.briefModel });
+        if (answer && typeof answer === 'object') note('brief', t, settings.briefModel, answer);
+        const text = linkBrief(cleanBrief(typeof answer === 'string' ? answer : answer?.text), listed);
         if (!text.trim()) throw new Error('the model answered no bullets');
         state.brief = { text, at: t, model: settings.briefModel, fingerprint: fp };
         persist();
@@ -612,7 +740,11 @@ export function createInbox({
       host: settings.host,
       updatedAt,
       brief: state.brief ? { text: state.brief.text, at: state.brief.at, model: state.brief.model } : null,
-      settings: { scanMinutes: settings.scanMinutes, workHours: settings.workHours, workDays: settings.workDays },
+      settings: {
+        ...Object.fromEntries(SETTING_KEYS.map((k) => [k, settings[k] ?? null])),
+        defaultScanRules: DEFAULT_SCAN_RULES,
+      },
+      usage: usageSummary(state.usage, t),
       sources,
       items,
     };
@@ -647,6 +779,9 @@ export function createInbox({
     /** New knobs (checked by checkInboxSettings), in effect at once. */
     updateSettings(patch) {
       Object.assign(settings, patch);
+      if (settings.comms && !sources.comms) sources.comms = { at: state.comms.at, ok: !state.comms.error, error: state.comms.error ?? null, count: state.comms.items.length, nextAt: null, running: false };
+      if (!settings.comms && sources.comms && !scanning) delete sources.comms;
+      if ('comms' in patch) merge();
       return response();
     },
     status() {

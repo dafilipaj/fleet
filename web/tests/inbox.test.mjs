@@ -13,7 +13,12 @@ import {
   isDismissed,
   linkBrief,
   commsItems,
+  commsPrompt,
+  createAgentAsk,
   createInbox,
+  DEFAULT_SCAN_RULES,
+  recordUsage,
+  usageSummary,
   extractJsonArray,
   inWorkHours,
   prItems,
@@ -225,4 +230,80 @@ test('dismiss: off the list at once, kept across passes, the scan told it is don
   await flush();
   assert.equal(inbox.response().items.length, 0);
   assert.match(calls.prompts.at(-1).includes('marked these done') ? calls.prompts.at(-1) : calls.prompts.at(-2), /slack:C1:1 \(done at/);
+});
+
+test('commsPrompt: DMs are read as a channel, previous items carry their time, custom rules replace the default', () => {
+  const t = new Date(2026, 9, 20, 9).getTime();
+  const p = commsPrompt({ since: t - 3600e3, now: t, previous: [{ id: 'slack:D1:1.2', url: null, from: 'Ana', title: 'Q', at: t - 7200e3 }] });
+  assert.match(p, /slack_read_channel/);
+  assert.match(p, /from:me/);
+  assert.match(p, /"at":"2026-/);
+  assert.ok(p.includes(DEFAULT_SCAN_RULES));
+  const own = commsPrompt({ since: t, now: t, rules: 'Only DMs from my manager.' });
+  assert.ok(own.includes('Only DMs from my manager.'));
+  assert.ok(!own.includes(DEFAULT_SCAN_RULES));
+  assert.match(own, /Answer with ONLY a JSON array/); // the frame stays
+});
+
+test('checkInboxSettings: models, brief interval, comms, language, scan rules (default → null)', () => {
+  assert.deepEqual(checkInboxSettings({ model: 'sonnet', briefModel: 'haiku', briefMinutes: 30, comms: false, language: 'Croatian' }).ok, { model: 'sonnet', briefModel: 'haiku', briefMinutes: 30, comms: false, language: 'Croatian' });
+  assert.match(checkInboxSettings({ model: 'rm -rf' }).error, /model/);
+  assert.match(checkInboxSettings({ briefMinutes: 1 }).error, /briefMinutes/);
+  assert.equal(checkInboxSettings({ scanRules: 'Only DMs.' }).ok.scanRules, 'Only DMs.');
+  assert.equal(checkInboxSettings({ scanRules: '' }).ok.scanRules, null);
+  assert.equal(checkInboxSettings({ scanRules: DEFAULT_SCAN_RULES }).ok.scanRules, null);
+  assert.match(checkInboxSettings({ scanRules: 'x'.repeat(9000) }).error, /scanRules/);
+});
+
+test('usage: each call is logged per day and kind; summaries over today, the week and the month', () => {
+  const t = new Date(2026, 9, 20, 9).getTime();
+  let log = recordUsage(null, { kind: 'scan', at: t, model: 'haiku', costUsd: 0.02, usage: { input: 10, output: 5, cacheRead: 100, cacheWrite: 20 } });
+  log = recordUsage(log, { kind: 'brief', at: t, model: 'haiku', costUsd: 0.001, usage: { input: 3, output: 2, cacheRead: 0, cacheWrite: 0 } });
+  log = recordUsage(log, { kind: 'scan', at: t - 3 * 86400e3, model: 'sonnet', costUsd: 0.1, usage: { input: 1, output: 1, cacheRead: 1, cacheWrite: 1 } });
+  log = recordUsage(log, { kind: 'scan', at: t - 40 * 86400e3, model: 'haiku', costUsd: 9 }); // older than the log keeps
+  const s = usageSummary(log, t);
+  assert.equal(s.today.scan.runs, 1);
+  assert.equal(s.today.brief.output, 2);
+  assert.equal(s.today.total.cacheRead, 100);
+  assert.equal(s.week.scan.runs, 2);
+  assert.ok(Math.abs(s.week.total.costUsd - 0.121) < 1e-9);
+  assert.equal(s.month.scan.runs, 2); // the 40-day-old day was dropped… from the days, not the run list
+  assert.equal(s.runs[0].kind, 'scan');
+  assert.equal(s.runs[1].model, 'sonnet');
+});
+
+test('a scan and a brief with usage are counted in the response', async () => {
+  const t0 = new Date(2026, 9, 20, 9).getTime();
+  const { inbox } = setup({ now: t0 });
+  inbox.updateSettings({}); // no-op
+  await inbox.pass();
+  await flush();
+  const r = inbox.response();
+  assert.equal(r.usage.today.scan.runs, 1);
+  assert.ok(Math.abs(r.usage.today.scan.costUsd - 0.01) < 1e-9);
+  assert.equal(r.settings.model, 'haiku');
+  assert.equal(typeof r.settings.defaultScanRules, 'string');
+});
+
+test('updateSettings: comms off drops the source, on brings it back', () => {
+  const { inbox } = setup({ now: new Date(2026, 9, 20, 9).getTime() });
+  assert.equal(inbox.updateSettings({ comms: false }).sources.comms, undefined);
+  assert.ok(inbox.updateSettings({ comms: true }).sources.comms);
+});
+
+test('createAgentAsk: connectors limited to the tools, or none (mcp: false); usage read from the JSON', async () => {
+  const seen = [];
+  const run = async (bin, args) => {
+    seen.push(args);
+    return { stdout: JSON.stringify({ result: '[]', total_cost_usd: 0.02, num_turns: 4, duration_ms: 900, usage: { input_tokens: 7, output_tokens: 3, cache_read_input_tokens: 50, cache_creation_input_tokens: 9 } }) };
+  };
+  const agent = createAgentAsk({ run });
+  const r = await agent({ prompt: 'x', tools: ['mcp__a'] });
+  assert.deepEqual(r.usage, { input: 7, output: 3, cacheRead: 50, cacheWrite: 9 });
+  assert.equal(r.turns, 4);
+  assert.ok(seen[0].includes('--allowed-tools'));
+  assert.ok(!seen[0].includes('--strict-mcp-config'));
+  await agent({ prompt: 'x', mcp: false });
+  assert.ok(seen[1].includes('--strict-mcp-config'));
+  assert.ok(!seen[1].includes('--allowed-tools'));
 });
