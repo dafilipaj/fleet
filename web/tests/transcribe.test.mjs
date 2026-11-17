@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 
-import { KEY_NAME, audioType, buildPrompt, createKeySource, createTranscriber, promptEcho } from '../lib/transcribe.mjs';
+import { KEY_NAME, audioType, buildPrompt, createKeySource, createTranscriber, promptEcho, tooFastForAudio } from '../lib/transcribe.mjs';
 
 function audioReq(body, type = 'audio/webm;codecs=opus') {
   const req = Readable.from([Buffer.from(body)]);
@@ -98,6 +98,26 @@ test('transcribe returns no text for a prompt echo', async () => {
   const tr = createTranscriber({ getKey: async () => 'sk-test', fetch: okFetch([], echo), log: (m) => logs.push(m) });
   assert.deepEqual(await tr.transcribe(audioReq('RIFFfake'), 'my-session, other-session'), { text: '', model: 'gpt-4o-transcribe' });
   assert.match(logs[0], /prompt echo/);
+});
+
+test('tooFastForAudio flags more words than the recording can hold', () => {
+  // The operator bug: a sentence strung from a session name over a 0.7 s recording.
+  assert.ok(tooFastForAudio('Coud možete li pregledati našu novu reviziju API-ja, public-plain-specs?', 700));
+  // Ordinary speech, a short answer, and an unknown duration pass.
+  assert.equal(tooFastForAudio('Imamo kakvih quick winova danas, skeniraj mi inbox.', 3500), false);
+  assert.equal(tooFastForAudio('Da, mergeaj.', 400), false);
+  assert.equal(tooFastForAudio('Coud možete li pregledati našu novu reviziju API-ja?', null), false);
+  assert.equal(tooFastForAudio('Coud možete li pregledati našu novu reviziju API-ja?', 'abc'), false);
+});
+
+test('transcribe drops text too long for the recording and logs the recording size', async () => {
+  const logs = [];
+  const made = 'Coud možete li pregledati našu novu reviziju API-ja, public-plain-specs?';
+  const tr = createTranscriber({ getKey: async () => 'sk-test', fetch: okFetch([], made), log: (m) => logs.push(m) });
+  assert.deepEqual(await tr.transcribe(audioReq('RIFFfake'), 'api-public-plain-specs', '700'), { text: '', model: 'gpt-4o-transcribe' });
+  assert.match(logs[0], /made-up text .*8 bytes, 700 ms/);
+  assert.equal((await tr.transcribe(audioReq('RIFFfake'), 'api-public-plain-specs', '9000')).text, made);
+  assert.match(logs[1], /^transcribe: \d+ chars from 8 bytes, 9000 ms/);
 });
 
 test('a recording that fails to transcribe is kept in keepDir', async () => {

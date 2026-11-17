@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { toast } from 'sonner'
 
 import { ApiError, api } from '@/api/client'
-import { micUnavailableReason, pickMimeType } from '@/lib/voice'
+import { emptyRecordingReason, micUnavailableReason, peakOf, pickMimeType } from '@/lib/voice'
 
 export type VoiceState = 'idle' | 'recording' | 'transcribing'
 
@@ -16,6 +16,51 @@ function unavailableReason(): string | null {
     getUserMedia: typeof navigator.mediaDevices?.getUserMedia === 'function',
     recorder: typeof MediaRecorder !== 'undefined',
   })
+}
+
+/**
+ * The mic's level while recording: the loudest sample so far, or null when it could not be
+ * measured (no Web Audio, or the context never ran), so an unmeasured recording is still sent.
+ */
+type Meter = { peak: () => number | null; close: () => void }
+
+/** Create inside the tap, before any await: a context made later may stay suspended. */
+function openAudioContext(): AudioContext | null {
+  try {
+    const Ctx = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+    return Ctx ? new Ctx() : null
+  } catch {
+    return null
+  }
+}
+
+function startMeter(ctx: AudioContext | null, media: MediaStream): Meter {
+  if (!ctx) return { peak: () => null, close: () => {} }
+  let max = 0
+  let measured = false
+  let timer: number | undefined
+  try {
+    void ctx.resume().catch(() => {})
+    const analyser = ctx.createAnalyser()
+    analyser.fftSize = 2048
+    ctx.createMediaStreamSource(media).connect(analyser)
+    const buf = new Float32Array(analyser.fftSize)
+    timer = window.setInterval(() => {
+      if (ctx.state !== 'running') return
+      analyser.getFloatTimeDomainData(buf)
+      measured = true
+      max = Math.max(max, peakOf(buf))
+    }, 50)
+  } catch {
+    measured = false
+  }
+  return {
+    peak: () => (measured ? max : null),
+    close: () => {
+      window.clearInterval(timer)
+      void ctx.close().catch(() => {})
+    },
+  }
 }
 
 function micError(err: unknown): string {
@@ -39,6 +84,7 @@ export function useVoice({ onText, hint }: { onText: (text: string) => void; hin
   const discard = useRef(false)
   const limitTimer = useRef<number | undefined>(undefined)
   const inflight = useRef<AbortController | null>(null)
+  const meter = useRef<Meter | null>(null)
   // Latest callbacks for the recorder's onstop (it outlives renders).
   const latest = useRef({ onText, hint })
   useLayoutEffect(() => {
@@ -47,18 +93,20 @@ export function useVoice({ onText, hint }: { onText: (text: string) => void; hin
 
   const release = useCallback(() => {
     window.clearTimeout(limitTimer.current)
+    meter.current?.close()
+    meter.current = null
     stream.current?.getTracks().forEach((t) => t.stop())
     stream.current = null
     recorder.current = null
     setStartedAt(null)
   }, [])
 
-  const send = useCallback(async function transcribe(audio: Blob): Promise<void> {
+  const send = useCallback(async function transcribe(audio: Blob, ms: number): Promise<void> {
     const controller = new AbortController()
     inflight.current = controller
     setState('transcribing')
     try {
-      const { text } = await api.transcribe(audio, latest.current.hint, { signal: controller.signal })
+      const { text } = await api.transcribe(audio, latest.current.hint, { signal: controller.signal, ms })
       if (text) latest.current.onText(text)
       else toast.message('Nothing to transcribe', { description: 'No speech was recognized.' })
     } catch (err) {
@@ -66,7 +114,7 @@ export function useVoice({ onText, hint }: { onText: (text: string) => void; hin
       // The recording stays retryable: a long dictation is not lost to one failed request.
       toast.error("Couldn't transcribe", {
         description: err instanceof ApiError ? err.message || `HTTP ${err.status}` : String(err),
-        action: { label: 'Retry', onClick: () => void transcribe(audio) },
+        action: { label: 'Retry', onClick: () => void transcribe(audio, ms) },
         duration: 60_000,
       })
     } finally {
@@ -84,10 +132,12 @@ export function useVoice({ onText, hint }: { onText: (text: string) => void; hin
       toast.error(reason)
       return
     }
+    const ctx = openAudioContext()
     let media: MediaStream
     try {
       media = await navigator.mediaDevices.getUserMedia({ audio: true })
     } catch (err) {
+      void ctx?.close().catch(() => {})
       toast.error(micError(err))
       return
     }
@@ -98,16 +148,30 @@ export function useVoice({ onText, hint }: { onText: (text: string) => void; hin
     rec.ondataavailable = (e) => {
       if (e.data.size) chunks.current.push(e.data)
     }
+    const level = startMeter(ctx, media)
+    let began = Date.now()
+    rec.onstart = () => {
+      began = Date.now()
+    }
     rec.onstop = () => {
       const audio = new Blob(chunks.current, { type: rec.mimeType || mimeType || 'audio/webm' })
+      const ms = Date.now() - began
+      const peak = level.peak()
       chunks.current = []
       release()
       if (discard.current || !audio.size) {
         setState('idle')
         return
       }
-      void send(audio)
+      const empty = emptyRecordingReason({ durationMs: ms, peak })
+      if (empty) {
+        setState('idle')
+        toast.message('Nothing sent', { description: empty })
+        return
+      }
+      void send(audio, ms)
     }
+    meter.current = level
     stream.current = media
     recorder.current = rec
     rec.start()
@@ -142,6 +206,7 @@ export function useVoice({ onText, hint }: { onText: (text: string) => void; hin
       if (recorder.current?.state === 'recording') recorder.current.stop()
       inflight.current?.abort()
       window.clearTimeout(limitTimer.current)
+      meter.current?.close()
       stream.current?.getTracks().forEach((t) => t.stop())
     },
     [],

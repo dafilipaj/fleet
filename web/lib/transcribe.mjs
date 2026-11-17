@@ -62,6 +62,21 @@ export function promptEcho(text, prompt) {
   return false;
 }
 
+// Faster than anyone speaks (Croatian or English run 2–4 words a second): text the model made
+// up, typically a sentence strung from the prompt over a near-empty recording.
+const MAX_WORDS_PER_SECOND = 6;
+
+/**
+ * Whether `text` is more words than `durationMs` of audio can hold (MAX_WORDS_PER_SECOND).
+ * Unknown duration → false. A few words are always believable.
+ */
+export function tooFastForAudio(text, durationMs) {
+  const ms = Number(durationMs);
+  if (!Number.isFinite(ms) || ms <= 0) return false;
+  const words = String(text ?? '').split(/\s+/).filter(Boolean).length;
+  return words > 3 && words / Math.max(ms / 1000, 0.1) > MAX_WORDS_PER_SECOND;
+}
+
 /** The request body as a Buffer, refusing more than `limit` bytes. */
 export function readAudio(req, limit = TRANSCRIBE_MAX_BYTES) {
   const declared = Number(req.headers?.['content-length']);
@@ -125,21 +140,22 @@ export function createKeySource({ name = KEY_NAME, env = process.env, platform =
  *   model     OpenAI transcription model
  *   fetch     injectable for tests
  *   keepDir   a recording that fails to transcribe is saved here, so a long dictation is not lost
- * @returns {{ enabled(), transcribe(req, hint): Promise<{ text, model }>, transcribeAudio(audio, type, prompt): Promise<{ text, model }> }}
+ * @returns {{ enabled(), transcribe(req, hint, durationMs?): Promise<{ text, model }>, transcribeAudio(audio, type, prompt, durationMs?): Promise<{ text, model }> }}
  */
 export function createTranscriber({ getKey, keepDir = null, now = () => new Date(), model = DEFAULT_TRANSCRIBE_MODEL, maxBytes = TRANSCRIBE_MAX_BYTES, fetch = globalThis.fetch, timeoutMs = 60 * 1000, log = () => {} }) {
   async function enabled() {
     return Boolean(await getKey());
   }
 
-  async function transcribe(req, hint) {
+  /** `durationMs`: the recording's length as the UI measured it (optional; catches made-up text). */
+  async function transcribe(req, hint, durationMs = null) {
     if (!(await getKey())) throw new HttpError(`voice input is off: no ${KEY_NAME} on this server`, 501);
     const type = audioType(req.headers?.['content-type']);
     if (!type) throw new HttpError('expected an audio body (webm, ogg, mp4, mp3 or wav)', 415);
     const audio = await readAudio(req, maxBytes);
     if (!audio.length) throw new HttpError('empty recording', 400);
     try {
-      return await transcribeAudio(audio, type, buildPrompt(hint));
+      return await transcribeAudio(audio, type, buildPrompt(hint), durationMs);
     } catch (err) {
       const kept = await keep(audio, type);
       if (kept) {
@@ -165,7 +181,7 @@ export function createTranscriber({ getKey, keepDir = null, now = () => new Date
   }
 
   /** Audio bytes of a known `type` (audioType) → text; `prompt` steers the model. */
-  async function transcribeAudio(audio, type, prompt = BASE_PROMPT) {
+  async function transcribeAudio(audio, type, prompt = BASE_PROMPT, durationMs = null) {
     const key = await getKey();
     if (!key) throw new HttpError(`voice input is off: no ${KEY_NAME} on this server`, 501);
     const form = new FormData();
@@ -194,10 +210,17 @@ export function createTranscriber({ getKey, keepDir = null, now = () => new Date
       throw new HttpError(`transcription failed: ${msg}`, res.status === 429 ? 429 : 502);
     }
     const text = String(data?.text ?? '').trim();
+    const ms = Number.isFinite(Number(durationMs)) && Number(durationMs) > 0 ? Math.round(Number(durationMs)) : null;
+    const size = `${audio.length} bytes${ms ? `, ${ms} ms` : ''}, ${type}`;
     if (promptEcho(text, prompt)) {
-      log(`transcribe: dropped a prompt echo (${text.length} chars) — silent recording?`);
+      log(`transcribe: dropped a prompt echo (${text.length} chars from ${size}) — silent recording?`);
       return { text: '', model };
     }
+    if (tooFastForAudio(text, ms)) {
+      log(`transcribe: dropped made-up text (${text.length} chars from ${size}) — too many words for the audio`);
+      return { text: '', model };
+    }
+    log(`transcribe: ${text.length} chars from ${size}`);
     return { text, model };
   }
 

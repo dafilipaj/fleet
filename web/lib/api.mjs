@@ -1140,7 +1140,7 @@ export function createApi({
     if (url.pathname === '/api/transcribe') {
       if (req.method !== 'POST') throw new HttpError('method not allowed', 405);
       if (!transcriber) throw new HttpError('voice input is not available on this server', 501);
-      return { status: 200, body: await transcriber.transcribe(req, url.searchParams.get('hint')) };
+      return { status: 200, body: await transcriber.transcribe(req, url.searchParams.get('hint'), url.searchParams.get('ms')) };
     }
 
     // Voice memos: always this server, like /api/transcribe.

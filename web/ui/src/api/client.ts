@@ -287,9 +287,9 @@ export const api = {
   autoname: (host: string, o: Opts = {}) =>
     request<AutoNameRun>(`${hostPath(host)}/autoname`, { ...o, method: 'POST', body: {} }),
 
-  /** A voice recording as text (always this server); `hint` = words to expect (session name, repo). */
-  transcribe: (audio: Blob, hint: string, o: Opts = {}) =>
-    request<TranscribeResponse>(`/api/transcribe?hint=${enc(hint)}`, { ...o, method: 'POST', file: audio }),
+  /** A voice recording as text (always this server); `hint` = words to expect (session name, repo), `ms` = its length. */
+  transcribe: (audio: Blob, hint: string, o: Opts & { ms?: number } = {}) =>
+    request<TranscribeResponse>(`/api/transcribe?hint=${enc(hint)}${o.ms ? `&ms=${Math.round(o.ms)}` : ''}`, { signal: o.signal, method: 'POST', file: audio }),
   /** Text → spoken mp3 (the voice operator's replies). */
   memos: (o: Opts = {}) => request<MemosResponse>('/api/memos', o),
   memo: (id: string, o: Opts = {}) => request<Memo>(`/api/memos/${enc(id)}`, o),
