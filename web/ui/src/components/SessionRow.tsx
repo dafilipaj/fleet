@@ -61,7 +61,7 @@ export interface SessionRowProps {
 
 /**
  * One session in the list: status dot (its label / waiting_for on hover), title, host, first prompt,
- * stack chip (opens the Stack sheet), Snoozed (until when) chip, the icon-only Back (from a snooze) / Done / Lead chips (each its own hue, explained in a tooltip), the done note in place of the prompt (it ran `fleet done`), job chip (started by a scheduled job), cwd, backend (unless tmux, the default), context, age. The title is editable in place: the pencil on hover
+ * stack chip (opens the Stack sheet), Snoozed (until when) chip, the icon-only Back (from a snooze) / Done / Lead chips (each its own hue, explained in a tooltip), the done note in place of the prompt (it ran `fleet done`), job chip (started by a scheduled job), cwd, backend (unless tmux, the default), context, age, then the host bottom right (the title gets the whole first line). The title is editable in place: the pencil on hover
  * (desktop), ⌘E / F2 on the cursor row, or a long press (touch). Clicking the row opens it.
  */
 export function SessionRow({ session: s, now, selected, cursor, inStack }: SessionRowProps) {
@@ -103,7 +103,6 @@ export function SessionRow({ session: s, now, selected, cursor, inStack }: Sessi
           <StatusDot status={s.status} title={statusLabel(s)} />
         )}
         <EditableTitle session={s} scope="row" className="text-[0.9375rem] font-bold" />
-        <HostBadge host={s.host} />
       </div>
       {done?.note ? (
         <p className="mt-1 line-clamp-2 text-[0.8125rem] break-words text-foreground/80">{done.note}</p>
@@ -150,6 +149,7 @@ export function SessionRow({ session: s, now, selected, cursor, inStack }: Sessi
         <span className="ml-auto flex shrink-0 items-center gap-2">
           <ContextMeter context={s.context} />
           <span className="tabular-nums">{relTime(s.updated_at, now)}</span>
+          <HostBadge host={s.host} className="h-4.5 px-1" />
         </span>
       </div>
     </Link>
