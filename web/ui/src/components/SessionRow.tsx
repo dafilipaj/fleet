@@ -1,4 +1,4 @@
-import { AlarmClockCheckIcon, AlarmClockIcon, CircleCheckBigIcon } from 'lucide-react'
+import { AlarmClockCheckIcon, AlarmClockIcon, CircleCheckBigIcon, CrownIcon } from 'lucide-react'
 import { Link } from 'wouter'
 
 import type { Session } from '@/api/types'
@@ -17,7 +17,7 @@ import { useLongPress } from '@/hooks/useLongPress'
 import { openTitleEditor, useSessionTitle } from '@/hooks/useTitles'
 import { relTime, sessionSubtitle, shortCwd } from '@/lib/format'
 import { harnessLabel, sessionHarness } from '@/lib/harness'
-import { sessionDone, sessionHref, statusLabel, statusMeta } from '@/lib/sessions'
+import { isStackLead, sessionDone, sessionHref, statusLabel, statusMeta } from '@/lib/sessions'
 import { sessionKey } from '@/lib/shortcuts'
 import { isBack, isSnoozed, snoozeTime } from '@/lib/snooze'
 import { echoesTitle } from '@/lib/title'
@@ -101,6 +101,12 @@ export function SessionRow({ session: s, now, selected, cursor, inStack }: Sessi
           </span>
         ) : null}
         {done ? <span className={cn(chip, 'gap-0.5 border-primary/40 bg-primary/10 font-medium text-primary')}>Done</span> : null}
+        {isStackLead(s) ? (
+          <span className={cn(chip, 'gap-0.5 border-primary/40 bg-primary/10 font-medium text-primary')} title="The lead (orchestrator) of its session stack">
+            <CrownIcon className="size-3 fill-current" aria-hidden />
+            Lead
+          </span>
+        ) : null}
         {inStack ? null : <StackChip session={s} />}
         <BackgroundChip session={s} />
         <JobChip session={s} />

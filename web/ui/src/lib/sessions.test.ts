@@ -3,6 +3,7 @@ import { expect, test } from 'vitest'
 import type { FleetResponse, Session } from '@/api/types'
 import {
   clusterByStack,
+  isStackLead,
   stackRuns,
   findSession,
   sessionDone,
@@ -344,4 +345,15 @@ test('snoozed sessions leave the list (and the counters) for Snoozed; one back f
   expect(statusSummary(fleet, null, now)).toEqual({ waiting: 0, busy: 0, idle: 2 })
   // once its time has passed, it is back in the list
   expect(listView(fleet, { now: 25_000 }).sessions.map((x) => x.session_id)).toEqual(['back', 'z2', 'a'])
+})
+
+test('the stack lead goes first in its cluster; the others keep their order', () => {
+  const st = { id: 'st-1', label: 'Login fix', lead: 'd' }
+  const rows = [s({ session_id: 'a', stack: st }), s({ session_id: 'b' }), s({ session_id: 'c', stack: st }), s({ session_id: 'd', stack: st })]
+  expect(clusterByStack(rows).map((x) => x.session_id)).toEqual(['d', 'a', 'c', 'b'])
+  expect(isStackLead(rows[3])).toBe(true)
+  expect(isStackLead(rows[0])).toBe(false)
+  expect(isStackLead(s({ session_id: 'x', stack: { id: 'st-1', label: 'x', lead: null } }))).toBe(false)
+  const runs = stackRuns(clusterByStack(rows))
+  expect(runs[0].kind === 'stack' && runs[0].sessions.map((x) => x.session_id)).toEqual(['d', 'a', 'c'])
 })

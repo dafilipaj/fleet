@@ -500,7 +500,7 @@ JSON over HTTP, errors as `{ "error": "..." }`. At a high level:
 | --- | --- | --- |
 | GET | `/api/health` | name, version, apiVersion, self, uptime, autoName (`lastRun`) |
 | GET | `/api/settings` | apiVersion, self, host names, quick replies, `transcribe: { enabled }` (this server has a transcription key), `speak: { enabled, voice }` (it can read replies aloud), `operator: { enabled, hosts }` (the [voice operator](#voice-operator) and where it runs), `focus: { host }` (`web.focus.host`, null when unset) |
-| GET | `/api/fleet[?local=1]` | `{ self, hosts: [{ name, ok, error?, sessions, spawnDirs, hiddenSpawnDirs?, home?, notes?, stacks? }], snapshotAt }` — `spawnDirs` (`[{ label, path }]`): what that host offers in New session, without its hidden entries (Home when it offers none); `hiddenSpawnDirs` (same shape, present only when it has any; older servers omit it): its `hidden: true` entries, allowed for spawns (the embed view checks `dir` against both) but not offered — `home`: that host's home directory (for `~/…` paths, e.g. the [embed view](#embed-view)'s `dir`); older servers omit it — `stacks`: that host's [session stacks](#session-stacks), compact (`{ id, label, host, members: [{ session, host, live }] }`), from which the merged view stamps `stack: { id, label, host }` on the rows of members running on *other* hosts; sessions are `list --json` objects + `host` (a Codex session with no transcript yet gets `session_id: "pid-<pid>"` until it has one) (`title` capped at 300 chars) + `editorUrl` (the "Open in editor" link for its cwd, built by the server that answered — see [Session briefs](#session-briefs)); the merged view is a warm background-refreshed snapshot |
+| GET | `/api/fleet[?local=1]` | `{ self, hosts: [{ name, ok, error?, sessions, spawnDirs, hiddenSpawnDirs?, home?, notes?, stacks? }], snapshotAt }` — `spawnDirs` (`[{ label, path }]`): what that host offers in New session, without its hidden entries (Home when it offers none); `hiddenSpawnDirs` (same shape, present only when it has any; older servers omit it): its `hidden: true` entries, allowed for spawns (the embed view checks `dir` against both) but not offered — `home`: that host's home directory (for `~/…` paths, e.g. the [embed view](#embed-view)'s `dir`); older servers omit it — `stacks`: that host's [session stacks](#session-stacks), compact (`{ id, label, host, lead, members: [{ session, host, live }] }`), from which the merged view stamps `stack: { id, label, host, lead }` on the rows of members running on *other* hosts; sessions are `list --json` objects + `host` (a Codex session with no transcript yet gets `session_id: "pid-<pid>"` until it has one) (`title` capped at 300 chars) + `editorUrl` (the "Open in editor" link for its cwd, built by the server that answered — see [Session briefs](#session-briefs)); the merged view is a warm background-refreshed snapshot |
 | GET | `/api/hosts/:host/sessions/:id/peek?lines=N` | plain-text screen |
 | GET | `/api/hosts/:host/sessions/:id/messages?limit=N` | conversation (no tool calls) from the transcript; an AskUserQuestion call is a message of `kind: "question"` with `id` (the tool use id), `questions` (`[{ question, header, multiSelect, options: [{ label, description }] }]`), `text` (a markdown rendering) and, once it has a result, `answers` (per question, the answer string) or `declined: true`. Claude Code (2.1.310+) writes the call to the transcript only once it is answered, so while the session waits on one the terminal is read instead: the prompt's current tab (or its "Review your answers" screen, a question with `noOther: true`) is appended as a question message with `id: "screen:<hash>"`, one question per tab; a prompt typed while Claude works and still in its queue is a `kind: "user"` message with `queued: true`, always last (prompts it took mid-turn show where it took them) |
 | POST | `/api/hosts/:host/sessions/:id/send` | `{ text }` → typed + Enter |
@@ -596,6 +596,8 @@ JSON over HTTP, errors as `{ "error": "..." }`. At a high level:
 | GET | `/api/hosts/:host/stacks/:id` | `fleet --local stack show <id> --json` → StackView (+ `editorUrl`); 404 when unknown |
 | PUT | `/api/hosts/:host/stacks/:id` | `{ markdown, expectUpdated? }` → `fleet --local stack set <id> [--expect-updated] --json` (markdown on stdin) → StackView; **409** `{ error, updated }` on conflict; 400 bad body (markdown a string ≤ 64 kB) |
 | POST | `/api/hosts/:host/stacks/:id/rename` | `{ label }` (one line, 1–80 chars) → `fleet --local stack rename <id> <label> --json` → StackView; 400 bad label; 404 unknown |
+| POST | `/api/hosts/:host/stacks/:id/lead` | `{ session: <member session id> \| null, quiet? }` → `fleet --local stack lead <id> <session> [--quiet] \| --clear --json` (30 s: telling the lead may go over ssh) → StackView + `sent`, `warning`; 400 bad body |
+| GET / PUT | `/api/hosts/:host/stacks/settings` | Settings → Session stacks: GET → `{ host, leadPrompt, leadPromptDefault, siblingReports, reportPrompt, reportPromptDefault }` (from `fleet --local stack list --json` → `settings`); PUT any of `leadPrompt`, `reportPrompt` (string ≤ 8000 chars, `null` / `""` = the default), `siblingReports` (bool) → `fleet --local config set stacks.<key>` each, then the same body; 400 bad body |
 | DELETE | `/api/hosts/:host/stacks/:id` | `fleet --local stack rm <id> -f --json` → `{ removed }` |
 | POST | `/api/hosts/:host/stacks/:id/spawn` | `{ prompt?, name?, model?, harness?, dir?, host? }` → a sibling in that stack: `dir` defaults to the stack's `absCwd`; otherwise as the session route below, without `ensure` |
 | POST | `/api/hosts/:host/sessions/:id/stack/spawn` | `{ prompt?, name?, model?, harness?, dir?, host? }` → (1) `fleet --local stack ensure <session_id> --json` (timeout 150 s: it may call the model); (2) the server's own spawner (tmux, trust prompt handled) in the session's cwd (or `dir`, inside the session's cwd or a spawn dir) with `prompt` = `contextLine + ' ' + prompt`; (3) in the background, find the new session (by tmux session name, ≤ ~75 s) and `fleet --local stack add <stack id> <session_id> --json` → 200 `{ host, stack: StackView, created, generated, spawn: { name, dir, tmuxSession, command, trusted, model } }`. With `host` (a peer of `:host`, the stack's home): `dir` is required (a path there), the peer's `/spawn` starts it with `remoteContextLine + ' ' + prompt`, the join watches the peer's list and runs `stack add … --on <host> --input -` here; `spawn.host` names the peer |
@@ -1161,6 +1163,7 @@ members' rows (the web server does, from the home's `/api/fleet` entry — see b
 ---
 stack: st-1a2b3c4d
 label: Login redirect fix
+lead: <uuid>
 host: laptop
 cwd: ~/Code/project
 created: 2026-09-29T10:00:00.000Z
@@ -1191,9 +1194,16 @@ free text; any other `## ` section is kept as is
 ```
 
 - Frontmatter: the briefs' encoding (`key: value`, arrays/objects one-line JSON). Machine keys —
-  `stack`, `host`, `cwd`, `created`, `updated` (last write of any kind), `generatedAt` (the model
+  `stack`, `lead`, `host`, `cwd`, `created`, `updated` (last write of any kind), `generatedAt` (the model
   wrote Summary/Resources), `editedAt` (last human edit), `members` — are never taken from an
   edited body; `label` is (from the submitted frontmatter). Unknown keys are preserved.
+- `lead` (optional): the session id of the stack's lead (orchestrator) member, set and cleared by
+  `fleet stack lead` (and cleared when that member is removed); a `lead` that names no member is
+  ignored. It reaches the rows as `stack.lead` (`fleet list` and the web server's `stampForeign`,
+  from the compact `stacks[]` entry's `lead`), and the UI lists the lead first in its stack's group
+  and board column. StackView: `lead` (id or `null`) and `leadLine` — the sentence a sibling gets
+  after its context line when the stack has a lead and `stacks.siblingReports` is on (else `null`);
+  the web server's sibling spawn appends it like the CLI does.
 - `members[]`: `{ session, host, name, added, closed, cwd?, firstPrompt? }` — `host` is where
   the session runs (the stack's home when absent), `name` is the
   display title at the last sync, `closed` `null` while live and an ISO time once the session was
@@ -1230,7 +1240,7 @@ registry can't be read, and a member dormant on this machine (left by a reboot,
 members carry `host`, `dormant: true|false` next to `live` (dormant = not live and in this
 machine's dormant set); for a member on a host not observed, `live` is `closed == null`,
 `status` is `null` and `briefPath` is `null` (the brief is on that host). `fleet list` only
-stamps `stack: { id, label, host } | null` on each row (read-only; `host` = the stack's home).
+stamps `stack: { id, label, host, lead } | null` on each row (read-only; `host` = the stack's home).
 
 **Generation** (creation only; `stacks.model`, default `sonnet`): one `core::naming::ask_claude`
 call (`-p --model <m> --strict-mcp-config`, tools disallowed, prompt on stdin, neutral cwd, 120 s)

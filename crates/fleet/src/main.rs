@@ -952,6 +952,21 @@ enum StackCmd {
         #[arg(long)]
         json: bool,
     },
+    /// The stack's lead (orchestrator) session: set it (and tell it so), --clear it, or show it
+    Lead {
+        stack: String,
+        /// The member to make the lead (a session target or member id); none = show the lead
+        #[arg(conflicts_with = "clear")]
+        session: Option<String>,
+        /// The stack has no lead from now on
+        #[arg(long)]
+        clear: bool,
+        /// Don't send the lead prompt (config `stacks.leadPrompt`) to the new lead
+        #[arg(long)]
+        quiet: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Rename a stack (its label; the StackBrief header follows)
     Rename {
         stack: String,
@@ -1769,6 +1784,13 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
         },
         Commands::Stack { cmd } => match cmd {
             StackCmd::List { json } => stack_cmds::list(json)?,
+            StackCmd::Lead {
+                stack,
+                session,
+                clear,
+                quiet,
+                json,
+            } => stack_cmds::lead(&stack, session.as_deref(), clear, quiet, json)?,
             StackCmd::Show { stack, json, path } => stack_cmds::show(&stack, json, path)?,
             StackCmd::New {
                 from,

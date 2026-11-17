@@ -79,6 +79,8 @@ import type {
   StackSpawnRequest,
   StackSpawnResponse,
   StackView,
+  StackLeadResponse,
+  StackSettings,
   StacksResponse,
   Task,
   TaskSpawnResponse,
@@ -382,6 +384,12 @@ export const api = {
   /** Rename a stack (400 bad label, 404 unknown stack, 501 / router 404 on servers without stacks). */
   renameStack: (host: string, id: string, label: string, o: Opts = {}) =>
     request<StackView>(`${hostPath(host)}/stacks/${enc(id)}/rename`, { ...o, method: 'POST', body: { label } }),
+  /** Make the member `session` the stack's lead (told so unless `quiet`), or — null — clear it. */
+  setStackLead: (host: string, id: string, session: string | null, { quiet = false, ...o }: Opts & { quiet?: boolean } = {}) =>
+    request<StackLeadResponse>(`${hostPath(host)}/stacks/${enc(id)}/lead`, { ...o, method: 'POST', body: { session, ...(quiet ? { quiet: true } : {}) } }),
+  stackSettings: (host: string, o: Opts = {}) => request<StackSettings>(`${hostPath(host)}/stacks/settings`, o),
+  setStackSettings: (host: string, patch: Partial<Pick<StackSettings, 'leadPrompt' | 'siblingReports' | 'reportPrompt'>>, o: Opts = {}) =>
+    request<StackSettings>(`${hostPath(host)}/stacks/settings`, { ...o, method: 'PUT', body: patch }),
   deleteStack: (host: string, id: string, o: Opts = {}) =>
     request<{ removed: string }>(`${hostPath(host)}/stacks/${enc(id)}`, { ...o, method: 'DELETE' }),
   /** A sibling of `sessionId`: its stack (created first when it has none — one model call), then a new session in its cwd. */

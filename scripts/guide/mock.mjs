@@ -23,9 +23,9 @@ const SESSIONS = () => [
   S({ host: 'workstation', session_id: 'a1b2c3d4-1111-4000-8000-000000000004', pid: 41502, display_title: 'Dependency audit', cwd: `${H}/Code/acme-web`, status: 'idle', updated_at: now() - 26 * M, handle: '%21', tmux_session: 'job-dependency-audit', gh_identity: 'acme-bot', origin: { job: 'dependency-audit', run: '20261015-0700' }, model: 'claude-sonnet-5-5', context: { used: 54_000, window: 200_000, pct: 27 } }),
   S({ host: 'workstation', session_id: 'a1b2c3d4-1111-4000-8000-000000000005', pid: 41630, display_title: 'Search index migration', harness: 'codex', cwd: `${H}/Code/search-indexer`, status: 'busy', updated_at: now() - 9_000, handle: '%24', tmux_session: 'search-index-migration', model: 'gpt-5.5-codex', context: null }),
   S({ host: 'workstation', session_id: 'a1b2c3d4-1111-4000-8000-000000000006', pid: 41702, display_title: 'Review acme-web#1310', cwd: `${H}/Code/acme-web/.worktrees/pr-1310`, status: 'idle', updated_at: now() - 12 * M, handle: '%26', tmux_session: 'review-acme-web-1310', done: { at: now() - 12 * M, note: 'Reviewed acme-web#1310: 2 blocking comments (retry loop, missing index), approved the rest' }, model: 'claude-opus-5-5', context: { used: 71_000, window: 200_000, pct: 36 } }),
-  S({ host: 'devbox', session_id: 'b2c3d4e5-2222-4000-8000-000000000001', pid: 9120, display_title: 'Onboarding flow redesign', cwd: `${H}/Code/acme-web`, status: 'busy', updated_at: now() - 2_000, handle: '%3', tmux_session: 'onboarding-flow', model: 'claude-opus-5-5', stack: { id: 'onboarding-redesign', label: 'Onboarding redesign', host: 'devbox' }, context: { used: 148_000, window: 200_000, pct: 74 } }),
-  S({ host: 'devbox', session_id: 'b2c3d4e5-2222-4000-8000-000000000002', pid: 9188, display_title: 'Onboarding copy & emails', cwd: `${H}/Code/acme-web`, status: 'idle', updated_at: now() - 7 * M, handle: '%5', tmux_session: 'onboarding-copy', model: 'claude-sonnet-5-5', stack: { id: 'onboarding-redesign', label: 'Onboarding redesign', host: 'devbox' }, context: { used: 30_000, window: 200_000, pct: 15 } }),
-  S({ host: 'workstation', session_id: 'a1b2c3d4-1111-4000-8000-000000000007', pid: 41790, display_title: 'Onboarding API endpoints', cwd: `${H}/Code/acme-api`, status: 'busy', updated_at: now() - 15_000, handle: '%28', tmux_session: 'onboarding-api', model: 'claude-sonnet-5-5', stack: { id: 'onboarding-redesign', label: 'Onboarding redesign', host: 'devbox' }, context: { used: 66_000, window: 200_000, pct: 33 } }),
+  S({ host: 'devbox', session_id: 'b2c3d4e5-2222-4000-8000-000000000001', pid: 9120, display_title: 'Onboarding flow redesign', cwd: `${H}/Code/acme-web`, status: 'busy', updated_at: now() - 2_000, handle: '%3', tmux_session: 'onboarding-flow', model: 'claude-opus-5-5', stack: { id: 'onboarding-redesign', label: 'Onboarding redesign', host: 'devbox', lead: 'b2c3d4e5-2222-4000-8000-000000000002' }, context: { used: 148_000, window: 200_000, pct: 74 } }),
+  S({ host: 'devbox', session_id: 'b2c3d4e5-2222-4000-8000-000000000002', pid: 9188, display_title: 'Onboarding copy & emails', cwd: `${H}/Code/acme-web`, status: 'idle', updated_at: now() - 7 * M, handle: '%5', tmux_session: 'onboarding-copy', model: 'claude-sonnet-5-5', stack: { id: 'onboarding-redesign', label: 'Onboarding redesign', host: 'devbox', lead: 'b2c3d4e5-2222-4000-8000-000000000002' }, context: { used: 30_000, window: 200_000, pct: 15 } }),
+  S({ host: 'workstation', session_id: 'a1b2c3d4-1111-4000-8000-000000000007', pid: 41790, display_title: 'Onboarding API endpoints', cwd: `${H}/Code/acme-api`, status: 'busy', updated_at: now() - 15_000, handle: '%28', tmux_session: 'onboarding-api', model: 'claude-sonnet-5-5', stack: { id: 'onboarding-redesign', label: 'Onboarding redesign', host: 'devbox', lead: 'b2c3d4e5-2222-4000-8000-000000000002' }, context: { used: 66_000, window: 200_000, pct: 33 } }),
   S({ host: 'devbox', session_id: 'b2c3d4e5-2222-4000-8000-000000000003', pid: 9301, display_title: 'Dashboard perf profiling', harness: 'pi', cwd: `${H}/Code/acme-web`, status: 'idle', updated_at: now() - 48 * M, handle: '%7', tmux_session: 'dashboard-perf', model: 'claude-sonnet-5-5', context: null }),
   S({ host: 'devbox', session_id: 'b2c3d4e5-2222-4000-8000-0000000000a1', pid: 9402, display_title: 'Spec review: pricing-annual', cwd: `${H}/Code/acme-web`, status: 'busy', updated_at: now() - 20_000, handle: '%11', tmux_session: 'spec-review-pricing-annual', gh_identity: 'acme-bot', origin: { job: 'spec-review', run: 'gh-spec-pricing-annual' }, model: 'claude-opus-5-5', context: { used: 52_000, window: 200_000, pct: 26 } }),
   S({ host: 'devbox', session_id: 'b2c3d4e5-2222-4000-8000-000000000004', pid: 9355, display_title: 'October release notes', cwd: `${H}/Code/docs`, status: 'waiting', waiting_for: 'Ready for your review', updated_at: now() - 3 * M, handle: '%9', tmux_session: 'release-notes-oct', model: 'claude-sonnet-5-5', context: { used: 44_000, window: 200_000, pct: 22 } }),
@@ -193,6 +193,7 @@ function stack() {
     host: 'devbox', id: 'onboarding-redesign', label: 'Onboarding redesign', path: `${H}/.local/state/fleet/stacks/onboarding-redesign.md`, cwd: '~/Code/acme-web', absCwd: `${H}/Code/acme-web`,
     created: iso(now() - 2 * D), updated: iso(now() - 25 * M), generatedAt: iso(now() - 2 * D), editedAt: iso(now() - 25 * M),
     contextLine: 'You are one of several sessions in the stack "Onboarding redesign"; shared context: ~/.local/state/fleet/stacks/onboarding-redesign.md',
+    lead: 'b2c3d4e5-2222-4000-8000-000000000002', leadLine: null,
     members: [
       { session: 'b2c3d4e5-2222-4000-8000-000000000001', host: 'devbox', name: 'Onboarding flow redesign', added: iso(now() - 2 * D), closed: null, live: true, status: 'busy' },
       { session: 'b2c3d4e5-2222-4000-8000-000000000002', host: 'devbox', name: 'Onboarding copy & emails', added: iso(now() - D), closed: null, live: true, status: 'idle' },
@@ -208,6 +209,12 @@ function stack() {
     editorUrl: `vscode://vscode-remote/ssh-remote+devbox${H}/Code/acme-web`,
   }
 }
+
+const stackSettings = (host) => ({
+  host, leadPrompt: null, siblingReports: false, reportPrompt: null,
+  leadPromptDefault: 'You are now the lead (orchestrator) session of the session stack "{label}" ({id}); its shared context: {context}. Your job: follow the other Fleet sessions in this stack, delegate tasks to them and organise the work of the whole stack. …',
+  reportPromptDefault: 'The stack\'s lead session, {leadName} ({lead} on {leadHost}), orchestrates the stack: report to it with `fleet -H {leadHost} send {lead} "<one or two lines>"` when you finish a task, get blocked or need a decision.',
+})
 
 // ---------------------------------------------------------------- beads (bd issues a session works on)
 const BEAD = (o) => ({ status: 'open', type: 'task', priority: 2, labels: [], assignee: null, owner: 'demo', description: '', design: '', acceptance: '', notes: '', parent: null, blockedBy: [], related: [], createdAt: iso(now() - 2 * D), updatedAt: iso(now() - HR), closedAt: null, closeReason: null, commentCount: 0, ...o })
@@ -762,6 +769,7 @@ function route(method, p, q, b) {
   if (rest === 'prs') return host === 'workstation' || host === 'laptop' ? prs(host) : prs(host)
   if (rest === 'dormant') return dormant(host)
   if (rest === 'stacks') return { host, stacks: host === 'devbox' ? [stack()] : [] }
+  if (rest === 'stacks/settings') return stackSettings(host)
   if (rest.startsWith('stacks/')) return stack()
   if (rest === 'notes/tree') return notesTree(host)
   if (rest === 'notes/search') return notesSearch(host, q.get('q') || '')

@@ -49,6 +49,7 @@ test('sortedMembers: live first in stack order, then the most recently closed', 
     m('b'),
   ]
   expect(sortedMembers(members).map((x) => x.session)).toEqual(['a', 'b', 'new', 'old'])
+  expect(sortedMembers(members, 'b').map((x) => x.session)).toEqual(['b', 'a', 'new', 'old'])
 })
 
 test('stacksMissing: 501 or the router’s generic 404, not an unknown stack', () => {

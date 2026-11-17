@@ -27,10 +27,10 @@ export function memberCountsText(stack: Pick<StackView, 'members'> | null | unde
   return closed ? `${live} live · ${closed} closed` : `${live} live`
 }
 
-/** Live members first (in stack order), then closed ones, most recently closed first. */
-export function sortedMembers(members: readonly StackMember[] | null | undefined): StackMember[] {
+/** Live members first (the lead, then stack order), then closed ones, most recently closed first. */
+export function sortedMembers(members: readonly StackMember[] | null | undefined, lead?: string | null): StackMember[] {
   const list = [...(members ?? [])]
-  const live = list.filter(memberLive)
+  const live = list.filter(memberLive).sort((a, b) => Number(b.session === lead) - Number(a.session === lead))
   const closed = list.filter((m) => !memberLive(m)).sort((a, b) => String(b.closed ?? '').localeCompare(String(a.closed ?? '')))
   return [...live, ...closed]
 }

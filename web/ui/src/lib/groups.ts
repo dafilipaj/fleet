@@ -4,7 +4,7 @@
 import type { GroupMember, GroupRun, GroupsResponse, Session, SessionGroup } from '@/api/types'
 import type { DormantMember } from '@/lib/dormant'
 import { relTime } from '@/lib/format'
-import { byLastActivity, statusMeta, type StatusKey } from '@/lib/sessions'
+import { byLastActivity, leadFirst, statusMeta, type StatusKey } from '@/lib/sessions'
 
 export const UNGROUPED_ID = '__ungrouped__'
 
@@ -192,7 +192,8 @@ export function withStackColumns(columns: BoardColumn[], sessions: Session[]): B
       let id = `${STACK_COLUMN_PREFIX}${st.id}`
       if (ids.has(id)) id = `${STACK_COLUMN_PREFIX}${st.host}/${st.id}`
       ids.add(id)
-      const list = [...st.sessions].sort(byUrgency)
+      // The lead (orchestrator) first, the rest by urgency.
+      const list = leadFirst([...st.sessions].sort(byUrgency))
       return {
         id,
         label: st.label,

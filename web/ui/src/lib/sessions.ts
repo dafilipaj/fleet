@@ -204,16 +204,27 @@ export function statusSummary(fleet: FleetResponse | null | undefined, hosts: Re
   return out
 }
 
-/**
- * Keep the sessions of one stack adjacent: every stack moves up to the position of its first
- * member (members keep their relative order), everything else stays where it was. Stable, pure;
- * rows without `stack` (older servers) come back unchanged.
- */
 /** A stack's identity across hosts: its home host + id; null when the session is in none. */
 function stackKey(s: Session): string | null {
   return s.stack?.id ? `${s.stack.host || s.host}/${s.stack.id}` : null
 }
 
+/** Whether `s` is its stack's lead (orchestrator). */
+export function isStackLead(s: Session): boolean {
+  return !!s.stack?.lead && s.stack.lead === s.session_id
+}
+
+/** One stack's members with its lead first; the others keep their order. */
+export function leadFirst(members: Session[]): Session[] {
+  const i = members.findIndex(isStackLead)
+  return i <= 0 ? members : [members[i], ...members.slice(0, i), ...members.slice(i + 1)]
+}
+
+/**
+ * Keep the sessions of one stack adjacent: every stack moves up to the position of its first
+ * member, its lead first and the other members in their relative order; everything else stays
+ * where it was. Stable, pure; rows without `stack` (older servers) come back unchanged.
+ */
 export function clusterByStack(sessions: Session[]): Session[] {
   // Keyed by the stack's home host: members on other hosts cluster with it.
   const key = stackKey
@@ -233,7 +244,7 @@ export function clusterByStack(sessions: Session[]): Session[] {
     if (!k) out.push(s)
     else if (!done.has(k)) {
       done.add(k)
-      out.push(...(members.get(k) ?? [s]))
+      out.push(...leadFirst(members.get(k) ?? [s]))
     }
   }
   return out

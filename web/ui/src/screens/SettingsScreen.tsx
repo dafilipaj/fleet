@@ -8,6 +8,7 @@ import {
   GitBranchIcon,
   InboxIcon,
   KeyboardIcon,
+  LayersIcon,
   MessageSquareIcon,
   MonitorIcon,
   MoonIcon,
@@ -24,6 +25,7 @@ import { ReposEditor } from '@/components/ReposEditor'
 import { ScreenHeader } from '@/components/ScreenHeader'
 import { SlackSpawnEditor } from '@/components/SlackSpawnEditor'
 import { SpawnDirsEditor } from '@/components/SpawnDirsEditor'
+import { StackSettingsEditor } from '@/components/stack/StackSettingsEditor'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
 import { Switch } from '@/components/ui/switch'
@@ -46,7 +48,7 @@ import { cn } from '@/lib/utils'
 const segItem =
   'h-9 flex-1 gap-1.5 rounded-md px-3 text-[0.8125rem] text-muted-foreground data-[state=on]:bg-background data-[state=on]:text-foreground data-[state=on]:shadow-sm dark:data-[state=on]:bg-accent'
 
-type SectionId = 'general' | 'models' | 'start-dirs' | 'repos' | 'inbox' | 'slack' | 'status'
+type SectionId = 'general' | 'models' | 'start-dirs' | 'repos' | 'stacks' | 'inbox' | 'slack' | 'status'
 
 /** Settings' sub-pages, in nav order: `#/settings/<id>`. */
 const SECTIONS: { id: SectionId; label: string; hint: string; icon: ReactNode }[] = [
@@ -54,6 +56,7 @@ const SECTIONS: { id: SectionId; label: string; hint: string; icon: ReactNode }[
   { id: 'models', label: 'Models', hint: 'Default model and effort per harness', icon: <BotIcon /> },
   { id: 'start-dirs', label: 'Start directories', hint: 'Where new sessions can start', icon: <FolderOpenIcon /> },
   { id: 'repos', label: 'Git repos', hint: 'Repos fleet keeps in sync', icon: <GitBranchIcon /> },
+  { id: 'stacks', label: 'Session stacks', hint: 'The lead prompt and sibling reports', icon: <LayersIcon /> },
   { id: 'inbox', label: 'Inbox', hint: 'Scan schedule, model, rules and usage', icon: <InboxIcon /> },
   { id: 'slack', label: 'Slack', hint: 'Sessions started from a mention', icon: <MessageSquareIcon /> },
   { id: 'status', label: 'Status', hint: 'Hosts and diagnostics', icon: <ActivityIcon /> },
@@ -179,6 +182,12 @@ function SectionBody({ id }: { id: SectionId }) {
       return (
         <Section title="Git repos">
           <ReposEditor />
+        </Section>
+      )
+    case 'stacks':
+      return (
+        <Section title="Session stacks">
+          <StackSettingsEditor />
         </Section>
       )
     case 'inbox':

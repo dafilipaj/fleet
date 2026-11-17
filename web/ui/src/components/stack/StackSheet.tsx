@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   CircleAlertIcon,
   CodeXmlIcon,
+  CrownIcon,
   GitForkIcon,
   LayersIcon,
   LinkIcon,
@@ -184,6 +185,26 @@ function StackBody({
     }
   }
 
+  // The lead (orchestrator): one live member, first in the stack's group; made lead → told so.
+  const [leading, setLeading] = useState<string | null>(null)
+  const setLead = async (m: StackMember | null) => {
+    if (leading) return
+    setLeading(m?.session ?? '-')
+    try {
+      const next = await api.setStackLead(host, id, m?.session ?? null)
+      st.apply(next)
+      refreshFleet()
+      const who = m?.name || m?.session.slice(0, 8)
+      if (!m) toast.success('The stack has no lead now', { duration: 1800 })
+      else if (next.warning) toast.warning(`${who} leads the stack`, { description: next.warning })
+      else toast.success(`${who} leads the stack`, { description: 'It got the lead prompt (Settings → Session stacks).' })
+    } catch (err) {
+      toast.error('Could not change the lead', { description: stackErrorMessage(err) })
+    } finally {
+      setLeading(null)
+    }
+  }
+
   const spawnSibling = () =>
     openSiblingSpawn({ host, stackId: id, cwd: s?.absCwd ?? s?.cwd ?? null, cwdHost: host, label: label || null, creates: false })
 
@@ -256,7 +277,7 @@ function StackBody({
   } else {
     body = (
       <div className="no-scrollbar min-h-0 flex-1 space-y-5 overflow-y-auto p-4">
-        <Members stack={s} onOpen={openMember} now={now} />
+        <Members stack={s} onOpen={openMember} now={now} onLead={(m) => void setLead(m)} leading={leading} />
         <Part
           title="StackBrief"
           aside={
@@ -369,9 +390,23 @@ function StackBody({
   )
 }
 
-function Members({ stack, onOpen, now }: { stack: StackView; onOpen: (m: StackMember) => void; now: number }) {
+function Members({
+  stack,
+  onOpen,
+  now,
+  onLead,
+  leading,
+}: {
+  stack: StackView
+  onOpen: (m: StackMember) => void
+  now: number
+  /** Make `m` the lead; null = no lead. */
+  onLead: (m: StackMember | null) => void
+  /** The change in flight (a session id, `-` = clearing). */
+  leading: string | null
+}) {
   const { fleet } = useFleet()
-  const members = sortedMembers(stack.members)
+  const members = sortedMembers(stack.members, stack.lead)
   return (
     <Part title="Sessions" aside={<span className="tabular-nums">{memberCountsText(stack)}</span>}>
       {members.length ? (
@@ -385,12 +420,13 @@ function Members({ stack, onOpen, now }: { stack: StackView; onOpen: (m: StackMe
             const closed = briefTime(m.closed)
             // A member on another host than the stack's home says where it runs.
             const elsewhere = ref.host !== stack.host
+            const lead = stack.lead === m.session
             return (
-              <li key={`${m.host}/${m.session}`}>
+              <li key={`${m.host}/${m.session}`} className="group/member flex items-center gap-0.5">
                 <button
                   type="button"
                   onClick={() => onOpen(m)}
-                  className="flex min-h-11 w-full items-center gap-2.5 rounded-lg px-2 text-left outline-none hover:bg-muted/60 focus-visible:ring-3 focus-visible:ring-ring/50 active:bg-muted"
+                  className="flex min-h-11 min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2 text-left outline-none hover:bg-muted/60 focus-visible:ring-3 focus-visible:ring-ring/50 active:bg-muted"
                 >
                   {live ? <StatusDot status={status} className="size-2" /> : <span aria-label="closed" className="inline-block size-2 shrink-0 rounded-full border border-dimmer" />}
                   <span className={cn('min-w-0 flex-1 truncate text-sm', !live && 'text-muted-foreground')}>{title}</span>
@@ -404,6 +440,25 @@ function Members({ stack, onOpen, now }: { stack: StackView; onOpen: (m: StackMe
                     {live ? (session ? statusLabel(session) : statusMeta(status).label) : m.dormant ? 'inactive' : closed ? `closed ${relTime(closed, now)} ago` : 'closed'}
                   </span>
                 </button>
+                {lead || live ? (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-pressed={lead}
+                    aria-label={lead ? `${title} leads the stack — remove the lead` : `Make ${title} the stack's lead`}
+                    title={lead ? 'Lead (orchestrator) — click to remove the lead' : 'Make lead: first in the stack, and told to orchestrate it'}
+                    disabled={leading !== null}
+                    onClick={() => onLead(lead ? null : m)}
+                    className={cn(
+                      'size-9 shrink-0 rounded-lg',
+                      lead ? 'text-primary' : 'text-dimmer opacity-60 group-hover/member:opacity-100 focus-visible:opacity-100',
+                    )}
+                  >
+                    {leading === m.session || (lead && leading === '-') ? <Loader2Icon className="animate-spin" /> : <CrownIcon className={cn(lead && 'fill-current')} />}
+                  </Button>
+                ) : (
+                  <span aria-hidden className="size-9 shrink-0" />
+                )}
               </li>
             )
           })}

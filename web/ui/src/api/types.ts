@@ -173,6 +173,8 @@ export interface StackRef {
   label: string
   /** The stack's home host (where its StackBrief lives); older servers omit it (= the session's host). */
   host?: string
+  /** The lead (orchestrator) member's session id; null / absent = no lead. */
+  lead?: string | null
 }
 
 /** `context` on a session row — see docs/architecture.md → "Context usage". */
@@ -800,6 +802,10 @@ export interface StackView {
   contextLine: string
   /** The same for a sibling on another host (`fleet -H <home> stack …`); older CLIs omit it. */
   remoteContextLine?: string
+  /** The lead (orchestrator) member's session id; null / absent = no lead. */
+  lead?: string | null
+  /** What a sibling is told about the lead after the context line (`stacks.siblingReports` on); null = nothing. */
+  leadLine?: string | null
   members: StackMember[]
   /** The whole file, frontmatter included (what the editor edits). */
   markdown: string
@@ -808,6 +814,22 @@ export interface StackView {
   parsed: { summary: string; resources: BriefResource[]; notes: string }
   /** Open the stack's directory in the editor; null / absent = hide the button. */
   editorUrl?: string | null
+}
+
+/** POST …/stacks/:id/lead → the StackView plus whether the lead was told. */
+export interface StackLeadResponse extends StackView {
+  sent?: boolean
+  warning?: string | null
+}
+
+/** GET/PUT /api/hosts/:host/stacks/settings — a prompt `null` = its default. */
+export interface StackSettings {
+  host: string
+  leadPrompt: string | null
+  leadPromptDefault: string
+  siblingReports: boolean
+  reportPrompt: string | null
+  reportPromptDefault: string
 }
 
 /** GET /api/hosts/:host/stacks */

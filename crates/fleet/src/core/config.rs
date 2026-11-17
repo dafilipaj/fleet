@@ -217,11 +217,37 @@ pub struct StacksConfig {
     pub enabled: Option<bool>,
     /// Model passed to `claude -p --model` (default `sonnet`).
     pub model: Option<String>,
+    /// What a session is told when it is made a stack's lead (`fleet stack lead`); empty/absent =
+    /// `core::stack::DEFAULT_LEAD_PROMPT`.
+    pub lead_prompt: Option<String>,
+    /// Siblings spawned into a stack with a lead are told to report to it (default off).
+    pub sibling_reports: Option<bool>,
+    /// That instruction; empty/absent = `core::stack::DEFAULT_REPORT_PROMPT`.
+    pub report_prompt: Option<String>,
 }
 
 impl StacksConfig {
     pub fn enabled(&self) -> bool {
         self.enabled.unwrap_or(true)
+    }
+    pub fn lead_prompt(&self) -> String {
+        self.lead_prompt
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .unwrap_or(crate::core::stack::DEFAULT_LEAD_PROMPT)
+            .to_string()
+    }
+    /// The sibling report template, `None` while `siblingReports` is off.
+    pub fn report_prompt(&self) -> Option<String> {
+        self.sibling_reports.unwrap_or(false).then(|| {
+            self.report_prompt
+                .as_deref()
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+                .unwrap_or(crate::core::stack::DEFAULT_REPORT_PROMPT)
+                .to_string()
+        })
     }
     pub fn model(&self) -> String {
         self.model

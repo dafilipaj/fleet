@@ -46,6 +46,8 @@ struct Ctx {
     /// Hosts whose sessions `rows` lists in full: this machine, plus every host an `--input`
     /// answered for. Members of other hosts are never judged.
     hosts_ok: HashSet<String>,
+    /// The sibling report template (`stacks.siblingReports` on), else `None`.
+    report: Option<String>,
 }
 
 impl Ctx {
@@ -97,6 +99,7 @@ impl Ctx {
             me,
             label,
             hosts_ok,
+            report: config::get().stacks.report_prompt(),
         })
     }
 
@@ -158,8 +161,18 @@ impl Ctx {
                 obs: &self.obs(),
                 paths: &self.paths,
                 path: &path,
+                report: self.report.as_deref(),
             },
         )
+    }
+
+    /// The context line plus — the stack has a lead and `stacks.siblingReports` is on — the
+    /// sentence telling a sibling to report to it.
+    fn with_report(&self, s: &Stack, line: String) -> String {
+        match stack::report_line(self.report.as_deref(), s, &self.path_of(s), &self.me) {
+            Some(r) => format!("{line} {r}"),
+            None => line,
+        }
     }
 
     fn resolve(&self, q: &str) -> Result<Stack> {
@@ -281,9 +294,18 @@ pub fn list(json: bool) -> Result<()> {
     c.sync()?;
     let stacks = c.stacks();
     if json {
+        let cfg = &config::get().stacks;
         return print_json(&json!({
             "host": c.label,
             "stacks": stacks.iter().map(|s| c.view(s)).collect::<Vec<_>>(),
+            // What Settings → Session stacks edits (`null` = the default below).
+            "settings": {
+                "leadPrompt": cfg.lead_prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()),
+                "leadPromptDefault": stack::DEFAULT_LEAD_PROMPT,
+                "siblingReports": cfg.sibling_reports.unwrap_or(false),
+                "reportPrompt": cfg.report_prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()),
+                "reportPromptDefault": stack::DEFAULT_REPORT_PROMPT,
+            },
         }));
     }
     if stacks.is_empty() {
@@ -626,42 +648,7 @@ pub fn remove(q: &str, target: &str, json: bool) -> Result<()> {
     let c = Ctx::new()?;
     c.sync()?;
     let mut st = c.resolve(q)?;
-    let t = target.trim().to_lowercase();
-    let by_id: Vec<String> = st
-        .members
-        .iter()
-        .filter(|m| {
-            let id = m.session.to_lowercase();
-            id == t || (t.len() >= 4 && id.starts_with(&t))
-        })
-        .map(|m| m.session.clone())
-        .collect();
-    let sid = match by_id.len() {
-        1 => by_id[0].clone(),
-        n if n > 1 => {
-            return Err(Error::exit(
-                EXIT_AMBIGUOUS,
-                format!(
-                    "\"{target}\" matches {n} members: {} — be more specific",
-                    by_id.join(", ")
-                ),
-            ));
-        }
-        _ => {
-            let by_name: Vec<String> = st
-                .members
-                .iter()
-                .filter(|m| m.name.as_deref().is_some_and(|n| n.to_lowercase() == t))
-                .map(|m| m.session.clone())
-                .collect();
-            if by_name.len() == 1 {
-                by_name[0].clone()
-            } else {
-                let s = c.session(target)?;
-                s.session_id.unwrap_or_default()
-            }
-        }
-    };
+    let sid = member_of(&c, &st, target)?;
     let Some(pos) = st.members.iter().position(|m| m.session == sid) else {
         return Err(Error::exit(
             EXIT_NOTHING,
@@ -673,6 +660,9 @@ pub fn remove(q: &str, target: &str, json: bool) -> Result<()> {
         ));
     };
     let gone = st.members.remove(pos);
+    if st.meta_str("lead").as_deref() == Some(gone.session.as_str()) {
+        st.set_lead(None);
+    }
     c.save(&mut st)?;
     if json {
         return print_json(&c.view(&st));
@@ -682,6 +672,146 @@ pub fn remove(q: &str, target: &str, json: bool) -> Result<()> {
         gone.name.unwrap_or(gone.session).bold(),
         st.label().bold(),
         counts(&st)
+    );
+    Ok(())
+}
+
+/// A member of `st` named by `target`: a (prefix of a) session id or a member's name, else a
+/// live session of this host. Exit 2 with the candidates when ambiguous.
+fn member_of(c: &Ctx, st: &Stack, target: &str) -> Result<String> {
+    let t = target.trim().to_lowercase();
+    let by_id: Vec<String> = st
+        .members
+        .iter()
+        .filter(|m| {
+            let id = m.session.to_lowercase();
+            id == t || (t.len() >= 4 && id.starts_with(&t))
+        })
+        .map(|m| m.session.clone())
+        .collect();
+    match by_id.len() {
+        1 => return Ok(by_id[0].clone()),
+        n if n > 1 => {
+            return Err(Error::exit(
+                EXIT_AMBIGUOUS,
+                format!(
+                    "\"{target}\" matches {n} members: {} — be more specific",
+                    by_id.join(", ")
+                ),
+            ));
+        }
+        _ => {}
+    }
+    let by_name: Vec<String> = st
+        .members
+        .iter()
+        .filter(|m| m.name.as_deref().is_some_and(|n| n.to_lowercase() == t))
+        .map(|m| m.session.clone())
+        .collect();
+    if by_name.len() == 1 {
+        return Ok(by_name[0].clone());
+    }
+    Ok(c.session(target)?.session_id.unwrap_or_default())
+}
+
+/// Type `text` into the member `m` of `st` (on this host, or over ssh on its own).
+fn send_to_member(c: &Ctx, st: &Stack, m: &stack::Member, text: &str) -> Result<()> {
+    let host = st.member_host(m, &c.me);
+    if c.is_me(&host) {
+        let s = c.session(&m.session)?;
+        return backend::send(&s, text);
+    }
+    let r = remote_of(&host)?;
+    let got = hosts::capture_remote(
+        &r,
+        &["send".into(), m.session.clone(), text.to_string()],
+        hosts::remote_timeout(),
+    )?;
+    if !got.ok() {
+        return Err(Error::Other(format!("{}: {}", r.name, got.why(&r))));
+    }
+    Ok(())
+}
+
+/// `fleet stack lead <stack> [<session>] [--clear] [--quiet]`: make a live member the stack's
+/// lead (orchestrator) and tell it so (config `stacks.leadPrompt`), or clear the lead. With no
+/// session: print the lead.
+pub fn lead(q: &str, target: Option<&str>, clear: bool, quiet: bool, json: bool) -> Result<()> {
+    let c = Ctx::new()?;
+    c.sync()?;
+    let mut st = c.resolve(q)?;
+    if clear {
+        if st.set_lead(None) {
+            c.save(&mut st)?;
+        }
+        if json {
+            return print_json(&c.view(&st));
+        }
+        println!("stack {} has no lead now", st.label().bold());
+        return Ok(());
+    }
+    let Some(target) = target.map(str::trim).filter(|t| !t.is_empty()) else {
+        if json {
+            return print_json(&c.view(&st));
+        }
+        match st.lead() {
+            Some(m) => println!(
+                "{} ({})",
+                m.name.clone().unwrap_or_else(|| m.session.clone()).bold(),
+                m.session
+            ),
+            None => println!("stack {} has no lead", st.label().bold()),
+        }
+        return Ok(());
+    };
+    let sid = member_of(&c, &st, target)?;
+    let Some(m) = st.member(&sid).cloned() else {
+        return Err(Error::exit(
+            EXIT_NOTHING,
+            format!(
+                "{target} is not a member of stack {} ({}) — add it first: fleet stack add {} {target}",
+                st.label(),
+                st.id(),
+                st.id()
+            ),
+        ));
+    };
+    if !m.is_live() {
+        return Err(Error::exit(
+            EXIT_NOTHING,
+            format!("{} is closed — only a live member can lead", m.short_name()),
+        ));
+    }
+    st.set_lead(Some(&sid));
+    c.save(&mut st)?;
+    let mut sent = false;
+    let mut warning = None;
+    if !quiet && !hosts::dry_run() {
+        let text = stack::lead_message(
+            &config::get().stacks.lead_prompt(),
+            &st,
+            &c.path_of(&st),
+            &c.me,
+        );
+        match send_to_member(&c, &st, &m, &text) {
+            Ok(()) => sent = true,
+            Err(e) => warning = Some(format!("lead set, but the message was not sent: {e}")),
+        }
+    }
+    if json {
+        return print_json(&with(
+            c.view(&st),
+            json!({ "sent": sent, "warning": warning }),
+        ));
+    }
+    if let Some(w) = &warning {
+        eprintln!("{}", w.yellow());
+    }
+    println!(
+        "{} leads stack {}{}",
+        m.short_name().bold(),
+        st.label().bold(),
+        if sent { " — told it so" } else { "" }
     );
     Ok(())
 }
@@ -1009,7 +1139,8 @@ pub fn spawn(a: SpawnArgs) -> Result<()> {
     let e = ensure_for(&c, &src, a.label.as_deref(), a.no_llm)?;
     let id = e.stack.id();
     let path = c.path_of(&e.stack);
-    let text = stack::stack_prompt(&path, a.prompt.as_deref().unwrap_or_default());
+    let line = c.with_report(&e.stack, stack::context_line(&path));
+    let text = stack::prompt_after(&line, a.prompt.as_deref().unwrap_or_default());
     let hex = id.trim_start_matches("st-");
     let prompt_file = commands::handoff_dir().join(format!(
         "{}-stack-{hex}.md",
@@ -1471,7 +1602,10 @@ fn spawn_on(c: &Ctx, src: &Session, host: &str, a: SpawnArgs) -> Result<()> {
         .flatten();
     let e = ensure_for(c, src, a.label.as_deref(), a.no_llm)?;
     let id = e.stack.id();
-    let line = stack::remote_context_line(&id, &e.stack.home(&c.me));
+    let line = c.with_report(
+        &e.stack,
+        stack::remote_context_line(&id, &e.stack.home(&c.me)),
+    );
     let text = stack::prompt_after(&line, a.prompt.as_deref().unwrap_or_default());
     let mut args: Vec<String> = vec!["spawn".into(), "--dir".into(), dir.clone()];
     if let Some(n) = &name {

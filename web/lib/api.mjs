@@ -102,8 +102,8 @@ const MEMO_FINISH_ROUTE = /^\/api\/memos\/recordings\/([^/]+)\/finish$/;
 const MEMO_ROUTE = /^\/api\/memos\/([^/]+)(\/retry)?$/;
 const NOTES_ROUTE = /^\/api\/hosts\/([^/]+)\/notes\/(tree|search|file|raw)$/;
 const SPAWN_DIRS_ROUTE = /^\/api\/hosts\/([^/]+)\/spawn-dirs$/;
-const STACKS_ROUTE = /^\/api\/hosts\/([^/]+)\/stacks(\/sync)?$/;
-const STACK_ROUTE = /^\/api\/hosts\/([^/]+)\/stacks\/([^/]+)(\/spawn|\/rename|\/add)?$/;
+const STACKS_ROUTE = /^\/api\/hosts\/([^/]+)\/stacks(\/sync|\/settings)?$/;
+const STACK_ROUTE = /^\/api\/hosts\/([^/]+)\/stacks\/([^/]+)(\/spawn|\/rename|\/add|\/lead)?$/;
 const SESSION_STACK_SPAWN_ROUTE = /^\/api\/hosts\/([^/]+)\/sessions\/([^/]+)\/stack\/(spawn|link)$/;
 /** A sibling spawn may create a stack first (`stack ensure` → one model call, ≤ 150 s). */
 const STACK_SPAWN_PROXY_MS = 180 * 1000;
@@ -1755,10 +1755,14 @@ export function createApi({
 
     const sl = STACKS_ROUTE.exec(url.pathname);
     if (sl) {
-      const [, rawHost, sync] = sl;
-      if (req.method !== (sync ? 'POST' : 'GET')) throw new HttpError('method not allowed', 405);
+      const [, rawHost, sub] = sl;
       const host = decodeURIComponent(rawHost);
-      const r = await forHost({ req, url, host, local: () => localStacks({ action: sync ? 'sync' : 'list', req }) });
+      if (sub === '/settings') {
+        if (!['GET', 'PUT'].includes(req.method)) throw new HttpError('method not allowed', 405);
+        return forHost({ req, url, host, local: () => localStackSettings(req) });
+      }
+      if (req.method !== (sub ? 'POST' : 'GET')) throw new HttpError('method not allowed', 405);
+      const r = await forHost({ req, url, host, local: () => localStacks({ action: sub ? 'sync' : 'list', req }) });
       return r.status === 200 ? { ...r, body: withStacksEditor(r.body, host, editorViewer(config, req)) } : r;
     }
 
@@ -1771,7 +1775,7 @@ export function createApi({
       const id = decodeURIComponent(rawId);
       if (!STACK_ID_RE.test(id)) throw new HttpError(`invalid stack id: ${id}`, 400);
       const host = decodeURIComponent(rawHost);
-      const action = spawn ? 'spawn' : sub === '/rename' ? 'rename' : sub === '/add' ? 'add' : req.method;
+      const action = spawn ? 'spawn' : sub === '/rename' ? 'rename' : sub === '/add' ? 'add' : sub === '/lead' ? 'lead' : req.method;
       const r = await forHost({
         req,
         url,
@@ -2381,6 +2385,15 @@ export function createApi({
       refreshFleet();
       return { status: 200, body };
     }
+    if (action === 'lead') {
+      // `{ session: <member session id> | null, quiet? }`: that member leads (and is told so), or none.
+      const body = await readJsonBody(req);
+      const session = body?.session ?? null;
+      if (session !== null && (typeof session !== 'string' || !SESSION_ID_RE.test(session))) throw new HttpError('session must be a session id or null', 400);
+      const out = await stacks.lead(id, session, { quiet: body?.quiet === true });
+      refreshFleet(); // the lead goes first in its stack's group
+      return { status: 200, body: out };
+    }
     if (action === 'rename') {
       const label = validateStackLabel((await readJsonBody(req))?.label);
       if (!label) throw new HttpError('label must be one non-empty line', 400);
@@ -2398,6 +2411,43 @@ export function createApi({
       if (err?.status === 409 && err.body) return { status: 409, body: err.body };
       throw err;
     }
+  }
+
+  /**
+   * Settings → Session stacks, this host's (`stacks.*` in its config, read by the CLI on every
+   * run): GET `{ host, leadPrompt, leadPromptDefault, siblingReports, reportPrompt,
+   * reportPromptDefault }` (a prompt `null` = its default); PUT any of `leadPrompt`,
+   * `siblingReports`, `reportPrompt` (`null` / `""` = back to the default) → the same.
+   */
+  async function localStackSettings(req) {
+    if (!stacks) throw new HttpError('session stacks are not available on this server', 501);
+    if (req.method === 'PUT') {
+      const body = await readJsonBody(req, STACK_BODY_LIMIT);
+      if (!body || typeof body !== 'object') throw new HttpError('body must be an object', 400);
+      const writes = [];
+      for (const key of ['leadPrompt', 'reportPrompt']) {
+        if (!(key in body)) continue;
+        const v = body[key];
+        if (v !== null && typeof v !== 'string') throw new HttpError(`${key} must be a string or null`, 400);
+        const text = typeof v === 'string' ? v.trim() : '';
+        if (text.length > 8000) throw new HttpError(`${key} is too long (max 8000 characters)`, 400);
+        writes.push([key, text || null]);
+      }
+      if ('siblingReports' in body) {
+        if (typeof body.siblingReports !== 'boolean') throw new HttpError('siblingReports must be true or false', 400);
+        writes.push(['siblingReports', body.siblingReports]);
+      }
+      if (!writes.length) throw new HttpError('nothing to save: leadPrompt, siblingReports or reportPrompt', 400);
+      if (typeof cli?.configSet !== 'function') throw new HttpError('config writes are not available on this server', 501);
+      try {
+        for (const [key, value] of writes) await cli.configSet({ key: `stacks.${key}`, value, configFile: config.configFile ?? null });
+      } catch (err) {
+        throw new HttpError(`could not save stacks settings: ${err?.message ?? err}`, err?.timedOut ? 504 : 502);
+      }
+    }
+    const settings = await stacks.settings();
+    if (!settings) throw new HttpError('fleet stack list returned no settings — update fleet on this host', 502);
+    return { status: 200, body: { host: config.self, ...settings } };
   }
 
   /**
@@ -2451,7 +2501,9 @@ export function createApi({
 
     // Exactly `core::stack::stack_prompt`: the context line, a space, the trimmed prompt.
     const userPrompt = check.prompt.trim();
-    const line = remote ? stack.remoteContextLine : stack.contextLine;
+    // A stack with a lead and `stacks.siblingReports` on: `leadLine` tells the sibling to report to it.
+    const context = remote ? stack.remoteContextLine : stack.contextLine;
+    const line = typeof stack.leadLine === 'string' && stack.leadLine ? `${context} ${stack.leadLine}` : context;
     const prompt = userPrompt ? `${line} ${userPrompt}` : line;
     if (remote) {
       // The peer validates `dir` against its own spawn dirs and names / auto-names the session.

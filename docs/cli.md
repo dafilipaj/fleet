@@ -261,6 +261,15 @@ host (`--on`) cannot read that path and gets: `You're running in the session sta
 context: stack <id> on host <home>. Read it with \`fleet -H <home> stack show <id>\` and update it
 with \`fleet -H <home> stack set <id>\` (the whole markdown on stdin; …). <prompt>`.
 
+**The lead.** A stack may have one lead (orchestrator) session (`fleet stack lead`). With
+`stacks.siblingReports: true` (default off) a sibling spawned into a stack that has a lead gets
+one more sentence after its context line (`stacks.reportPrompt`, default
+`core::stack::DEFAULT_REPORT_PROMPT`): report to the lead with `fleet -H <its host> send <its id>`
+when a task is done, blocked or needs a decision. Both prompts take the placeholders `{label}`,
+`{id}`, `{home}`, `{context}` (the file's path, or how to reach it from a lead on another host),
+`{fleet}` (`fleet`, or `fleet -H <home>` for such a lead), `{lead}` (its short session id),
+`{leadName}` and `{leadHost}`; Settings → Session stacks edits them on every host.
+
 `<stack>` resolves: exact id (`st-1a2b3c4d` or `1a2b3c4d`) → label (exact, then case-insensitive
 prefix, then substring) → a member's session id (whole, or a prefix of ≥ 8) → a session target
 that is a member. Two hits on the same rung is an error listing the candidates (exit 2); no hit is
@@ -275,13 +284,14 @@ another host needs for its context line. The other forms need ssh. `--on <host>`
 
 | form | does |
 | --- | --- |
-| `fleet stack list [--json]` | the host's stacks (after a sync): label, id, live/closed counts, cwd, updated. `--json`: `{ host, stacks: [StackView…] }` |
+| `fleet stack list [--json]` | the host's stacks (after a sync): label, id, live/closed counts, cwd, updated. `--json`: `{ host, stacks: [StackView…], settings: { leadPrompt, leadPromptDefault, siblingReports, reportPrompt, reportPromptDefault } }` (a prompt `null` = its default) |
 | `fleet stack show <stack> [--json \| --path]` | the StackBrief body (no frontmatter); `--json` the StackView; `--path` only the file path |
 | `fleet stack new --from <target> [--label <l>] [--no-llm] [--json]` | create a stack around a live session (error if it is in one already — says which). The model writes Summary / Resources and a label (unless `--label`); `--no-llm`, `FLEET_FIXTURE`, `stacks.enabled: false` or a failing call give the skeleton (Summary "Started from <title> in <cwd>.", Resources = the Git line + Folder) — a failed call never blocks the stack: `generated: false` and a `warning` |
 | `fleet stack ensure <target> [--label] [--no-llm] [--json]` | the session's stack, created like `new` when it has none |
 | `fleet stack spawn <target> [prompt] [--harness] [--name] [--model] [--dir] [--backend iterm\|tmux] [--tmux-session <s>] [--window] [--on <host>] [--no-wait] [--label] [--no-llm] [--json]` | a sibling: `ensure` on `<target>`, then a new session on this host in `<target>`'s cwd (`--dir` overrides) whose first prompt is the context line + `prompt`, always through a prompt file `~/.claude/fleet-handoffs/<stamp>-stack-<hex>.md`; then waits (≤ 75 s) for it to register and adds it. `--on <host>`: the session starts on that host instead — `fleet --local spawn` there over ssh, in `--dir` (a path there; default `<target>`'s cwd as `~/…`, the same place on that machine) with the remote context line + `prompt` as the argument; it then waits for it in that host's `fleet list` and adds it as a member of that host (`spawned.host`, `session.host` in `--json`). `--no-wait` skips the waiting and prints the `fleet stack add` to run later. `-n` / `FLEET_DRY_RUN` prints the launch line (the ssh line with `--on`) and the prompt and writes nothing (not even a new stack). Starts an agent — confirm like `spawn` |
 | `fleet stack add <stack> <target> [--on <host>] [--input <src>] [--json]` | add a live session (refused when it is live in another stack of this host). `--on <host>`: a session running on that host — `<target>` is resolved among its rows, from `fleet list --json` over ssh, or from `--input` (`-` = stdin: a `list --json` array or an `/api/fleet` body carrying that host; what the web server passes, so it never needs ssh). Naming this machine is the plain form |
 | `fleet stack remove <stack> <target\|session_id> [--json]` | drop a member (a gone one by its session id or a prefix of ≥ 4, or its name); removing the last leaves an empty stack (the file stays) |
+| `fleet stack lead <stack> [<target\|session_id>] [--clear] [--quiet] [--json]` | the stack's **lead** (orchestrator): a live member becomes it (frontmatter `lead`; one per stack) and is sent the lead prompt (`stacks.leadPrompt`, default `core::stack::DEFAULT_LEAD_PROMPT`: follow the other sessions, delegate to them, keep the stack's plan and progress in the StackBrief) — typed into it like `send`, over ssh for a member on another host; `--quiet` sends nothing. A failed send still sets the lead (`sent: false` and a `warning` in `--json`). `--clear`: no lead. No session: print the lead. Removing the lead member clears it. The lead is listed first in its stack's group in the web UI and marked `, lead` in `## Sessions`. `--json`: the StackView + `sent`, `warning` |
 | `fleet stack rename <stack> <label> [--json]` | rename the stack: the label (one line, ≤ 80 chars, cleaned like `--label`) in the frontmatter, the header line follows; `editedAt` stamped. `--json`: the StackView |
 | `fleet stack edit <stack>` | the body in `$VISUAL` / `$EDITOR`, saved as a human edit (with `--expect-updated` semantics; on another host fetched with `stack show --json` and written back with `stack set`) |
 | `fleet stack set <stack> [--expect-updated <iso>] [--json]` | the markdown on stdin, saved as a human edit: authoritative for everything but the header and `## Sessions` (regenerated); the stored machine keys stay; a `label:` in its frontmatter renames the stack; `editedAt` stamped. A stale `--expect-updated` is exit 3, nothing written (with `--json` stdout still carries `{ error, id, updated }`, the stored timestamp) |

@@ -123,6 +123,7 @@ export function compactStack(view) {
     id: view.id,
     label: typeof view.label === 'string' ? view.label : view.id,
     host: typeof view.host === 'string' ? view.host : null,
+    lead: typeof view.lead === 'string' ? view.lead : null,
     members: (Array.isArray(view.members) ? view.members : [])
       .filter((m) => m && typeof m.session === 'string')
       .map((m) => ({ session: m.session, host: typeof m.host === 'string' ? m.host : null, live: typeof m.live === 'boolean' ? m.live : m.closed == null })),
@@ -130,7 +131,7 @@ export function compactStack(view) {
 }
 
 /**
- * Stamp `stack: { id, label, host }` on the rows of sessions that are live members of a stack
+ * Stamp `stack: { id, label, host, lead }` on the rows of sessions that are live members of a stack
  * homed on another host (each host's `stacks[]` names its own stacks and their members' hosts).
  * A row's own `stack` (its host's file) wins. Pure: a new `hosts` array, rows copied as needed.
  */
@@ -142,7 +143,7 @@ export function stampForeign(hosts) {
     if (!home || !Array.isArray(home.stacks)) continue;
     for (const st of home.stacks) {
       if (!st || typeof st.id !== 'string' || !Array.isArray(st.members)) continue;
-      const ref = { id: st.id, label: typeof st.label === 'string' ? st.label : st.id, host: home.name };
+      const ref = { id: st.id, label: typeof st.label === 'string' ? st.label : st.id, host: home.name, lead: typeof st.lead === 'string' ? st.lead : null };
       for (const m of st.members) {
         if (!m || typeof m.session !== 'string' || !m.host || m.host === home.name || m.live === false) continue;
         const entry = byName.get(m.host);
@@ -365,6 +366,13 @@ export function createStacks({
         return r;
       }),
     rename: (id, label) => call('fleet stack rename', async () => remember(await cli.stackRename(id, label))),
+    lead: (id, session, opts) => call('fleet stack lead', async () => remember(await cli.stackLead(id, session, opts))),
+    /** Settings → Session stacks: the lead / report prompts (`fleet stack list --json` → `settings`). */
+    settings: () => call('fleet stack list', async () => {
+      const out = await cli.stackList();
+      rememberAll(out);
+      return out?.settings ?? null;
+    }),
     ensure: (sessionId, opts) => call('fleet stack ensure', async () => rememberEnsured(await cli.stackEnsure(sessionId, opts))),
     /**
      * Add an existing live session to a stack: this host's (`host` absent / self) or a peer's,

@@ -43,9 +43,10 @@ const LABEL_CAP: usize = 80;
 const HEADER_MARK: &str = "Shared context for the session stack";
 
 /// Frontmatter keys in the order they are written; unknown keys follow, as found.
-const META_ORDER: [&str; 9] = [
+const META_ORDER: [&str; 10] = [
     "stack",
     "label",
+    "lead",
     "host",
     "cwd",
     "created",
@@ -55,8 +56,9 @@ const META_ORDER: [&str; 9] = [
     "members",
 ];
 /// Keys a human edit never changes: the stored file's win.
-const MACHINE_KEYS: [&str; 8] = [
+const MACHINE_KEYS: [&str; 9] = [
     "stack",
+    "lead",
     "host",
     "cwd",
     "created",
@@ -206,6 +208,9 @@ pub struct StackRef {
     /// The stack's home host: where its file is (frontmatter `host`).
     #[serde(default)]
     pub host: String,
+    /// The lead (orchestrator) member's session id, when the stack has one (frontmatter `lead`).
+    #[serde(default)]
+    pub lead: Option<String>,
 }
 
 /// One entry of the frontmatter `members` array.
@@ -243,6 +248,14 @@ impl Member {
     }
     fn short(&self) -> String {
         self.session.chars().take(8).collect()
+    }
+    /// The display name at the last sync, else the short session id.
+    pub fn short_name(&self) -> String {
+        self.name
+            .as_deref()
+            .map(brief::one_line)
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| self.short())
     }
 }
 
@@ -286,7 +299,26 @@ impl Stack {
             id: self.id(),
             label: self.label(),
             host: self.home(local),
+            lead: self.lead().map(|m| m.session.clone()),
         }
+    }
+    /// The lead (orchestrator) member: frontmatter `lead`, when it names a member.
+    pub fn lead(&self) -> Option<&Member> {
+        let id = self.meta_str("lead")?;
+        self.member(&id)
+    }
+    /// Make `session_id` the lead (`None` clears it). → whether anything changed.
+    pub fn set_lead(&mut self, session_id: Option<&str>) -> bool {
+        let before = self.meta_str("lead");
+        match session_id {
+            Some(id) => {
+                self.meta.insert("lead".into(), Value::String(id.into()));
+            }
+            None => {
+                self.meta.remove("lead");
+            }
+        }
+        before.as_deref() != session_id
     }
     pub fn member(&self, session_id: &str) -> Option<&Member> {
         self.members.iter().find(|m| m.session == session_id)
@@ -513,6 +545,7 @@ pub fn sessions_section(stack: &Stack, paths: &Paths) -> String {
     }
     let stack_cwd = stack.meta_str("cwd");
     let home = stack.home("");
+    let lead = stack.lead().map(|m| m.session.clone());
     let mut out = Vec::new();
     for m in &stack.members {
         let name = m
@@ -528,6 +561,9 @@ pub fn sessions_section(stack: &Stack, paths: &Paths) -> String {
         let host = stack.member_host(m, &home);
         if host != home {
             state.push_str(&format!(", on {host}"));
+        }
+        if lead.as_deref() == Some(m.session.as_str()) {
+            state.push_str(", lead");
         }
         let mut parts = Vec::new();
         if let Some(a) = &m.added {
@@ -1067,6 +1103,83 @@ pub fn stack_prompt(path: &Path, prompt: &str) -> String {
     prompt_after(&context_line(path), prompt)
 }
 
+// ------------------------------------------------------------------ the lead
+
+/// What the lead (orchestrator) session is told when it is made the lead (config
+/// `stacks.leadPrompt` replaces it). Placeholders: see [`fill`].
+pub const DEFAULT_LEAD_PROMPT: &str = "You are now the lead (orchestrator) session of the session \
+stack \"{label}\" ({id}); its shared context: {context}. Your job: follow the other Fleet sessions in \
+this stack, delegate tasks to them and organise the work of the whole stack. `{fleet} stack show {id}` \
+lists the members; `fleet peek <session>` shows what one is doing and `fleet send <session> \"…\"` \
+gives it work (add `-H <host>` for a member on another host); `{fleet} stack spawn {lead} \"<prompt>\"` \
+starts a new sibling. Keep the plan and the progress of the whole stack current in the Summary and \
+Notes of the stack file.";
+
+/// The sentence a sibling spawned into a stack with a lead gets after the context line, when
+/// config `stacks.siblingReports` is on (`stacks.reportPrompt` replaces it). Placeholders: see [`fill`].
+pub const DEFAULT_REPORT_PROMPT: &str = "The stack's lead session, {leadName} ({lead} on {leadHost}), \
+orchestrates the stack: report to it with `fleet -H {leadHost} send {lead} \"<one or two lines>\"` when \
+you finish a task, get blocked or need a decision.";
+
+/// Fill a lead / report template: `{label}`, `{id}`, `{home}` (the stack's home host),
+/// `{context}` (the stack file's path — or, for a lead on another host, how to reach it),
+/// `{fleet}` (`fleet`, or `fleet -H <home>` for a lead on another host), `{lead}` (the lead's
+/// short session id), `{leadName}`, `{leadHost}`. Unknown placeholders are left as they are.
+pub fn fill(template: &str, stack: &Stack, path: &Path, local: &str) -> String {
+    let home = stack.home(local);
+    let lead = stack.lead();
+    let lead_host = lead
+        .map(|m| stack.member_host(m, &home))
+        .unwrap_or_else(|| home.clone());
+    let away = lead_host != home;
+    let context = if away {
+        format!(
+            "stack {} on host {home} (`fleet -H {home} stack show {}`)",
+            stack.id(),
+            stack.id()
+        )
+    } else {
+        path.display().to_string()
+    };
+    let fleet = if away {
+        format!("fleet -H {home}")
+    } else {
+        "fleet".to_string()
+    };
+    let short = lead.map(Member::short).unwrap_or_default();
+    let name = lead
+        .and_then(|m| m.name.as_deref())
+        .map(brief::one_line)
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| short.clone());
+    template
+        .replace("{label}", &stack.label())
+        .replace("{id}", &stack.id())
+        .replace("{home}", &home)
+        .replace("{context}", &context)
+        .replace("{fleet}", &fleet)
+        .replace("{leadName}", &name)
+        .replace("{leadHost}", &lead_host)
+        .replace("{lead}", &short)
+}
+
+/// The message the lead gets when it is made the lead.
+pub fn lead_message(template: &str, stack: &Stack, path: &Path, local: &str) -> String {
+    brief::one_line(&fill(template, stack, path, local))
+}
+
+/// The sentence after a sibling's context line: `None` without a lead or without a template.
+pub fn report_line(
+    template: Option<&str>,
+    stack: &Stack,
+    path: &Path,
+    local: &str,
+) -> Option<String> {
+    let t = template.map(str::trim).filter(|t| !t.is_empty())?;
+    stack.lead()?;
+    Some(brief::one_line(&fill(t, stack, path, local)))
+}
+
 // ------------------------------------------------------------------ the JSON view
 
 /// What `view` needs beyond the stack.
@@ -1078,6 +1191,8 @@ pub struct ViewCtx<'a> {
     pub paths: &'a Paths,
     /// The stack file.
     pub path: &'a Path,
+    /// The sibling report template (config `stacks.siblingReports` on), else `None`.
+    pub report: Option<&'a str>,
 }
 
 /// StackView: the `--json` shape of every `fleet stack` command (and the web API's). A member
@@ -1139,6 +1254,8 @@ pub fn view(stack: &Stack, c: &ViewCtx) -> Value {
         "editedAt": get("editedAt"),
         "contextLine": context_line(c.path),
         "remoteContextLine": remote_context_line(&stack.id(), &home),
+        "lead": stack.lead().map(|m| m.session.clone()),
+        "leadLine": report_line(c.report, stack, c.path, c.obs.local),
         "members": members,
         "markdown": serialize_stack(stack, c.paths),
         "body": serialize_body(stack, c.paths),
@@ -1710,6 +1827,7 @@ mod tests {
                 obs: &seen.obs(),
                 paths: &p,
                 path: &path,
+                report: None,
             },
         );
         assert_eq!(v["members"][0]["dormant"], false);
@@ -1724,6 +1842,7 @@ mod tests {
                 obs: &seen.obs(),
                 paths: &p,
                 path: &path,
+                report: None,
             },
         );
         assert_eq!(v["members"][1]["dormant"], false);
@@ -1757,6 +1876,7 @@ mod tests {
                 obs: &seen.obs(),
                 paths: &p,
                 path: &path,
+                report: None,
             },
         );
         assert_eq!(v["members"][1]["host"], "workstation");
@@ -1852,6 +1972,7 @@ mod tests {
                 id: "st-1a2b3c4d".into(),
                 label: "Login redirect fix".into(),
                 host: "laptop".into(),
+                lead: None,
             })
         );
         assert_eq!(rows[1].stack, None);
@@ -2036,5 +2157,74 @@ mod tests {
         );
         assert_eq!(clean_label(" ** "), None);
         assert!(file(d.path(), "../x").is_err());
+    }
+
+    #[test]
+    fn the_lead_round_trips_survives_edits_and_is_marked() {
+        let p = paths();
+        let mut s = sample();
+        let m2 = member_for(&row(SID2, "login-tests"), "laptop", LATER, &p).unwrap();
+        add_member(&mut s, m2);
+        assert!(s.lead().is_none());
+        assert!(s.set_lead(Some(SID2)));
+        assert!(!s.set_lead(Some(SID2)), "no change the second time");
+        let text = serialize_stack(&s, &p);
+        assert!(text.contains(&format!("lead: {SID2}")));
+        assert!(text.contains("(`bbbbbbbb`, live, lead)"));
+        let back = parse_stack(&text);
+        assert_eq!(back.lead().map(|m| m.session.as_str()), Some(SID2));
+        assert_eq!(back.stack_ref("laptop").lead.as_deref(), Some(SID2));
+        // A human edit never moves the lead.
+        let edited = human_edit(
+            &back,
+            &text.replace(&format!("lead: {SID2}"), &format!("lead: {SID}")),
+            LATER,
+        )
+        .unwrap();
+        assert_eq!(edited.lead().map(|m| m.session.as_str()), Some(SID2));
+        // A lead that is no member is no lead.
+        let mut odd = sample();
+        odd.meta.insert("lead".into(), Value::String(SID2.into()));
+        assert!(odd.lead().is_none());
+        assert!(s.set_lead(None));
+        assert!(s.lead().is_none());
+    }
+
+    #[test]
+    fn lead_and_report_prompts_fill_in_the_stack() {
+        let p = paths();
+        let mut s = sample();
+        let path = Path::new("/home/u/.local/state/fleet/stacks/st-1a2b3c4d.md");
+        assert_eq!(
+            report_line(Some(DEFAULT_REPORT_PROMPT), &s, path, "laptop"),
+            None,
+            "no lead"
+        );
+        s.set_lead(Some(SID));
+        let msg = lead_message(DEFAULT_LEAD_PROMPT, &s, path, "laptop");
+        assert!(
+            msg.contains("\"Login redirect fix\" (st-1a2b3c4d)"),
+            "{msg}"
+        );
+        assert!(msg.contains(&path.display().to_string()));
+        assert!(msg.contains("`fleet stack spawn aaaaaaaa"));
+        assert!(!msg.contains('\n'));
+        assert_eq!(report_line(None, &s, path, "laptop"), None, "reports off");
+        let r = report_line(Some(DEFAULT_REPORT_PROMPT), &s, path, "laptop").unwrap();
+        assert!(r.contains("login-redirect (aaaaaaaa on laptop)"), "{r}");
+        assert!(r.contains("`fleet -H laptop send aaaaaaaa"));
+        // A lead on another host than the stack's home reaches the file through -H.
+        s.members[0].host = Some("workstation".into());
+        let msg = lead_message(
+            "{context} | {fleet} | {leadHost} | {nope}",
+            &s,
+            path,
+            "laptop",
+        );
+        assert_eq!(
+            msg,
+            "stack st-1a2b3c4d on host laptop (`fleet -H laptop stack show st-1a2b3c4d`) | fleet -H laptop | workstation | {nope}"
+        );
+        let _ = p;
     }
 }

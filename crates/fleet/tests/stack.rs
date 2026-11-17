@@ -179,7 +179,7 @@ fn new_with_a_label_and_list_json_carries_stack() {
     };
     assert_eq!(
         by(A)["stack"],
-        json!({ "id": id, "label": "Login fix", "host": "laptop" })
+        json!({ "id": id, "label": "Login fix", "host": "laptop", "lead": null })
     );
     assert!(by(B).get("stack").unwrap().is_null(), "null, not missing");
     // Listing is read-only: nothing rewritten.
@@ -888,4 +888,74 @@ fn rename_changes_the_label_everywhere_and_refuses_an_empty_one() {
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(3));
+}
+
+#[test]
+fn lead_is_set_shown_reported_to_and_cleared() {
+    let t = T::new();
+    let st = t.json(&["stack", "ensure", A, "--no-llm", "--label", "One", "--json"]);
+    let id = st["id"].as_str().unwrap().to_string();
+    assert_eq!(st["lead"], Value::Null);
+    t.json(&["stack", "add", &id, "login-tests", "--json"]);
+    // --quiet: nothing is typed anywhere (no tmux in a test).
+    let v = t.json(&["stack", "lead", &id, "login-tests", "--quiet", "--json"]);
+    assert_eq!(v["lead"], B);
+    assert_eq!(v["sent"], false);
+    assert_eq!(
+        v["leadLine"],
+        Value::Null,
+        "siblingReports is off by default"
+    );
+    let rows = t.json(&["list", "--json"]);
+    let b = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["session_id"] == B)
+        .unwrap();
+    assert_eq!(b["stack"]["lead"], B);
+    let text = stdout(&t.cmd().args(["stack", "show", &id]).output().unwrap());
+    assert!(text.contains("(`bbbbbbbb`, live, lead)"), "{text}");
+    let out = t.cmd().args(["stack", "lead", &id]).output().unwrap();
+    assert!(stdout(&out).contains(B), "{}", stdout(&out));
+
+    // siblingReports on: the StackView and a sibling's first prompt carry the report line.
+    let mut cfg = t.env.read_config();
+    cfg["stacks"] =
+        json!({ "siblingReports": true, "reportPrompt": "Report to {leadName} ({lead})." });
+    t.env.write_config(&cfg);
+    let v = t.json(&["stack", "show", &id, "--json"]);
+    assert_eq!(v["leadLine"], "Report to login-tests (bbbbbbbb).");
+    let out = t
+        .cmd()
+        .env("FLEET_DRY_RUN", "1")
+        .args([
+            "stack",
+            "spawn",
+            "login-redirect",
+            "Go",
+            "--backend",
+            "tmux",
+            "--no-wait",
+            "--no-llm",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("Report to login-tests (bbbbbbbb). Go"),
+        "{}",
+        stdout(&out)
+    );
+
+    // A closed member can't lead; removing the lead clears it.
+    t.fleet(&[A]);
+    let out = t.cmd().args(["stack", "lead", &id, B]).output().unwrap();
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    let v = t.json(&["stack", "remove", &id, B, "--json"]);
+    assert_eq!(v["lead"], Value::Null);
+    let v = t.json(&["stack", "lead", &id, "login-redirect", "--quiet", "--json"]);
+    assert_eq!(v["lead"], A);
+    let v = t.json(&["stack", "lead", &id, "--clear", "--json"]);
+    assert_eq!(v["lead"], Value::Null);
 }

@@ -55,11 +55,16 @@ const cliError = (code, stderr, stdout = '') => Object.assign(new Error(stderr |
 function fakeHost(self, { dir }) {
   const calls = [];
   const view = stackView({ absCwd: dir, host: self });
+  const settings = { leadPrompt: null, leadPromptDefault: 'You lead {label}.', siblingReports: false, reportPrompt: null, reportPromptDefault: 'Report to {lead}.' };
   const sessions = [{ session_id: SRC_ID, name: 'login-redirect', status: 'idle', backend: 'tmux', handle: '%1', tmux_session: 'login', cwd: dir, updated_at: 1, stack: null }];
   let n = 0;
   const run = async (bin, args, opts = {}) => {
     calls.push({ args, opts });
     if (args[0] === 'list') return { stdout: JSON.stringify(sessions), stderr: '' };
+    if (args[1] === 'config') {
+      settings[args[3].replace(/^stacks\./, '')] = JSON.parse(args[4]);
+      return { stdout: '', stderr: '' };
+    }
     assert.deepEqual(args.slice(0, 2), ['--local', 'stack'], `unexpected fleet call ${args.join(' ')}`);
     assert.equal(args.at(-1), '--json');
     const [sub, ...rest] = args.slice(2, -1);
@@ -69,7 +74,11 @@ function fakeHost(self, { dir }) {
     };
     switch (sub) {
       case 'list':
-        return out({ host: self, stacks: [view] });
+        return out({ host: self, stacks: [view], settings });
+      case 'lead':
+        known(rest[0]);
+        assert.equal(opts.timeout, 30 * 1000);
+        return out({ ...view, lead: rest[1] === '--clear' ? null : rest[1], sent: rest[1] !== '--clear' && !rest.includes('--quiet') });
       case 'show':
         known(rest[0]);
         return out(view);
@@ -390,7 +399,7 @@ test('compactStack and stampForeign: members of a stack homed elsewhere get `sta
     { session: 'c1', host: 'office', closed: null, live: true },
   ] };
   const c = compactStack(view);
-  assert.deepEqual(c, { id: STACK_ID, label: 'Login redirect fix', host: 'laptop', members: [
+  assert.deepEqual(c, { id: STACK_ID, label: 'Login redirect fix', host: 'laptop', lead: null, members: [
     { session: 'a1', host: 'laptop', live: true },
     { session: 'b1', host: 'workstation', live: true },
     { session: 'b2', host: 'workstation', live: false },
@@ -407,7 +416,9 @@ test('compactStack and stampForeign: members of a stack homed elsewhere get `sta
     { name: 'office', ok: false, error: 'unreachable', sessions: [] },
   ];
   const out = stampForeign(hosts);
-  assert.deepEqual(out[1].sessions[0].stack, { id: STACK_ID, label: 'Login redirect fix', host: 'laptop' });
+  assert.deepEqual(out[1].sessions[0].stack, { id: STACK_ID, label: 'Login redirect fix', host: 'laptop', lead: null });
+  const led = stampForeign([{ ...hosts[0], stacks: [{ ...c, lead: 'b1' }] }, hosts[1]]);
+  assert.equal(led[1].sessions[0].stack.lead, 'b1', 'the lead travels with the stamped ref');
   assert.equal(out[1].sessions[1].stack, null, 'a closed member is not stamped');
   assert.deepEqual(out[1].sessions[2].stack, { id: 'st-99999999', label: 'Own', host: 'workstation' });
   assert.deepEqual(out[0].sessions[0].stack, { id: STACK_ID, label: 'Login redirect fix', host: 'laptop' }, "the row's own stack wins");
@@ -714,7 +725,7 @@ test('a sibling on another host: the peer spawns it with the remote context line
     const fleet = (await json('GET', `${urls[name]}/api/fleet`)).body;
     const ws = fleet.hosts.find((h) => h.name === 'workstation');
     const row = ws.sessions.find((s) => s.session_id === joined.session);
-    assert.deepEqual(row.stack, { id: STACK_ID, label: 'Login redirect fix', host: 'laptop' }, `${name}'s view`);
+    assert.deepEqual(row.stack, { id: STACK_ID, label: 'Login redirect fix', host: 'laptop', lead: null }, `${name}'s view`);
     const lp = fleet.hosts.find((h) => h.name === 'laptop');
     assert.equal(lp.stacks.find((s) => s.id === STACK_ID).members.some((m) => m.session === joined.session && m.host === 'workstation'), true);
   }
@@ -723,4 +734,48 @@ test('a sibling on another host: the peer spawns it with the remote context line
   const sync = hosts.laptop.calls.filter((c) => c.args?.[2] === 'sync').at(-1);
   assert.deepEqual(sync.args.slice(2, -1), ['sync', '--input', '-']);
   assert.deepEqual(JSON.parse(sync.opts.input).hosts.map((h) => h.name), ['laptop', 'workstation']);
+});
+
+test('POST stacks/:id/lead: a member leads (told unless quiet), null clears; bad session → 400', async (t) => {
+  const { call, host } = solo(t);
+  const ok = await call('POST', `/api/hosts/laptop/stacks/${STACK_ID}/lead`, { session: SRC_ID });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.lead, SRC_ID);
+  assert.equal(ok.body.sent, true);
+  assert.deepEqual(host.stackCalls().at(-1), ['lead', STACK_ID, SRC_ID]);
+  await call('POST', `/api/hosts/laptop/stacks/${STACK_ID}/lead`, { session: SRC_ID, quiet: true });
+  assert.deepEqual(host.stackCalls().at(-1), ['lead', STACK_ID, SRC_ID, '--quiet']);
+  const cleared = await call('POST', `/api/hosts/laptop/stacks/${STACK_ID}/lead`, { session: null });
+  assert.equal(cleared.body.lead, null);
+  assert.deepEqual(host.stackCalls().at(-1), ['lead', STACK_ID, '--clear']);
+  for (const body of [{ session: 42 }, { session: '-x' }, { session: 'a b' }]) {
+    assert.equal((await call('POST', `/api/hosts/laptop/stacks/${STACK_ID}/lead`, body)).status, 400, JSON.stringify(body));
+  }
+  assert.equal((await call('GET', `/api/hosts/laptop/stacks/${STACK_ID}/lead`)).status, 405);
+});
+
+test('stacks/settings: GET from `stack list --json`; PUT writes stacks.* through `config set`, "" → null', async (t) => {
+  const { call, host } = solo(t);
+  const got = await call('GET', '/api/hosts/laptop/stacks/settings');
+  assert.equal(got.status, 200);
+  assert.deepEqual(got.body, { host: 'laptop', leadPrompt: null, leadPromptDefault: 'You lead {label}.', siblingReports: false, reportPrompt: null, reportPromptDefault: 'Report to {lead}.' });
+  const put = await call('PUT', '/api/hosts/laptop/stacks/settings', { leadPrompt: '  Lead {label}  ', siblingReports: true, reportPrompt: '' });
+  assert.equal(put.status, 200);
+  assert.equal(put.body.leadPrompt, 'Lead {label}');
+  assert.equal(put.body.siblingReports, true);
+  assert.equal(put.body.reportPrompt, null);
+  const sets = host.calls.filter((c) => c.args?.[1] === 'config').map((c) => c.args.slice(2));
+  assert.deepEqual(sets, [['set', 'stacks.leadPrompt', '"Lead {label}"'], ['set', 'stacks.reportPrompt', 'null'], ['set', 'stacks.siblingReports', 'true']]);
+  for (const body of [{}, { leadPrompt: 1 }, { siblingReports: 'yes' }, { reportPrompt: 'x'.repeat(8001) }]) {
+    assert.equal((await call('PUT', '/api/hosts/laptop/stacks/settings', body)).status, 400, JSON.stringify(body));
+  }
+  assert.equal((await call('POST', '/api/hosts/laptop/stacks/settings', {})).status, 405);
+});
+
+test('sibling spawn into a stack with a lead: the leadLine follows the context line', async (t) => {
+  const { call, host } = solo(t);
+  host.view.leadLine = 'Report to aaaaaaaa.';
+  const res = await call('POST', `/api/hosts/laptop/stacks/${STACK_ID}/spawn`, { prompt: 'Go', name: 'sib' });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(host.calls.find((c) => c.spawn).spawn.prompt, `${host.view.contextLine} Report to aaaaaaaa. Go`);
 });
