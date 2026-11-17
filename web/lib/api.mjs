@@ -1143,6 +1143,13 @@ export function createApi({
       return { status: 200, body: await transcriber.transcribe(req, url.searchParams.get('hint'), url.searchParams.get('ms')) };
     }
 
+    // The browser recorder's lifecycle (start, stop, outcome), into this server's log.
+    if (url.pathname === '/api/voice-log') {
+      if (req.method !== 'POST') throw new HttpError('method not allowed', 405);
+      transcriber?.note(await readJsonBody(req));
+      return { status: 200, body: { ok: true } };
+    }
+
     // Voice memos: always this server, like /api/transcribe.
     if (url.pathname === '/api/memos' || url.pathname.startsWith('/api/memos/')) return handleMemos(req, url);
 

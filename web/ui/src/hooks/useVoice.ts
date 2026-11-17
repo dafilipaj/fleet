@@ -8,7 +8,8 @@ export interface VoiceTarget {
   hint: string
   /** Shown on the recorder screen and when an unsent take is offered again ("Operator"). */
   label: string
-  onText: (text: string) => void
+  /** May return a promise: a rejection keeps the text on the recorder (review) instead of losing it. */
+  onText: (text: string) => void | Promise<unknown>
   /** Hold the transcript CONFIRM_MS, cancellable, before `onText` (the operator: it sends at once). */
   confirm?: boolean
 }
@@ -48,7 +49,7 @@ let seq = 0
  * transcript goes to `onText` (after a cancellable pause with `confirm`). The state is this
  * button's: 'idle' while the recorder works for another one.
  */
-export function useVoice({ onText, hint, label = 'Voice', confirm = false }: { onText: (text: string) => void; hint: string; label?: string; confirm?: boolean }) {
+export function useVoice({ onText, hint, label = 'Voice', confirm = false }: { onText: VoiceTarget['onText']; hint: string; label?: string; confirm?: boolean }) {
   const recorder = useContext(VoiceContext)
   const target = useRef<VoiceTarget>({ onText, hint, label, confirm })
   const [owner] = useState<VoiceOwner>(() => ({ id: `voice-${(seq += 1)}`, target }))

@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 
-import { KEY_NAME, audioType, buildPrompt, createKeySource, createTranscriber, promptEcho, tooFastForAudio } from '../lib/transcribe.mjs';
+import { KEY_NAME, audioType, buildPrompt, createKeySource, createTranscriber, promptEcho, tooFastForAudio, voiceLogLine } from '../lib/transcribe.mjs';
 
 function audioReq(body, type = 'audio/webm;codecs=opus') {
   const req = Readable.from([Buffer.from(body)]);
@@ -148,4 +148,19 @@ test('upstream errors become 502 (429 stays 429), never a 401 the UI would misre
   await assert.rejects(tr429.transcribe(audioReq('abc'), ''), { status: 429 });
   const down = createTranscriber({ getKey: async () => 'sk', fetch: async () => { throw new Error('ECONNRESET'); } });
   await assert.rejects(down.transcribe(audioReq('abc'), ''), { status: 502 });
+});
+
+test('voiceLogLine: an event and flat values on one line, nothing else', () => {
+  assert.equal(voiceLogLine({ event: 'stop', label: 'Operator', ms: 8123, peak: 0.00412, discarded: false }), 'stop label="Operator" ms=8123 peak=0.004 discarded=false');
+  assert.equal(voiceLogLine({ event: 'x\nforged line', note: 'a\nb', nested: { a: 1 }, 'bad key': 1 }), 'xforgedline note="a b"');
+  assert.equal(voiceLogLine({ ms: 1 }), null);
+  assert.equal(voiceLogLine(null), null);
+});
+
+test('note logs the recorder event as a voice: line', () => {
+  const lines = [];
+  const t = createTranscriber({ getKey: async () => 'k', log: (l) => lines.push(l) });
+  t.note({ event: 'start', label: 'Operator' });
+  t.note({ nope: true });
+  assert.deepEqual(lines, ['voice: start label="Operator"']);
 });

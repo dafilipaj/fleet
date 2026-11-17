@@ -10,7 +10,7 @@ import { toast } from 'sonner'
 import { ApiError, api } from '@/api/client'
 import { VoiceOverlay, type VoicePhase } from '@/components/VoiceOverlay'
 import { VoiceContext, type VoiceOwner, type VoiceRecorder, type VoiceState } from '@/hooks/useVoice'
-import { CONFIRM_MS, HEARTBEAT_MS, emptyRecordingReason, formatElapsed, micUnavailableReason, pickMimeType, staleTakes } from '@/lib/voice'
+import { CONFIRM_MS, HEARTBEAT_MS, KEEP_UNRECOGNIZED_MS, emptyRecordingReason, formatElapsed, meterHeardNothing, micUnavailableReason, pickMimeType, staleTakes } from '@/lib/voice'
 import { NO_METER, openAudioContext, startMeter, type VoiceMeter } from '@/lib/voiceMeter'
 import { voiceStore, type VoiceTake } from '@/lib/voiceStore'
 
@@ -38,6 +38,10 @@ const errorText = (err: unknown) => (err instanceof ApiError ? err.message || `H
 const newId = () => (typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`)
 // The store is a safety net: when it fails, the take still lives in memory for this visit.
 const quiet = (p: Promise<unknown>) => void p.catch((err) => console.warn('voice store:', err))
+// Every step of a take goes to the server's log: a take that never reaches /api/transcribe
+// (closed by the app, dropped on the device) leaves no other trace.
+const vlog = (event: string, data: Record<string, string | number | boolean | null | undefined> = {}) => void api.voiceLog({ event, ...data })
+const round3 = (n: number | null) => (n === null ? null : Math.round(n * 1000) / 1000)
 
 const stateOf = (phase: VoicePhase): VoiceState =>
   phase.kind === 'idle' ? 'idle' : phase.kind === 'starting' || phase.kind === 'recording' ? 'recording' : 'transcribing'
@@ -49,6 +53,8 @@ interface Current {
   owner: VoiceOwner | null
   /** Offered again from an earlier visit: its text is always reviewed, never sent on its own. */
   recovered: boolean
+  /** Why its text must be reviewed before it is sent (the meter heard nothing), if it must. */
+  doubt?: string
 }
 
 export function VoiceProvider({ children }: { children: ReactNode }) {
@@ -101,12 +107,33 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     wakeLock.current = null
   }, [])
 
+  const delivering = useRef(false)
+  /** The text to its field. It is forgotten only once taken: a field that is gone or a send that fails keeps it for review. */
   const deliver = useCallback(
-    (text: string, owner: VoiceOwner | null) => {
+    async (text: string, owner: VoiceOwner | null) => {
+      if (delivering.current) return
+      const cur = current.current
+      const label = cur?.take.label ?? 'Voice'
       const target = live(owner)
-      if (!target) return
-      target.target.current.onText(text)
-      finish()
+      if (!target) {
+        vlog('deliver-failed', { label, reason: 'field gone' })
+        setPhase({ kind: 'review', text, label, action: null, note: 'The field this was for is closed. Copy the text, or discard it.' })
+        return
+      }
+      delivering.current = true
+      try {
+        await target.target.current.onText(text)
+      } catch (err) {
+        if (current.current !== cur) return
+        const error = errorText(err)
+        vlog('deliver-failed', { label, reason: error.slice(0, 80) })
+        setPhase({ kind: 'review', text, label, action: target.target.current.confirm ? 'Send' : 'Insert', note: `Not sent: ${error}` })
+        return
+      } finally {
+        delivering.current = false
+      }
+      vlog('delivered', { label, chars: text.length })
+      if (current.current === cur) finish()
     },
     [finish, live],
   )
@@ -121,11 +148,15 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
         return
       }
       if (owner.target.current.confirm) {
+        if (cur.doubt) {
+          setPhase({ kind: 'review', text, label: cur.take.label, action: 'Send', note: cur.doubt })
+          return
+        }
         setPhase({ kind: 'confirm', text, until: Date.now() + CONFIRM_MS, label: cur.take.label })
-        confirmTimer.current = window.setTimeout(() => deliver(text, owner), CONFIRM_MS)
+        confirmTimer.current = window.setTimeout(() => void deliver(text, owner), CONFIRM_MS)
         return
       }
-      deliver(text, owner)
+      void deliver(text, owner)
     },
     [deliver, live],
   )
@@ -139,14 +170,23 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     try {
       const audio = cur.audio ?? (cur.audio = await voiceStore.blob(cur.take.id, cur.take.mimeType))
       if (!audio.size) {
+        vlog('empty', { label: cur.take.label })
         toast.error('That recording is empty', { description: 'Nothing of it was saved on this device.' })
         finish()
         return
       }
       const { text } = await api.transcribe(audio, cur.take.hint, { signal: controller.signal, ms: cur.take.durationMs })
       if (controller.signal.aborted || current.current !== cur) return
+      vlog('transcribed', { label: cur.take.label, chars: text.length })
       if (!text) {
-        toast.message('Nothing to transcribe', { description: 'No speech was recognized.' })
+        // A real take the model heard nothing in stays for Retry; a short one is let go.
+        if ((cur.take.durationMs ?? 0) >= KEEP_UNRECOGNIZED_MS) {
+          const error = 'No speech was recognized in this recording.'
+          quiet(voiceStore.update(cur.take.id, { error }))
+          setPhase({ kind: 'failed', error, label: cur.take.label, durationMs: cur.take.durationMs ?? null })
+          return
+        }
+        toast.error('Nothing sent', { description: 'No speech was recognized.' })
         finish()
         return
       }
@@ -154,6 +194,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       if (controller.signal.aborted || current.current !== cur) return
       const error = errorText(err)
+      vlog('transcribe-failed', { label: cur.take.label, error: error.slice(0, 80) })
       quiet(voiceStore.update(cur.take.id, { error }))
       setPhase({ kind: 'failed', error, label: cur.take.label, durationMs: cur.take.durationMs ?? null })
     } finally {
@@ -177,12 +218,14 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       discard.current = false
       setOwnerId(owner.id)
       setPhase({ kind: 'starting', label })
+      vlog('start', { label, audioContext: ctx?.state ?? 'none' })
 
       let media: MediaStream
       try {
         media = await navigator.mediaDevices.getUserMedia({ audio: true })
       } catch (err) {
         void ctx?.close().catch(() => {})
+        vlog('mic-failed', { label, error: micError(err) })
         if (startToken.current === token) {
           toast.error(micError(err))
           close()
@@ -218,27 +261,38 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       }
       rec.onstart = () => {
         began = Date.now()
+        vlog('recording', { label, mime: take.mimeType, openMs: began - take.startedAt, audioContext: ctx?.state ?? 'none' })
         if (current.current?.take === take) setPhase({ kind: 'recording', startedAt: began, label })
       }
+      // iOS can take the mic away (a call, a route change): the recorder then stops by itself.
+      const track = media.getAudioTracks()[0]
+      if (track) {
+        track.onended = () => vlog('track-ended', { label, ms: Date.now() - began })
+        track.onmute = () => vlog('track-muted', { label, ms: Date.now() - began })
+      }
+      rec.onerror = (e) => vlog('recorder-error', { label, error: String((e as Event & { error?: Error }).error?.message ?? e.type) })
       rec.onstop = () => {
         const ms = Date.now() - began
         const peak = meter.current.peak()
         release()
         const cur = current.current
-        if (!cur || cur.take !== take) return
         const audio = new Blob(chunks, { type: take.mimeType })
-        if (discard.current || !audio.size) {
+        vlog('stop', { label, ms, bytes: audio.size, chunks: chunks.length, peak: round3(peak), discarded: discard.current, current: cur?.take === take })
+        if (!cur || cur.take !== take) return
+        if (discard.current) {
           finish()
           return
         }
-        const empty = emptyRecordingReason({ durationMs: ms, peak })
+        const empty = emptyRecordingReason({ durationMs: ms })
         if (empty) {
           toast.message('Nothing sent', { description: empty })
           finish()
           return
         }
         take.durationMs = ms
-        cur.audio = audio
+        // No chunks in memory: transcribe() reads the take back from the device.
+        if (audio.size) cur.audio = audio
+        if (meterHeardNothing(peak)) cur.doubt = 'The level meter heard nothing while recording. Check the text before you send it.'
         quiet(voiceStore.update(take.id, { durationMs: ms, mimeType: take.mimeType }))
         void transcribe()
       }
@@ -267,6 +321,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 
   const stop = useCallback(() => {
     if (recorder.current?.state === 'recording') recorder.current.stop()
+    else if (phase.kind === 'recording') vlog('stop-ignored', { recorder: recorder.current?.state ?? 'none' })
     else if (phase.kind === 'starting') {
       startToken.current += 1
       finish()
@@ -275,6 +330,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 
   /** Recording: throw it away. Transcribing: give up on it. Confirm: hold the text for review. */
   const cancel = useCallback(() => {
+    vlog('cancel', { phase: phase.kind })
     switch (phase.kind) {
       case 'starting':
         startToken.current += 1
@@ -350,6 +406,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 
   useEffect(
     () => () => {
+      if (current.current) vlog('unmount', { label: current.current.take.label })
       discard.current = true
       if (recorder.current?.state === 'recording') recorder.current.stop()
       inflight.current?.abort()
@@ -373,12 +430,12 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       /** Confirm: send now instead of waiting. */
       sendNow: (text: string) => {
         window.clearTimeout(confirmTimer.current)
-        deliver(text, current.current?.owner ?? null)
+        void deliver(text, current.current?.owner ?? null)
       },
       /** Review: the (edited) text to the field that opened it, else the newest one open. */
       use: (text: string) => {
         const cur = current.current
-        deliver(text, live(cur?.owner ?? null) ?? (cur?.recovered ? (owners.current.at(-1) ?? null) : null))
+        void deliver(text, live(cur?.owner ?? null) ?? (cur?.recovered ? (owners.current.at(-1) ?? null) : null))
       },
       copy: async (text: string) => {
         try {

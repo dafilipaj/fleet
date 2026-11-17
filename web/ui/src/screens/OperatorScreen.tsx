@@ -85,6 +85,9 @@ export function OperatorScreen({ layout = 'screen' }: { layout?: 'screen' | 'pan
     { enabled: settings.operator && !session },
   )
 
+  // The recorder is open (set below, once useVoice runs).
+  const voiceRef = useRef<{ busy: boolean }>({ busy: false })
+
   // Its conversation.
   const spoken = useRef<string | null>(null)
   const primed = useRef(false)
@@ -126,14 +129,14 @@ export function OperatorScreen({ layout = 'screen' }: { layout?: 'screen' | 'pan
     if (!reply) return
     spoken.current = reply.key
     setAwaiting(false)
-    if (autoSpeak) void speak(reply.text, `operator:${reply.key}`)
+    // Never over a recording: on iOS, playback can take the mic away mid-take.
+    if (autoSpeak && !voiceRef.current.busy) void speak(reply.text, `operator:${reply.key}`)
   }, [messages, turns, opStatus, autoSpeak, speak, session?.harness])
 
   // Announce sessions that start waiting on you.
   const sessions = useMemo(() => allSessions(fleet), [fleet])
   const waitingBefore = useRef<Set<string> | null>(null)
   const waiting = useMemo(() => sessions.filter((s) => s.status === 'waiting' && sessionKey(s) !== opKey), [sessions, opKey])
-  const voiceRef = useRef<{ busy: boolean }>({ busy: false })
   useEffect(() => {
     if (!fleet) return
     const before = waitingBefore.current
@@ -143,26 +146,32 @@ export function OperatorScreen({ layout = 'screen' }: { layout?: 'screen' | 'pan
     if (fresh.length && speechState === 'idle' && !voiceRef.current.busy && !awaiting) void speak(waitingAnnouncement(fresh))
   }, [fleet, sessions, announce, opKey, speak, speechState, awaiting])
 
-  const send = useCallback(
+  // Rejects when it did not go out, so a voice take keeps its text (the recorder's review).
+  const deliver = useCallback(
     async (text: string) => {
       const t = text.trim()
-      if (!t || !session) return
+      if (!t) return
+      if (!session) throw new Error('The operator is not running.')
       try {
         await api.send(session.host, session.session_id, t)
-        setAwaiting(true)
-        setChat((c) => ({ key: sessionKey(session), list: [...(c?.key === sessionKey(session) ? c.list : []), { role: 'user', kind: 'user', text: t, ts: Date.now(), queued: true }] }))
       } catch (err) {
-        toast.error("Couldn't reach the operator", { description: sendErrorMessage(err) })
+        throw new Error(sendErrorMessage(err))
       }
+      setAwaiting(true)
+      setChat((c) => ({ key: sessionKey(session), list: [...(c?.key === sessionKey(session) ? c.list : []), { role: 'user', kind: 'user', text: t, ts: Date.now(), queued: true }] }))
     },
     [session],
+  )
+  const send = useCallback(
+    (text: string) => deliver(text).catch((err) => toast.error("Couldn't reach the operator", { description: (err as Error).message })),
+    [deliver],
   )
 
   const hint = useMemo(
     () => ['operator', ...sessions.map((s) => sessionTitle(s))].join(', ').slice(0, 380),
     [sessions],
   )
-  const voice = useVoice({ onText: (t) => void send(t), hint, label: 'Operator', confirm: true })
+  const voice = useVoice({ onText: deliver, hint, label: 'Operator', confirm: true })
   useEffect(() => {
     voiceRef.current.busy = voice.state !== 'idle'
   }, [voice.state])

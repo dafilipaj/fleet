@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 
-import { STALE_MS, appendTranscript, emptyRecordingReason, formatElapsed, hearsNothing, micUnavailableReason, peakOf, pickMimeType, staleTakes } from './voice'
+import { STALE_MS, appendTranscript, emptyRecordingReason, formatElapsed, hearsNothing, meterHeardNothing, micUnavailableReason, peakOf, pickMimeType, staleTakes } from './voice'
 
 test('appendTranscript joins with exactly one space and ignores empty transcripts', () => {
   expect(appendTranscript('', 'Pozdrav.')).toBe('Pozdrav.')
@@ -28,12 +28,16 @@ test('formatElapsed is m:ss', () => {
   expect(formatElapsed(75_000)).toBe('1:15')
 })
 
-test('emptyRecordingReason holds back slipped taps and silence, trusts an unmeasured level', () => {
-  expect(emptyRecordingReason({ durationMs: 200, peak: 0.5 })).toMatch(/too short/)
-  expect(emptyRecordingReason({ durationMs: 3000, peak: 0 })).toMatch(/heard nothing/)
-  expect(emptyRecordingReason({ durationMs: 3000, peak: 0.004 })).toMatch(/heard nothing/)
-  expect(emptyRecordingReason({ durationMs: 3000, peak: 0.2 })).toBeNull()
-  expect(emptyRecordingReason({ durationMs: 3000, peak: null })).toBeNull()
+test('emptyRecordingReason holds back only slipped taps, never a silent-looking take', () => {
+  expect(emptyRecordingReason({ durationMs: 200 })).toMatch(/too short/)
+  expect(emptyRecordingReason({ durationMs: 3000 })).toBeNull()
+})
+
+test('meterHeardNothing: a measured level under the silence floor; an unmeasured one is trusted', () => {
+  expect(meterHeardNothing(0)).toBe(true)
+  expect(meterHeardNothing(0.004)).toBe(true)
+  expect(meterHeardNothing(0.2)).toBe(false)
+  expect(meterHeardNothing(null)).toBe(false)
 })
 
 test('peakOf is the loudest sample, either sign', () => {

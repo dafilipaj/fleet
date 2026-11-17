@@ -17,7 +17,7 @@ export type VoicePhase =
   /** The operator: the text goes out at `until` unless cancelled. */
   | { kind: 'confirm'; label: string; text: string; until: number }
   /** Text to check before it goes anywhere; `action` names the button that uses it (null: copy only). */
-  | { kind: 'review'; label: string; text: string; action: 'Send' | 'Insert' | null }
+  | { kind: 'review'; label: string; text: string; action: 'Send' | 'Insert' | null; note?: string }
   | { kind: 'failed'; label: string; error: string; durationMs: number | null }
   /** A take an earlier visit left behind. */
   | { kind: 'offer'; label: string; startedAt: number; durationMs: number | null; error: string | null }
@@ -141,6 +141,11 @@ function Review({ phase, actions }: { phase: Extract<VoicePhase, { kind: 'review
   return (
     <>
       <Body>
+        {phase.note ? (
+          <p role="alert" className="flex w-full max-w-md items-start gap-1.5 text-sm text-destructive">
+            <AlertTriangleIcon className="mt-0.5 size-4 shrink-0" /> {phase.note}
+          </p>
+        ) : null}
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}

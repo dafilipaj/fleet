@@ -556,6 +556,7 @@ JSON over HTTP, errors as `{ "error": "..." }`. At a high level:
 | POST | `/api/groups/edit` | `{ op: "rename", id, label }` or `{ op: "move", host, session, to }` / `{ op: "move", host, session, label }` (a new group) / `{ op: "create", label }` / `{ op: "delete", id }` (empty groups) → `fleet group --rename/--move/--create/--delete` on the grouping host (proxied there) → the same shape; 400 bad body, 409 refused (unknown id, taken label), 501 when grouping is off |
 | POST | `/api/hosts/:host/uploads?name=<file>` | raw file body → stored under that host's `web.uploads.dir` → `{ host, path, name, size }` (absolute `path`; 413 over `web.uploads.maxMB`); streamed through to a peer |
 | POST | `/api/transcribe?hint=<words>&ms=<duration>` | raw audio body (webm / ogg / mp4 / mp3 / wav, ≤ 25 MB) → `{ text, model }` via OpenAI `gpt-4o-transcribe`; always this server, never proxied. `hint` (≤ 400 chars: session name, repo) steers spelling. `ms` (optional): the recording's length; text with more words than that audio can hold is made up (silence) and comes back empty, like a prompt echo. Key: `$OPENAI_SPEECH_TO_TEXT_API_KEY`, else the macOS Keychain item of that name (never the config file). 501 without a key, 415 non-audio, 413 too large, 502 upstream errors (including a bad key), 429 rate limit |
+| POST | `/api/voice-log` | `{ event, …flat fields }` from the voice recorder → one `voice: <event> k=v…` line in this server's log (event name and short values only, never transcript text); always this server |
 | PUT | `/api/memos/recordings/:rec/segments/:n` | voice memos, always this server: one segment's raw audio (≤ 25 MB) is stored under `web.memos.audioDir`, then transcribed → `{ stored: true, transcribed, error? }` (a failed transcription keeps the audio; `finish` retries it). `:rec` is the client's recording id (`[a-z0-9-]`, 8–64), `:n` 0-based. 501 without a transcription key |
 | POST | `/api/memos/recordings/:rec/finish` | `{ segments, startedAt, durationMs }` → transcribes what is missing, titles it (`claude -p`, else `Memo <date> <time>`), writes `web.memos.dir/<date>-<slug>.md` → the memo (below). Idempotent: again updates the same file. 409 a segment was never uploaded |
 | GET | `/api/memos` | `{ dir, memos: [{ id, title, created, durationSec, status: done\|partial, words, preview }] }`, newest first (only files with a `recording` frontmatter key) |
@@ -696,12 +697,20 @@ full-screen recorder (`providers/VoiceProvider.tsx`, `components/VoiceOverlay.ts
 card on a desktop, a Radix dialog so it stacks over the new-session dialog). It shows the mic
 opening, then a timer and a live level, and warns when the mic hears nothing; the stop button is
 large for use in a car, and the screen is kept awake while recording. A take shorter than 0.4 s
-or silent is not sent. Its audio goes to IndexedDB (`fleet-voice`) a second at a time as it is
+is not sent. The level meter never drops a take: on iOS it can read silence while the recorder
+gets speech (a Bluetooth or car route switching as the mic opens), so a take it thought silent is
+still transcribed, and the operator holds its text for review instead of sending it. Its audio goes to IndexedDB (`fleet-voice`) a second at a time as it is
 recorded, so a failed transcription offers Retry / Keep for later / Discard, and a take an
 earlier visit left behind (a failure, a closed app) is offered again at the next start, for
 review. The text goes into the field that opened the recorder at once; the operator, which sends
 it, shows it for 5 s with Cancel first (Cancel opens it for editing, its buttons armed after a
-moment so a second tap cannot send it).
+moment so a second tap cannot send it). Text that cannot be delivered (the send fails, the field
+closed) stays on the recorder for review, and a take the model found no speech in (≥ 3 s) stays
+for Retry: the recorder never closes without the text going somewhere or a visible reason. Every
+step of a take (start, recording, stop with its length, bytes and level, transcribed, delivered
+or why not, cancel) goes to the server log as a `voice:` line (`POST /api/voice-log`), since a
+take that never reaches `/api/transcribe` leaves no other trace. Replies are not read aloud
+while recording: on iOS playback can take the mic away.
 
 ## Voice memos
 

@@ -224,7 +224,32 @@ export function createTranscriber({ getKey, keepDir = null, now = () => new Date
     return { text, model };
   }
 
-  return { enabled, transcribe, transcribeAudio };
+  /** A line from the browser's recorder (POST /api/voice-log): the only trace of a take that never reached transcribe. */
+  function note(event) {
+    const line = voiceLogLine(event);
+    if (line) log(`voice: ${line}`);
+    return line;
+  }
+
+  return { enabled, transcribe, transcribeAudio, note };
+}
+
+/**
+ * The recorder's event as one short log line ("stop label=Operator ms=8123 bytes=48211"), or null.
+ * Only an event name and a few flat numbers / short words: never transcript text.
+ */
+export function voiceLogLine(event) {
+  if (!event || typeof event !== 'object') return null;
+  const name = String(event.event ?? '').replace(/[^\w-]/g, '').slice(0, 32);
+  if (!name) return null;
+  const parts = [name];
+  for (const [k, v] of Object.entries(event).slice(0, 16)) {
+    if (k === 'event' || !/^[a-zA-Z]\w{0,23}$/.test(k)) continue;
+    if (typeof v === 'number' && Number.isFinite(v)) parts.push(`${k}=${Math.round(v * 1000) / 1000}`);
+    else if (typeof v === 'boolean') parts.push(`${k}=${v}`);
+    else if (typeof v === 'string' && v) parts.push(`${k}=${JSON.stringify(v.replace(/\s+/g, ' ').slice(0, 80))}`);
+  }
+  return parts.join(' ');
 }
 
 // Spoken replies (the voice operator): text → mp3 via OpenAI's speech endpoint, same key.

@@ -292,6 +292,9 @@ export const api = {
     request<AutoNameRun>(`${hostPath(host)}/autoname`, { ...o, method: 'POST', body: {} }),
 
   /** A voice recording as text (always this server); `hint` = words to expect (session name, repo), `ms` = its length. */
+  /** One recorder event into this server's log (web/lib/transcribe.mjs voiceLogLine); best effort. */
+  voiceLog: (event: Record<string, string | number | boolean | null | undefined>) =>
+    request<{ ok: boolean }>('/api/voice-log', { method: 'POST', body: event, keepalive: true }).catch(() => {}),
   transcribe: (audio: Blob, hint: string, o: Opts & { ms?: number } = {}) =>
     request<TranscribeResponse>(`/api/transcribe?hint=${enc(hint)}${o.ms ? `&ms=${Math.round(o.ms)}` : ''}`, { signal: o.signal, method: 'POST', file: audio }),
   /** Text → spoken mp3 (the voice operator's replies). */

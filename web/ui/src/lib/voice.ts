@@ -30,16 +30,23 @@ export const MIN_RECORDING_MS = 400
 // quiet speech and above a muted or dead mic, which reads 0.
 export const SILENCE_PEAK = 0.01
 
-/**
- * Why a recording is not worth transcribing, or null. Sent anyway, silence comes back as text
- * the model makes up from the prompt (session names), which then goes out as a message.
- * `peak`: the loudest sample while recording; null when the level could not be measured.
- */
-export function emptyRecordingReason({ durationMs, peak }: { durationMs: number; peak: number | null }): string | null {
-  if (durationMs < MIN_RECORDING_MS) return 'The recording was too short.'
-  if (peak !== null && peak < SILENCE_PEAK) return 'The microphone heard nothing. Check that it is not muted, then try again.'
-  return null
+/** Why a recording is not worth transcribing (a slipped tap), or null. */
+export function emptyRecordingReason({ durationMs }: { durationMs: number }): string | null {
+  return durationMs < MIN_RECORDING_MS ? 'The recording was too short.' : null
 }
+
+/**
+ * The level meter heard nothing (`peak`: the loudest sample; null when unmeasured). Never a
+ * reason to drop the take: on iOS the meter can read silence while the recorder gets speech
+ * (a Bluetooth / car route switching as the mic opens), so the take is still transcribed, and
+ * its text reviewed before it is sent: silence comes back as text made up from the prompt.
+ */
+export function meterHeardNothing(peak: number | null): boolean {
+  return peak !== null && peak < SILENCE_PEAK
+}
+
+/** A take whose transcription came back empty is kept (Retry) from this long on; shorter ones are let go. */
+export const KEEP_UNRECOGNIZED_MS = 3000
 
 /** The loudest sample in a block of time-domain samples (-1…1). */
 export function peakOf(samples: ArrayLike<number>): number {
