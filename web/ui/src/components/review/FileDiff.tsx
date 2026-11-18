@@ -345,9 +345,10 @@ export const FileDiff = memo(function FileDiff({
       id={fileAnchor(fileKey)}
       data-file-key={fileKey}
       aria-label={file.path}
-      className={cn('scroll-mt-3 overflow-hidden rounded-lg border bg-background [content-visibility:auto]', fresh && 'ring-2 ring-primary/40')}
+      className={cn('scroll-mt-3 overflow-clip rounded-lg border bg-background [content-visibility:auto]', fresh && 'ring-2 ring-primary/40')}
     >
-      <header className="sticky top-0 z-10 flex items-center gap-2 border-b bg-card px-2 py-1.5">
+      {/* -top-3: flush with the diff column's scroll edge (it has p-3) */}
+      <header className="sticky -top-3 z-10 flex items-center gap-2 border-b bg-card px-2 py-1.5">
         <Button variant="ghost" size="icon" className="size-7" aria-label={open ? 'Collapse' : 'Expand'} aria-expanded={open} onClick={() => onToggleCollapsed(fileKey)}>
           {open ? <ChevronDownIcon /> : <ChevronRightIcon />}
         </Button>
