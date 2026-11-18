@@ -1,4 +1,4 @@
-import { ExternalLinkIcon, FolderGitIcon, GitBranchIcon, GitMergeIcon, GitPullRequestClosedIcon, GitPullRequestDraftIcon, GitPullRequestIcon, LoaderIcon, type LucideIcon } from 'lucide-react'
+import { ChevronDownIcon, ChevronRightIcon, ExternalLinkIcon, FolderGitIcon, GitBranchIcon, GitMergeIcon, GitPullRequestClosedIcon, GitPullRequestDraftIcon, GitPullRequestIcon, LoaderIcon, type LucideIcon } from 'lucide-react'
 import { useState } from 'react'
 
 import type { DiffRepo, ReviewPr } from '@/api/types'
@@ -100,9 +100,9 @@ export function EntryHeader({ repo, entryKey, onSetUp }: { repo: DiffRepo; entry
 }
 
 /** An entry in the file-tree column: compact PR / branch line, click → its heading. */
-export function EntryRow({ repo, onOpen }: { repo: DiffRepo; onOpen: () => void }) {
+export function EntryRow({ repo, onOpen, collapsed, onToggle }: { repo: DiffRepo; onOpen: () => void; collapsed?: boolean; onToggle?: () => void }) {
   const pr = repo.pr
-  return (
+  const row = (
     <button
       type="button"
       onClick={onOpen}
@@ -120,5 +120,22 @@ export function EntryRow({ repo, onOpen }: { repo: DiffRepo; onOpen: () => void 
       )}
       {repo.source === 'pr' ? <span className="ml-auto shrink-0 text-[0.625rem] text-dimmer">no worktree</span> : repo.local?.uncommitted ? <span className="ml-auto shrink-0 text-[0.625rem] text-status-waiting" title="uncommitted files">●{repo.local.uncommitted}</span> : null}
     </button>
+  )
+  if (!onToggle) return row
+  // The chevron folds the entry's files in the tree; the row itself still jumps to the entry.
+  return (
+    <div className="flex min-w-0 items-center">
+      <button
+        type="button"
+        aria-expanded={!collapsed}
+        aria-label={collapsed ? 'Show its files' : 'Hide its files'}
+        title={collapsed ? 'Show its files' : 'Hide its files'}
+        onClick={onToggle}
+        className="flex size-6 shrink-0 items-center justify-center rounded-md text-dimmer hover:bg-muted hover:text-foreground"
+      >
+        {collapsed ? <ChevronRightIcon className="size-3.5" /> : <ChevronDownIcon className="size-3.5" />}
+      </button>
+      <div className="min-w-0 flex-1">{row}</div>
+    </div>
   )
 }

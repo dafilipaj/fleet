@@ -349,6 +349,17 @@ function ReviewView({ layout, source }: { layout: Layout; source: ReviewSource }
   const sections = useMemo(() => entrySections(views), [views])
   const grouped = source.kind === 'session' || views.length > 1
   const [sectionOpen, setSectionOpen] = useState<Partial<Record<EntryBucket, boolean>>>({})
+  // Entries (a PR, a worktree) whose files are folded away in the tree.
+  const [treeFolded, setTreeFolded] = useState<ReadonlySet<string>>(() => new Set())
+  const toggleTreeFolded = useCallback(
+    (key: string) =>
+      setTreeFolded((prev) => {
+        const next = new Set(prev)
+        if (!next.delete(key)) next.add(key)
+        return next
+      }),
+    [],
+  )
   const isOpen = (bucket: EntryBucket) => sectionOpen[bucket] ?? (sections.length < 2 || sections[0].bucket === bucket)
   const openEntry = (key: string, bucket: EntryBucket) => {
     setSectionOpen((o) => ({ ...o, [bucket]: true }))
@@ -910,12 +921,16 @@ function ReviewView({ layout, source }: { layout: Layout; source: ReviewSource }
                                 <FolderGitIcon className="size-3.5 shrink-0 text-muted-foreground" />
                                 <span className="truncate">{g.name}</span>
                               </p>
-                              {g.views.map((v) => (
-                                <div key={repoKey(v.repo)} className="border-b px-0.5 py-1 last:border-b-0">
-                                  <EntryRow repo={v.repo} onOpen={() => openEntry(repoKey(v.repo), bucket)} />
-                                  <FileTree nodes={v.tree} viewed={isViewed} fresh={isFresh} active={active} onOpen={openFile} />
-                                </div>
-                              ))}
+                              {g.views.map((v) => {
+                                const k = repoKey(v.repo)
+                                const folded = treeFolded.has(k)
+                                return (
+                                  <div key={k} className="border-b px-0.5 py-1 last:border-b-0">
+                                    <EntryRow repo={v.repo} onOpen={() => openEntry(k, bucket)} collapsed={folded} onToggle={() => toggleTreeFolded(k)} />
+                                    {folded ? null : <FileTree nodes={v.tree} viewed={isViewed} fresh={isFresh} active={active} onOpen={openFile} />}
+                                  </div>
+                                )
+                              })}
                             </div>
                           ) : (
                             g.views.map((v) => <FileTree key={repoKey(v.repo)} nodes={v.tree} viewed={isViewed} fresh={isFresh} active={active} onOpen={openFile} />)
