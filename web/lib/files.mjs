@@ -3,8 +3,9 @@
 // Paths resolve against the session's cwd; a relative path missing there falls back to files
 // the session touched (lib/touched.mjs: "Updated docs/x.md" after editing /…/other-repo/docs/x.md),
 // then to their ancestor dirs and the configured `web.files.roots`. Whatever the route, after
-// realpath the file must stay inside $HOME or that cwd (symlinks out are refused), and a few
-// secret stores are never served.
+// realpath the file must stay inside $HOME, that cwd or Claude Code's per-user temp dir
+// (`/tmp/claude-<uid>`: session scratchpads, where agents write briefs and reports; symlinks out
+// are refused), and a few secret stores are never served.
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
@@ -94,6 +95,24 @@ export function isDenied(p, home) {
   return DENY_DIRS.some((d) => inside(p, path.join(home, d)));
 }
 
+/** Claude Code's per-user temp dir (session scratchpads), or null where there are no uids. */
+export function defaultScratchDir() {
+  return typeof process.getuid === 'function' ? `/tmp/claude-${process.getuid()}` : null;
+}
+
+/** [realpath of `dir`] when it is a directory owned by this user and writable by nobody else, else []. */
+export function trustedScratchRoots(dir) {
+  if (!dir || typeof process.getuid !== 'function') return [];
+  try {
+    const real = fs.realpathSync(dir);
+    const st = fs.statSync(real);
+    if (!st.isDirectory() || st.uid !== process.getuid() || st.mode & 0o022) return [];
+    return [real];
+  } catch {
+    return [];
+  }
+}
+
 /** At most this many modules in a files/plain answer. */
 const MAX_PLAIN_MODULES = 2000;
 
@@ -169,14 +188,17 @@ function displayPath(abs, { cwd, home }) {
  *   hasBinary  (name) → boolean, for xdg-open (default: PATH lookup)
  *   touched    lib/touched.mjs index ({ get(session) }) — optional; enables the fallbacks
  *   roots      extra absolute dirs a relative path may be under (`web.files.roots`); they only
- *              add candidates — the sandbox stays $HOME + cwd
+ *              add candidates — the sandbox stays $HOME + cwd + scratch
+ *   scratch    Claude Code's per-user temp dir (default `/tmp/claude-<uid>`); allowed only when it
+ *              is a directory this user owns that nobody else can write to
  */
-export function createFiles({ home, run, platform = process.platform, hasBinary = pathHas, now = Date.now, touched = null, roots: extraRoots = [] } = {}) {
+export function createFiles({ home, run, platform = process.platform, hasBinary = pathHas, now = Date.now, touched = null, roots: extraRoots = [], scratch = defaultScratchDir() } = {}) {
   const realHome = safeRealpathSync(home) ?? path.resolve(home);
+  const scratchRoots = trustedScratchRoots(scratch);
   const cache = new Map(); // `${session}\0${touched version}\0${cwd}\0${input}` → { at, entry }
 
   async function roots(cwd) {
-    const out = [realHome];
+    const out = [realHome, ...scratchRoots];
     if (cwd) {
       const real = await fsp.realpath(cwd).catch(() => null);
       if (real && !out.includes(real)) out.push(real);
@@ -260,7 +282,7 @@ export function createFiles({ home, run, platform = process.platform, hasBinary 
   async function check(abs, base, cwd, allowed) {
     const out = { ...base, path: abs, rel: displayPath(abs, { cwd, home: realHome }) };
     // Lexical check first (cheap, and never stats anything outside), then the real path.
-    const lexicalRoots = [path.resolve(home), realHome, ...(cwd ? [path.resolve(cwd)] : []), ...allowed];
+    const lexicalRoots = [path.resolve(home), realHome, ...(cwd ? [path.resolve(cwd)] : []), ...allowed, ...(scratch ? [path.resolve(scratch)] : [])];
     if (!lexicalRoots.some((r) => inside(abs, r))) return { ...out, status: 403, error: 'outside the allowed directories' };
     let real;
     try {

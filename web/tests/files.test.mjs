@@ -116,6 +116,27 @@ test('stat: exists / kinds / rel / line, sandbox and secrets', async (t) => {
   await assert.rejects(files.stat(Array.from({ length: 201 }, (_, i) => `f${i}`), fx.proj), /too many/);
 });
 
+test('stat: Claude Code scratch dir is allowed only when private to this user', async (t) => {
+  const fx = fixture(t);
+  const scratch = path.join(fx.root, 'claude-tmp');
+  const brief = path.join(scratch, 'sess', 'scratchpad', 'brief.md');
+  fs.mkdirSync(path.dirname(brief), { recursive: true });
+  fs.writeFileSync(brief, '# brief\n');
+  fs.symlinkSync(fx.outside, path.join(scratch, 'link-out'));
+  fs.chmodSync(scratch, 0o700);
+  const files = createFiles({ home: fx.home, run: async () => ({}), scratch });
+  const r = await files.stat([brief, path.join(scratch, 'link-out', 'secret.txt')], fx.proj);
+  assert.equal(r.files[0].exists, true);
+  assert.equal(r.files[0].kind, 'markdown');
+  assert.equal(r.files[1].forbidden, true, 'a symlink out of the scratch dir');
+
+  fs.chmodSync(scratch, 0o777);
+  const open = createFiles({ home: fx.home, run: async () => ({}), scratch });
+  assert.equal((await open.stat([brief], fx.proj)).files[0].forbidden, true, 'world-writable scratch is not trusted');
+  const none = createFiles({ home: fx.home, run: async () => ({}), scratch: null });
+  assert.equal((await none.stat([brief], fx.proj)).files[0].forbidden, true);
+});
+
 test('stat results are cached briefly', async (t) => {
   const fx = fixture(t);
   let clock = 1000;
