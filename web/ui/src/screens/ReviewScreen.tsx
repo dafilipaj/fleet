@@ -1,5 +1,6 @@
 import { ExternalLinkIcon, RefreshCwIcon, SparklesIcon, ChevronLeftIcon, Columns2Icon, FoldVerticalIcon, FolderGitIcon, GitBranchIcon, ListTreeIcon, MessageSquarePlusIcon, MessageSquareTextIcon, RowsIcon, UnfoldVerticalIcon } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { flushSync } from 'react-dom'
 import { useLocation } from 'wouter'
 
 import { HostBadge } from '@/components/HostBadge'
@@ -525,6 +526,19 @@ function ReviewView({ layout, source }: { layout: Layout; source: ReviewSource }
   )
   // Select code with the mouse → a "Comment on lines …" button at the selection's end.
   const bodyRef = useRef<HTMLDivElement>(null)
+  // Ticking Viewed folds the card: when its top had scrolled away (the sticky header was the one
+  // clicked), land right below it, on what comes next, instead of wherever the shrink leaves you.
+  const markViewed = useCallback(
+    (key: string) => {
+      const box = bodyRef.current
+      // By dataset, not a selector: a key holds a NUL (root\u0000path), which CSS cannot match.
+      const card = box ? [...box.querySelectorAll<HTMLElement>('[data-file-key]')].find((e) => e.dataset.fileKey === key) : undefined
+      if (!box || !card || isViewed(key) || card.getBoundingClientRect().top >= box.getBoundingClientRect().top) return toggleViewed(key)
+      flushSync(() => toggleViewed(key))
+      box.scrollTop += card.getBoundingClientRect().bottom - box.getBoundingClientRect().top
+    },
+    [isViewed, toggleViewed],
+  )
   const [pick, setPick] = useState<{ sel: LineSelection; x: number; y: number } | null>(null)
   const readSelection = useCallback(() => {
     const s = window.getSelection()
@@ -774,7 +788,7 @@ function ReviewView({ layout, source }: { layout: Layout; source: ReviewSource }
                               viewed={isViewed(key)}
                               fresh={isFresh(key)}
                               onToggleCollapsed={toggleCollapsed}
-                              onToggleViewed={toggleViewed}
+                              onToggleViewed={markViewed}
                               selection={selection?.path === key ? selection : null}
                               composing={composing && selection?.path === key}
                               onLine={onLine}
