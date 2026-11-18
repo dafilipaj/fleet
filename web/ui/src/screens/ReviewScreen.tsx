@@ -5,6 +5,7 @@ import { useLocation } from 'wouter'
 import { HostBadge } from '@/components/HostBadge'
 import { DiffStat, FileDiff, type DiffView } from '@/components/review/FileDiff'
 import { FileTree } from '@/components/review/FileTree'
+import { FullFileDialog, type FullFileTarget } from '@/components/review/FullFileDialog'
 import { CommentComposer, ReviewThreadCard, type CommentTarget, type ThreadActions } from '@/components/review/ReviewThread'
 import { EntryHeader, EntryRow } from '@/components/review/ReviewEntry'
 import { SideAsks } from '@/components/review/SideAsks'
@@ -83,6 +84,8 @@ interface ReviewSource {
   hint: string
   empty: string
   headerActions?: ReactNode
+  /** a file whole, its changes marked in place (the full-file view) */
+  fullFile?: (repo: DiffRepo, file: DiffFile) => Promise<DiffFile>
   /** A lite diff: fetch a file's lines (`need`), its last fetch failed (`failed`). */
   lazy?: { need: (repo: DiffRepo, file: DiffFile) => void; failed: (repo: DiffRepo, file: DiffFile) => boolean }
   /** A session's entries that have a PR: notes on them, and a worktree for one without. */
@@ -108,6 +111,20 @@ export function ReviewScreen({ layout = 'screen' }: { layout?: Layout }) {
   const loc = parseReviewLocation(location)
   if (!loc) return null
   return <SessionReview key={`${loc.host}/${loc.id}/${loc.root ?? ''}`} host={loc.host} id={loc.id} root={loc.root ?? null} layout={layout} />
+}
+
+/**
+ * A file whole, its changes marked in place: the entry's base → tree diff with every line as
+ * context (a rename asks for its old path too). An older server ignores `full`: the plain hunks.
+ */
+function fullFileOf(repo: DiffRepo, file: DiffFile, fetch: (at: { base: string; tree: string; paths: string[]; full: true }) => Promise<{ files: DiffFile[] }>): Promise<DiffFile> {
+  if (!repo.base?.sha || !repo.tree) return Promise.reject(new Error('This entry has no base to diff against yet'))
+  const paths = file.oldPath && file.oldPath !== file.path ? [file.path, file.oldPath] : [file.path]
+  return fetch({ base: repo.base.sha, tree: repo.tree, paths, full: true }).then((r) => {
+    const f = r.files.find((x) => x.path === file.path)
+    if (!f) throw new Error('This file is no longer in the diff')
+    return f
+  })
 }
 
 /** A thread on checkout `root` (one without a root is the cwd's). */
@@ -194,6 +211,7 @@ function SessionReview({ host, id, root, layout }: { host: string; id: string; r
     },
     hint: 'To comment: select code with the mouse, or click a line number (shift-click for a range). The comment goes to the session with those lines.',
     lazy: { need: lazy.need, failed: lazy.failed },
+    fullFile: (repo, file) => fullFileOf(repo, file, (at) => api.diffFiles(host, id, { root: repo.root, ...at })),
     prs: {
       notes: prNotes.notes,
       create: (pr, anchor, body, base) => prNotes.create(pr, anchor, body, base),
@@ -285,6 +303,7 @@ function PrReview({ host, pr, from, layout }: { host: string; pr: PrKey; from: {
       placeholder: 'What should it do with them? (optional, e.g. “turn the good ones into review comments”)',
       run: handoff,
     },
+    fullFile: (repo, file) => fullFileOf(repo, file, (at) => api.prFiles(host, pr, at)),
     hint: 'Notes stay in Fleet: select code (or click a line number) to write one, post any of them to GitHub, or hand them all to a session. Ask asks Claude about the lines on the side.',
     empty: 'This PR changes no files.',
     headerActions: (
@@ -345,6 +364,21 @@ function ReviewView({ layout, source }: { layout: Layout; source: ReviewSource }
     entriesRef.current = entries
   }, [entries])
   const lazyNeed = source.lazy?.need
+  // The full-file view: one dialog for every card, opened by key.
+  const [fullTarget, setFullTarget] = useState<FullFileTarget | null>(null)
+  const sourceFull = useRef(source.fullFile)
+  useEffect(() => {
+    sourceFull.current = source.fullFile
+  })
+  const openFull = useCallback((key: string) => {
+    const e = entriesRef.current.get(key)
+    if (e) setFullTarget({ fileKey: key, file: e.file })
+  }, [])
+  const loadFull = useCallback((key: string) => {
+    const e = entriesRef.current.get(key)
+    const f = sourceFull.current
+    return e && f ? f(e.repo, e.file) : Promise.reject(new Error('This file is no longer in the diff'))
+  }, [])
   const needFile = useCallback(
     (key: string) => {
       const e = entriesRef.current.get(key)
@@ -738,6 +772,7 @@ function ReviewView({ layout, source }: { layout: Layout; source: ReviewSource }
                               renderComposer={renderComposer}
                               session={plainSession}
                               onNeed={needFile}
+                              onFull={source.fullFile ? openFull : undefined}
                               loadFailed={file.lazy ? (source.lazy?.failed(v.repo, file) ?? false) : false}
                             />
                           ))}
@@ -801,6 +836,8 @@ function ReviewView({ layout, source }: { layout: Layout; source: ReviewSource }
     </div>
   )
 
+  const fullDialog = <FullFileDialog target={fullTarget} view={view} load={loadFull} onClose={() => setFullTarget(null)} />
+
   const dialog = (
     <Dialog open={submitOpen} onOpenChange={setSubmitOpen}>
       <DialogContent className="sm:max-w-lg">
@@ -838,6 +875,7 @@ function ReviewView({ layout, source }: { layout: Layout; source: ReviewSource }
         {header}
         {body}
         {dialog}
+        {fullDialog}
       </div>
     )
   }
@@ -898,6 +936,7 @@ function ReviewView({ layout, source }: { layout: Layout; source: ReviewSource }
         </aside>
       ) : null}
       {dialog}
+      {fullDialog}
     </div>
   )
 }

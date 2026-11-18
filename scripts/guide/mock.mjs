@@ -597,10 +597,34 @@ const DIFF_FILES = {
   }`), 'import { round } from \'../money\'')]),
   ],
 }
-// The reviewer over a PR without a session (…/prs/:o/:r/:n/diff | notes | ask): the first checkout of the demo diff, two notes.
-function prReview(host, owner, repo, number, what, b) {
+// `full=1`: a file whole — its hunks with the lines between them (and around them) filled in as context.
+function wholeFile(f) {
+  if (!f.hunks?.length) return f
+  const lines = []
+  let o = 1
+  let n = 1
+  const filler = (k) => ({ t: ' ', o: o++, n: n++, text: k % 7 === 0 ? '' : `  // …unchanged line ${n - 1}` })
+  for (const h of f.hunks) {
+    while (n < h.newStart) lines.push(filler(n))
+    for (const l of h.lines) {
+      lines.push(l)
+      if (l.o != null) o = l.o + 1
+      if (l.n != null) n = l.n + 1
+    }
+  }
+  for (let k = 0; k < 12; k++) lines.push(filler(n))
+  return { ...f, hunks: [{ header: `@@ -1,${o - 1} +1,${n - 1} @@`, oldStart: 1, oldLines: o - 1, newStart: 1, newLines: n - 1, section: '', lines }] }
+}
+
+// The reviewer over a PR without a session (…/prs/:o/:r/:n/diff | files | notes | ask): the first checkout of the demo diff, two notes.
+function prReview(host, owner, repo, number, what, b, q) {
   const pr = { owner, repo, number, title: 'Checkout: retry Stripe confirmation on network errors', url: `https://github.com/${owner}/${repo}/pull/${number}`, author: 'jo', headBranch: 'stripe-retry', baseBranch: 'main', headOid: 'c'.repeat(40), draft: false }
   if (what === 'ask') return { host, ask: { ...sideAsk(b), forked: false } }
+  if (what === 'files') {
+    const want = new Set(q.getAll('path'))
+    const files = diffs('workstation', SID(1)).repos[0].files.filter((f) => want.has(f.path))
+    return { host, files: q.get('full') === '1' ? files.map(wholeFile) : files, truncated: false }
+  }
   if (what === 'diff') {
     const r = diffs('workstation', SID(1)).repos[0]
     return { host, id: null, cwd: `${H}/Code/${repo}`, pr, fingerprint: 'pr-fp', unchanged: false, repos: [{ ...r, label: `${owner}/${repo}`, branch: 'stripe-retry', head: 'c'.repeat(40) }] }
@@ -745,7 +769,8 @@ function route(method, p, q, b) {
     if (what === 'diffs/files') {
       const repo = diffs(host, id).repos.find((r) => r.root === q.get('root'))
       const want = new Set(q.getAll('path'))
-      return { host, root: q.get('root'), files: (repo?.files ?? []).filter((f) => want.has(f.path)), truncated: false }
+      const files = (repo?.files ?? []).filter((f) => want.has(f.path))
+      return { host, root: q.get('root'), files: q.get('full') === '1' ? files.map(wholeFile) : files, truncated: false }
     }
     if (what === 'review') return review(host, id)
     if (what === 'ask') return { host, id, ask: sideAsk(b) }
@@ -756,7 +781,7 @@ function route(method, p, q, b) {
     return { ok: true, host, id, result: 'renamed', title: b.title }
   }
   if ((s = rest.match(/^asks\/([^/]+)$/))) return { host, ask: sideAsk({}, decodeURIComponent(s[1])) }
-  if ((s = rest.match(/^prs\/([^/]+)\/([^/]+)\/(\d+)\/(diff|ask|notes)(?:\/(.*))?$/))) return prReview(host, decodeURIComponent(s[1]), decodeURIComponent(s[2]), Number(s[3]), s[4], b)
+  if ((s = rest.match(/^prs\/([^/]+)\/([^/]+)\/(\d+)\/(diff|files|ask|notes)(?:\/(.*))?$/))) return prReview(host, decodeURIComponent(s[1]), decodeURIComponent(s[2]), Number(s[3]), s[4], b, q)
   if (rest === 'harnesses') return HARN(host)
   if (rest === 'spawn-dirs') return spawnDirs(host)
   if (rest === 'jobs') return jobs(host)

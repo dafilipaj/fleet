@@ -189,9 +189,9 @@ export const api = {
     const q = [since ? `since=${enc(since)}` : null, root ? `root=${enc(root)}` : null, lite ? 'lite=1' : null].filter(Boolean).join('&')
     return request<DiffsResponse>(`${sessionPath(host, id, 'diffs')}${q ? `?${q}` : ''}`, o)
   },
-  /** Some files of a lite diff with their lines, by the entry's root, base and tree ids. */
-  diffFiles: (host: string, id: string, at: { root: string; base: string; tree: string; paths: string[] }, o: Opts = {}) => {
-    const q = [`root=${enc(at.root)}`, `base=${enc(at.base)}`, `tree=${enc(at.tree)}`, ...at.paths.map((p) => `path=${enc(p)}`)].join('&')
+  /** Some files of a lite diff with their lines, by the entry's root, base and tree ids. `full`: each file whole, its changes in place. */
+  diffFiles: (host: string, id: string, at: { root: string; base: string; tree: string; paths: string[]; full?: boolean }, o: Opts = {}) => {
+    const q = [`root=${enc(at.root)}`, `base=${enc(at.base)}`, `tree=${enc(at.tree)}`, ...at.paths.map((p) => `path=${enc(p)}`), ...(at.full ? ['full=1'] : [])].join('&')
     return request<{ host: string; root: string; files: DiffFile[]; truncated: boolean }>(`${sessionPath(host, id, 'diffs/files')}?${q}`, o)
   },
   // Prompt queue (server-side): sent one per run once the session is idle.
@@ -431,6 +431,11 @@ export const api = {
   /** The diff reviewer over a PR without a session: the diff from the host's clone (`refetch`: fetch now). */
   prDiff: (host: string, pr: PrKey, since: string | null, refetch = false, o: Opts = {}) =>
     request<PrDiffResponse>(`${prPath(host, pr)}/diff?${new URLSearchParams({ ...(since ? { since } : {}), ...(refetch ? { refetch: '1' } : {}) })}`, o),
+  /** Some files of a PR's diff by its base and head ids; `full`: each file whole, its changes in place. */
+  prFiles: (host: string, pr: PrKey, at: { base: string; tree: string; paths: string[]; full?: boolean }, o: Opts = {}) => {
+    const q = [`base=${enc(at.base)}`, `tree=${enc(at.tree)}`, ...at.paths.map((p) => `path=${enc(p)}`), ...(at.full ? ['full=1'] : [])].join('&')
+    return request<{ host: string; files: DiffFile[]; truncated: boolean }>(`${prPath(host, pr)}/files?${q}`, o)
+  },
   prNotes: (host: string, pr: PrKey, o: Opts = {}) => request<PrNotesState>(`${prPath(host, pr)}/notes`, o),
   prNoteCreate: (host: string, pr: PrKey, body: ReviewAnchor & { body: string; base?: string | null }, o: Opts = {}) =>
     request<PrNotesState & { thread: PrNote }>(`${prPath(host, pr)}/notes`, { ...o, method: 'POST', body }),

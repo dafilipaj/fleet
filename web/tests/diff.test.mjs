@@ -449,6 +449,28 @@ test('lite: the list without lines, the same files and counts as the full diff; 
   await assert.rejects(differ.filesAt(r.dir, { base: lr.base.sha, tree: lr.tree, paths: Array.from({ length: 41 }, (_, i) => `f${i}`) }), { status: 400 });
 });
 
+test('filesAt full: the whole file as one hunk, its changes in place', async (t) => {
+  const r = repo(t);
+  const lines = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`);
+  r.write('a.txt', lines.join('\n') + '\n');
+  r.git('add', '-A');
+  r.git('commit', '-qm', 'init');
+  lines[4] = 'FIVE';
+  lines[34] = 'THIRTY-FIVE';
+  r.write('a.txt', lines.join('\n') + '\n');
+  const differ = createDiffer({ run, home: '/nonexistent' });
+  const [lr] = (await differ.diffAll([r.dir], { lite: true })).repos;
+  const at = { base: lr.base.sha, tree: lr.tree, paths: ['a.txt'] };
+  const plain = (await differ.filesAt(r.dir, at)).files[0];
+  assert.equal(plain.hunks.length, 2);
+  const [f] = (await differ.filesAt(r.dir, { ...at, full: true })).files;
+  assert.equal(f.hunks.length, 1);
+  const ls = f.hunks[0].lines;
+  assert.equal(ls.filter((l) => l.t !== '-').length, 40);
+  assert.deepEqual(ls.filter((l) => l.t !== ' ').map((l) => [l.t, l.text]), [['-', 'line 5'], ['+', 'FIVE'], ['-', 'line 35'], ['+', 'THIRTY-FIVE']]);
+  assert.deepEqual([f.additions, f.deletions], [2, 2]);
+});
+
 test('HTTP: …/diffs?lite=1 and …/diffs/files — the list, then some files by base + tree', async (t) => {
   const r = repo(t);
   r.write('a.txt', 'one\n');

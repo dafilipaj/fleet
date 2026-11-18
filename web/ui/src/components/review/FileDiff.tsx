@@ -1,4 +1,4 @@
-import { ChevronDownIcon, ChevronRightIcon, CopyIcon, MessageSquareIcon } from 'lucide-react'
+import { ChevronDownIcon, ChevronRightIcon, CopyIcon, FileTextIcon, MessageSquareIcon } from 'lucide-react'
 import { Fragment, memo, useEffect, useMemo, useRef, type ReactNode } from 'react'
 
 import type { DiffFile, DiffHunk, DiffLine, ReviewThread } from '@/api/types'
@@ -74,18 +74,20 @@ function HunkHeader({ hunk }: { hunk: DiffHunk }) {
 }
 
 /** What a row needs to know about comments: selection, the gutter click, what renders under it. */
-interface Commenting {
+export interface Commenting {
   path: string
   selection: LineSelection | null
   onLine: (path: string, side: Side, n: number, extend: boolean) => void
   /** threads (and the composer) shown under the row holding these anchor keys */
   after: (keys: string[]) => ReactNode
+  /** no commenting: plain line numbers (the full-file view) */
+  readOnly?: boolean
 }
 
 function Gutter({ l, side, c }: { l: DiffLine | null; side: Side; c: Commenting }) {
   const n = lineNo(l, side)
   // A line commentable on this side: not the other side's change.
-  const ok = l != null && n != null && (side === 'new' ? l.t !== '-' : l.t !== '+')
+  const ok = !c.readOnly && l != null && n != null && (side === 'new' ? l.t !== '-' : l.t !== '+')
   const selected = ok && inSelection(c.selection, c.path, side, n)
   if (!ok) return <span className={cn(NUM, numBg(l))}>{n ?? ''}</span>
   return (
@@ -113,10 +115,10 @@ const keysOf = (l: DiffLine | null, sides: Side[]) =>
     return l && n != null && (side === 'new' ? l.t !== '-' : l.t !== '+') ? [anchorKey(side, n)] : []
   })
 
-function UnifiedHunk({ hunk, c }: { hunk: DiffHunk; c: Commenting }) {
+export function UnifiedHunk({ hunk, c, header = true }: { hunk: DiffHunk; c: Commenting; header?: boolean }) {
   return (
     <>
-      <HunkHeader hunk={hunk} />
+      {header ? <HunkHeader hunk={hunk} /> : null}
       {hunk.lines.map((l, i) => {
         const sel = inSelection(c.selection, c.path, unifiedSide(l), lineNo(l, unifiedSide(l)))
         return (
@@ -159,10 +161,10 @@ function SplitSide({ l, side, c }: { l: DiffLine | null; side: Side; c: Commenti
   )
 }
 
-function SplitHunk({ hunk, c }: { hunk: DiffHunk; c: Commenting }) {
+export function SplitHunk({ hunk, c, header = true }: { hunk: DiffHunk; c: Commenting; header?: boolean }) {
   return (
     <>
-      <HunkHeader hunk={hunk} />
+      {header ? <HunkHeader hunk={hunk} /> : null}
       {splitRows(hunk).map((r, i) => (
         <Fragment key={i}>
           <div className="flex divide-x">
@@ -254,6 +256,8 @@ export interface FileDiffProps {
   renderComposer: () => ReactNode
   /** the session the diff is from: a .plain spec's terms resolve across its checkout's modules */
   session?: { host: string; id: string } | null
+  /** open the whole file with its changes marked (absent: no button) */
+  onFull?: (fileKey: string) => void
 }
 
 /** A card whose lines are not loaded yet: asks for them once it comes near the screen. */
@@ -308,6 +312,7 @@ export const FileDiff = memo(function FileDiff({
   session = null,
   onNeed,
   loadFailed = false,
+  onFull,
 }: FileDiffProps) {
   const placed = useMemo(() => placeThreads(file, threads), [file, threads])
   const composerKey = composing && selection ? anchorKey(selection.side, selection.end) : null
@@ -361,6 +366,12 @@ export const FileDiff = memo(function FileDiff({
           <CopyIcon className="size-3.5" />
         </Button>
         <span className="flex-1" />
+        {onFull && !file.binary ? (
+          <Button variant="ghost" size="xs" className="shrink-0 text-muted-foreground" title="The whole file, its changes marked" onClick={() => onFull(fileKey)}>
+            <FileTextIcon />
+            <span className="max-sm:hidden">Full file</span>
+          </Button>
+        ) : null}
         {hasSpec ? (
           <span role="group" aria-label="Show as" className="flex shrink-0 rounded-md bg-muted p-0.5 text-xs">
             {(['spec', 'diff'] as const).map((v) => (

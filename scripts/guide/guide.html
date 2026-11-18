@@ -269,6 +269,9 @@ footer { padding-block: 36px 64px; font-size: 13px; color: var(--muted); display
       <li><b>Filteri</b> ispod headera: Specs, Docs, Code, Tests, svaki s brojem datoteka. Po defaultu su upaljeni specovi i kod; izbor se pamti.</li>
       <li><code>.plain</code> spec se ne čita kao diff linija nego kao spec, s promjenama po klauzulama: <a href="#plain">Plain specovi</a>.</li>
     </ul>
+    <h3>Cijela datoteka</h3>
+    <p class="prose"><b>Full file</b> u zaglavlju kartice otvara cijelu datoteku s promjenama označenim na mjestu (diff sa svim linijama kao kontekstom). Otvori se na prvoj promjeni; <kbd>n</kbd> / <kbd>p</kbd> ili strelice skaču po promjenama, a traka desno pokazuje gdje su u datoteci (klik skače). Radi i za PR review bez sesije. Samo za čitanje: komentari ostaju na karticama.</p>
+    <figure><img src="img/d-review-full.webp" alt="Cijela datoteka invoice_total.ts u dijalogu, promjene označene, traka s promjenama desno" width="1600" height="1000" loading="lazy"><figcaption><b>Full file</b>: cijela datoteka, promjene na mjestu, <i>Change 1 of n</i> i skakanje po njima</figcaption></figure>
     <h3>Komentar ide u sesiju, odgovor u thread</h3>
     <p class="prose">Označi kod mišem i klikni <b>Comment on lines</b>, ili klikni broj linije (<b>+</b> na hover, shift-klik za raspon). Komentar ide u sesiju kao prompt s datotekom, rasponom linija i označenim kodom, pa agent točno zna o čemu pričaš. Odgovor se čita iz transcripta i pojavi se u threadu ispod linija, a ostaje i normalan dio razgovora sesije.</p>
     <div class="shots two">

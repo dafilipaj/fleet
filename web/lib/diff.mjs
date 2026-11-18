@@ -23,6 +23,10 @@ export const MAX_ROOTS = 12;
 export const MAX_PLAIN_BYTES = 512 * 1024;
 /** Files per lazy request (…/diffs/files) at most. */
 export const MAX_LAZY_PATHS = 40;
+/** The whole-file view (`full`): one file's lines at most, its changes in place. */
+export const MAX_FULL_LINES = 20000;
+/** Context lines for a whole file: more than any file it shows. */
+const FULL_CONTEXT = 1000000;
 const PLAIN_RE = /\.plain$/i;
 const MAX_BUFFER = 64 * 1024 * 1024;
 /** `?base=`: a branch, tag or sha; never an option. */
@@ -191,9 +195,10 @@ export function createDiffer({ run, tmpDir = os.tmpdir(), home = os.homedir() })
 
   /**
    * A snapshot's files → hunks → lines. `paths`: only these (each file's path and, for a rename,
-   * its old one) — the lazy reviewer asks for a few files at a time.
+   * its old one) — the lazy reviewer asks for a few files at a time. `full`: every line of each
+   * file as context (one hunk), the whole-file view.
    */
-  async function filesOf(meta, { paths = null } = {}) {
+  async function filesOf(meta, { paths = null, full = false } = {}) {
     const { root, tree } = meta;
     const baseSha = meta.base.sha;
     const opts = ['--no-color', '--no-ext-diff', '-M', '--no-relative'];
@@ -201,7 +206,7 @@ export function createDiffer({ run, tmpDir = os.tmpdir(), home = os.homedir() })
     const lit = paths ? ['--literal-pathspecs'] : [];
     const [{ stdout: ns }, { stdout: patch }] = await Promise.all([
       git(root, [...lit, 'diff', ...opts, '--name-status', '-z', baseSha, tree, ...spec]),
-      git(root, [...lit, 'diff', ...opts, '-p', '-U3', baseSha, tree, ...spec]),
+      git(root, [...lit, 'diff', ...opts, '-p', full ? `-U${FULL_CONTEXT}` : '-U3', baseSha, tree, ...spec]),
     ]);
     const names = parseNameStatus(ns);
     const parsed = parsePatch(patch);
@@ -222,8 +227,8 @@ export function createDiffer({ run, tmpDir = os.tmpdir(), home = os.homedir() })
         hunks = [];
         cut = true;
         truncated = true;
-      } else if (size > MAX_FILE_LINES) {
-        hunks = cutHunks(p.hunks, MAX_FILE_LINES);
+      } else if (size > (full ? MAX_FULL_LINES : MAX_FILE_LINES)) {
+        hunks = cutHunks(p.hunks, full ? MAX_FULL_LINES : MAX_FILE_LINES);
         cut = true;
       }
       total += hunks.reduce((s, h) => s + h.lines.length, 0);
@@ -457,16 +462,17 @@ export function createDiffer({ run, tmpDir = os.tmpdir(), home = os.homedir() })
 
   /**
    * Some files of a diff the lazy list already named, by its base and tree ids (immutable, so
-   * the answer is too): → { files } with hunks (and .plain texts), in diff order.
+   * the answer is too): → { files } with hunks (and .plain texts), in diff order. `full`: each
+   * file whole, its changes marked in place (one hunk).
    */
-  async function filesAt(root, { base, tree, paths }) {
+  async function filesAt(root, { base, tree, paths, full = false }) {
     if (!validTree(base) || !validTree(tree)) throw new DiffError('invalid base or tree', 400);
     if (!Array.isArray(paths) || !paths.length || paths.length > MAX_LAZY_PATHS) throw new DiffError(`1–${MAX_LAZY_PATHS} paths`, 400);
     if (!paths.every((p) => typeof p === 'string' && p && p.length <= 4096 && !p.includes('\0') && !p.startsWith('/'))) throw new DiffError('invalid path', 400);
     const top = await revParse(root, ['--show-toplevel']);
     if (!top) throw new DiffError('not a git repository', 409);
     const want = new Set(paths);
-    const { files, truncated } = await filesOf({ root: top, tree, base: { sha: base } }, { paths });
+    const { files, truncated } = await filesOf({ root: top, tree, base: { sha: base } }, { paths, full });
     return { files: files.filter((f) => want.has(f.path)), truncated };
   }
 

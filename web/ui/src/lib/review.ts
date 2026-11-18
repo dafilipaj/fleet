@@ -408,3 +408,18 @@ export function placeOnClauses(file: DiffFile, clauses: Clause[], threads: Revie
   }
   return { at, unplaced, outdated }
 }
+
+/** The changed blocks of a whole-file diff: runs of +/− lines, as line indexes (`±`: both kinds). */
+export function changeBlocks(file: Pick<DiffFile, 'hunks'>): { start: number; end: number; kind: '+' | '-' | '±' }[] {
+  const lines = file.hunks.flatMap((h) => h.lines)
+  const out: { start: number; end: number; kind: '+' | '-' | '±' }[] = []
+  lines.forEach((l, i) => {
+    if (l.t === ' ') return
+    const last = out[out.length - 1]
+    if (last && last.end === i - 1) {
+      last.end = i
+      if (last.kind !== l.t) last.kind = '±'
+    } else out.push({ start: i, end: i, kind: l.t })
+  })
+  return out
+}

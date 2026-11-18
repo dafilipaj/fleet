@@ -113,8 +113,8 @@ const JOBS_ROUTE = /^\/api\/hosts\/([^/]+)\/jobs(?:\/([^/]+)(?:\/(run|enabled|re
 const JOB_RUN_PROXY_MS = 90 * 1000;
 const USAGE_ROUTE = /^\/api\/hosts\/([^/]+)\/usage$/;
 const PRS_ROUTE = /^\/api\/hosts\/([^/]+)\/prs(?:\/(checkout|spawn|seen))?$/;
-/** A PR in the diff reviewer without a session: …/prs/:owner/:repo/:n/diff | ask | notes[/:note[/post]] | notes/handoff. */
-const PR_REVIEW_ROUTE = /^\/api\/hosts\/([^/]+)\/prs\/([^/]+)\/([^/]+)\/(\d{1,9})\/(diff|ask|notes)(?:\/([^/]+)(?:\/(post))?)?$/;
+/** A PR in the diff reviewer without a session: …/prs/:owner/:repo/:n/diff | files | ask | notes[/:note[/post]] | notes/handoff. */
+const PR_REVIEW_ROUTE = /^\/api\/hosts\/([^/]+)\/prs\/([^/]+)\/([^/]+)\/(\d{1,9})\/(diff|files|ask|notes)(?:\/([^/]+)(?:\/(post))?)?$/;
 const SHA_RE = /^[0-9a-f]{40}$/;
 /** What a side question about a PR may run: read-only git, to see the PR's files rather than the clone's working tree. */
 const PR_ASK_TOOLS = [...ASK_TOOLS, 'Bash(git show:*)', 'Bash(git diff:*)', 'Bash(git log:*)', 'Bash(git blame:*)'];
@@ -1404,9 +1404,9 @@ export function createApi({
       const ref = { owner: decodeURIComponent(rawOwner), repo: decodeURIComponent(rawRepo), number: Number(rawNum) };
       const note = rawNote == null ? null : decodeURIComponent(rawNote);
       const op =
-        what === 'diff' ? 'diff' : what === 'ask' ? 'ask' : note == null ? (req.method === 'GET' ? 'list' : 'create') : note === 'handoff' ? 'handoff' : post ? 'post' : req.method === 'DELETE' ? 'remove' : 'update';
-      const method = { diff: 'GET', ask: 'POST', list: 'GET', create: 'POST', handoff: 'POST', post: 'POST', remove: 'DELETE', update: 'PUT' }[op];
-      if (req.method !== method || ((what === 'diff' || what === 'ask') && note != null)) throw new HttpError('method not allowed', 405);
+        what === 'diff' ? 'diff' : what === 'files' ? 'files' : what === 'ask' ? 'ask' : note == null ? (req.method === 'GET' ? 'list' : 'create') : note === 'handoff' ? 'handoff' : post ? 'post' : req.method === 'DELETE' ? 'remove' : 'update';
+      const method = { diff: 'GET', files: 'GET', ask: 'POST', list: 'GET', create: 'POST', handoff: 'POST', post: 'POST', remove: 'DELETE', update: 'PUT' }[op];
+      if (req.method !== method || ((what === 'diff' || what === 'files' || what === 'ask') && note != null)) throw new HttpError('method not allowed', 405);
       if (note != null && op !== 'handoff' && !validNoteId(note)) throw new HttpError('invalid note id', 400);
       return forHost({
         req,
@@ -1518,7 +1518,7 @@ export function createApi({
             const top = await differ.checkout?.(root);
             if (!top) throw new HttpError('root is not a git checkout on this host', 400);
             try {
-              const r = await differ.filesAt(top, { base: url.searchParams.get('base'), tree: url.searchParams.get('tree'), paths: url.searchParams.getAll('path') });
+              const r = await differ.filesAt(top, { base: url.searchParams.get('base'), tree: url.searchParams.get('tree'), paths: url.searchParams.getAll('path'), full: url.searchParams.get('full') === '1' });
               return { status: 200, body: { host: config.self, id: session.session_id, root: top, ...r } };
             } catch (err) {
               if (err?.status) throw new HttpError(err.message, err.status);
@@ -2019,6 +2019,17 @@ export function createApi({
         const body = { host: config.self, id: null, cwd: repoPath, pr: info, fingerprint, unchanged };
         if (!unchanged) body.repos = [{ ...repoDiff, fingerprint, label: `${pr.owner}/${pr.repo}` }];
         return { status: 200, body };
+      } catch (err) {
+        return fail(err);
+      }
+    }
+    if (op === 'files') {
+      // Some files of the PR's diff by its base + head ids; `full=1`: each file whole (the full-file view).
+      if (!differ?.filesAt) throw new HttpError('the diff reviewer is not available on this server', 501);
+      if (!repoPath) throw new HttpError(`no local clone of ${pr.owner}/${pr.repo} on this host`, 409);
+      try {
+        const r = await differ.filesAt(repoPath, { base: url.searchParams.get('base'), tree: url.searchParams.get('tree'), paths: url.searchParams.getAll('path'), full: url.searchParams.get('full') === '1' });
+        return { status: 200, body: { host: config.self, ...r } };
       } catch (err) {
         return fail(err);
       }

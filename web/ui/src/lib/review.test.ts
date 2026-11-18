@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { DiffFile, DiffHunk, DiffRepo, ReviewThread } from '@/api/types'
 
 import { diffPlain } from './plain'
-import { githubPr, parsePrReviewLocation, prReviewHref, fileKind, kindCounts, allClauses, clauseAt, placeOnClauses, diffBar, fileKey, rowsToRange, fileSignature, fileTree, orphanThreads, orphanThreadsByKey, repoViews, threadKey, repoKey, entrySections, entryBucket, parseReviewLocation, placeThreads, reviewHref, selectLine, selectionCode, splitRows, treeOrder } from './review'
+import { changeBlocks, githubPr, parsePrReviewLocation, prReviewHref, fileKind, kindCounts, allClauses, clauseAt, placeOnClauses, diffBar, fileKey, rowsToRange, fileSignature, fileTree, orphanThreads, orphanThreadsByKey, repoViews, threadKey, repoKey, entrySections, entryBucket, parseReviewLocation, placeThreads, reviewHref, selectLine, selectionCode, splitRows, treeOrder } from './review'
 
 const file = (path: string, o: Partial<DiffFile> = {}): DiffFile => ({
   path,
@@ -287,5 +287,18 @@ describe('githubPr', () => {
     expect(githubPr('https://github.com/acme/api/issues/12')).toBeNull()
     expect(githubPr('https://gitlab.com/acme/api/pull/12')).toBeNull()
     expect(githubPr('https://github.com/acme/api/pull/12x')).toBeNull()
+  })
+})
+
+describe('changeBlocks', () => {
+  it('groups runs of changed lines; a run with both kinds is ±', () => {
+    const l = (t: ' ' | '+' | '-') => ({ t, o: null, n: null, text: '' })
+    const f = { hunks: [hunk([l(' '), l('-'), l('+'), l(' '), l(' '), l('+'), l('+'), l(' '), l('-')])] }
+    expect(changeBlocks(f)).toEqual([
+      { start: 1, end: 2, kind: '±' },
+      { start: 5, end: 6, kind: '+' },
+      { start: 8, end: 8, kind: '-' },
+    ])
+    expect(changeBlocks({ hunks: [] })).toEqual([])
   })
 })
