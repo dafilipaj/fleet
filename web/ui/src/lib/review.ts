@@ -10,6 +10,18 @@ export const reviewHref = (host: string, id: string, root?: string | null) =>
 export const prReviewHref = (host: string, pr: { owner: string; repo: string; number: number }) =>
   `/review/pr/${encodeURIComponent(host)}/${encodeURIComponent(pr.owner)}/${encodeURIComponent(pr.repo)}/${pr.number}`
 
+export interface GithubPr {
+  owner: string
+  repo: string
+  number: number
+}
+
+/** A GitHub PR link (`https://github.com/<owner>/<repo>/pull/<n>…`) → its parts, else null. */
+export function githubPr(url: string): GithubPr | null {
+  const m = /^https?:\/\/(?:www\.)?github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/(\d+)(?:[/?#]|$)/.exec(url.trim())
+  return m ? { owner: m[1], repo: m[2], number: Number(m[3]) } : null
+}
+
 export function parsePrReviewLocation(location: string): { host: string; owner: string; repo: string; number: number } | null {
   const m = /^\/review\/pr\/([^/]+)\/([^/]+)\/([^/]+)\/(\d+)\/?$/.exec(location)
   if (!m) return null

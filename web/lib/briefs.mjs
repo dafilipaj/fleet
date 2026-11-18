@@ -31,6 +31,7 @@ import {
   serializeBrief,
 } from './brief-format.mjs';
 import { readDelta } from './brief-extract.mjs';
+import { githubSlug } from './diff.mjs';
 
 export const SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const HOUR_MS = 60 * 60 * 1000;
@@ -108,11 +109,14 @@ export function createClaudeAsk({ bin = 'claude', run, timeoutMs = 120 * 1000, c
 /**
  * Branch and checkout root of a directory, or null outside git. One `git` call, 2 s cap. →
  * { branch (null when detached), toplevel (absolute), linked (a linked worktree, not the main
- * checkout), worktree (toplevel when linked, else null) }.
+ * checkout), worktree (toplevel when linked, else null), repo (origin's GitHub `owner/name`, or null) }.
  */
 export async function gitInfo(cwd, { run }) {
   try {
-    const { stdout } = await run('git', ['-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD', '--show-toplevel', '--git-dir', '--git-common-dir'], { timeout: 2000 });
+    const [{ stdout }, origin] = await Promise.all([
+      run('git', ['-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD', '--show-toplevel', '--git-dir', '--git-common-dir'], { timeout: 2000 }),
+      run('git', ['-C', cwd, 'config', '--get', 'remote.origin.url'], { timeout: 2000 }).then((r) => r.stdout, () => ''),
+    ]);
     const [branch, top, gitDir, common] = stdout.trim().split('\n').map((s) => s.trim());
     if (!top) return null;
     // Relative paths are relative to the directory git ran in.
@@ -123,6 +127,7 @@ export async function gitInfo(cwd, { run }) {
       toplevel: top,
       linked,
       worktree: linked ? top : null,
+      repo: githubSlug(origin),
     };
   } catch {
     return null;
@@ -481,13 +486,13 @@ export function createBriefs({
    * The git checkouts the session works in: its cwd's first, then those of the directories it
    * was in (`meta.dirs`), then those of the files and specs in Resources (a session often edits
    * a worktree it never cd'd into). Deduped by root, at most
-   * MAX_WORKTREE_ROOTS checkouts looked up. → [{ path (absolute), display, branch, linked }].
+   * MAX_WORKTREE_ROOTS checkouts looked up. → [{ path (absolute), display, branch, linked, repo }].
    */
   async function worktreesOf(brief, absCwd, gi) {
     const roots = new Map();
     const add = (g) => {
       if (g?.toplevel && !roots.has(g.toplevel)) {
-        roots.set(g.toplevel, { path: g.toplevel, display: displayPath(g.toplevel, null, home), branch: g.branch ?? null, linked: Boolean(g.linked ?? g.worktree) });
+        roots.set(g.toplevel, { path: g.toplevel, display: displayPath(g.toplevel, null, home), branch: g.branch ?? null, linked: Boolean(g.linked ?? g.worktree), repo: g.repo ?? null });
       }
     };
     add(gi);

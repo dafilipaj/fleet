@@ -587,7 +587,7 @@ test('briefs: GET serves an empty skeleton, then no-model extraction', async (t)
   assert.deepEqual([git.branch, git.linked, git.label], ['fix-login', false, 'fix-login']);
   assert.match(live.continuePrompt, /^Continue the work of session aaaaaaaa-.* on laptop in /);
   assert.deepEqual(Object.keys(live).sort(), ['absCwd', 'continuePrompt', 'editedAt', 'enabled', 'exists', 'generatedAt', 'generatedThrough', 'generating', 'gitRoot', 'host', 'id', 'markdown', 'parsed', 'updated', 'worktrees']);
-  assert.deepEqual(live.worktrees, [{ path: s.cwd, display: displayPath(s.cwd, null, s.home), branch: 'fix-login', linked: false }]);
+  assert.deepEqual(live.worktrees, [{ path: s.cwd, display: displayPath(s.cwd, null, s.home), branch: 'fix-login', linked: false, repo: null }]);
 });
 
 test('briefs: worktrees — the cwd checkout first, then where it worked and the files it wrote, deduped', async (t) => {
@@ -689,12 +689,13 @@ test('claude runner: failure, timeout, and a claude without --no-session-persist
   assert.equal((await ask({ prompt: 'y' })).trim(), 'fine', 'the flag stays off');
 });
 
-test('gitInfo: branch and checkout root from one rev-parse', async () => {
-  const fakeRun = (out) => async () => ({ stdout: out, stderr: '' });
-  assert.deepEqual(await gitInfo('/w/p', { run: fakeRun('main\n/w/p\n.git\n.git\n') }), { branch: 'main', toplevel: '/w/p', linked: false, worktree: null });
+test('gitInfo: branch and checkout root from one rev-parse, the GitHub repo from origin', async () => {
+  const fakeRun = (out, origin = '') => async (_bin, args) => ({ stdout: args.includes('config') ? origin : out, stderr: '' });
+  assert.deepEqual(await gitInfo('/w/p', { run: fakeRun('main\n/w/p\n.git\n.git\n', 'git@github.com:acme/api.git\n') }), { branch: 'main', toplevel: '/w/p', linked: false, worktree: null, repo: 'acme/api' });
+  assert.equal((await gitInfo('/w/p', { run: fakeRun('main\n/w/p\n.git\n.git\n', 'https://gitlab.com/acme/api.git\n') })).repo, null, 'not GitHub');
   // In a subdirectory git prints absolute paths; relative ones are relative to the cwd.
   assert.equal((await gitInfo('/w/p/src', { run: fakeRun('main\n/w/p\n/w/p/.git\n../.git\n') })).linked, false);
-  assert.deepEqual(await gitInfo('/w/p/.worktrees/x', { run: fakeRun('feat-x\n/w/p/.worktrees/x\n/w/p/.git/worktrees/x\n/w/p/.git\n') }), { branch: 'feat-x', toplevel: '/w/p/.worktrees/x', linked: true, worktree: '/w/p/.worktrees/x' });
+  assert.deepEqual(await gitInfo('/w/p/.worktrees/x', { run: fakeRun('feat-x\n/w/p/.worktrees/x\n/w/p/.git/worktrees/x\n/w/p/.git\n') }), { branch: 'feat-x', toplevel: '/w/p/.worktrees/x', linked: true, worktree: '/w/p/.worktrees/x', repo: null });
   assert.equal((await gitInfo('/w', { run: fakeRun('HEAD\n/w\n.git\n.git\n') })).branch, null, 'detached');
   assert.equal(await gitInfo('/nope', { run: async () => { throw new Error('not a git repository'); } }), null);
 });

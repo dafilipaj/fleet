@@ -9,7 +9,8 @@ const OPEN_TTL_MS = 3 * 60_000;
 const DONE_TTL_MS = 6 * 60 * 60_000;
 const ERROR_TTL_MS = 5 * 60_000;
 const WAIT_MS = 3000;
-const MAX_PRS = 12;
+const MAX_PRS = 40;
+const MAX_PARALLEL = 6; // `gh` calls at once (a long brief's first read)
 const MAX_CACHE = 500;
 
 /** `gh pr view --json state,isDraft` output → 'draft' | 'open' | 'merged' | 'closed' | null. */
@@ -29,12 +30,21 @@ export function stateOf(json) {
 export function createPrStates({ gh, now = Date.now, waitMs = WAIT_MS }) {
   const cache = new Map(); // prKey → { at, ttl, state, head }
   const inflight = new Map(); // prKey → Promise<state | null>
+  let running = 0;
+  const queue = [];
+  const slot = () => (running < MAX_PARALLEL ? (running++, Promise.resolve()) : new Promise((r) => queue.push(r)));
+  const release = () => {
+    const next = queue.shift();
+    if (next) next();
+    else running--;
+  };
 
   function fetchState(pr, key) {
     let p = inflight.get(key);
     if (p) return p;
     let head = null;
-    p = gh(['pr', 'view', pr.url, '--json', 'state,isDraft,headRefName'], { timeout: 15000 })
+    p = slot()
+      .then(() => gh(['pr', 'view', pr.url, '--json', 'state,isDraft,headRefName'], { timeout: 15000 }).finally(release))
       .then(({ stdout }) => {
         const json = JSON.parse(stdout);
         head = typeof json?.headRefName === 'string' && json.headRefName ? json.headRefName : null;

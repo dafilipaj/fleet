@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { DiffFile, DiffHunk, DiffRepo, ReviewThread } from '@/api/types'
 
 import { diffPlain } from './plain'
-import { parsePrReviewLocation, prReviewHref, fileKind, kindCounts, allClauses, clauseAt, placeOnClauses, diffBar, fileKey, rowsToRange, fileSignature, fileTree, orphanThreads, orphanThreadsByKey, repoViews, threadKey, repoKey, entrySections, entryBucket, parseReviewLocation, placeThreads, reviewHref, selectLine, selectionCode, splitRows, treeOrder } from './review'
+import { githubPr, parsePrReviewLocation, prReviewHref, fileKind, kindCounts, allClauses, clauseAt, placeOnClauses, diffBar, fileKey, rowsToRange, fileSignature, fileTree, orphanThreads, orphanThreadsByKey, repoViews, threadKey, repoKey, entrySections, entryBucket, parseReviewLocation, placeThreads, reviewHref, selectLine, selectionCode, splitRows, treeOrder } from './review'
 
 const file = (path: string, o: Partial<DiffFile> = {}): DiffFile => ({
   path,
@@ -272,5 +272,17 @@ describe('review entries: worktrees and PRs', () => {
     const order = (list: typeof vs) => entrySections(list).flatMap((x) => x.groups.flatMap((g) => g.views.map((v) => v.repo.pr?.number)))
     expect(order(vs)).toEqual([3, 7, 9])
     expect(order([...vs].reverse())).toEqual([3, 7, 9])
+  })
+})
+
+describe('githubPr', () => {
+  it('reads a GitHub PR link', () => {
+    expect(githubPr('https://github.com/acme/api.js/pull/12')).toEqual({ owner: 'acme', repo: 'api.js', number: 12 })
+    expect(githubPr('https://github.com/acme/api/pull/12/files#diff')).toEqual({ owner: 'acme', repo: 'api', number: 12 })
+  })
+  it('is null for anything else', () => {
+    expect(githubPr('https://github.com/acme/api/issues/12')).toBeNull()
+    expect(githubPr('https://gitlab.com/acme/api/pull/12')).toBeNull()
+    expect(githubPr('https://github.com/acme/api/pull/12x')).toBeNull()
   })
 })

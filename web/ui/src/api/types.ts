@@ -940,6 +940,8 @@ export interface BriefWorktree {
   branch: string | null
   /** true = a linked worktree, false = the main checkout. */
   linked: boolean
+  /** The GitHub `owner/name` of its origin (null: none / not GitHub). Older servers omit it. */
+  repo?: string | null
   /** "Open in editor" link for `path` (see Brief.editorUrl); null = no button. */
   editorUrl?: string | null
 }

@@ -34,6 +34,7 @@ import { usePersistentState } from '@/hooks/usePersistentState'
 import { briefBody, briefTime, briefTodos, gitLine, groupResources, todoProgress, type ResourceGroup } from '@/lib/brief'
 import { relTime } from '@/lib/format'
 import { pathCandidates } from '@/lib/paths'
+import { githubPr, type GithubPr } from '@/lib/review'
 import { cn } from '@/lib/utils'
 
 const KIND_ICON: Record<string, typeof FileIcon> = {
@@ -73,6 +74,8 @@ export interface BriefSectionProps {
   cancelEditRef?: React.RefObject<(() => void) | null>
   /** Review one checkout: the diff reviewer scoped to it (a worktree's row, a PR's on its branch). Absent: no buttons. */
   onReviewRoot?: (root: string) => void
+  /** A PR row's Review when no worktree has its branch: the PR's diff from this host's clone. */
+  onReviewPr?: (pr: GithubPr) => void
 }
 
 /**
@@ -80,7 +83,7 @@ export interface BriefSectionProps {
  * Edit), then Summary, Todos (clickable checkboxes, "3/7"), Resources grouped by kind (files
  * open the in-app preview, URLs a new tab; Files collapsed by default). Edit = the body markdown in a textarea (⌘/Ctrl+Enter saves, Esc cancels).
  */
-export function BriefSection({ host, brief: st, fileLinks, desktop = false, cancelEditRef, onReviewRoot }: BriefSectionProps) {
+export function BriefSection({ host, brief: st, fileLinks, desktop = false, cancelEditRef, onReviewRoot, onReviewPr }: BriefSectionProps) {
   const now = useNow(15_000)
   const b = st.brief
   const [draft, setDraft] = useState<string | null>(null)
@@ -131,8 +134,17 @@ export function BriefSection({ host, brief: st, fileLinks, desktop = false, canc
   const topGroups = groups.filter((g) => g.kind != null && TOP_KINDS.has(g.kind))
   const restGroups = groups.filter((g) => !(g.kind != null && TOP_KINDS.has(g.kind)))
   const empty = !!b && !b.exists && !summary && !todos.length && !groups.length && !worktrees.length
-  // A PR row's Review: the worktree on its head branch (gh tells the branch; none checked out → no button).
-  const prRoot = (r: BriefResource) => (r.kind === 'PR' && r.prBranch ? (worktrees.find((w) => w.branch === r.prBranch)?.path ?? null) : null)
+  // A PR row's Review: the worktree of its repo on its head branch (gh tells the branch), else the
+  // PR's own review (diffed from the host's clone).
+  const prReview = (r: BriefResource): ResourceReview | undefined => {
+    if (r.kind !== 'PR') return undefined
+    const pr = r.url ? githubPr(r.url) : null
+    const slug = pr ? `${pr.owner}/${pr.repo}`.toLowerCase() : null
+    const wt = r.prBranch ? worktrees.find((w) => w.branch === r.prBranch && (!w.repo || !slug || w.repo.toLowerCase() === slug)) : undefined
+    if (wt && onReviewRoot) return { onClick: () => onReviewRoot(wt.path), title: `Review ${r.label || 'this PR'}: the diff of its worktree (${r.prBranch}) only` }
+    if (pr && onReviewPr) return { onClick: () => onReviewPr(pr), title: `Review ${r.label || 'this PR'}: its diff from this host's clone` }
+    return undefined
+  }
 
   const regenerateButton = (label: string, className?: string) => (
     <Button variant="outline" size="lg" className={className} disabled={busy || !b} onClick={() => void st.regenerate()}>
@@ -230,7 +242,7 @@ export function BriefSection({ host, brief: st, fileLinks, desktop = false, canc
             <Part key={g.kind} title={g.label} aside={g.items.length > 1 ? <span className="tabular-nums">{g.items.length}</span> : null}>
               <ul className="space-y-1">
                 {g.items.map((r, i) => (
-                  <ResourceRow key={`${r.text}-${i}`} r={r} fileLinks={fileLinks} onReview={onReviewRoot ? reviewAction(prRoot(r), onReviewRoot) : undefined} />
+                  <ResourceRow key={`${r.text}-${i}`} r={r} fileLinks={fileLinks} review={prReview(r)} />
                 ))}
               </ul>
             </Part>
@@ -416,9 +428,10 @@ function WorktreesGroup({ worktrees, editor, onReview }: { worktrees: BriefWorkt
 const rowClass = 'flex min-w-0 items-start gap-2 rounded-md py-1 text-sm'
 const linkClass = 'min-w-0 break-words text-primary underline decoration-primary/40 underline-offset-2 [overflow-wrap:anywhere] active:opacity-70'
 
-/** `root` → the click that reviews it; null root → no button. */
-function reviewAction(root: string | null, onReview: (root: string) => void): (() => void) | undefined {
-  return root ? () => onReview(root) : undefined
+/** A row's Review button: what it opens and its tooltip. */
+interface ResourceReview {
+  onClick: () => void
+  title: string
 }
 
 /** The per-checkout Review: the whole diff reviewer, scoped to one worktree / PR. */
@@ -430,7 +443,7 @@ function ReviewButton({ onClick, title }: { onClick: () => void; title: string }
   )
 }
 
-function ResourceRow({ r, fileLinks, onReview }: { r: BriefResource; fileLinks: FileStats; onReview?: () => void }) {
+function ResourceRow({ r, fileLinks, review }: { r: BriefResource; fileLinks: FileStats; review?: ResourceReview }) {
   const Icon = (r.kind && KIND_ICON[r.kind]) || StickyNoteIcon
   const icon = <Icon className="mt-0.5 size-4 shrink-0 text-dimmer" />
   const pr = r.kind === 'PR' && r.prState ? PR_STATE[r.prState] : null
@@ -447,7 +460,7 @@ function ResourceRow({ r, fileLinks, onReview }: { r: BriefResource; fileLinks: 
         <a href={r.url} target="_blank" rel="noopener noreferrer" className={cn(linkClass, 'mr-auto')} title={r.url}>
           {r.label || r.url}
         </a>
-        {onReview ? <ReviewButton onClick={onReview} title={`Review ${r.label || 'this PR'}: the diff of its worktree (${r.prBranch}) only`} /> : null}
+        {review ? <ReviewButton onClick={review.onClick} title={review.title} /> : null}
       </li>
     )
   }

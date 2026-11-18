@@ -51,7 +51,7 @@ import { harnessLabel } from '@/lib/harness'
 import { tailAnchor } from '@/lib/outbox'
 import { findSession, sessionDone, statusMeta } from '@/lib/sessions'
 import { isBack } from '@/lib/snooze'
-import { reviewHref } from '@/lib/review'
+import { prReviewHref, reviewHref } from '@/lib/review'
 import { stacksKnown } from '@/lib/stacks'
 import { isUndoBackspace } from '@/lib/shortcuts'
 import { STATUS_TEXT } from '@/lib/styles'
@@ -460,7 +460,7 @@ export function SessionScreen({
     host,
     id,
     session,
-    brief: { host, brief, fileLinks, onReviewRoot: session?.cwd && !embedded ? (root: string) => navigate(reviewHref(host, id, root)) : undefined },
+    brief: { host, brief, fileLinks, onReviewRoot: session?.cwd && !embedded ? (root: string) => navigate(reviewHref(host, id, root)) : undefined, onReviewPr: !embedded ? (pr) => navigate(prReviewHref(host, pr)) : undefined },
     onNewFromHere: session ? newFromHere : undefined,
     onReview: session?.cwd && !embedded ? () => navigate(reviewHref(host, id)) : undefined,
     stack: embedded ? null : stackMenu,
