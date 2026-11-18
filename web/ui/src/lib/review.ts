@@ -7,8 +7,10 @@ export const reviewHref = (host: string, id: string, root?: string | null) =>
   `/review/${encodeURIComponent(host)}/${encodeURIComponent(id)}${root ? `/root/${encodeURIComponent(root)}` : ''}`
 
 /** `#/review/pr/<host>/<owner>/<repo>/<n>`: the diff reviewer over a PR from that host's clone, without a session. */
-export const prReviewHref = (host: string, pr: { owner: string; repo: string; number: number }) =>
-  `/review/pr/${encodeURIComponent(host)}/${encodeURIComponent(pr.owner)}/${encodeURIComponent(pr.repo)}/${pr.number}`
+/** `from`: the session it was opened from (Back returns there instead of to the PR). */
+export const prReviewHref = (host: string, pr: { owner: string; repo: string; number: number }, from?: { host: string; id: string }) =>
+  `/review/pr/${encodeURIComponent(host)}/${encodeURIComponent(pr.owner)}/${encodeURIComponent(pr.repo)}/${pr.number}` +
+  (from ? `/from/${encodeURIComponent(from.host)}/${encodeURIComponent(from.id)}` : '')
 
 export interface GithubPr {
   owner: string
@@ -22,11 +24,17 @@ export function githubPr(url: string): GithubPr | null {
   return m ? { owner: m[1], repo: m[2], number: Number(m[3]) } : null
 }
 
-export function parsePrReviewLocation(location: string): { host: string; owner: string; repo: string; number: number } | null {
-  const m = /^\/review\/pr\/([^/]+)\/([^/]+)\/([^/]+)\/(\d+)\/?$/.exec(location)
+export function parsePrReviewLocation(location: string): { host: string; owner: string; repo: string; number: number; from?: { host: string; id: string } } | null {
+  const m = /^\/review\/pr\/([^/]+)\/([^/]+)\/([^/]+)\/(\d+)(?:\/from\/([^/]+)\/([^/]+))?\/?$/.exec(location)
   if (!m) return null
   try {
-    return { host: decodeURIComponent(m[1]), owner: decodeURIComponent(m[2]), repo: decodeURIComponent(m[3]), number: Number(m[4]) }
+    return {
+      host: decodeURIComponent(m[1]),
+      owner: decodeURIComponent(m[2]),
+      repo: decodeURIComponent(m[3]),
+      number: Number(m[4]),
+      ...(m[5] && m[6] ? { from: { host: decodeURIComponent(m[5]), id: decodeURIComponent(m[6]) } } : {}),
+    }
   } catch {
     return null
   }

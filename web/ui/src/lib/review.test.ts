@@ -232,6 +232,9 @@ describe('PR review locations', () => {
     expect(parsePrReviewLocation(href)).toEqual({ host: 'work station', owner: 'acme', repo: 'api.js', number: 12 })
     expect(parsePrReviewLocation('/review/laptop/abc')).toBeNull()
     expect(parsePrReviewLocation('/review/pr/h/o/r/x')).toBeNull()
+    const fromSession = prReviewHref('ws', { owner: 'acme', repo: 'api', number: 3 }, { host: 'work station', id: 'abc-1' })
+    expect(fromSession).toBe('/review/pr/ws/acme/api/3/from/work%20station/abc-1')
+    expect(parsePrReviewLocation(fromSession)).toEqual({ host: 'ws', owner: 'acme', repo: 'api', number: 3, from: { host: 'work station', id: 'abc-1' } })
   })
 })
 

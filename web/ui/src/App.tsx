@@ -36,7 +36,7 @@ import { UsageScreen } from '@/screens/UsageScreen'
 
 /**
  * Hash routing: `#/` (list), `#/s/<host>/<session_id>` (detail),
- * plus `#/embed?host=…&dir=…` (one directory's sessions, for another app to frame: its own tree, below), `#/settings[/<section>]` (General, Models, Start directories, Git repos, Inbox, Status), `#/usage` (the subscription limits), `#/inbox` (everything waiting on you), `#/bots` (agent sessions from a recipe; `#/jobs` is its old name), `#/operator` (talk to the fleet by voice), `#/prs` (the GitHub PRs that need you), `#/tasks` (your open Productive tasks), `#/memos[/<id>]` (voice memos) and `#/notes[/<host>[/<path>]]` (the notes explorer) `#/review/<host>/<session_id>` (the diff reviewer) and `#/review/pr/<host>/<owner>/<repo>/<n>` (the diff reviewer over a PR, with no session).
+ * plus `#/embed?host=…&dir=…` (one directory's sessions, for another app to frame: its own tree, below), `#/settings[/<section>]` (General, Models, Start directories, Git repos, Inbox, Status), `#/usage` (the subscription limits), `#/inbox` (everything waiting on you), `#/bots` (agent sessions from a recipe; `#/jobs` is its old name), `#/operator` (talk to the fleet by voice), `#/prs` (the GitHub PRs that need you), `#/tasks` (your open Productive tasks), `#/memos[/<id>]` (voice memos) and `#/notes[/<host>[/<path>]]` (the notes explorer) `#/review/<host>/<session_id>` (the diff reviewer) and `#/review/pr/<host>/<owner>/<repo>/<n>[/from/<host>/<session_id>]` (the diff reviewer over a PR, with no session; `from`: Back returns to that session).
  * No server-side SPA fallback needed; the PWA start_url is `/#/`. Desktop and mobile use the
  * same routes, so links work across both.
  */
@@ -102,6 +102,9 @@ function FleetApp() {
                     <NotesScreen />
                   </Route>
                   <Route path="/review/pr/:host/:owner/:repo/:n">
+                    <ReviewScreen />
+                  </Route>
+                  <Route path="/review/pr/:host/:owner/:repo/:n/from/:fromHost/:fromId">
                     <ReviewScreen />
                   </Route>
                   <Route path="/review/:host/:id">

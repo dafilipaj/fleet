@@ -98,13 +98,13 @@ interface ReviewSource {
  * `#/review/<host>/<id>`: GitHub's "Files changed" over every checkout the session works in
  * (its cwd's, and the worktrees it edits from there — a meta repo's PRs), following it live. Desktop (`pane`): file tree | diff | the session itself (chat + composer), so the
  * review and the conversation sit side by side. Mobile: the diff alone.
- * `#/review/pr/<host>/<owner>/<repo>/<n>`: the same over a PR from the host's clone, with no
+ * `#/review/pr/<host>/<owner>/<repo>/<n>[/from/<host>/<session>]`: the same over a PR from the host's clone, with no
  * session: comments are notes kept in Fleet (post one to GitHub, or hand them all to a session).
  */
 export function ReviewScreen({ layout = 'screen' }: { layout?: Layout }) {
   const [location] = useLocation()
   const prLoc = parsePrReviewLocation(location)
-  if (prLoc) return <PrReview key={`${prLoc.host}/${prLoc.owner}/${prLoc.repo}/${prLoc.number}`} host={prLoc.host} pr={prLoc} layout={layout} />
+  if (prLoc) return <PrReview key={`${prLoc.host}/${prLoc.owner}/${prLoc.repo}/${prLoc.number}`} host={prLoc.host} pr={prLoc} from={prLoc.from ?? null} layout={layout} />
   const loc = parseReviewLocation(location)
   if (!loc) return null
   return <SessionReview key={`${loc.host}/${loc.id}/${loc.root ?? ''}`} host={loc.host} id={loc.id} root={loc.root ?? null} layout={layout} />
@@ -211,7 +211,7 @@ function SessionReview({ host, id, root, layout }: { host: string; id: string; r
   return <ReviewView layout={layout} source={source} />
 }
 
-function PrReview({ host, pr, layout }: { host: string; pr: PrKey; layout: Layout }) {
+function PrReview({ host, pr, from, layout }: { host: string; pr: PrKey; from: { host: string; id: string } | null; layout: Layout }) {
   const [, navigate] = useLocation()
   const { applyFleet } = useFleet()
   const { data, error, changedAt, refetch } = usePrDiff(host, pr)
@@ -257,8 +257,9 @@ function PrReview({ host, pr, layout }: { host: string; pr: PrKey; layout: Layou
         <span className="font-mono font-semibold text-muted-foreground">{ref}</span> {info?.title ?? ''}
       </>
     ),
-    backLabel: 'Back to the PR',
-    back: () => navigate(prHref({ owner: pr.owner, repo: pr.repo, number: pr.number })),
+    // Opened from a session's brief: Back returns to that session, else to the PR.
+    backLabel: from ? 'Back to session' : 'Back to the PR',
+    back: () => navigate(from ? `/s/${encodeURIComponent(from.host)}/${encodeURIComponent(from.id)}` : prHref({ owner: pr.owner, repo: pr.repo, number: pr.number })),
     data,
     error,
     changedAt,
