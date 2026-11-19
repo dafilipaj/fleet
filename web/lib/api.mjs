@@ -873,8 +873,9 @@ export function createApi({
   }
 
   /**
-   * PUT /api/slack/spawn `{ bridge?, spawn: { … } | null }` → that bridge's status: sets its
-   * `slack.spawn` (a mention opens a session; null = off) in its config and live at once. Served
+   * PUT /api/slack/spawn `{ bridge?, spawn: { … } | null }` → that bridge's status: changes the
+   * fields given of its `slack.spawn` (a field set to null = its default; `spawn: null` = off) in
+   * its config and live at once. Served
    * by the bridge (`bridge`, default `slack.host`); the others proxy there once.
    */
   async function handleSlackSpawn(req, url) {
@@ -892,7 +893,11 @@ export function createApi({
     if (!body || !('spawn' in body)) throw new HttpError('spawn is required: { host, dir, model, minutes, from } or null', 400);
     let spawn;
     try {
-      spawn = slackSpawn(body.spawn);
+      // A patch: only the fields given change, on top of the current `slack.spawn` (or nothing,
+      // when it is off); a field given as null (or '') goes back to its default. `spawn: null` = off.
+      const patch = body.spawn;
+      const merged = patch && typeof patch === 'object' && !Array.isArray(patch) ? { ...(config.slack?.spawn ?? {}), ...patch } : patch;
+      spawn = slackSpawn(merged);
     } catch (err) {
       throw new HttpError(err.message.replace(/^config\./, ''), 400);
     }

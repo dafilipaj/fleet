@@ -1106,7 +1106,7 @@ test('config slack.spawn: defaults, from, and what it refuses', () => {
   assert.throws(() => cfg({ dir: 3 }), /slack.spawn.dir must be a string/);
 });
 
-test('PUT /api/slack/spawn: saved in the bridge\'s config and live at once; proxied from a peer; null turns it off', async (t) => {
+test('PUT /api/slack/spawn: saved in the bridge\'s config and live at once; proxied from a peer; a patch keeps the other fields; null turns it off', async (t) => {
   const bridgeConfig = normalizeConfig({ self: 'workstation', hosts: { laptop: { web: 'http://127.0.0.1:9' } }, slack: { host: 'workstation', owner: 'UOWNER' } }, { env: {}, home: '/home/tester' });
   const spawns = [];
   const fx = fixture(t, { settings: bridgeConfig.slack, spawn: async (host, body) => (spawns.push({ host, body }), {}) });
@@ -1146,6 +1146,16 @@ test('PUT /api/slack/spawn: saved in the bridge\'s config and live at once; prox
   await settle();
   assert.equal(spawns.length, 1);
   assert.equal(spawns[0].body.slack.minutes, '8h');
+
+  // A patch: only the fields given change; null puts one back to its default.
+  const patched = await put(servers.bridge, { spawn: { from: ['U0123ABC'] } });
+  assert.equal(patched.status, 200, JSON.stringify(patched.body));
+  assert.deepEqual(sets.at(-1).value, { host: 'laptop', dir: '~/Code/project', model: 'opus', minutes: '8h', from: ['U0123ABC'] });
+  assert.equal(patched.body.spawn.dir, '~/Code/project');
+  assert.equal(patched.body.spawn.model, 'opus');
+  const cleared = await put(servers.bridge, { spawn: { model: null, minutes: null } });
+  assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
+  assert.deepEqual(sets.at(-1).value, { host: 'laptop', dir: '~/Code/project', minutes: '1d', from: ['U0123ABC'] });
 
   const off = await put(servers.bridge, { spawn: null });
   assert.equal(off.status, 200);
