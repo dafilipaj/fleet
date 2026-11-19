@@ -17,6 +17,7 @@ const ANSI_RE = /\x1b\[[0-9;]*m/g;
  *  `   ⧉ fix-login → fix-login-flow`        (tmux synced, indented note)
  *  `⏸ project-4f is mid-turn — nothing sent (--force overrides)` (held)
  *  `✕ project-01: ...` (error)
+ *  `⚠ naming model unavailable: ...` (the model failed; the names are the branch/title guess)
  *  `no sessions still carry a Claude-derived name — nothing to rename`
  */
 export function parseNameOutput(text) {
@@ -24,18 +25,20 @@ export function parseNameOutput(text) {
   const tmux = [];
   const held = [];
   const errors = [];
+  const warnings = [];
   for (const raw of String(text).replace(ANSI_RE, '').split('\n')) {
     const line = raw.trim();
     if (!line) continue;
     if (line.startsWith('⏸')) held.push(line.slice(1).trim());
     else if (line.startsWith('✕')) errors.push(line.slice(1).trim());
+    else if (line.startsWith('⚠')) warnings.push(line.slice(1).trim());
     else if (line.startsWith('⧉')) tmux.push(line.slice(1).trim());
     else if (line.includes('  →  ')) {
       const [from, to] = line.split('  →  ');
       renamed.push({ from: from.trim(), to: to.trim().split(/\s+/)[0] });
     }
   }
-  return { renamed, tmux, held, errors };
+  return { renamed, tmux, held, errors, warnings };
 }
 
 /**
@@ -63,6 +66,7 @@ export function createAutoNamer({ cli, intervalMs = 5 * 60 * 1000, initialDelayM
         const heldBrief = summary.held.length ? ` (${summary.held.length} held)` : '';
         const errBrief = summary.errors.length ? ` (${summary.errors.length} errors)` : '';
         log(`[autoname] ${reason}: ${brief}${tmuxBrief}${heldBrief}${errBrief}`);
+        for (const w of summary.warnings) log(`[autoname] ${reason}: ${w}`);
       } catch (err) {
         lastRun = {
           at: startedAt,

@@ -474,9 +474,12 @@ export function createApi({
       } catch (err) {
         throw new HttpError(`naming failed: ${err?.message ?? err}`, err?.timedOut ? 504 : 502);
       }
-      const { renamed, held, errors } = parseNameOutput(`${out.stdout}\n${out.stderr}`);
+      const { renamed, held, errors, warnings } = parseNameOutput(`${out.stdout}\n${out.stderr}`);
       const base = { host: config.self, id: session.session_id };
       if (held.length) return { status: 409, body: { ...base, error: `session is waiting on you — nothing sent (${held[0]})` } };
+      // The model failed and the CLI fell back to the branch/title guess: say why (a dead
+      // login says how to fix it) instead of "renamed" to the same slug again.
+      if (warnings.length) return { status: 502, body: { ...base, error: warnings[0] } };
       if (errors.length && !renamed.length) return { status: 502, body: { ...base, error: `naming failed: ${errors[0]}` } };
       refreshFleet();
       return { status: 200, body: { ...base, ok: true, name: renamed[0]?.to ?? null } };

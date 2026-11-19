@@ -403,6 +403,31 @@ fn which_claude() -> Result<String> {
     crate::core::tools::claude().ok_or_else(|| Error::Other("`claude` is not on PATH".into()))
 }
 
+/// What to do when `claude -p` is logged out. Background jobs (the web server's
+/// LaunchAgent) read the login Keychain; an ssh shell may read another credential
+/// store, so a `claude` that works over ssh can still be logged out for them.
+/// Mirrored in web/lib/claude-login.mjs.
+pub const LOGIN_HINT: &str = "run `claude auth login` on this host in its GUI session (a Fleet tmux session or Screen Sharing, not ssh): background jobs use the login Keychain";
+
+/// Does this `claude` output say it is logged out?
+pub fn is_login_error(text: &str) -> bool {
+    let t = text.to_lowercase();
+    [
+        "failed to authenticate",
+        "not logged in",
+        "auth login",
+        "/login",
+        "invalid api key",
+        "token expired",
+        "token has expired",
+        "login expired",
+        "login has expired",
+        "reached its time limit",
+    ]
+    .iter()
+    .any(|p| t.contains(p))
+}
+
 /// One `claude -p` call, with a deadline enforced by hand.
 ///
 /// Three things here are load-bearing and were expensive to establish:
@@ -527,8 +552,24 @@ fn converse(
     let stdout = out_r.join().unwrap_or_default();
     let stderr = err_r.join().unwrap_or_default();
     if !status.success() {
-        let why = stderr.trim().lines().next_back().unwrap_or("no output");
-        return Err(Error::Other(format!("`claude -p` failed: {why}")));
+        // `claude` prints some failures (a dead login among them) on stdout, not stderr.
+        let stdout = String::from_utf8_lossy(&stdout);
+        let last = |t: &str| {
+            t.trim()
+                .lines()
+                .next_back()
+                .map(str::trim)
+                .map(String::from)
+        };
+        let why = last(&stderr)
+            .or_else(|| last(&stdout))
+            .unwrap_or_else(|| "no output".into());
+        let hint = if is_login_error(&stderr) || is_login_error(&stdout) {
+            format!(" — {LOGIN_HINT}")
+        } else {
+            String::new()
+        };
+        return Err(Error::Other(format!("`claude -p` failed: {why}{hint}")));
     }
     Ok(String::from_utf8_lossy(&stdout).to_string())
 }
@@ -1072,6 +1113,15 @@ mod tests {
     }
 
     // --- sanitize_name -------------------------------------------------------
+
+    #[test]
+    fn a_dead_login_is_recognised() {
+        assert!(is_login_error(
+            "Failed to authenticate: this login reached its time limit and cannot be renewed. Run `claude auth login` to sign in again"
+        ));
+        assert!(is_login_error("Not logged in · Please run /login"));
+        assert!(!is_login_error("API Error: 529 overloaded"));
+    }
 
     #[test]
     fn model_prose_is_stripped_to_the_name_it_wrapped() {

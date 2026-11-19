@@ -31,6 +31,7 @@ import {
   serializeBrief,
 } from './brief-format.mjs';
 import { readDelta } from './brief-extract.mjs';
+import { claudeFailure } from './claude-login.mjs';
 import { githubSlug } from './diff.mjs';
 
 export const SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
@@ -98,7 +99,7 @@ export function createClaudeAsk({ bin = 'claude', run, timeoutMs = 120 * 1000, c
         noPersist = false;
         return ask({ prompt, model });
       }
-      const why = err?.killed ? `\`claude\` did not answer within ${Math.round(timeoutMs / 1000)}s` : `\`claude -p\` failed: ${String(err?.message ?? err).trim().split('\n').pop()}`;
+      const why = err?.killed ? `\`claude\` did not answer within ${Math.round(timeoutMs / 1000)}s` : claudeFailure(err);
       const e = new Error(why);
       e.timedOut = Boolean(err?.killed);
       throw e;

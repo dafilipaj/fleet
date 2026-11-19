@@ -9,6 +9,7 @@ test('parseNameOutput splits renamed / tmux / held / errors', () => {
     '   ⧉ fix-login → fix-login-flow',
     '⏸ app-4f is mid-turn — nothing sent (--force overrides)',
     '✕ app-01: claude exited 1',
+    '⚠ naming model unavailable: `claude -p` failed: Not logged in',
     'app-c4  →  cache-warmup   (llm)',
     '\x1b[2mapp-d5\x1b[0m  →  \x1b[1mrelease-notes\x1b[0m',
   ].join('\n');
@@ -21,6 +22,7 @@ test('parseNameOutput splits renamed / tmux / held / errors', () => {
   assert.deepEqual(r.tmux, ['fix-login → fix-login-flow']);
   assert.equal(r.held.length, 1);
   assert.equal(r.errors.length, 1);
+  assert.deepEqual(r.warnings, ['naming model unavailable: `claude -p` failed: Not logged in']);
   assert.deepEqual(parseNameOutput('no sessions still carry a Claude-derived name — nothing to rename').renamed, []);
 });
 

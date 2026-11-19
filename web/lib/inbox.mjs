@@ -28,6 +28,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { claudeFailure, isLoginError, LOGIN_HINT } from './claude-login.mjs';
 import { MODEL_ID_RE } from './config.mjs';
 import { createSlackPoller, emptySlackState } from './inbox-slack.mjs';
 
@@ -466,7 +467,7 @@ export function createAgentAsk({ bin = 'claude', run, timeoutMs = 6 * 60 * 1000,
     try {
       ({ stdout } = await run(bin, args, { input: prompt, timeout: timeoutMs, cwd, env, maxBuffer: 8 * 1024 * 1024 }));
     } catch (err) {
-      const why = err?.killed ? `\`claude\` did not finish within ${Math.round(timeoutMs / 1000)}s` : `\`claude -p\` failed: ${String(err?.message ?? err).trim().split('\n').pop()}`;
+      const why = err?.killed ? `\`claude\` did not finish within ${Math.round(timeoutMs / 1000)}s` : claudeFailure(err);
       throw new Error(why);
     }
     let out;
@@ -475,7 +476,10 @@ export function createAgentAsk({ bin = 'claude', run, timeoutMs = 6 * 60 * 1000,
     } catch {
       return { text: stdout, costUsd: null, usage: null, turns: null, durationMs: null };
     }
-    if (out?.is_error) throw new Error(`\`claude -p\` failed: ${String(out.result ?? out.subtype ?? 'error').slice(0, 200)}`);
+    if (out?.is_error) {
+      const why = String(out.result ?? out.subtype ?? 'error').slice(0, 200);
+      throw new Error(`\`claude -p\` failed: ${why}${isLoginError(why) ? ` — ${LOGIN_HINT}` : ''}`);
+    }
     return {
       text: String(out?.result ?? ''),
       costUsd: typeof out?.total_cost_usd === 'number' ? out.total_cost_usd : null,

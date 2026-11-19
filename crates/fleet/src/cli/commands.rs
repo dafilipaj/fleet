@@ -687,9 +687,12 @@ fn generate(
             Ok(naming::NameMsg::Failed { key, err, .. }) => {
                 by_key.insert(key, Err(err));
             }
-            // Said once per run by contract; the per-session lines carry the
-            // detail that matters here.
-            Ok(naming::NameMsg::Unavailable(_)) => continue,
+            // Said once per run: the model failed and the names below are the
+            // branch/title guess. `⚠` is what the web server parses (lib/autoname.mjs).
+            Ok(naming::NameMsg::Unavailable(why)) => {
+                eprintln!("{} naming model unavailable: {why}", "⚠".yellow());
+                continue;
+            }
             // Every worker is gone — nothing more is coming.
             Err(_) => break,
         }
