@@ -7,7 +7,8 @@ import { cn } from '@/lib/utils'
 
 /**
  * Last-run note ("grouped 3m ago · 1 model call" / "fallback: by repo") + "Regroup now".
- * `quiet`: the note only when something failed; otherwise it is the button's tooltip.
+ * `quiet`: the note only when something failed; otherwise it is the button's tooltip, and the button is
+ * only its icon.
  */
 export function GroupsStatus({
   state,
@@ -26,6 +27,8 @@ export function GroupsStatus({
   const enabled = !!groups?.enabled
   const text = error ? 'groups unavailable — by repo' : groupsStatusText(groups, now)
   const failed = !!groups?.lastRun && groups.lastRun.ok === false
+  // The phone's 44px button and the desktop top bar's (quiet) show only the icon.
+  const iconOnly = size === 'lg' || quiet
   return (
     <span className={cn('flex min-w-0 items-center gap-1.5', className)}>
       {quiet && !failed && !error ? null : (
@@ -40,15 +43,15 @@ export function GroupsStatus({
       {enabled ? (
         <Button
           variant="ghost"
-          size={size === 'lg' ? 'icon' : 'sm'}
+          size={size === 'lg' ? 'icon' : quiet ? 'icon-sm' : 'sm'}
           onClick={() => void run()}
           disabled={running}
           aria-label="Regroup now"
           title={quiet ? `Regroup now — ${text}` : 'Regroup now'}
-          className={cn('shrink-0 text-muted-foreground hover:text-foreground', size === 'lg' ? 'size-10' : 'h-7 px-2 text-xs')}
+          className={cn('shrink-0 text-muted-foreground hover:text-foreground', size === 'lg' ? 'size-10' : quiet ? null : 'h-7 px-2 text-xs')}
         >
           {running ? <LoaderCircleIcon className="animate-spin" /> : <SparklesIcon />}
-          {size === 'lg' ? null : 'Regroup'}
+          {iconOnly ? null : 'Regroup'}
         </Button>
       ) : null}
     </span>
