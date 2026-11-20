@@ -37,10 +37,17 @@ const START_GRACE: Duration = Duration::from_secs(30);
 const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 /// A TLS handshake over the tailnet included.
 const REMOTE_PROBE_TIMEOUT: Duration = Duration::from_secs(4);
+/// How often focusing a window may check whether a better server is back (or the shown one gone).
+const FAILOVER_CHECK_EVERY: Duration = Duration::from_secs(30);
 
 struct State {
     profile: Profile,
-    target: Result<server::Target, String>,
+    /// The servers the window may show, preferred first (`server::resolve_all`).
+    targets: Result<Vec<server::Target>, String>,
+    /// Which of `targets` the window was last sent to.
+    active: Mutex<Option<usize>>,
+    /// When focusing a window last checked the servers (see `failover_check`).
+    checked: Mutex<Option<Instant>>,
     /// Computed on first use: asking the login shell can take a moment.
     path: OnceLock<String>,
     /// The `fleet web serve` this app started, and when.
@@ -57,14 +64,30 @@ impl State {
         self.path.get_or_init(server::server_path)
     }
 
-    /// Does the server answer? Another profile's https server is checked end to end
-    /// (Fleet's is not, as before: a reachable port counts).
+    /// Does the server answer? Another profile's https server is checked end to end, and
+    /// so is Fleet's once it has fallbacks (a `tailscale serve` port accepts connections
+    /// while the server behind it is down); a single Fleet server is not, as before.
     fn probe(&self, url: &Url) -> Result<(), String> {
-        if self.profile.is_fleet() {
+        let fallbacks = self.targets.as_ref().is_ok_and(|t| t.len() > 1);
+        if self.profile.is_fleet() && !fallbacks {
             server::probe(url, PROBE_TIMEOUT)
         } else {
             server::probe_strict(url, REMOTE_PROBE_TIMEOUT)
         }
+    }
+
+    /// The server the window was last sent to, else the preferred one.
+    fn active_target(&self) -> Option<&server::Target> {
+        let t = self.targets.as_ref().ok()?;
+        t.get(self.active.lock().unwrap().unwrap_or(0))
+    }
+
+    /// The server windows' own origins: every target (any may be the one shown).
+    fn server_urls(&self) -> Vec<Url> {
+        self.targets
+            .as_ref()
+            .map(|t| t.iter().map(|t| t.url.clone()).collect())
+            .unwrap_or_default()
     }
 }
 
@@ -122,25 +145,37 @@ async fn connect(window: WebviewWindow) -> Status {
     s
 }
 
+/// The first server that answers gets the window. When none does, this machine's own
+/// server (the first local target) is started, else the start page reports them all.
 fn connect_blocking(window: &WebviewWindow) -> Status {
     let st = window.state::<State>();
-    let t = match &st.target {
+    let targets = match &st.targets {
         Ok(t) => t,
         Err(e) => return Status::new("error", None).error(e.clone()),
     };
-    let err = match st.probe(&t.url) {
-        Ok(()) => {
-            return match window.navigate(t.url.clone()) {
-                Ok(()) => Status::new("ok", Some(t)),
-                Err(e) => Status::new("error", Some(t)).error(e.to_string()),
-            };
+    let mut errors = Vec::new();
+    for (i, t) in targets.iter().enumerate() {
+        match st.probe(&t.url) {
+            Ok(()) => {
+                *st.active.lock().unwrap() = Some(i);
+                *st.checked.lock().unwrap() = Some(Instant::now());
+                return match window.navigate(t.url.clone()) {
+                    Ok(()) => Status::new("ok", Some(t)),
+                    Err(e) => Status::new("error", Some(t)).error(e.to_string()),
+                };
+            }
+            Err(e) => errors.push(if targets.len() > 1 {
+                format!("{} ({}): {e}", t.url, t.source)
+            } else {
+                e
+            }),
         }
-        Err(e) => e,
+    }
+    let err = errors.join("\n");
+    let Some(t) = targets.iter().find(|t| t.local) else {
+        return Status::new("down", targets.first()).error(err);
     };
     let down = Status::new("down", Some(t));
-    if !t.local {
-        return down.error(err);
-    }
     let mut child = st.child.lock().unwrap();
     if let Some((c, since)) = child.as_mut() {
         return match c.try_wait() {
@@ -331,7 +366,7 @@ fn on_menu(app: &AppHandle, id: &str) {
             std::thread::spawn(move || {
                 let on_server = w.url().is_ok_and(|u| u.scheme().starts_with("http"));
                 let st = w.state::<State>();
-                let up = st.target.as_ref().is_ok_and(|t| st.probe(&t.url).is_ok());
+                let up = st.active_target().is_some_and(|t| st.probe(&t.url).is_ok());
                 if on_server && !up {
                     let _ = w.navigate(start_page());
                 } else {
@@ -372,16 +407,15 @@ fn build_window(app: &AppHandle, label: &str, url: Option<Url>) -> tauri::Result
     let fleet = st.profile.is_fleet();
     let overlay = st.profile.overlay();
     let name = st.profile.name().to_string();
-    let server = st
-        .target
-        .as_ref()
-        .map(|t| t.url.clone())
-        .unwrap_or_else(|_| start_page());
-    let frames = st.profile.frame_origins();
+    // Every server stays in the window (any may be the one shown); new windows are
+    // for the one shown now.
+    let mut servers = st.server_urls().into_iter();
+    let server = servers.next().unwrap_or_else(start_page);
+    let mut frames = st.profile.frame_origins();
+    frames.extend(servers);
     let dl = app.clone();
     let nav = app.clone();
     let popup = app.clone();
-    let popup_server = server.clone();
     let page = match url {
         Some(u) => WebviewUrl::External(u),
         None => WebviewUrl::App("index.html".into()),
@@ -415,7 +449,12 @@ fn build_window(app: &AppHandle, label: &str, url: Option<Url>) -> tauri::Result
             Action::Window | Action::Deny => false,
         })
         .on_new_window(move |url, _| {
-            match links::new_window(&url, &popup_server) {
+            let shown = popup
+                .state::<State>()
+                .active_target()
+                .map(|t| t.url.clone())
+                .unwrap_or_else(start_page);
+            match links::new_window(&url, &shown) {
                 Action::Open => open_external(url.as_str()),
                 // Built off this callback: a window built inside a webview's own
                 // callback can deadlock.
@@ -526,15 +565,46 @@ fn allow_window_drag(app: &AppHandle) -> tauri::Result<()> {
         .permission("core:window:allow-start-dragging")
         .permission("core:window:allow-internal-toggle-maximize");
     let st = app.state::<State>();
-    if let Some(p) = st
-        .target
-        .as_ref()
-        .ok()
-        .and_then(|t| shell::drag_pattern(&t.url))
-    {
+    for p in st.server_urls().iter().filter_map(shell::drag_pattern) {
         cap = cap.remote(p);
     }
     app.add_capability(cap)
+}
+
+/// With fallbacks, focusing `main` (at most every `FAILOVER_CHECK_EVERY`) sends it back
+/// through the start page when a server it prefers answers again, or the one it shows
+/// stopped answering. Only on focus: a switch reloads the page.
+fn failover_check(app: &AppHandle) {
+    let st = app.state::<State>();
+    let Ok(targets) = &st.targets else { return };
+    let Some(active) = *st.active.lock().unwrap() else {
+        return;
+    };
+    if targets.len() < 2 {
+        return;
+    }
+    {
+        let mut checked = st.checked.lock().unwrap();
+        if checked.is_some_and(|c| c.elapsed() < FAILOVER_CHECK_EVERY) {
+            return;
+        }
+        *checked = Some(Instant::now());
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let st = app.state::<State>();
+        let Ok(targets) = &st.targets else { return };
+        let better = targets[..active].iter().any(|t| st.probe(&t.url).is_ok());
+        let gone = !better && st.probe(&targets[active].url).is_err();
+        if !(better || gone) {
+            return;
+        }
+        if let Some(w) = app.get_webview_window(MAIN)
+            && w.url().is_ok_and(|u| u.scheme().starts_with("http"))
+        {
+            let _ = w.navigate(start_page());
+        }
+    });
 }
 
 fn show_main(app: &AppHandle) {
@@ -556,12 +626,12 @@ fn main() {
             let env_url = std::env::var("FLEET_DESKTOP_URL").ok();
             match &loaded.problem {
                 Some(p) => Err(p.clone()),
-                None => server::resolve(env_url.as_deref(), loaded),
+                None => server::resolve_all(env_url.as_deref(), loaded),
             }
         }
         Profile::Remote(r) => {
             let env_url = r.url_env.as_deref().and_then(|k| std::env::var(k).ok());
-            server::resolve_remote(env_url.as_deref(), r)
+            server::resolve_remote(env_url.as_deref(), r).map(|t| vec![t])
         }
     };
     let mut context = tauri::generate_context!();
@@ -585,7 +655,9 @@ fn main() {
         )
         .manage(State {
             profile,
-            target,
+            targets: target,
+            active: Mutex::new(None),
+            checked: Mutex::new(None),
             path: OnceLock::new(),
             child: Mutex::new(None),
             downloads: Mutex::new(HashMap::new()),
@@ -621,9 +693,15 @@ fn main() {
                     }
                 }
                 // AppKit may lay the title bar out again on these (see `shell`).
-                WindowEvent::Focused(_)
-                | WindowEvent::ThemeChanged(_)
-                | WindowEvent::ScaleFactorChanged { .. } => {
+                WindowEvent::Focused(focused) => {
+                    if *focused && w.label() == MAIN {
+                        failover_check(w.app_handle());
+                    }
+                    if let Some(wv) = w.app_handle().get_webview_window(w.label()) {
+                        place_traffic_lights(&wv);
+                    }
+                }
+                WindowEvent::ThemeChanged(_) | WindowEvent::ScaleFactorChanged { .. } => {
                     if let Some(wv) = w.app_handle().get_webview_window(w.label()) {
                         place_traffic_lights(&wv);
                     }

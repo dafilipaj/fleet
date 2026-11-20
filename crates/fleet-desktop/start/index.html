@@ -34,7 +34,7 @@
   <p id="where" class="dim"></p>
   <pre id="error" hidden></pre>
   <div id="help" hidden>
-    <p>Start it in a terminal with <code>fleet web serve</code>, or keep it running with <code>fleet web install-service</code>. The app opens <code>desktop.url</code>, else <code>hosts.&lt;self&gt;.web</code>, else <code>http://127.0.0.1:&lt;web.port&gt;</code> from <code>~/.config/fleet/config.json</code>.</p>
+    <p>Start it in a terminal with <code>fleet web serve</code>, or keep it running with <code>fleet web install-service</code>. The app opens <code>desktop.url</code>, else <code>hosts.&lt;self&gt;.web</code>, else <code>http://127.0.0.1:&lt;web.port&gt;</code> from <code>~/.config/fleet/config.json</code>, or the first of <code>desktop.fallbacks</code> that answers. It keeps retrying.</p>
   </div>
   <details id="logbox" hidden><summary class="dim">Server log</summary><pre id="log"></pre></details>
   <div class="row" id="actions" hidden>
@@ -88,6 +88,8 @@
     }
     show(s)
     if (s.state === 'starting') timer = setTimeout(run, 700)
+    // A server that is down (e.g. its machine is offline) may come back, or a fallback may.
+    else if (s.state === 'down') timer = setTimeout(run, 10000)
   }
 
   $('retry').onclick = () => {

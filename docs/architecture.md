@@ -184,6 +184,7 @@ server. Path: `$FLEET_CONFIG`, else `${XDG_CONFIG_HOME:-~/.config}/fleet/config.
 | `web.focus` | `{ host? }` (default: none): Focus mode — the sidebar toggle runs the `focus` CLI (Do Not Disturb + quitting distracting apps) on `host`, the machine you sit at; set the same on every machine. Unset, or a host without `focus` (501): no toggle |
 | `web.files.roots` | array of dirs (`~` expanded, default `[]`): extra roots a relative file path in chat may be under. A relative path missing under the session cwd first matches files the session touched (from its transcript), then ancestors of those, then these roots; the sandbox stays `$HOME` + cwd |
 | `desktop.url` | the server [Fleet.app](desktop.md) opens instead of `hosts.<self>.web`; unset → this machine's server |
+| `desktop.fallbacks` | servers [Fleet.app](desktop.md#fallbacks) opens, in order, when that one does not answer: URLs, or `"self"` for this machine's own |
 | `tmux` | tmux binary; `null` → `PATH`, then `/opt/homebrew/bin`, `/usr/local/bin` |
 | `hosts.<name>.fleetBin` | path to `fleet` on that host; `null` → `~/.local/bin/fleet`, then `PATH` |
 | `fleetBin` | this machine's `fleet` binary (used by the web server) |

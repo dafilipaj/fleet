@@ -61,6 +61,56 @@ pub fn resolve(env_url: Option<&str>, loaded: &config::Loaded) -> Result<Target,
     })
 }
 
+/// Every server the window may show, in order of preference: `resolve`'s, then each
+/// `desktop.fallbacks` entry (a URL, or `"self"` for this machine's own server). The app
+/// shows the first that answers. `$FLEET_DESKTOP_URL` (testing) means that server only.
+pub fn resolve_all(env_url: Option<&str>, loaded: &config::Loaded) -> Result<Vec<Target>, String> {
+    let mut all = vec![resolve(env_url, loaded)?];
+    if env_url.is_some_and(|u| !u.trim().is_empty()) {
+        return Ok(all);
+    }
+    let entries: Vec<&Value> = match config::get_path(&loaded.raw, "desktop.fallbacks") {
+        None | Some(Value::Null) => vec![],
+        Some(v @ Value::String(_)) => vec![v],
+        Some(Value::Array(a)) => a.iter().collect(),
+        Some(_) => return Err("desktop.fallbacks: expected a list of URLs".into()),
+    };
+    let own = resolve(None, &without_desktop_url(loaded))?;
+    for (i, v) in entries.into_iter().enumerate() {
+        let source = format!("desktop.fallbacks[{i}]");
+        let raw = v
+            .as_str()
+            .ok_or_else(|| format!("{source}: not a string"))?
+            .trim();
+        let t = if raw.is_empty() {
+            continue;
+        } else if raw == "self" {
+            Target {
+                source: format!("{source} = {}", own.source),
+                ..own.clone()
+            }
+        } else {
+            let url = parse(raw, &source)?;
+            // This machine's own server, written out: the app may start it.
+            let local = is_loopback(&url) || (own.local && url.origin() == own.url.origin());
+            Target { url, source, local }
+        };
+        if !all.iter().any(|a| a.url.origin() == t.url.origin()) {
+            all.push(t);
+        }
+    }
+    Ok(all)
+}
+
+/// `loaded` as if `desktop.url` were unset (to find this machine's own server).
+fn without_desktop_url(loaded: &config::Loaded) -> config::Loaded {
+    let mut l = loaded.clone();
+    if let Some(d) = l.raw.get_mut("desktop").and_then(Value::as_object_mut) {
+        d.remove("url");
+    }
+    l
+}
+
 /// A profile's server (see `profile`): its env var when set, else the URL baked into
 /// the bundle. Always remote — the app never starts it.
 pub fn resolve_remote(env_url: Option<&str>, r: &profile::Remote) -> Result<Target, String> {
@@ -291,6 +341,56 @@ mod tests {
         let l = loaded(r#"{ "web": { "port": 7799 } }"#);
         let t = resolve(None, &l).unwrap();
         assert_eq!(t.url.as_str(), "http://127.0.0.1:7799/");
+    }
+
+    #[test]
+    fn fallbacks_follow_the_preferred_server_in_order() {
+        let l = loaded(
+            r#"{ "self": "laptop", "desktop": { "url": "https://workstation.example:7443",
+                 "fallbacks": ["http://192.0.2.2:7777", "self", "https://workstation.example:7443/", ""] },
+                 "hosts": { "laptop": { "web": "http://192.0.2.1:7777" } } }"#,
+        );
+        let all = resolve_all(None, &l).unwrap();
+        let got: Vec<_> = all
+            .iter()
+            .map(|t| (t.url.as_str(), t.source.as_str(), t.local))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("https://workstation.example:7443/", "desktop.url", false),
+                ("http://192.0.2.2:7777/", "desktop.fallbacks[0]", false),
+                (
+                    "http://192.0.2.1:7777/",
+                    "desktop.fallbacks[1] = hosts.laptop.web",
+                    true
+                ),
+            ]
+        );
+
+        // This machine's own server written out is local too; a lone string works.
+        let l = loaded(
+            r#"{ "self": "laptop", "desktop": { "url": "http://192.0.2.9:7777", "fallbacks": "http://192.0.2.1:7777" },
+                 "hosts": { "laptop": { "web": "http://192.0.2.1:7777" } } }"#,
+        );
+        let all = resolve_all(None, &l).unwrap();
+        assert_eq!(all.len(), 2);
+        assert!(all[1].local);
+
+        // The env override (testing) means that server only.
+        let all = resolve_all(Some("http://127.0.0.1:1234"), &l).unwrap();
+        assert_eq!(all.len(), 1);
+
+        let bad = loaded(r#"{ "desktop": { "fallbacks": [7] } }"#);
+        assert!(
+            resolve_all(None, &bad)
+                .unwrap_err()
+                .contains("fallbacks[0]")
+        );
+        let bad = loaded(r#"{ "desktop": { "fallbacks": ["ftp://x"] } }"#);
+        assert!(resolve_all(None, &bad).is_err());
+        let none = loaded("{}");
+        assert_eq!(resolve_all(None, &none).unwrap().len(), 1);
     }
 
     #[test]

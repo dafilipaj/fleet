@@ -49,6 +49,25 @@ The first of:
 
 Since every server merges its peers, the local server shows the whole fleet.
 
+### Fallbacks
+
+`desktop.fallbacks` lists servers to use when that one does not answer — e.g. the workstation is
+offline. Each entry is a URL, or `"self"` for this machine's own server (3, else 4, as if
+`desktop.url` were unset):
+
+```sh
+fleet config set desktop.fallbacks '["http://100.x.y.z:7777", "self"]'
+```
+
+The start page tries them in order (the preferred server first) and opens the first that answers;
+a server the app may start (this machine's) is started only when none answers. While on a
+fallback, focusing the main window (at most every 30 s) checks again: once a server earlier in the
+list answers, or the shown one stops answering, the window goes back through the start page and
+reconnects. ⌘⇧R does the same right away. With fallbacks every https server is checked end to end
+(`/api/health` through `curl`), so a `tailscale serve` port whose server is down counts as down. A
+fallback with `web.auth` asks you to sign in once (its own origin). `FLEET_DESKTOP_URL` ignores
+fallbacks. While nothing answers, the start page retries every 10 s.
+
 **Voice input needs a secure origin.** WebKit only exposes the microphone to HTTPS pages and
 `localhost`, so with a remote server over plain `http://100.x.y.z:7777` the composer's mic just
 says so. Put the server behind Tailscale HTTPS on that machine (tailnet only, a real certificate):
@@ -71,7 +90,8 @@ login shell's `PATH`, logs to `~/Library/Logs/Fleet/web-serve.log`, and opens th
 up. A server the app started stops when the app quits; to keep one running (and reachable from the
 phone) with the lid open and the app closed, use `fleet web install-service` — the app then just
 connects. Anything else — a remote URL that is down, a server that exits, one that does not come up
-within 30 s — shows "Fleet server is not running" with the error, the log tail and Retry.
+within 30 s — shows "Fleet server is not running" with the error (each server's, with
+fallbacks), the log tail and Retry, and retries every 10 s.
 `fleet` is found as config `fleetBin`, else on the login shell's `PATH`, `~/.local/bin`,
 `~/.cargo/bin`, `/opt/homebrew/bin`, `/usr/local/bin`.
 
