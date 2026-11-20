@@ -1,5 +1,7 @@
-//! Fleet as a macOS app: one window on this machine's Fleet web server
+//! Fleet as a macOS app: a window on this machine's Fleet web server
 //! (`fleet web serve`), which the app starts when nothing is listening.
+//! A ⌘-clicked route opens in another window (`links::new_window`); only the
+//! first one, `main`, hides on close and comes back from the Dock.
 //! The server's page gets no app commands (only the bundled start page, `start/`,
 //! does) — just the window-dragging permission its top bar needs (see `shell`).
 //! A bundled profile (see `profile`) makes the same binary a plain window on
@@ -13,7 +15,7 @@ mod shell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::{Child, Command};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -44,8 +46,10 @@ struct State {
     /// The `fleet web serve` this app started, and when.
     child: Mutex<Option<(Child, Instant)>>,
     downloads: Mutex<HashMap<String, PathBuf>>,
-    /// The full-screen state the page was last told (see `sync_shell`).
-    fullscreen: AtomicBool,
+    /// The full-screen state each window's page was last told (see `sync_shell`).
+    fullscreen: Mutex<HashMap<String, bool>>,
+    /// Numbers the extra windows' labels (`window-<n>`).
+    windows: AtomicUsize,
 }
 
 impl State {
@@ -217,7 +221,7 @@ fn run_in_iterm(app: &AppHandle, line: String) {
 /// Log a failed native action and show it in the window (`shell::error`).
 fn report_error(app: &AppHandle, title: &str, message: &str, command: Option<&str>) {
     eprintln!("fleet-desktop: {title}: {message}");
-    if let Some(w) = app.get_webview_window("main") {
+    if let Some(w) = front_window(app) {
         let _ = w.eval(shell::error(title, message, command));
     }
 }
@@ -303,8 +307,17 @@ fn start_page() -> Url {
     Url::parse(START_PAGE).expect("static URL")
 }
 
+/// The window in front (the menu's target): the focused one, else `main`.
+fn front_window(app: &AppHandle) -> Option<WebviewWindow> {
+    let all = app.webview_windows();
+    all.values()
+        .find(|w| w.is_focused().unwrap_or(false))
+        .or_else(|| all.get(MAIN))
+        .cloned()
+}
+
 fn on_menu(app: &AppHandle, id: &str) {
-    let Some(w) = app.get_webview_window("main") else {
+    let Some(w) = front_window(app) else {
         return;
     };
     match id {
@@ -330,8 +343,32 @@ fn on_menu(app: &AppHandle, id: &str) {
     }
 }
 
-fn build_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
+const MAIN: &str = "main";
+
+/// Another app window on `url` (a page of the server), cascaded from the window in front.
+fn open_window(app: &AppHandle, url: Url) {
+    let from = front_window(app);
+    let n = app.state::<State>().windows.fetch_add(1, Ordering::Relaxed) + 1;
+    let w = match build_window(app, &format!("window-{n}"), Some(url)) {
+        Ok(w) => w,
+        Err(e) => return report_error(app, "Could not open a window", &e.to_string(), None),
+    };
+    if let Some(f) = from
+        && let (Ok(pos), Ok(size)) = (f.outer_position(), f.inner_size())
+    {
+        let step = (28.0 * f.scale_factor().unwrap_or(1.0)) as i32;
+        let _ = w.set_size(size);
+        let _ = w.set_position(tauri::PhysicalPosition::new(pos.x + step, pos.y + step));
+    }
+    let _ = w.show();
+    let _ = w.set_focus();
+}
+
+/// A window on the start page (`main`, which then connects to the server) or right on
+/// `url`, a page of the server (the windows `open_window` adds).
+fn build_window(app: &AppHandle, label: &str, url: Option<Url>) -> tauri::Result<WebviewWindow> {
     let st = app.state::<State>();
+    let main = url.is_none();
     let fleet = st.profile.is_fleet();
     let overlay = st.profile.overlay();
     let name = st.profile.name().to_string();
@@ -343,7 +380,13 @@ fn build_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     let frames = st.profile.frame_origins();
     let dl = app.clone();
     let nav = app.clone();
-    let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+    let popup = app.clone();
+    let popup_server = server.clone();
+    let page = match url {
+        Some(u) => WebviewUrl::External(u),
+        None => WebviewUrl::App("index.html".into()),
+    };
+    let builder = WebviewWindowBuilder::new(app, label, page)
         .title(&name)
         .inner_size(1280.0, 820.0)
         .min_inner_size(420.0, 480.0)
@@ -369,11 +412,18 @@ fn build_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
                 }
                 false
             }
-            Action::Deny => false,
+            Action::Window | Action::Deny => false,
         })
-        .on_new_window(|url, _| {
-            if links::new_window(&url) == Action::Open {
-                open_external(url.as_str());
+        .on_new_window(move |url, _| {
+            match links::new_window(&url, &popup_server) {
+                Action::Open => open_external(url.as_str()),
+                // Built off this callback: a window built inside a webview's own
+                // callback can deadlock.
+                Action::Window => {
+                    let app = popup.clone();
+                    std::thread::spawn(move || open_window(&app, url));
+                }
+                _ => {}
             }
             NewWindowResponse::Deny
         })
@@ -429,8 +479,11 @@ fn build_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
         builder
     };
     let w = builder.build()?;
-    let _ = w.restore_state(StateFlags::all() & !StateFlags::VISIBLE);
-    w.show()?;
+    // The extra windows take the size and place of the one they came from (`open_window`).
+    if main {
+        let _ = w.restore_state(StateFlags::all() & !StateFlags::VISIBLE);
+        w.show()?;
+    }
     Ok(w)
 }
 
@@ -443,8 +496,12 @@ fn sync_shell(w: &WebviewWindow, force: bool) {
         return;
     }
     let Ok(fs) = w.is_fullscreen() else { return };
-    let last = st.fullscreen.swap(fs, Ordering::Relaxed);
-    if force || last != fs {
+    let last = st
+        .fullscreen
+        .lock()
+        .unwrap()
+        .insert(w.label().to_string(), fs);
+    if force || last != Some(fs) {
         let _ = w.eval(shell::script(fs, st.profile.is_fleet()));
     }
 }
@@ -464,7 +521,8 @@ fn place_traffic_lights(w: &WebviewWindow) {
 /// the server's origin, in this window only — nothing else is exposed to the page.
 fn allow_window_drag(app: &AppHandle) -> tauri::Result<()> {
     let mut cap = CapabilityBuilder::new("window-drag")
-        .window("main")
+        .window(MAIN)
+        .window("window-*")
         .permission("core:window:allow-start-dragging")
         .permission("core:window:allow-internal-toggle-maximize");
     let st = app.state::<State>();
@@ -480,7 +538,7 @@ fn allow_window_drag(app: &AppHandle) -> tauri::Result<()> {
 }
 
 fn show_main(app: &AppHandle) {
-    if let Some(w) = app.get_webview_window("main") {
+    if let Some(w) = app.get_webview_window(MAIN) {
         let _ = w.unminimize();
         let _ = w.show();
         let _ = w.set_focus();
@@ -521,6 +579,8 @@ fn main() {
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_state_flags(StateFlags::all() & !StateFlags::VISIBLE)
+                // Only `main` keeps its place; the others follow the window they came from.
+                .with_filter(|label| label == MAIN)
                 .build(),
         )
         .manage(State {
@@ -529,7 +589,8 @@ fn main() {
             path: OnceLock::new(),
             child: Mutex::new(None),
             downloads: Mutex::new(HashMap::new()),
-            fullscreen: AtomicBool::new(false),
+            fullscreen: Mutex::new(HashMap::new()),
+            windows: AtomicUsize::new(0),
         })
         .invoke_handler(tauri::generate_handler![connect, open_log])
         .menu(move |app| menu(app, &menu_profile))
@@ -538,15 +599,19 @@ fn main() {
             if app.state::<State>().profile.overlay() {
                 allow_window_drag(app.handle())?;
             }
-            build_window(app.handle())?;
+            build_window(app.handle(), MAIN, None)?;
             Ok(())
         })
         .on_window_event(|w, ev| {
-            // ⌘W / the close button hide the window; ⌘Q quits.
+            // ⌘W / the close button hide `main` and close the others; ⌘Q quits.
             match ev {
-                WindowEvent::CloseRequested { api, .. } => {
+                WindowEvent::CloseRequested { api, .. } if w.label() == MAIN => {
                     api.prevent_close();
                     let _ = w.hide();
+                }
+                WindowEvent::Destroyed => {
+                    let st = w.state::<State>();
+                    st.fullscreen.lock().unwrap().remove(w.label());
                 }
                 // Entering / leaving full screen resizes the window.
                 WindowEvent::Resized(_) => {

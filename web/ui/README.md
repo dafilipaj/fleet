@@ -80,6 +80,8 @@ src/
   suite/              generated, do not edit: `palette-suite.css`, the opt-in **Suite** palette (warm neutrals and a
                       terracotta accent shared with a few sibling apps). It and the app icons in `public/` (and the
                       desktop icons) come from a shared design system kept outside this repo; Default is unchanged
+  lib/newWindow.ts    ⌘-click (Ctrl, middle click) on anything that navigates opens a new window: the main router's
+                      `aroundNav` turns the navigate of a modified click into `window.open` (a tab; in Fleet.app a window)
   lib/notes.ts        notes explorer: buildTree(), notesHref() / parseNotesLocation() (`#/notes/<host>/<path>`),
                       indexNotes() + resolveNoteLink() (relative + `[[wiki]]` links), splitRanges(), highlightTerms()
   lib/review.ts       diff reviewer: reviewHref() / parseReviewLocation() (`#/review/<host>/<id>`), fileTree() +

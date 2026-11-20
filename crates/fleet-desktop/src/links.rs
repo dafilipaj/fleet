@@ -12,6 +12,8 @@ pub enum Action {
     Allow,
     /// Hand it to the OS: the default browser for http(s), the registered app otherwise.
     Open,
+    /// Open it in another app window (the server's page, e.g. a ⌘-clicked route).
+    Window,
     /// `fleet://attach?host=<h>&session=<tmux session>`: open an iTerm tab attached to it.
     Attach {
         host: String,
@@ -61,8 +63,13 @@ pub fn navigation(url: &Url, server: &Url, frames: &[Url]) -> Action {
     }
 }
 
-/// A `target="_blank"` link or `window.open`: never a second app window.
-pub fn new_window(url: &Url) -> Action {
+/// A `target="_blank"` link or `window.open`. The server's page itself (its hash
+/// routes: a ⌘-clicked link or button) gets a second app window; anything else on
+/// the server (`/api/…`, downloads) and other sites go to the OS.
+pub fn new_window(url: &Url, server: &Url) -> Action {
+    if same_origin(url, server) && url.path() == server.path() {
+        return Action::Window;
+    }
     match url.scheme() {
         "http" | "https" => Action::Open,
         s if OS_SCHEMES.contains(&s) => Action::Open,
@@ -162,10 +169,22 @@ mod tests {
 
     #[test]
     fn new_windows_open_outside() {
-        assert_eq!(new_window(&u("http://127.0.0.1:7777/api/x")), Action::Open);
-        assert_eq!(new_window(&u("https://example.com/")), Action::Open);
-        assert_eq!(new_window(&u("vscode://file/tmp")), Action::Open);
-        assert_eq!(new_window(&u("file:///tmp")), Action::Deny);
+        let server = u("http://127.0.0.1:7777/");
+        let nw = |s: &str| new_window(&u(s), &server);
+        assert_eq!(nw("http://127.0.0.1:7777/api/x"), Action::Open);
+        assert_eq!(nw("http://127.0.0.1:8888/"), Action::Open);
+        assert_eq!(nw("https://example.com/"), Action::Open);
+        assert_eq!(nw("vscode://file/tmp"), Action::Open);
+        assert_eq!(nw("file:///tmp"), Action::Deny);
+    }
+
+    #[test]
+    fn the_servers_page_gets_an_app_window() {
+        let server = u("http://127.0.0.1:7777/");
+        let nw = |s: &str| new_window(&u(s), &server);
+        assert_eq!(nw("http://127.0.0.1:7777/#/review/ws/abc"), Action::Window);
+        assert_eq!(nw("http://127.0.0.1:7777/?x=1#/prs"), Action::Window);
+        assert_eq!(nw("http://127.0.0.1:7777/"), Action::Window);
     }
 
     #[test]
@@ -198,7 +217,7 @@ mod tests {
             assert_eq!(navigation(&u(d), &server, &[]), Action::Deny, "{d}");
         }
         assert_eq!(
-            new_window(&u("fleet://attach?host=h&session=x")),
+            new_window(&u("fleet://attach?host=h&session=x"), &server),
             Action::Deny
         );
     }

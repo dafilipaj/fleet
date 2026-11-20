@@ -83,15 +83,16 @@ within 30 s — shows "Fleet server is not running" with the error, the log tail
 | ⌘R | reload (back to the start page when the server is gone) |
 | ⌘⇧R | reconnect: the start page again (re-checks, restarts a server the app owns) |
 | ⌘[ / ⌘] | back / forward (the app's hash routes) |
-| ⌘W, close button | hide the window; the Dock icon brings it back; ⌘Q quits |
-| links | the server's own pages stay in the window; other http(s) pages and every `target="_blank"` link open in the default browser; `vscode://`, `vscode-insiders://`, `cursor://`, `mailto:` go to macOS (**Open in VS Code / Cursor** works); other schemes are dropped |
+| ⌘W, close button | hide the main window (the Dock icon brings it back) and close any other; ⌘Q quits |
+| ⌘-click | on anything that navigates (a link, or a button such as **Review** or a PR's review button) opens that page in another app window, the size of the one in front and cascaded from it; it is a full Fleet window. The page does it (`web/ui/src/lib/newWindow.ts`: a `window.open` of the route, also a new tab in a browser); the app gives the server's page (`/` plus a hash route) a window |
+| links | the server's own pages stay in the window; other http(s) pages and every other `target="_blank"` link (the server's `/api/…` too) open in the default browser; `vscode://`, `vscode-insiders://`, `cursor://`, `mailto:` go to macOS (**Open in VS Code / Cursor** works); other schemes are dropped |
 | attach | `fleet://attach?host=<host>&session=<tmux session>` opens an iTerm tab (a window when none is open) running `fleet -H <host> enter -- <session>`, both words shell-quoted; `fleet://shell?host=<host>` opens one running `fleet -H <host> new` (the host's tmux: attach to, or create, `main`; the Mac the app runs on — config `self` — gets a plain iTerm tab) — the top bar's ▣ per host, links only when the init script sets `data-host-shell="iterm"` (else it copies the command); any other `fleet://` link is dropped. The session details' **Attach** button and the palette's *Attach in iTerm* use it (shown only when the init script sets `data-attach="iterm"`, so an older app keeps just **Copy**). The first use asks for permission to control iTerm (Info.plist `NSAppleEventsUsageDescription`) |
 | downloads | the preview's Download saves to `~/Downloads` (no overwrite: `name (1).ext`) and reveals the file in Finder |
 | files | dropping files on a session / the New session form, pasting images and the paperclip picker work as in the browser (Tauri's own drop handler is off, so the page gets the drop) |
 | clipboard | Copy path and ⌘C/⌘V/⌘X/⌘A work (Edit menu); on a plain-http tailnet URL the UI uses its non-secure-context copy fallback |
 | title bar | none: the traffic lights sit over the UI's own top bar (vertically centred on its 56 px row), the page's headers leave room for them and collapse that room in full screen, where macOS hides them |
 | dragging | drag the window by the empty parts of any top bar (the top bar, session / settings / notes header, the empty pane); double-click there zooms. Buttons, fields, toggles and links don't drag |
-| window | size, position and maximized/fullscreen state are remembered; the title follows the page (`(2) session · Fleet`, shown in the Window menu and Mission Control) |
+| window | the main window's size, position and maximized/fullscreen state are remembered; the title follows the page (`(2) session · Fleet`, shown in the Window menu and Mission Control) |
 | single instance | opening the app again focuses the running one |
 
 The server's page gets no app commands: only the bundled start page may call the app's two
@@ -115,7 +116,7 @@ part drags; buttons, inputs, links, `tabindex` and `role=button`-like elements d
 drag script turns a mousedown there into the window's `start_dragging` command (and a
 double-click into `internal_toggle_maximize`), which is IPC. So the app adds one runtime
 capability, `window-drag`: exactly `core:window:allow-start-dragging` and
-`core:window:allow-internal-toggle-maximize`, for the `main` window, on the start page and on the
+`core:window:allow-internal-toggle-maximize`, for the `main` window and the ⌘-click ones (`window-*`), on the start page and on the
 resolved server's origin only (`remote.urls: ["<scheme>://<host>:<port>/*"]`). Every other
 command stays denied to the server's page (other window commands, every plugin, `connect`,
 `open_log`).

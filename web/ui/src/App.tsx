@@ -19,6 +19,7 @@ import { usePreventFileNavigation } from '@/hooks/useAttach'
 import { useIsDesktop } from '@/hooks/useMediaQuery'
 import { ThemeProvider } from '@/providers/ThemeProvider'
 import { readEmbed } from '@/lib/embed'
+import { newWindowNav } from '@/lib/newWindow'
 import { DesktopShell } from '@/screens/DesktopShell'
 import { EmbedScreen } from '@/screens/EmbedScreen'
 import { InboxScreen } from '@/screens/InboxScreen'
@@ -66,7 +67,7 @@ function FleetApp() {
         <PrsProvider>
         <TasksProvider>
           <TooltipProvider>
-            <Router hook={useHashLocation}>
+            <Router hook={useHashLocation} aroundNav={newWindowNav}>
               {desktop ? (
                 <DesktopShell />
               ) : (
