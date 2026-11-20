@@ -6,7 +6,6 @@ import { HostRail } from '@/components/desktop/HostRail'
 import { FocusToggle } from '@/components/FocusToggle'
 import { ModuleButtons } from '@/components/ModuleNav'
 import { SessionFilters } from '@/components/SessionFilters'
-import { StatusDot } from '@/components/StatusDot'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Kbd } from '@/components/ui/kbd'
@@ -30,11 +29,11 @@ export interface TopBarProps {
 }
 
 /**
- * The desktop top bar, the same over the List and the Board: summary (own hosts), session filters,
+ * The desktop top bar, the same over the List and the Board: session filters,
  * search, List | Board, the hosts (HostRail), modules, New. The desktop app's traffic lights sit over its left end.
  */
 export function TopBar({ list, now, view, onView, searchRef, onSearchNav, onNew, groups }: TopBarProps) {
-  const { fleet, query, setQuery, summary, note } = list
+  const { query, setQuery, note } = list
 
   const onSearchKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.nativeEvent.isComposing) return
@@ -58,24 +57,6 @@ export function TopBar({ list, now, view, onView, searchRef, onSearchNav, onNew,
       className="titlebar titlebar-lead flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b px-4 py-2.5 [--titlebar-pad:1rem]"
     >
       <h1 className="text-lg font-bold tracking-tight">Fleet</h1>
-      {fleet ? (
-        <div className="flex items-center gap-2 text-xs text-muted-foreground tabular-nums" aria-label="Status summary">
-          {summary.waiting > 0 ? (
-            <span className="flex items-center gap-1 font-semibold text-status-waiting" title="Needs you">
-              <StatusDot status="waiting" className="size-2" />
-              {summary.waiting}
-            </span>
-          ) : null}
-          <span className="flex items-center gap-1" title="Busy">
-            <StatusDot status="busy" className="size-2" />
-            {summary.busy}
-          </span>
-          <span className="flex items-center gap-1" title="Idle">
-            <StatusDot status="idle" className="size-2" />
-            {summary.idle}
-          </span>
-        </div>
-      ) : null}
       <SessionFilters list={list} hostPicker={false} />
 
       <div className="relative w-64 min-w-40">
@@ -109,7 +90,7 @@ export function TopBar({ list, now, view, onView, searchRef, onSearchNav, onNew,
         )}
       </div>
 
-      <ViewToggle value={view} onChange={onView} />
+      <ViewToggle value={view} onChange={onView} labels={false} />
       {/* The hosts: the host filter (Mine / Shared, multi-select) and each one's state and terminal. */}
       <HostRail list={list} now={now} />
 

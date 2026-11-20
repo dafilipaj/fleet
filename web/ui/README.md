@@ -510,8 +510,9 @@ src/
 Master–detail on the same hash routes as mobile (`#/` = nothing open, `#/s/<host>/<id>` = that
 session in the pane), so a link opens the same session on either layout.
 
-- **Top bar** (the same over List and Board): Fleet summary (own hosts only), Sessions | Bots |
-  Slack | Apps toggle with the status picker, search (⌘F), List | Board, the **host rail**
+- **Top bar** (the same over List and Board, one row at laptop width): Sessions | Bots |
+  Slack | Apps toggle with the status picker, search (⌘F), List | Board (icons, names in the
+  tooltip), the **host rail**
   (`HostRail`, which is also the host filter): a chip per host (colour mark + session count), own
   hosts in one group, shared sheds (`hosts.<name>.shared`, a hollow diamond) in a dashed one, a
   waiting dot on a shared chip with waiting sessions. Click: the host's whole group, *Mine* or
