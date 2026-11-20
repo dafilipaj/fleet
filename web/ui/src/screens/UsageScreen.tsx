@@ -23,7 +23,9 @@ const LEVEL_TEXT = { low: 'text-foreground', warn: 'text-status-waiting', hot: '
  * `#/usage`: the subscription limits of every account logged in across the fleet — Claude
  * (current session, weekly, per-model weekly, extra usage) and the ChatGPT plan Codex and pi
  * use (session, weekly, credits). Hosts on one account share one card. Accounts only shared sheds
- * use (`hosts.<name>.shared`) come last, under their own heading: their limits are not the user's. `screen` = the mobile page (back, swipe back); `pane` = the desktop main pane.
+ * use (`hosts.<name>.shared`) come in their own group: their limits are not the user's. Each group
+ * is a grid of compact cards that fills the width, so a wide pane shows every account at once.
+ * `screen` = the mobile page (back, swipe back); `pane` = the desktop main pane.
  */
 export function UsageScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane' }) {
   const pane = layout === 'pane'
@@ -57,27 +59,32 @@ export function UsageScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane' 
     </Button>
   )
 
+  const grid = 'grid grid-cols-[repeat(auto-fill,minmax(min(100%,19rem),1fr))] items-start gap-3'
+  const group = (label: string, list: AccountUsage[]) => (
+    <section aria-label={label} className="space-y-2">
+      {mine.length && sheds.length ? <h2 className="px-1 text-xs font-medium tracking-wide text-muted-foreground uppercase">{label}</h2> : null}
+      <div className={grid}>
+        {list.map((a) => (
+          <AccountCard key={a.key} account={a} now={now} />
+        ))}
+      </div>
+    </section>
+  )
+
   const content = (
-    <div className="mx-auto w-full max-w-lg space-y-4 px-4 pt-3 pb-[max(1.5rem,env(safe-area-inset-bottom))] md:max-w-2xl">
+    <div className={cn('mx-auto w-full space-y-4 px-4 pt-3 pb-[max(1.5rem,env(safe-area-inset-bottom))]', pane ? 'max-w-7xl' : 'max-w-lg md:max-w-4xl')}>
       {loading && !accounts.length ? (
-        <div className="space-y-3 rounded-xl border p-4">
-          <Skeleton className="h-4 w-1/2" />
-          <Skeleton className="h-2 w-full" />
-          <Skeleton className="h-2 w-full" />
-          <Skeleton className="h-2 w-full" />
+        <div className={grid}>
+          <div className="space-y-3 rounded-xl border p-3">
+            <Skeleton className="h-4 w-1/2" />
+            <Skeleton className="h-1.5 w-full" />
+            <Skeleton className="h-1.5 w-full" />
+            <Skeleton className="h-1.5 w-full" />
+          </div>
         </div>
       ) : null}
-      {mine.map((a) => (
-        <AccountCard key={a.key} account={a} now={now} />
-      ))}
-      {sheds.length ? (
-        <section aria-label="Shared sheds" className="space-y-3">
-          <h2 className="px-1 pt-1 text-xs font-medium tracking-wide text-muted-foreground uppercase">Shared sheds</h2>
-          {sheds.map((a) => (
-            <AccountCard key={a.key} account={a} now={now} />
-          ))}
-        </section>
-      ) : null}
+      {mine.length ? group('My hosts', mine) : null}
+      {sheds.length ? group('Shared sheds', sheds) : null}
       {errors.length ? (
         <ul className="space-y-1.5">
           {errors.map((e) => (
@@ -91,7 +98,7 @@ export function UsageScreen({ layout = 'screen' }: { layout?: 'screen' | 'pane' 
         </ul>
       ) : null}
       {!loading && !accounts.length && !errors.length ? <p className="py-8 text-center text-sm text-muted-foreground">No hosts to read usage from.</p> : null}
-      <p className="text-xs text-dimmer">The same numbers as Claude Code’s /usage and Codex’s /status, read from each host’s Claude and Codex logins. Refreshed every minute.</p>
+      <p className="px-1 text-xs text-dimmer">The same numbers as Claude Code’s /usage and Codex’s /status, read from each host’s Claude and Codex logins. Refreshed every minute.</p>
     </div>
   )
 
@@ -136,31 +143,37 @@ function AccountCard({ account: a, now }: { account: AccountUsage; now: number }
   const x = u.extra_usage
   const openai = a.provider === 'openai'
   const fetched = Date.parse(u.fetched_at)
+  const ago = relTime(fetched, now)
   return (
-    <section className="rounded-xl border bg-card p-4">
-      <header className="mb-3 flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <span className="rounded-full bg-muted px-1.5 py-px text-[0.6875rem] font-medium text-muted-foreground">{name}</span>
-        <h2 className="min-w-0 truncate font-semibold">{who}</h2>
-        {a.account?.plan_label ? <span className="text-sm text-muted-foreground">{a.account.plan_label}</span> : null}
-        <span className="ml-auto flex items-center gap-1.5 text-xs text-dimmer">
+    <section className="rounded-xl border bg-card p-3">
+      <header className="mb-2.5 space-y-0.5">
+        <div className="flex items-baseline gap-2">
+          <span className="shrink-0 rounded-full bg-muted px-1.5 py-px text-[0.6875rem] font-medium text-muted-foreground">{name}</span>
+          <h3 className="min-w-0 truncate text-sm font-semibold" title={who}>
+            {who}
+          </h3>
+          {a.account?.plan_label ? <span className="ml-auto shrink-0 text-xs text-muted-foreground">{a.account.plan_label}</span> : null}
+        </div>
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-dimmer">
           {a.hosts.map((h) => (
             <span key={h} className="inline-flex items-center gap-1">
               <HostDot host={h} />
               {h}
             </span>
           ))}
-        </span>
+          {!u.stale ? <span className="ml-auto" title="Last read">{ago ? `${ago} ago` : 'just now'}</span> : null}
+        </div>
       </header>
-      <div className="space-y-3.5">
+      <div className="space-y-2">
         {u.limits.map((l) => (
           <LimitRow key={`${l.kind}-${l.label}`} limit={l} now={now} />
         ))}
         {!u.limits.length ? <p className="text-sm text-muted-foreground">No limits reported for this account.</p> : null}
       </div>
       {x ? (
-        <div className="mt-3.5 flex items-baseline justify-between gap-2 border-t pt-3 text-sm">
-          <span>{openai ? 'Credits' : 'Extra usage'}</span>
-          <span className="text-muted-foreground tabular-nums">
+        <div className="mt-2.5 flex items-baseline justify-between gap-2 border-t pt-2 text-xs">
+          <span className="text-muted-foreground">{openai ? 'Credits' : 'Extra usage'}</span>
+          <span className="tabular-nums">
             {openai
               ? !x.enabled
                 ? 'None'
@@ -177,16 +190,12 @@ function AccountCard({ account: a, now }: { account: AccountUsage; now: number }
           </span>
         </div>
       ) : null}
-      <footer className="mt-3 text-xs text-dimmer">
-        {u.stale ? (
-          <span className="inline-flex items-start gap-1 text-status-waiting">
-            <TriangleAlertIcon className="mt-px size-3.5 shrink-0" />
-            As of {relTime(fetched, now) || 'earlier'} ago — {u.error ?? 'refresh failed'}
-          </span>
-        ) : (
-          <>Updated {relTime(fetched, now) || 'just now'}{relTime(fetched, now) ? ' ago' : ''}</>
-        )}
-      </footer>
+      {u.stale ? (
+        <footer className="mt-2 flex items-start gap-1 text-xs text-status-waiting">
+          <TriangleAlertIcon className="mt-px size-3.5 shrink-0" />
+          As of {ago || 'earlier'} ago — {u.error ?? 'refresh failed'}
+        </footer>
+      ) : null}
     </section>
   )
 }
@@ -197,17 +206,22 @@ function LimitRow({ limit: l, now }: { limit: UsageLimit; now: number }) {
   const resets = resetsLabel(l.resets_at, now)
   return (
     <div>
-      <div className="mb-1.5 flex items-baseline gap-2 text-sm">
+      <div className="mb-1 flex items-baseline gap-1.5 text-sm">
         <span className="min-w-0 truncate">{l.label}</span>
         {l.active ? (
-          <span className="rounded-full bg-muted px-1.5 py-px text-[0.6875rem] text-muted-foreground" title="The limit that stops you first">
+          <span className="shrink-0 rounded-full bg-muted px-1.5 text-[0.625rem] text-muted-foreground" title="The limit that stops you first">
             binding
           </span>
         ) : null}
-        <span className={cn('ml-auto font-medium tabular-nums', LEVEL_TEXT[level])}>{pct}%</span>
+        {resets ? (
+          <span className="ml-auto shrink-0 text-xs text-dimmer" title="Resets">
+            ↻ {resets.replace(/^in /, '')}
+          </span>
+        ) : null}
+        <span className={cn('w-10 shrink-0 text-right font-medium tabular-nums', !resets && 'ml-auto', LEVEL_TEXT[level])}>{pct}%</span>
       </div>
       <div
-        className="relative h-2 overflow-hidden rounded-full bg-muted"
+        className="relative h-1.5 overflow-hidden rounded-full bg-muted"
         role="meter"
         aria-label={l.label}
         aria-valuemin={0}
@@ -216,7 +230,6 @@ function LimitRow({ limit: l, now }: { limit: UsageLimit; now: number }) {
       >
         <span className={cn('absolute inset-y-0 left-0 rounded-full', level === 'low' ? 'bg-primary' : CTX_FILL[level])} style={{ width: `${Math.min(100, pct)}%` }} />
       </div>
-      {resets ? <div className="mt-1 text-xs text-dimmer">Resets {resets}</div> : null}
     </div>
   )
 }

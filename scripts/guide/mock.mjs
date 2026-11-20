@@ -302,7 +302,18 @@ function prs(host) {
 }
 
 // ---------------------------------------------------------------- usage
-const usage = (host) => ({
+// devbox (a shared shed) runs on the team's own account: it shows under "Shared sheds".
+const usage = (host) => (host === 'devbox' ? teamUsage(host) : myUsage(host))
+const teamUsage = (host) => ({
+  host, account: { uuid: 'acct-team', email: 'ai-team@acme.dev', organization: 'Acme', plan: 'max', tier: 'max_20x', plan_label: 'Team · Max 20x' },
+  limits: [
+    { kind: 'session', group: 'session', label: 'Current session', model: null, percent: 71, severity: 'normal', resets_at: iso(now() + 1.4 * HR), active: true },
+    { kind: 'weekly_all', group: 'weekly', label: 'All models', model: null, percent: 38, severity: 'normal', resets_at: iso(now() + 5.1 * D), active: false },
+    { kind: 'weekly_scoped', group: 'weekly', label: 'Opus', model: 'Opus', percent: 44, severity: 'normal', resets_at: iso(now() + 5.1 * D), active: false },
+  ],
+  extra_usage: { enabled: false }, fetched_at: iso(now() - 30_000), stale: false, error: null,
+})
+const myUsage = (host) => ({
   host, account: { uuid: 'acct-demo', email: 'demo@acme.dev', organization: 'Acme', plan: 'max', tier: 'max_5x', plan_label: 'Team · Max 5x' },
   limits: [
     { kind: 'session', group: 'session', label: 'Current session', model: null, percent: 42, severity: 'normal', resets_at: iso(now() + 2.3 * HR), active: false },
