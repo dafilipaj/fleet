@@ -753,6 +753,20 @@ enum SlackCmd {
         #[arg(long)]
         json: bool,
     },
+    /// React to a message in a linked conversation with an emoji — often enough instead of a post
+    React {
+        /// The link id (sl-xxxxxx)
+        link: String,
+        /// The message's ts (each delivered message and `history` line carries it)
+        ts: String,
+        /// A Slack emoji name: white_check_mark, thumbsup, eyes, … (colons optional)
+        emoji: String,
+        /// Take the reaction off instead
+        #[arg(long)]
+        remove: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Read the linked conversation, a page at a time (a thread link: its thread) — what a linked
     /// session runs to catch up; lists each message's ts, replies and files
     History {
@@ -1569,6 +1583,13 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
                 thread,
                 json,
             } => slack_cmd::reply(&link, &text, thread.as_deref(), json)?,
+            SlackCmd::React {
+                link,
+                ts,
+                emoji,
+                remove,
+                json,
+            } => slack_cmd::react(&link, &ts, &emoji, remove, json)?,
             SlackCmd::History {
                 link,
                 limit,

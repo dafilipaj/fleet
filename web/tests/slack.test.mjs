@@ -48,6 +48,7 @@ function fakeSlack() {
     'chat.getPermalink': () => ({ permalink: `${URL_}?thread_ts=${THREAD}` }),
     'chat.postMessage': () => ({ ts: `1792779999.${String(++n).padStart(6, '0')}` }),
     'reactions.add': () => ({}),
+    'reactions.remove': () => ({}),
   };
   const call = async (method, params = {}) => {
     calls.push({ method, params });
@@ -144,6 +145,11 @@ test('link: reads the thread, types the intro into the idle session, then messag
   assert.match(intro, /Owner \(UOWNER, the owner of this session\)/);
   assert.match(intro, /Alex \(U1\)[^\n]*\n\s*How does it work\?/);
   assert.doesNotMatch(intro, /a bot/);
+  // Concise by default: reactions over posts, no intro or filler.
+  assert.match(intro, new RegExp(`fleet slack react ${link.id} <ts> <emoji>`));
+  assert.match(intro, /No filler: no hello or intro/);
+  assert.match(intro, /Never announce yourself/);
+  assert.doesNotMatch(intro, /say in a few words who you are/);
 
   // A message in another thread, an edit, the bot itself, an old one: none delivered.
   await fx.bridge.handleEvent({ type: 'message', channel: 'C0123ABCDEF', ts: '1792778000.000001', thread_ts: '1792770000.000001', user: 'U1', text: 'elsewhere' });
@@ -160,7 +166,7 @@ test('link: reads the thread, types the intro into the idle session, then messag
   fx.advance(10_000);
   await fx.bridge.tick();
   assert.equal(fx.sent.length, 2);
-  assert.match(fx.sent[1].text, /Alex \(U1\) at \d\d:\d\d → mentions you:\nIs @you there\?/);
+  assert.match(fx.sent[1].text, /Alex \(U1\) at \d\d:\d\d \(ts 1792778000\.000004\) → mentions you:\nIs @you there\?/);
   assert.match(fx.sent[1].text, /And this\?/);
   await new Promise((r) => setImmediate(r));
   // 👀 only on what was addressed to it.
@@ -428,6 +434,25 @@ test('two sessions answering each other: at most 5 wakes per 10 min, the rest is
   assert.equal((st2.links ?? st2).find((l) => l.id === a.id).pending.at(-1).capped, false);
 });
 
+test('react: an emoji on a message of the conversation, only for the linked session', async (t) => {
+  const fx = fixture(t);
+  const link = await fx.bridge.link({ session: SID, url: URL_, minutes: 5, host: 'h' });
+  const r = await fx.bridge.react({ link: link.id, ts: '1792778000.000004', emoji: ':white_check_mark:', pane: '%5' });
+  assert.deepEqual(r, { ok: true, link: link.id, channel: 'C0123ABCDEF', ts: '1792778000.000004', emoji: 'white_check_mark', removed: false });
+  const add = fx.slack.calls.findLast((c) => c.method === 'reactions.add');
+  assert.deepEqual(add.params, { channel: 'C0123ABCDEF', timestamp: '1792778000.000004', name: 'white_check_mark' });
+  await fx.bridge.react({ link: link.id, ts: '1792778000.000004', emoji: 'thumbsup', remove: true, pane: '%5' });
+  assert.equal(fx.slack.calls.findLast((c) => c.method === 'reactions.remove').params.name, 'thumbsup');
+  // A reaction is not a post: it does not join a thread.
+  assert.equal(fx.slack.calls.filter((c) => c.method === 'chat.postMessage').length, 0);
+
+  await assert.rejects(fx.bridge.react({ link: link.id, ts: '1792778000.000004', emoji: 'ok', pane: '%6' }), { status: 403 });
+  await assert.rejects(fx.bridge.react({ link: link.id, ts: 'nope', emoji: 'ok' }), { status: 400 });
+  await assert.rejects(fx.bridge.react({ link: link.id, ts: '1792778000.000004', emoji: 'two words' }), { status: 400 });
+  fx.advance(6 * 60 * 1000);
+  await assert.rejects(fx.bridge.react({ link: link.id, ts: '1792778000.000004', emoji: 'ok' }), { status: 410 });
+});
+
 test('blockedWhat: a short label without Slack markup', () => {
   assert.equal(blockedWhat(null), 'input needed');
   assert.equal(blockedWhat('exec `approval`  <now>'), 'exec approval now');
@@ -645,7 +670,7 @@ test('a DM link: a person instead of a URL — the app\'s DM with them, every me
   await fx.bridge.tick();
   assert.equal(fx.sent.length, 2);
   assert.match(fx.sent[1].text, /New in the DM with Sam — something for you/);
-  assert.match(fx.sent[1].text, /Sam \(U0SAM0001\) at \d\d:\d\d → to you:\nhi, what is this\?/);
+  assert.match(fx.sent[1].text, /Sam \(U0SAM0001\) at \d\d:\d\d \(ts \d{10}\.\d{6}\) → to you:\nhi, what is this\?/);
 
   // By id, again: the same DM — renewed.
   const again = await fx.bridge.link({ session: SID, user: 'U0SAM0001', minutes: 60, host: 'h' });

@@ -278,6 +278,24 @@ pub fn reply(id: &str, text: &str, thread: Option<&str>, json: bool) -> Result<(
     Ok(())
 }
 
+/// `fleet slack react <link> <ts> <emoji> [--remove]`: an emoji reaction on a message there.
+pub fn react(id: &str, ts: &str, emoji: &str, remove: bool, json: bool) -> Result<()> {
+    let mut body = json!({ "link": id, "ts": ts, "emoji": emoji, "remove": remove });
+    if let Some(pane) = crate::core::done::own_pane_from_env(None) {
+        body["pane"] = json!(pane);
+    }
+    let (status, v) = request("POST", "/api/slack/react", Some(&body))?;
+    ok_or_err(&status, &v)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&v)?);
+    } else {
+        let name = v["emoji"].as_str().unwrap_or(emoji);
+        let verb = if remove { "removed" } else { "reacted" };
+        println!("{verb} :{name}: on {ts} ({id})");
+    }
+    Ok(())
+}
+
 /// The body of a read: the link, and this session's pane (the bridge refuses another session's link).
 fn read_body(id: &str) -> Value {
     let mut body = json!({ "link": id });

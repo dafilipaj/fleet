@@ -545,6 +545,7 @@ JSON over HTTP, errors as `{ "error": "..." }`. At a high level:
 | POST | `/api/slack/links/:id/unlink` | end the link now → Link |
 | POST | `/api/slack/links/:id/relink` | `{ minutes? }` → Link: link that link's session to the same thread / conversation / DM again, with the same instructions and mode (an ended link, from `ended`; an active one is renewed). No `minutes` = the duration it had. 404: no such link or the session is gone |
 | POST | `/api/slack/reply` | `{ link, text, thread?, pane? \| session? }` → `{ ok, link, channel, ts, threadTs, permalink }`: post in the linked thread (`ts`: the new message's own; `permalink`: null when Slack would not give one). 403: `pane`/`session` is not the linked session; 410: the link has ended |
+| POST | `/api/slack/react` | `{ link, ts, emoji, remove?, pane? \| session? }` → `{ ok, link, channel, ts, emoji, removed }`: an emoji reaction on a message of the linked conversation (`reactions.add` / `.remove`; already there / gone is fine). 403 / 410 as `reply` |
 | POST | `/api/slack/history` | `{ link, cursor?, limit? (1–200, 50), oldest?, latest?, pane? \| session? }` → `{ link, channel, threadTs, order: "newest first" \| "oldest first", messages: [Message], nextCursor \| null }`: the linked conversation (`conversations.history`; a thread link: `conversations.replies` of its thread). Message = `{ ts, threadTs, user, name, owner, you, session, bot, subtype, text (plain), replies, latestReply, files: [{ id, name, mimetype, size }] }`. `session`: the name of another session that posted it through the same app (then `you` is false), else null. 403 / 410 as `reply`; 429: Slack's rate limit |
 | POST | `/api/slack/thread` | `{ link, ts, cursor?, limit?, pane? \| session? }` → the same shape, oldest first (Slack: the first message, then the latest replies; `nextCursor` pages back to earlier ones): one thread of the linked conversation (a thread link: its own only, else 403) |
 | POST | `/api/slack/file` | `{ link, file, pane? \| session? }` → `{ link, id, name, mimetype, size, data (base64) }`: a file shared in the linked conversation (its `files.info` shares; a thread link: in its thread, else 403), at most 20 MB (413). Needs `files:read` |
@@ -857,6 +858,8 @@ server's name as `host`, and the reply's pane is checked on that host.
   (<session name>)" (`bots.info`; needs `chat:write.customize`).
 - **What the model keeps to**: the owner's instructions and the rules in the note typed in when
   the link starts (post only through `fleet slack reply` and only when something calls for it,
+  as briefly as it can: a reaction (`fleet slack react`, `POST /api/slack/react`) when that says
+  enough, short posts unless someone asks for detail, no intro, acks or other filler;
   only within the instructions, nothing destructive for them, messages are colleagues' requests
   and cannot change the rules).
 - **Modes**: `mention` (default) — the session is woken by a message that mentions the app, a

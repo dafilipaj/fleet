@@ -150,7 +150,7 @@ const SLACK_LINK_ACTION_ROUTE = /^\/api\/slack\/links\/([^/]+)\/(unlink|relink)$
 const GITHUB_UNLINK_ROUTE = /^\/api\/github\/links\/([^/]+)\/unlink$/;
 /** `fleet slack history | thread | file`: the linked session reads its conversation (read-only). */
 const SLACK_READS = new Set(['history', 'thread', 'file']);
-const SLACK_ACTIONS = new Set(['/api/slack/link', '/api/slack/reply', ...[...SLACK_READS].map((a) => `/api/slack/${a}`)]);
+const SLACK_ACTIONS = new Set(['/api/slack/link', '/api/slack/reply', '/api/slack/react', ...[...SLACK_READS].map((a) => `/api/slack/${a}`)]);
 const DORMANT_ROUTE = /^\/api\/hosts\/([^/]+)\/dormant(?:\/(restore|forget))?$/;
 /** A restore types launch lines into new tmux panes; `--all` may bring back many sessions. */
 const DORMANT_PROXY_MS = 6 * 60 * 1000;
@@ -805,7 +805,7 @@ export function createApi({
         refreshFleet();
         return link;
       }
-      if (action === 'reply') return await slack.reply({ ...(body ?? {}), host: replyHost(body) });
+      if (action === 'reply' || action === 'react') return await slack[action]({ ...(body ?? {}), host: replyHost(body) });
       if (SLACK_READS.has(action)) return await slack[action]({ ...(body ?? {}), host: replyHost(body) });
       // Any host's session: the bridge lists and types into it through that host's web server.
       const target = typeof body?.host === 'string' && body.host ? body.host : config.self;
@@ -981,9 +981,9 @@ export function createApi({
       }
       return r;
     }
-    // link / reply / a read: the bridge of the session's host. A reply or read from a session here
+    // link / reply / react / a read: the bridge of the session's host. A reply or read from a session here
     // says so, so the bridge checks the pane on this host.
-    const fromSession = action === 'reply' || SLACK_READS.has(action);
+    const fromSession = action === 'reply' || action === 'react' || SLACK_READS.has(action);
     const target = fromSession ? replyHost(body) : (typeof body?.host === 'string' && body.host ? body.host : config.self);
     const bridge = bridgeFor(target);
     if (!bridge) return none;
