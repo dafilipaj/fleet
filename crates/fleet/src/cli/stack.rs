@@ -1112,6 +1112,7 @@ pub fn spawn(a: SpawnArgs) -> Result<()> {
     if let Some(h) = on {
         return spawn_on(&c, &src, &h, a);
     }
+    crate::core::config::get().ensure_spawn_allowed()?;
     let mut opts = a.opts;
     if opts.dir.is_none() {
         opts.dir = Some(src.cwd.clone().ok_or_else(|| {

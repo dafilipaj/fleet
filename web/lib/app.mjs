@@ -187,7 +187,9 @@ export function createHttpServer({ handleApi, uiDir, guard = null, auth = null, 
     })().catch((err) => {
       const status = err instanceof HttpError || err instanceof BackendError ? err.status : 500;
       if (status >= 500) logError(err, `${req.method} ${req.url}`);
-      if (!res.headersSent) sendJson(res, status, { error: err?.message ?? 'internal error' });
+      // An HttpError may carry extra fields (`body`, e.g. `noSpawn: true`); `error` is always its message.
+      const extra = err instanceof HttpError && err.body && typeof err.body === 'object' ? err.body : {};
+      if (!res.headersSent) sendJson(res, status, { ...extra, error: err?.message ?? 'internal error' });
       else res.destroy();
     });
   });

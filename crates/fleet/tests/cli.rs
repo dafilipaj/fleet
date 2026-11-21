@@ -541,3 +541,79 @@ fn group_keeps_dormant_sessions() {
     let a1 = members.iter().find(|m| m["id"] == "a1").unwrap();
     assert!(a1.get("dormant").is_none());
 }
+
+#[test]
+fn spawn_false_refuses_every_command_that_starts_an_agent() {
+    let env = common::Env::new();
+    let mut cfg = common::two_hosts();
+    cfg["spawn"] = serde_json::json!(false);
+    env.write_config(&cfg);
+    let dir = env.path("work");
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.display().to_string();
+    for args in [
+        vec![
+            "--dry-run",
+            "spawn",
+            "--backend",
+            "tmux",
+            "--dir",
+            &dir,
+            "hi",
+        ],
+        vec![
+            "--dry-run",
+            "handoff",
+            "--backend",
+            "tmux",
+            "--dir",
+            &dir,
+            "a brief",
+        ],
+        vec!["--dry-run", "pr", "spawn", "acme/app#1"],
+        vec!["--dry-run", "task", "spawn", "1001"],
+        vec!["--dry-run", "restore", "--all"],
+    ] {
+        let out = env.cmd().args(&args).output().unwrap();
+        assert!(!out.status.success(), "{args:?} must fail");
+        assert!(
+            common::stderr(&out)
+                .contains("laptop does not run agent sessions (config spawn: false)"),
+            "{args:?}: {}",
+            common::stderr(&out)
+        );
+    }
+    // Commands that start no agent still work.
+    let out = env.cmd().args(["config", "path"]).output().unwrap();
+    assert!(out.status.success());
+}
+
+#[test]
+fn spawn_true_or_absent_keeps_spawning() {
+    let env = common::Env::new();
+    for v in [
+        None,
+        Some(serde_json::json!(true)),
+        Some(serde_json::json!("yes")),
+    ] {
+        let mut cfg = common::two_hosts();
+        if let Some(v) = v {
+            cfg["spawn"] = v;
+        }
+        env.write_config(&cfg);
+        let dir = env.path("work");
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = env
+            .cmd()
+            .args(["--dry-run", "spawn", "--backend", "tmux", "--dir"])
+            .arg(&dir)
+            .arg("hi")
+            .output()
+            .unwrap();
+        assert!(
+            !common::stderr(&out).contains("does not run agent sessions"),
+            "{}",
+            common::stderr(&out)
+        );
+    }
+}

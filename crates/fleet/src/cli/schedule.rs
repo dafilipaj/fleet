@@ -61,6 +61,7 @@ fn task_settings() -> tasks::Settings {
 
 /// `fleet schedule add` / `fleet task schedule`.
 pub fn add(o: AddOpts) -> Result<()> {
+    crate::core::config::get().ensure_spawn_allowed()?;
     let now = Local::now();
     let now_ms = now.timestamp_millis();
     let dir = o

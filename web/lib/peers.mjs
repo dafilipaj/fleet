@@ -134,6 +134,7 @@ export async function fetchPeerHost(name, baseUrl, { timeoutMs = 6000, now = Dat
       ok: host.ok !== false,
       ...(host.ok === false && host.error ? { error: host.error } : {}),
       fetchedAt: Number(host.fetchedAt) || fetchedAt,
+      ...(host.spawn === false ? { spawn: false } : {}),
       ...(Array.isArray(host.spawnDirs) ? { spawnDirs: host.spawnDirs } : {}),
       ...(Array.isArray(host.hiddenSpawnDirs) ? { hiddenSpawnDirs: host.hiddenSpawnDirs } : {}),
       ...(typeof host.home === 'string' && host.home ? { home: host.home } : {}),

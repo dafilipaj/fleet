@@ -8,7 +8,8 @@
 # Refuses a checkout with uncommitted changes to tracked files (that is someone's work in
 # progress — deploy what is pushed, not what is lying around). The binary goes to
 # ~/.local/bin/fleet (where `fleet install` and the launchd agent expect it), replaced
-# atomically. Restart: the `fleet.web` launchd agent (`fleet web install-service`), else a tmux
+# atomically. Restart: the `fleet.web` launchd agent (`fleet web install-service`), else the
+# `fleet-web` systemd user unit (what `fleet web install-service` prints on Linux), else a tmux
 # session `fleet-web`, else it only tells you to restart the server yourself.
 set -eu
 
@@ -46,11 +47,14 @@ uid=$(id -u)
 if launchctl print "gui/$uid/fleet.web" >/dev/null 2>&1; then
   say "restart (launchd fleet.web)"
   launchctl kickstart -k "gui/$uid/fleet.web"
+elif command -v systemctl >/dev/null 2>&1 && systemctl --user is-enabled fleet-web >/dev/null 2>&1; then
+  say "restart (systemd --user fleet-web)"
+  systemctl --user restart fleet-web
 elif tmux has-session -t fleet-web 2>/dev/null; then
   say "restart (tmux fleet-web)"
   tmux respawn-pane -k -t fleet-web "while true; do '$HOME/.local/bin/fleet' web serve --dir '$repo/web'; sleep 2; done"
 else
-  say "no fleet.web launchd agent or fleet-web tmux session — restart the web server yourself"
+  say "no fleet.web launchd agent, fleet-web systemd user unit or fleet-web tmux session — restart the web server yourself"
   exit 0
 fi
 

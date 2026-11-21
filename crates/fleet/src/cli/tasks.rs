@@ -259,6 +259,7 @@ pub fn status(r: &str, want: Option<&str>, json: bool) -> Result<()> {
 /// `fleet task spawn <ref> [prompt]`: a new session whose first prompt is the task's context
 /// line + `prompt`.
 pub fn spawn(r: &str, prompt: Option<String>, opts: crate::cli::commands::SpawnOpts) -> Result<()> {
+    crate::core::config::get().ensure_spawn_allowed()?;
     let id = parse_ref(r)?;
     let (t, _, _, _) = tasks::lookup(&settings(), &id, false)?;
     let line = tasks::context_line(&t);

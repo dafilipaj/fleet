@@ -81,3 +81,9 @@ test('sessionsIn: that host, that dir (worktrees included), latest first', () =>
   }
   expect(sessionsIn(fleet, 'w', '/h/app').map((x) => x.session_id)).toEqual(['b', 'a'])
 })
+
+test('resolveEmbedDir: a host that runs no agent sessions offers no spawn', () => {
+  const r = resolveEmbedDir('/srv/app', { home: '/home/me', spawn: false, spawnDirs: [], hiddenSpawnDirs: [] })
+  expect(r.ok).toBe(false)
+  expect(r.ok ? '' : r.error).toMatch(/runs no agent sessions/)
+})

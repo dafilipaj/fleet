@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { DEFAULT_VOICE_FAILED_DIR, configPath, createSlackSettingsReloader, expandHome, fleetStateDir, loadConfig, ensurePath, ensureUtf8Locale, resolveBinary } from './lib/config.mjs';
+import { DEFAULT_VOICE_FAILED_DIR, configPath, createSlackSettingsReloader, expandHome, fleetStateDir, loadConfig, ensurePath, ensureUtf8Locale, noSpawnMessage, resolveBinary } from './lib/config.mjs';
 import { createPrStates } from './lib/pr-state.mjs';
 import { run } from './lib/run.mjs';
 import { createFleetCli } from './lib/fleet-cli.mjs';
@@ -50,7 +50,7 @@ import { createMemos } from './lib/memos.mjs';
 import { createApi } from './lib/api.mjs';
 import { createHttpServer } from './lib/app.mjs';
 import { createRequestGuard, listenAddresses, loopbackFor, machineNames } from './lib/guard.mjs';
-import { createAuth, createKeychainSecret, MIN_PASSWORD_LENGTH, MIN_TOKEN_LENGTH } from './lib/auth.mjs';
+import { createAuth, createSecret, MIN_PASSWORD_LENGTH, MIN_TOKEN_LENGTH } from './lib/auth.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const NAME = 'fleet-web';
@@ -289,6 +289,7 @@ const spawner = createSpawner({
   ghIdentities: config.ghIdentities,
   ghIdentityLauncher: (name, launcher) => cli.ghIdentityLauncher(name, launcher),
   harnessDefaults: () => config.harnessDefaults,
+  refuse: config.spawn === false ? noSpawnMessage(config.self) : null,
 });
 const operator = createOperator({ config, fleet, spawner, backend, log });
 // One transcript reader: the chat and the review threads (their replies) share its cache.
@@ -370,16 +371,20 @@ const guard = createRequestGuard({
 // web.bind: one address, or a specific one (a tailnet IP) plus loopback (lib/guard.mjs).
 const addresses = listenAddresses(config.bind);
 // web.auth: a token on every request, loopback included (lib/auth.mjs); off unless configured. The
-// token and the phone password live in the Keychain only.
+// token and the phone password live in the Keychain, or in owner-only files (tokenFile / passwordFile).
 const auth = createAuth({
-  enabled: Boolean(config.authKeychain),
-  getToken: createKeychainSecret({ service: config.authKeychain, run, minLength: MIN_TOKEN_LENGTH, log }),
-  getPassword: createKeychainSecret({ service: config.authPasswordKeychain, run, minLength: MIN_PASSWORD_LENGTH, log }),
+  enabled: Boolean(config.authKeychain || config.authTokenFile),
+  getToken: createSecret({ file: config.authTokenFile, service: config.authKeychain, run, minLength: MIN_TOKEN_LENGTH, log }),
+  getPassword: createSecret({ file: config.authPasswordFile, service: config.authPasswordKeychain, run, minLength: MIN_PASSWORD_LENGTH, log }),
   log,
 });
-// Peers whose web.auth wants a token (hosts.<name>.webTokenKeychain): read now and, while one is
-// missing (a locked Keychain), again every 30 s.
-const peerTokenSources = Object.entries(config.peerTokenKeychains).map(([origin, service]) => [origin, createKeychainSecret({ service, run, minLength: MIN_TOKEN_LENGTH, log })]);
+// Peers whose web.auth wants a token (hosts.<name>.webTokenFile, else webTokenKeychain): read now
+// and, while one is missing (a locked Keychain, no file yet), again every 30 s.
+const peerTokenOrigins = [...new Set([...Object.keys(config.peerTokenKeychains), ...Object.keys(config.peerTokenFiles ?? {})])];
+const peerTokenSources = peerTokenOrigins.map((origin) => [
+  origin,
+  createSecret({ file: config.peerTokenFiles?.[origin] ?? null, service: config.peerTokenKeychains[origin] ?? null, run, minLength: MIN_TOKEN_LENGTH, log }),
+]);
 async function loadPeerTokens() {
   const entries = await Promise.all(peerTokenSources.map(async ([origin, get]) => [origin, await get()]));
   setPeerTokens(Object.fromEntries(entries.filter(([, t]) => t)));
@@ -399,7 +404,7 @@ for (const [i, s] of servers.entries()) if (i > 0) s.listen(config.port, address
 servers[0].listen(config.port, addresses[0], () => {
   log(`[fleet-web] self=${config.self} listening on ${addresses.map((a) => `http://${a.includes(':') ? `[${a}]` : a}:${config.port}`).join(', ')}`);
   if (config.allowedHosts.length) log(`[fleet-web] allowedHosts=${config.allowedHosts.join(',')}`);
-  log(`[fleet-web] auth ${auth.enabled ? `on (Keychain ${config.authKeychain}${config.authPasswordKeychain ? `, password ${config.authPasswordKeychain}` : ''})` : 'off'}`);
+  log(`[fleet-web] auth ${auth.enabled ? `on (${config.authTokenFile ? `token file ${config.authTokenFile}` : `Keychain ${config.authKeychain}`}${config.authPasswordFile ? `, password file ${config.authPasswordFile}` : config.authPasswordKeychain ? `, password ${config.authPasswordKeychain}` : ''})` : 'off'}`);
   log(`[fleet-web] config=${config.configFile ?? '(none, defaults)'} peers=${Object.keys(config.peers).join(',') || '(none)'}`);
   log(`[fleet-web] fleet=${config.fleetBin} tmux=${config.tmux} ui=${config.uiDir ?? '(none)'}`);
   if (config.autoName.enabled) {
@@ -473,7 +478,9 @@ servers[0].listen(config.port, addresses[0], () => {
   log(config.stacks.sync
     ? `[fleet-web] stacks: sync every ${config.stacks.syncMinutes}m while a session is in a stack (fleet stack sync)`
     : '[fleet-web] stacks: background sync off (FLEET_WEB_STACKS=0)');
-  if (config.restore.onBoot) {
+  if (config.restore.onBoot && config.spawn === false) {
+    log('[fleet-web] restore.onBoot: skipped, this host runs no agent sessions (spawn: false)');
+  } else if (config.restore.onBoot) {
     log('[fleet-web] restore.onBoot: bringing back dormant sessions (fleet restore --all)');
     dormant.restoreOnBoot({ markerFile: config.restore.markerFile }).then((r) => {
       if (r?.restored?.length) handleApi.refreshFleet();

@@ -750,6 +750,8 @@ pub fn spawn_tagged(
     harness: Harness,
     tag: Option<&crate::core::jobs::Tag>,
 ) -> Result<(String, Option<String>)> {
+    // The backstop behind every command's own check: a `spawn: false` machine starts no agent.
+    crate::core::config::get().ensure_spawn_allowed()?;
     let backend = match (backend, tag) {
         (Backend::Iterm, Some(_)) => Backend::Tmux,
         (b, _) => b,

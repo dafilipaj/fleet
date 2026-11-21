@@ -32,6 +32,9 @@ pub fn run(o: RestoreOpts) -> Result<()> {
     if o.forget_all || o.forget.is_some() {
         return forget(pool, o.forget.as_deref(), o.json);
     }
+    if o.target.is_some() || o.all {
+        crate::core::config::get().ensure_spawn_allowed()?;
+    }
     // Record first: the first command after a reboot is what turns the old boot dormant.
     let snap = snapshot::refresh()?;
     match (o.target.as_deref(), o.all) {

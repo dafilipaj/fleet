@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { configPath, createSlackSettingsReloader, expandHome, ghIdentitiesOf, loadConfig, normalizeConfig, resolveBinary, resolveFleetBin, spawnRoots } from '../lib/config.mjs';
+import { configPath, createSlackSettingsReloader, expandHome, ghIdentitiesOf, loadConfig, normalizeConfig, resolveBinary, resolveFleetBin, spawnAllowed, spawnRoots } from '../lib/config.mjs';
 
 function tmp() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-web-cfg-'));
@@ -257,4 +257,19 @@ test('slack.owners: a list, merged with slack.owner (first); bad ids refused', (
   assert.deepEqual([n({ owners: ['UBBBBB'] }).owner, n({}).owners], ['UBBBBB', []]);
   assert.throws(() => n({ owners: 'UAAAAA' }), /owners must be a list/);
   assert.throws(() => n({ owners: ['nope'] }), /owners must be a list/);
+});
+
+test('spawn: only an explicit false turns spawning off; then no spawn dirs, hidden ones included', () => {
+  for (const [v, ok] of [[undefined, true], [true, true], ['no', true], [0, true], [null, true], [false, false]]) assert.equal(spawnAllowed(v === undefined ? {} : { spawn: v }), ok, String(v));
+  const dirs = [{ label: 'App', paths: { server: '/srv/app' } }, { label: 'Hidden', paths: { server: '/srv/h' }, hidden: true }];
+  const off = normalizeConfig({ self: 'server', spawn: false, spawnDirs: dirs }, { env: {}, home: '/h' });
+  assert.equal(off.spawn, false);
+  assert.deepEqual(off.spawnDirs, []);
+  assert.deepEqual(off.hiddenSpawnDirs, []);
+  assert.deepEqual(spawnRoots(off), []);
+  const on = normalizeConfig({ self: 'server', spawnDirs: dirs }, { env: {}, home: '/h' });
+  assert.equal(on.spawn, true);
+  assert.deepEqual(on.spawnDirs, [{ label: 'App', path: '/srv/app' }]);
+  const bare = normalizeConfig({ self: 'server' }, { env: {}, home: '/h' });
+  assert.deepEqual(bare.spawnDirs, [{ label: 'Home', path: '/h' }], 'unchanged: Home when none offered');
 });

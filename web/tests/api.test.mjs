@@ -109,7 +109,7 @@ function fakeHost(self, sessions) {
   return { calls, cli, backend, transcripts, spawner, killer, autoNamer, focus, fleet: createFleet({ cli, self }) };
 }
 
-async function startPair(t) {
+async function startPair(t, { raw = {} } = {}) {
   const uiDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-web-ui-'));
   fs.writeFileSync(path.join(uiDir, 'index.html'), '<p>custom ui</p>');
   t.after(() => fs.rmSync(uiDir, { recursive: true, force: true }));
@@ -135,6 +135,7 @@ async function startPair(t) {
         hosts: { laptop: { web: urls.laptop }, workstation: { web: urls.workstation } },
         spawnDirs: [{ label: 'Tmp', paths: { [name]: os.tmpdir() } }],
         web: { autoName: { enabled: true } },
+        ...(raw[name] ?? {}),
       },
       { env: {}, home: '/home/tester' },
     );
@@ -374,6 +375,75 @@ test('spawn keeps `claude -n <name>` when auto-naming is off', async () => {
   req.end('{}');
   await api(req, new URL('http://x/api/hosts/solo/spawn'));
   assert.equal(host.calls.at(-1)[1].nameGiven, true);
+});
+
+test('spawn: false — the host offers no spawn dirs and every route that starts an agent there is refused', async (t) => {
+  const { urls, remote, lap } = await startPair(t, { raw: { workstation: { spawn: false, spawnDirs: [{ label: 'Tmp', paths: { workstation: os.tmpdir() } }, { label: 'App', paths: { workstation: os.tmpdir() }, hidden: true }] } } });
+  const fleet = await get(`${urls.laptop}/api/fleet`);
+  const ws = fleet.body.hosts.find((h) => h.name === 'workstation');
+  assert.equal(ws.spawn, false);
+  assert.deepEqual(ws.spawnDirs, []);
+  assert.deepEqual(ws.hiddenSpawnDirs, []);
+  const lapHost = fleet.body.hosts.find((h) => h.name === 'laptop');
+  assert.equal(lapHost.spawn, undefined, 'other hosts are unchanged');
+  assert.equal(lapHost.spawnDirs[0].label, 'Tmp');
+
+  const refused = async (pathname, body) => {
+    const r = await post(`${urls.laptop}${pathname}`, body);
+    assert.equal(r.status, 403, pathname);
+    assert.equal(r.body.noSpawn, true, pathname);
+    assert.match(r.body.error, /workstation does not run agent sessions \(config spawn: false\)/);
+  };
+  await refused('/api/hosts/workstation/spawn', { prompt: 'hi' });
+  await refused('/api/hosts/workstation/spawn', { prompt: 'hi', embed: 'brain', dir: os.tmpdir() });
+  await refused('/api/hosts/workstation/prs/spawn', { pr: 'acme/app#1' });
+  await refused('/api/hosts/workstation/tasks/spawn', { task: '1001', dir: os.tmpdir() });
+  await refused('/api/hosts/workstation/schedule', { at: 'in 2h', dir: os.tmpdir() });
+  assert.ok(!remote.calls.some(([c]) => ['spawn', 'prCheckout', 'taskShow', 'scheduleAdd'].includes(c)), 'nothing ran on the no-spawn host');
+
+  // The laptop still spawns.
+  const ok = await post(`${urls.workstation}/api/hosts/laptop/spawn`, { prompt: 'hi' });
+  assert.equal(ok.status, 200);
+  assert.equal(lap.calls.filter(([c]) => c === 'spawn').length, 1);
+});
+
+test('spawn: false — operator, dormant restore and the spawner backstop refuse; dry runs and reads still work', async () => {
+  const host = fakeHost('solo', []);
+  const config = normalizeConfig({ self: 'solo', spawn: false, web: { operator: { hosts: ['solo'] } } }, { env: {}, home: '/home/tester' });
+  assert.equal(config.spawn, false);
+  const operator = { status: async () => ({ host: 'solo', session: null }), ensure: async () => assert.fail('operator must not start'), stamp: (h) => h };
+  const restores = [];
+  const dormant = { list: async () => ({ dormant: [] }), restore: async (c) => (restores.push(c), { restored: [], failed: [] }), forget: async () => ({ forgotten: [] }) };
+  const api = createApi({ config, ...host, operator, dormant, warmFleet: false });
+  const call = async (pathname, body) => api(await spawnReq(body), new URL(`http://x${pathname}`)).catch((e) => e);
+
+  const local = await call('/api/operator?local=1', {});
+  assert.equal(local.status, 403);
+  assert.match(local.message, /solo does not run agent sessions/);
+  const routed = await call('/api/operator', {});
+  assert.equal(routed.status, 503, 'the only operator host runs no sessions: none answered');
+  assert.match(routed.message, /solo does not run agent sessions/);
+  const status = await api({ method: 'GET', headers: {} }, new URL('http://x/api/operator?local=1'));
+  assert.equal(status.status, 200, 'GET (is it running) still answers');
+
+  const restore = await call('/api/hosts/solo/dormant/restore', { all: true });
+  assert.equal(restore.status, 403);
+  assert.equal(restore.body.noSpawn, true);
+  assert.equal(restores.length, 0);
+  const dry = await call('/api/hosts/solo/dormant/restore', { all: true, dryRun: true });
+  assert.equal(dry.status, 200);
+
+  const fleet = await api({ method: 'GET', headers: {} }, new URL('http://x/api/fleet?local=1'));
+  assert.deepEqual(fleet.body.hosts[0].spawnDirs, []);
+  assert.equal(fleet.body.hosts[0].spawn, false);
+});
+
+test('spawn: false — the spawner itself refuses (backstop)', async () => {
+  const { createSpawner } = await import('../lib/spawn.mjs');
+  const ran = [];
+  const spawner = createSpawner({ run: async (...a) => (ran.push(a), { stdout: '', stderr: '' }), refuse: 'solo does not run agent sessions (config spawn: false)', sleep: async () => {} });
+  await assert.rejects(spawner.spawn({ name: 'x', dir: os.tmpdir(), prompt: '' }), (e) => e.status === 403 && e.noSpawn === true);
+  assert.equal(ran.length, 0);
 });
 
 test('/api/fleet is served from the warm snapshot with snapshotAt', async (t) => {

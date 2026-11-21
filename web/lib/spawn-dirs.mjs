@@ -211,8 +211,9 @@ export function createSpawnDirsEditor({ config, configFile, cli, home = os.homed
     const run = queue.then(async () => {
       await cli.configSet({ key: 'spawnDirs', value: entries, configFile });
       const raw = readRaw();
-      config.spawnDirs = spawnDirsFor(raw.spawnDirs, config.self, home); // hot reload
-      config.hiddenSpawnDirs = hiddenSpawnDirsFor(raw.spawnDirs, config.self, home);
+      // hot reload (a host with `spawn: false` keeps offering nothing)
+      config.spawnDirs = config.spawn === false ? [] : spawnDirsFor(raw.spawnDirs, config.self, home);
+      config.hiddenSpawnDirs = config.spawn === false ? [] : hiddenSpawnDirsFor(raw.spawnDirs, config.self, home);
       return { status: 200, body: { ...describe(raw, canonicalSpawnDirs(raw.spawnDirs, hostNames(raw)), checks), saved: true } };
     });
     queue = run.catch(() => {});

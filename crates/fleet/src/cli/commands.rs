@@ -766,6 +766,7 @@ fn default_backend() -> Backend {
 }
 
 pub fn spawn(prompt: Option<String>, from: Option<String>, opts: SpawnOpts) -> Result<()> {
+    crate::core::config::get().ensure_spawn_allowed()?;
     if let Some(src) = from {
         return spawn_from(&src, prompt, opts);
     }
@@ -1060,6 +1061,7 @@ pub fn handoff(
     opts: SpawnOpts,
     wait: bool,
 ) -> Result<()> {
+    crate::core::config::get().ensure_spawn_allowed()?;
     let brief = read_brief(brief, file)?;
     let (dir, backend_kind, name) = opts.resolve()?;
     let model = opts

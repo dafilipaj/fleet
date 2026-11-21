@@ -72,6 +72,10 @@ pub struct Host {
     /// (read by the web server only). `None` → no token.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub web_token_keychain: Option<String>,
+    /// File (`~` allowed, owner-only) holding that token, for a server without a Keychain (read
+    /// by the web server only); wins over `web_token_keychain` when both are set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web_token_file: Option<String>,
     /// A shared shed (other people's sessions too): the web UI keeps its sessions out of the
     /// default view, the Inbox and the waiting count; `list --mine` / `--shared` split on it.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -290,6 +294,10 @@ pub struct Config {
     /// `restore` — session recovery (`onBoot` is the web server's; `keepClosedDays` ours).
     /// Raw JSON, read leniently: a bad value here must not cost the rest of the config.
     pub restore: Value,
+    /// `spawn` — `false`: this machine never runs agent sessions (an always-on server that only
+    /// serves the web app and its single-home services). Raw JSON, read leniently: only an
+    /// explicit `false` turns spawning off (see [`Config::spawn_allowed`]).
+    pub spawn: Value,
 }
 
 impl Config {
@@ -398,6 +406,24 @@ impl Config {
             .and_then(Value::as_f64)
             .filter(|d| d.is_finite() && *d >= 0.0)
             .unwrap_or(crate::core::snapshot::DEFAULT_KEEP_CLOSED_DAYS)
+    }
+
+    /// May this machine start agent sessions? `false` only for an explicit `"spawn": false`.
+    pub fn spawn_allowed(&self) -> bool {
+        self.spawn.as_bool() != Some(false)
+    }
+
+    /// `Err` with a clear message when this machine has `"spawn": false`: every command that
+    /// starts an agent (spawn, handoff, stack / pr / task spawn, bots run, schedule, restore)
+    /// calls it before doing anything.
+    pub fn ensure_spawn_allowed(&self) -> Result<()> {
+        if self.spawn_allowed() {
+            return Ok(());
+        }
+        Err(Error::Other(format!(
+            "{} does not run agent sessions (config spawn: false) — start it on another host with -H <host>",
+            self.self_name()
+        )))
     }
 
     pub fn web_port(&self) -> u16 {
@@ -671,6 +697,33 @@ mod tests {
             "spawnDirs": [ { "label": "Work", "paths": { "laptop": "~/Code/app", "workstation": "~/src/app" } } ],
             "somethingNew": { "keep": true }
         })
+    }
+
+    #[test]
+    fn spawn_is_off_only_for_an_explicit_false() {
+        for (v, allowed) in [
+            (None, true),
+            (Some(json!(true)), true),
+            (Some(json!("no")), true),
+            (Some(json!(0)), true),
+            (Some(json!(false)), false),
+        ] {
+            let mut raw = sample();
+            if let Some(v) = v {
+                raw["spawn"] = v;
+            }
+            let c: Config = serde_json::from_value(raw).unwrap();
+            assert_eq!(c.spawn_allowed(), allowed);
+            assert_eq!(c.ensure_spawn_allowed().is_ok(), allowed);
+        }
+        let mut raw = sample();
+        raw["spawn"] = json!(false);
+        let c: Config = serde_json::from_value(raw).unwrap();
+        let e = c.ensure_spawn_allowed().unwrap_err().to_string();
+        assert!(
+            e.contains("does not run agent sessions (config spawn: false)"),
+            "{e}"
+        );
     }
 
     #[test]

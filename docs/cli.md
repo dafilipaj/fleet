@@ -67,6 +67,13 @@ the first rung with hits wins. Two hits on the same rung is an error that lists 
 `send`, `rename --force`, `name --apply` and `spawn` change a live agent's state — scripts and agents
 should confirm before running them.
 
+A machine whose config has `"spawn": false` (an always-on server that runs no agent sessions; see
+[architecture](architecture.md#config)) refuses every command that starts an agent there — `spawn`,
+`spawn --from`, `handoff`, `stack spawn` (unless `--on` names another host), `pr spawn`, `task spawn`,
+`schedule add`, `bots run` and `restore <target> | --all` — with `<host> does not run agent sessions
+(config spawn: false)`, also when reached with `-H <host>` (the remote CLI reads its own config).
+tmux-only commands (`new`, `tmux …`) still work.
+
 ### Harnesses
 
 fleet drives three coding agents: **Claude Code** (`claude`, the default), **Codex** (`codex`) and
@@ -920,7 +927,7 @@ Cancel. Web API: `GET /api/hosts/:host/schedule`, `POST /api/hosts/:host/schedul
 | --- | --- |
 | `fleet web serve [--port N] [--bind ADDR] [--dir PATH]` | run `node <web.dir>/server.mjs` with this machine's config (needs Node ≥ 22) |
 | `fleet web build [--dir PATH] [--install]` | build the React UI: `npm --prefix <web.dir>/ui ci` (when `node_modules` is missing, or `--install`) then `npm … run build` → `ui/dist`, which the server then serves by default. Needs a checkout (an installed web dir has only `ui/dist`) |
-| `fleet web install-service` | macOS: write and load a launchd agent that keeps `fleet web serve` running (`--uninstall`, `--no-load`, `--print`); logs to `~/Library/Logs/fleet.web.log`, runs as `ProcessType=Interactive` so macOS does not throttle it like a background job (that made `fleet list` take 10s+ under Low Power Mode); elsewhere: print a systemd user unit. The agent pins one node (config `web.node`, else `/opt/homebrew/bin/node` or `/usr/local/bin/node`, else `PATH`) and leaves version-manager dirs (nvm/volta/fnm) out of its `PATH`; if the only node is version-managed it is used with a warning |
+| `fleet web install-service` | macOS: write and load a launchd agent that keeps `fleet web serve` running (`--uninstall`, `--no-load`, `--print`); logs to `~/Library/Logs/fleet.web.log`, runs as `ProcessType=Interactive` so macOS does not throttle it like a background job (that made `fleet list` take 10s+ under Low Power Mode); elsewhere: print a systemd user unit (`fleet-web.service`; `scripts/deploy.sh` restarts it with `systemctl --user restart fleet-web` when it is enabled). The agent pins one node (config `web.node`, else `/opt/homebrew/bin/node` or `/usr/local/bin/node`, else `PATH`) and leaves version-manager dirs (nvm/volta/fnm) out of its `PATH`; if the only node is version-managed it is used with a warning |
 
 ## Environment
 

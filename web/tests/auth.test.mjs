@@ -3,7 +3,11 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 
 import { createHttpServer } from '../lib/app.mjs';
-import { COOKIE, FAILURE_WINDOW_MS, MAX_FAILURES, createAuth, createKeychainSecret } from '../lib/auth.mjs';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+import { COOKIE, FAILURE_WINDOW_MS, MAX_FAILURES, createAuth, createFileSecret, createKeychainSecret, createSecret } from '../lib/auth.mjs';
 import { normalizeConfig } from '../lib/config.mjs';
 import { apiScript } from '../lib/operator.mjs';
 import { fetchPeerHost, setPeerTokens } from '../lib/peers.mjs';
@@ -158,7 +162,7 @@ test('config: web.auth Keychain services and hosts.<name>.webTokenKeychain', () 
   assert.equal(none.authKeychain, null);
   assert.deepEqual(none.peerTokenKeychains, {});
 
-  assert.throws(() => normalizeConfig({ self: 'laptop', web: { auth: { tokenFile: '/x' } } }, { env: {}, home: '/h' }), /web.auth.keychain is required/);
+  assert.throws(() => normalizeConfig({ self: 'laptop', web: { auth: { passwordFile: '/x' } } }, { env: {}, home: '/h' }), /web.auth.keychain \(or tokenFile\) is required/);
   assert.throws(() => normalizeConfig({ self: 'laptop', web: { auth: 'x' } }, { env: {}, home: '/h' }), /web.auth must be an object/);
 });
 
@@ -189,4 +193,60 @@ test('operator ./api: reads the token from the Keychain and keeps it out of argv
   assert.match(script, /token=\$\(security find-generic-password -s 'fleet-web-'\\''token' -w\)/);
   assert.match(script, /curl -sS -K - /);
   assert.doesNotMatch(apiScript('http://127.0.0.1:7777/api'), /token=/);
+});
+
+test('config: web.auth.tokenFile / passwordFile and hosts.<name>.webTokenFile (~ expanded)', () => {
+  const cfg = normalizeConfig(
+    { self: 'laptop', web: { auth: { tokenFile: '~/.config/fleet/web-token', passwordFile: '/etc/fleet/pw' } }, hosts: { laptop: {}, workstation: { web: 'http://100.x.y.z:7777', webTokenFile: '~/.config/fleet/peer-token' } } },
+    { env: {}, home: '/h' },
+  );
+  assert.equal(cfg.authKeychain, null);
+  assert.equal(cfg.authTokenFile, '/h/.config/fleet/web-token');
+  assert.equal(cfg.authPasswordFile, '/etc/fleet/pw');
+  assert.deepEqual(cfg.peerTokenFiles, { 'http://100.x.y.z:7777': '/h/.config/fleet/peer-token' });
+  assert.deepEqual(cfg.peerTokenKeychains, {});
+  assert.throws(() => normalizeConfig({ self: 'laptop', hosts: { workstation: { web: 'http://100.x.y.z:7777', webTokenFile: '' } } }, { env: {}, home: '/h' }), /webTokenFile must be a file path/);
+});
+
+test('createFileSecret: trimmed, cached, refuses a file its group or others can read', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-web-secret-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'token');
+  const logs = [];
+  let clock = 0;
+  const get = createFileSecret({ file, minLength: 32, now: () => clock, log: (m) => logs.push(m) });
+  assert.equal(await get(), null, 'no file yet');
+  fs.writeFileSync(file, `  ${TOKEN}\n`, { mode: 0o644 });
+  fs.chmodSync(file, 0o644);
+  clock += 31 * 1000;
+  assert.equal(await get(), null, 'group/other-readable: refused');
+  assert.match(logs.join('\n'), /readable or writable by its group or others/);
+  fs.chmodSync(file, 0o600);
+  assert.equal(await get(), null, 'a miss is retried only after 30 s');
+  clock += 31 * 1000;
+  assert.equal(await get(), TOKEN, 'trimmed');
+  fs.writeFileSync(file, 'changed-but-cached');
+  assert.equal(await get(), TOKEN, 'a hit is cached for good');
+
+  const tilde = createFileSecret({ file: '~/token', home: dir, minLength: 32, log: (m) => logs.push(m) });
+  assert.equal(await tilde(), null, '~ expanded; a value shorter than minLength is ignored');
+  assert.match(logs.join('\n'), /shorter than 32 characters/);
+});
+
+test('createSecret: the file wins over the Keychain item when both are set', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-web-secret-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'token');
+  fs.writeFileSync(file, TOKEN, { mode: 0o600 });
+  const calls = [];
+  const run = async (...a) => (calls.push(a), { stdout: 'b'.repeat(64) });
+  assert.equal(await createSecret({ file, service: 'svc', run, minLength: 32 })(), TOKEN);
+  assert.equal(calls.length, 0, 'no Keychain call');
+  assert.equal(await createSecret({ file: null, service: 'svc', run, minLength: 32 })(), 'b'.repeat(64));
+});
+
+test('operator ./api: reads the token from web.auth.tokenFile when set', () => {
+  const script = apiScript('http://127.0.0.1:7777/api', 'svc', "/h/.config/fleet/web-'token");
+  assert.match(script, /token=\$\(tr -d '\[:space:\]' < '\/h\/\.config\/fleet\/web-'\\''token'\)/);
+  assert.doesNotMatch(script, /security/);
 });

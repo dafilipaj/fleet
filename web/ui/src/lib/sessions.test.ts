@@ -2,6 +2,7 @@ import { expect, test } from 'vitest'
 
 import type { FleetResponse, Session } from '@/api/types'
 import {
+  canSpawnOn,
   clusterByStack,
   isStackLead,
   stackRuns,
@@ -356,4 +357,18 @@ test('the stack lead goes first in its cluster; the others keep their order', ()
   expect(isStackLead(s({ session_id: 'x', stack: { id: 'st-1', label: 'x', lead: null } }))).toBe(false)
   const runs = stackRuns(clusterByStack(rows))
   expect(runs[0].kind === 'stack' && runs[0].sessions.map((x) => x.session_id)).toEqual(['d', 'a', 'c'])
+})
+
+test('spawnTargets / canSpawnOn: a host with spawn: false is never offered', () => {
+  const fleet = {
+    self: 'laptop',
+    hosts: [
+      { name: 'laptop', ok: true, spawnDirs: [{ label: 'Home', path: '/home/me' }], sessions: [] },
+      { name: 'server', ok: true, spawn: false, spawnDirs: [], hiddenSpawnDirs: [], sessions: [] },
+    ],
+  } as unknown as FleetResponse
+  expect(spawnTargets(fleet).map((h) => h.name)).toEqual(['laptop'])
+  expect(canSpawnOn(fleet, 'laptop')).toBe(true)
+  expect(canSpawnOn(fleet, 'server')).toBe(false)
+  expect(canSpawnOn(fleet, 'unknown')).toBe(true)
 })

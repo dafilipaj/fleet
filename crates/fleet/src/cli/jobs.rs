@@ -555,6 +555,9 @@ fn start(j: &Job, trigger: &str, slot: Option<i64>, branch: Option<&Branch>) -> 
         }
         return Ok(run);
     }
+    if let Err(e) = crate::core::config::get().ensure_spawn_allowed() {
+        return fail(run, e.to_string());
+    }
     if j.slack.is_some()
         && let Err(e) = crate::cli::slack::check_linkable()
     {

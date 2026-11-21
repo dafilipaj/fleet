@@ -233,7 +233,8 @@ permission prompts, and its working directory must already be trusted by Claude 
 **Updating** a machine that runs from a repo checkout: `scripts/deploy.sh` there (over ssh:
 `ssh workstation '~/Code/project/scripts/deploy.sh'`) — pulls `main` (refuses uncommitted
 changes), builds the CLI into `~/.local/bin/fleet`, runs `fleet web build`, restarts the
-`fleet.web` launchd agent (else the `fleet-web` tmux session) and waits for `/api/health`.
+`fleet.web` launchd agent (else the `fleet-web` systemd user unit on Linux, else the `fleet-web` tmux
+session) and waits for `/api/health`.
 
 ## 7. Phone
 

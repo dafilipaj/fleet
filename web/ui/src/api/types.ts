@@ -242,6 +242,8 @@ export interface Host {
   ok: boolean
   error?: string
   fetchedAt?: number
+  /** `false`: that host runs no agent sessions (config `spawn: false`) — offer no spawn there. Absent = it does. */
+  spawn?: false
   spawnDirs?: SpawnDir[]
   /** Start directories allowed for spawns but not offered (config `hidden: true`); absent when none. */
   hiddenSpawnDirs?: SpawnDir[]

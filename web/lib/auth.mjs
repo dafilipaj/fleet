@@ -9,14 +9,18 @@
 //   holds a value derived from the token (HMAC), so the token never sits in the browser, and a new
 //   token signs every browser out.
 //
-// The token and the password come from the macOS Keychain only (`security find-generic-password -s
-// <service> -w`), never from a file. Until the token can be read (a locked Keychain), the server
+// The token and the password come from the macOS Keychain (`security find-generic-password -s
+// <service> -w`), or, where there is no Keychain (Linux), from a file only its owner can read
+// (web.auth.tokenFile / passwordFile; a file wins over a Keychain item when both are set). Until the token can be read (a locked Keychain), the server
 // fails closed: 503 for everything but /api/health. Wrong logins are throttled: after
 // MAX_FAILURES in FAILURE_WINDOW_MS, /login answers 429 until the oldest failure ages out.
 //
 // `/api/health` stays open (the desktop app and scripts/deploy.sh probe it; it names the server and
 // its version, nothing more).
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 export const COOKIE = 'fleet_auth';
 export const MIN_TOKEN_LENGTH = 32;
@@ -53,6 +57,46 @@ export function createKeychainSecret({ service, run, minLength = 1, now = Date.n
     missedAt = now();
     return null;
   };
+}
+
+/**
+ * A secret kept in a file (`~/…` allowed), for hosts without a Keychain: read on demand, trimmed,
+ * cached like a Keychain hit (a hit for good, a miss retried after 30 s). A file that its group or
+ * others may read or write (mode & 0o077) is refused, never read (logged once), like a missing one.
+ */
+export function createFileSecret({ file, minLength = 1, now = Date.now, log = () => {}, fsImpl = fs, home = os.homedir() }) {
+  const p = typeof file === 'string' && file.trim() ? path.resolve(file.trim() === '~' ? home : file.trim().startsWith('~/') ? path.join(home, file.trim().slice(2)) : file.trim()) : null;
+  let value = null;
+  let missedAt = -Infinity;
+  const warned = new Set();
+  const warn = (key, msg) => {
+    if (warned.has(key)) return;
+    warned.add(key);
+    log(`[auth] ${msg}`);
+  };
+  return async function get() {
+    if (value) return value;
+    if (!p || now() - missedAt < MISS_TTL_MS) return null;
+    try {
+      const st = fsImpl.statSync(p);
+      if ((st.mode & 0o077) !== 0) {
+        warn('mode', `${p} is readable or writable by its group or others: ignored (chmod 600 it)`);
+      } else {
+        const v = String(fsImpl.readFileSync(p, 'utf8')).trim();
+        if (v.length >= minLength) return (value = v);
+        if (v) warn('short', `${p} holds a value shorter than ${minLength} characters: ignored`);
+      }
+    } catch {
+      /* no such file (yet), or unreadable */
+    }
+    missedAt = now();
+    return null;
+  };
+}
+
+/** The secret source for a config entry: its file when one is set, else its Keychain item. */
+export function createSecret({ file = null, service = null, run, minLength = 1, log = () => {}, now = Date.now, fsImpl = fs, home = os.homedir() }) {
+  return file ? createFileSecret({ file, minLength, log, now, fsImpl, home }) : createKeychainSecret({ service, run, minLength, log, now });
 }
 
 function sameSecret(a, b) {

@@ -73,7 +73,8 @@ export type ResolvedDir = { ok: true; path: string } | { ok: false; error: strin
  * or hidden) or beneath one (the server checks it again on spawn). `~` needs the host's `home`; a server too
  * old to send it still matches a spawn dir that ends with the same path.
  */
-export function resolveEmbedDir(dir: string, host: Pick<Host, 'home' | 'spawnDirs' | 'hiddenSpawnDirs'> | null | undefined): ResolvedDir {
+export function resolveEmbedDir(dir: string, host: Pick<Host, 'home' | 'spawnDirs' | 'hiddenSpawnDirs' | 'spawn'> | null | undefined): ResolvedDir {
+  if (host?.spawn === false) return { ok: false, error: 'this host runs no agent sessions (config spawn: false)' }
   const roots = [...(host?.spawnDirs ?? []), ...(host?.hiddenSpawnDirs ?? [])].map((d) => trim(d.path))
   let abs: string | null = null
   if (dir.startsWith('/')) abs = trim(dir)

@@ -23,7 +23,7 @@ import { copyText } from '@/lib/clipboard'
 import { shortCwd } from '@/lib/format'
 import { CHECKS_LABEL, checksTone, prRef, promptChips } from '@/lib/prs'
 import { prReviewHref } from '@/lib/review'
-import { sessionHref } from '@/lib/sessions'
+import { canSpawnOn, sessionHref } from '@/lib/sessions'
 import { isMacPlatform, isSubmitChord } from '@/lib/shortcuts'
 
 /**
@@ -46,12 +46,13 @@ export function PrDialog({
   onChanged: () => void
 }) {
   const [, navigate] = useLocation()
-  const { applyFleet } = useFleet()
+  const { fleet, applyFleet } = useFleet()
   const [prompt, setPrompt] = useState('')
   const [busy, setBusy] = useState<null | 'spawn' | 'checkout'>(null)
   const [error, setError] = useState<string | null>(null)
   const tasks = usePrTasks(pr ?? { url: '' })
   if (!pr || !host) return null
+  const spawnable = canSpawnOn(fleet, host)
   const ref = prRef(pr)
   const worktree = pr.local?.worktree ?? null
   const editorUrl = worktree ? (pr.local?.editorUrl ?? null) : null
@@ -217,7 +218,7 @@ export function PrDialog({
             onKeyDown={(e) => {
               if (isSubmitChord(e)) {
                 e.preventDefault()
-                void spawn()
+                if (spawnable) void spawn()
               }
             }}
             rows={3}
@@ -259,7 +260,13 @@ export function PrDialog({
               {busy === 'checkout' ? <Loader2Icon className="animate-spin" /> : <FolderGit2Icon />} Check out
             </Button>
           ) : null}
-          <Button size="sm" className="ml-auto" onClick={() => void spawn()} disabled={!!busy || !pr.local}>
+          <Button
+            size="sm"
+            className="ml-auto"
+            onClick={() => void spawn()}
+            disabled={!!busy || !pr.local || !spawnable}
+            title={spawnable ? undefined : `${host} runs no agent sessions (config spawn: false)`}
+          >
             {busy === 'spawn' ? <Loader2Icon className="animate-spin" /> : <PlayIcon />} Start session
             <Kbd className="ml-1 hidden bg-primary-foreground/20 text-primary-foreground sm:inline-flex">{isMacPlatform() ? '⌘↵' : 'Ctrl↵'}</Kbd>
           </Button>

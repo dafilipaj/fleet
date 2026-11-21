@@ -260,10 +260,15 @@ export function sessionHref(s: Pick<Session, 'host' | 'session_id'>): string {
   return `/s/${encodeURIComponent(s.host)}/${encodeURIComponent(s.session_id)}`
 }
 
-/** Hosts a session can be spawned on: reachable ones, with the directories each advertises. */
+/** May `host` start agent sessions? False only for a host with config `spawn: false` (unknown hosts: yes). */
+export function canSpawnOn(fleet: FleetResponse | null | undefined, host: string | null | undefined): boolean {
+  return fleet?.hosts?.find((h) => h.name === host)?.spawn !== false
+}
+
+/** Hosts a session can be spawned on: reachable ones that run agent sessions, with the directories each advertises. */
 export function spawnTargets(fleet: FleetResponse | null | undefined): { name: string; dirs: { label: string; path: string }[]; shared: boolean }[] {
   const all = (fleet?.hosts ?? [])
-    .filter((h) => h.ok !== false)
+    .filter((h) => h.ok !== false && h.spawn !== false)
     .map((h) => ({ name: h.name, dirs: Array.isArray(h.spawnDirs) ? h.spawnDirs : [], shared: h.shared === true }))
   // The user's own hosts first (the default pick), shared sheds last.
   return [...all.filter((h) => !h.shared), ...all.filter((h) => h.shared)]

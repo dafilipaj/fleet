@@ -30,7 +30,7 @@ import { relTime } from '@/lib/format'
 import { reviewHref, DEFAULT_KINDS, FILE_KINDS, entryAnchor, entryBucket, entrySections, fileAnchor, fileKey, fileSignature, kindCounts, orphanThreadsByKey, parsePrReviewLocation, parseReviewLocation, prRefOf, rangeText, repoKey, repoViews, rowsToRange, selectLine, selectionCode, threadKey, type EntryBucket, type FileKind, type LineRow, type LineSelection, type Side } from '@/lib/review'
 import type { DiffFile, DiffRepo, PrNote, ReviewAnchor, ReviewPr, ReviewThread, SideAsk } from '@/api/types'
 import { prHref } from '@/lib/prs'
-import { findSession, sessionHref } from '@/lib/sessions'
+import { canSpawnOn, findSession, sessionHref } from '@/lib/sessions'
 import { storage } from '@/lib/storage'
 import { cn } from '@/lib/utils'
 import { SessionScreen } from '@/screens/SessionScreen'
@@ -232,7 +232,7 @@ function SessionReview({ host, id, root, layout }: { host: string; id: string; r
 
 function PrReview({ host, pr, from, layout }: { host: string; pr: PrKey; from: { host: string; id: string } | null; layout: Layout }) {
   const [, navigate] = useLocation()
-  const { applyFleet } = useFleet()
+  const { fleet, applyFleet } = useFleet()
   const { data, error, changedAt, refetch } = usePrDiff(host, pr)
   const notes = usePrNotes(host, pr)
   const info = data?.pr ?? notes.review?.pr ?? null
@@ -246,6 +246,10 @@ function PrReview({ host, pr, from, layout }: { host: string; pr: PrKey; from: {
   )
   const ref = `${pr.owner}/${pr.repo}#${pr.number}`
   const handoff = async (summary: string) => {
+    if (!canSpawnOn(fleet, host)) {
+      toast.error(`${host} runs no agent sessions`, { description: 'Its config says spawn: false' })
+      return false
+    }
     try {
       const res = await api.prHandoff(host, pr, summary)
       const name = res.spawn?.name || res.spawn?.tmuxSession || ref

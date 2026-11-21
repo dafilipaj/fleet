@@ -17,7 +17,7 @@ import {
 import { createSnapshot } from './snapshot.mjs';
 import { DISABLED_GROUPS } from './grouping.mjs';
 import { checkInboxSettings } from './inbox.mjs';
-import { DEFAULT_MODELS, slackSpawn, spawnRoots } from './config.mjs';
+import { DEFAULT_MODELS, noSpawnMessage, slackSpawn, spawnRoots } from './config.mjs';
 import { parseNameOutput } from './autoname.mjs';
 import { SESSION_ID_RE } from './briefs.mjs';
 import { parseBrief } from './brief-format.mjs';
@@ -268,10 +268,19 @@ export function createApi({
 }) {
   // Each host advertises its start directories: `spawnDirs` (the New session menu) and, when it
   // has any, `hiddenSpawnDirs` (allowed for spawns, e.g. an app's embedded panel, but not offered).
-  const spawnDirsInfo = () => ({
-    spawnDirs: config.spawnDirs,
-    ...(config.hiddenSpawnDirs?.length ? { hiddenSpawnDirs: config.hiddenSpawnDirs } : {}),
-  });
+  // A host with `spawn: false` runs no agent sessions: `spawn: false`, both lists empty.
+  const spawnDirsInfo = () =>
+    config.spawn === false
+      ? { spawn: false, spawnDirs: [], hiddenSpawnDirs: [] }
+      : {
+          spawnDirs: config.spawnDirs,
+          ...(config.hiddenSpawnDirs?.length ? { hiddenSpawnDirs: config.hiddenSpawnDirs } : {}),
+        };
+  /** Every route that starts an agent on this host calls this first: 403 on a `spawn: false` host. */
+  function refuseSpawn() {
+    if (config.spawn !== false) return;
+    throw Object.assign(new HttpError(noSpawnMessage(config.self), 403), { body: { error: noSpawnMessage(config.self), noSpawn: true } });
+  }
   // Each host advertises whether it has a notes explorer (like its spawnDirs).
   const notesInfo = () => (notes ? { notes: { name: notes.name ?? null } } : {});
   // …and its session stacks, compact, so a peer can stamp the rows of their members on its side.
@@ -636,6 +645,7 @@ export function createApi({
   }
 
   async function localSpawn(req) {
+    refuseSpawn();
     const body = await readJsonBody(req);
     // `~/…`: this host's home — a caller on another host (a Slack mention's bridge) does not know it.
     if (typeof body?.dir === 'string' && /^~(\/|$)/.test(body.dir.trim())) body.dir = path.join(os.homedir(), body.dir.trim().slice(1));
@@ -1055,6 +1065,7 @@ export function createApi({
   async function localOperator(req) {
     if (!operator) throw new HttpError('the operator is not available on this server', 501);
     if (req.method === 'GET') return { status: 200, body: await operator.status() };
+    refuseSpawn();
     try {
       const r = await operator.ensure();
       if (r.started) refreshFleet();
@@ -1182,6 +1193,11 @@ export function createApi({
       if (url.searchParams.get('local') === '1') return localOperator(req);
       const tried = [];
       for (const h of config.operator?.hosts ?? [config.self]) {
+        // A host that runs no agent sessions cannot hold the operator: the next host takes over.
+        if (h === config.self && config.spawn === false && req.method === 'POST') {
+          tried.push(`${h}: ${noSpawnMessage(h)}`);
+          continue;
+        }
         if (h === config.self) return localOperator(req);
         if (!config.peers[h]) {
           tried.push(`${h}: not a peer with a web url`);
@@ -1195,7 +1211,7 @@ export function createApi({
           timeoutMs: req.method === 'POST' ? 45000 : 5000,
         });
         // Unreachable (or too old to have an operator): the next host takes over.
-        if (r.status === 502 || r.status === 504 || r.status === 404 || r.status === 501) {
+        if (r.status === 502 || r.status === 504 || r.status === 404 || r.status === 501 || r.body?.noSpawn) {
           tried.push(`${h}: ${r.body?.error ?? `HTTP ${r.status}`}`);
           continue;
         }
@@ -1860,6 +1876,7 @@ export function createApi({
       if (action === 'list') return { status: 200, body: await dormant.list() };
       const check = validateDormantRequest(await readJsonBody(req), { allowDryRun: action === 'restore', allowAll: action === 'forget' });
       if (action === 'forget') return { status: 200, body: await dormant.forget(check) };
+      if (!check.dryRun) refuseSpawn();
       const report = await dormant.restore(check);
       const restored = Array.isArray(report?.restored) ? report.restored : [];
       const failed = Array.isArray(report?.failed) ? report.failed : [];
@@ -2067,6 +2084,7 @@ export function createApi({
     if (!prNotes) throw new HttpError('PR review notes are not available on this server', 501);
     const key = { owner: pr.owner, repo: pr.repo, number: pr.number };
     if (op === 'handoff') {
+      refuseSpawn();
       const body = await readJsonBody(req, REVIEW_BODY_LIMIT);
       const notes = await prNotes.pending(key).catch(fail);
       if (!notes.length) throw new HttpError('no notes to hand over', 409);
@@ -2104,6 +2122,7 @@ export function createApi({
     if (action === 'seen') return localPrSeen(ref);
     let check = null;
     if (action === 'spawn') {
+      refuseSpawn();
       // Validate before anything is fetched; the real dir is the worktree.
       check = validateSpawnRequest({ ...body, dir: '/' }, { spawnDirs: [] });
       if (!check.ok) throw new HttpError(check.error, 400);
@@ -2186,6 +2205,7 @@ export function createApi({
       }
     }
 
+    refuseSpawn();
     const roots = spawnRoots(config); // hidden spawn dirs are allowed too
     const check = validateSpawnRequest(body, { spawnDirs: config.spawnDirs.map((d) => d.path) });
     if (!check.ok) throw new HttpError(check.error, 400);
@@ -2236,6 +2256,7 @@ export function createApi({
    */
   async function localScheduleAdd(req) {
     if (typeof cli?.scheduleAdd !== 'function') throw new HttpError('scheduled sessions are not available on this server', 501);
+    refuseSpawn();
     const body = await readJsonBody(req);
     const at = typeof body?.at === 'string' ? body.at.trim() : '';
     const task = body?.task != null && body.task !== '' ? taskId(body.task) : null;
@@ -2349,6 +2370,7 @@ export function createApi({
 
   async function localJobs(req, name, action) {
     if (!jobs) throw new HttpError('jobs are not available on this server', 501);
+    if (action === 'run') refuseSpawn();
     if (action === 'run') return jobs.runNow(name, await readJsonBody(req));
     if (action === 'enabled') return jobs.setEnabled(name, await readJsonBody(req));
     if (action === 'retention') return jobs.setRetention(name, await readJsonBody(req));
@@ -2497,6 +2519,7 @@ export function createApi({
     const remote = spawnHost !== config.self;
     if (remote && !config.peers[spawnHost]) throw new HttpError(`unknown host: ${spawnHost} (not a peer with a web url)`, 400);
     if (remote && !requested) throw new HttpError(`dir is required for a sibling on ${spawnHost}`, 400);
+    if (!remote) refuseSpawn(); // a sibling on a peer is that peer's to refuse
 
     let stack;
     let created = false;

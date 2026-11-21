@@ -13,6 +13,7 @@
 //     grouping: { enabled, model, host },   (enabled/model are read by the CLI)
 //     inbox: { host, scanMinutes, workHours, workDays, model, briefModel, briefMinutes, language, comms, scanRules, slackMinutes, slackModel, slackRules },
 //     slack: { host, owner, owners, bridges, spawn },
+//     spawn (false: this host runs no agent sessions),
 //     tmux, fleetBin, claude, spawnDirs: [ { label, paths: { host: dir }, hidden? } ] }
 //
 // A missing config file is not an error: the server runs as a single local host
@@ -251,6 +252,19 @@ export function hiddenSpawnDirsFor(list, self, home = os.homedir()) {
     .map(({ label, path: p }) => ({ label, path: p }));
 }
 
+/**
+ * Top-level `spawn`: may this host run agent sessions? Only an explicit `false` says no (read
+ * leniently: absent or any other value = yes, today's behaviour).
+ */
+export function spawnAllowed(raw) {
+  return raw?.spawn !== false;
+}
+
+/** The error every spawn route answers on a host with `spawn: false`. */
+export function noSpawnMessage(self) {
+  return `${self} does not run agent sessions (config spawn: false)`;
+}
+
 /** The spawn allow-list: every dir offered (`spawnDirs`) plus the hidden ones. */
 export function spawnRoots(config) {
   return [...(config.spawnDirs ?? []), ...(config.hiddenSpawnDirs ?? [])].map((d) => d.path);
@@ -273,7 +287,7 @@ export function resolveUiDir(uiRaw, { webRoot = null, home = os.homedir() } = {}
 /**
  * Turn the raw shared config into what the server needs:
  *   { self, port, bind, peers: { name: url }, sshHosts: { name: ssh }, hostAddrs: { name: hostname }, editor, editorSsh, hosts: [names], fleetBin, tmux, claude,
- *     spawnDirs: [{ label, path }], uiDir, quickReplies, models: [{ id, label }], autoName: { enabled, intervalMinutes },
+ *     spawn, spawnDirs: [{ label, path }], uiDir, quickReplies, models: [{ id, label }], autoName: { enabled, intervalMinutes },
  *     grouping: { enabled, intervalMinutes, host }, uploads: { dir, maxMB, retentionDays },
  *     beads: { enabled, dir },
  *     briefs: { enabled, model, idleMs, minIntervalMs, maxDeltaChars, maxCallsPerHour, minNewTurns,
@@ -380,6 +394,7 @@ export function normalizeConfig(
   const peerProxies = {}; // peer origin → HTTP proxy url (hosts.<name>.webProxy)
   const peerConnects = {}; // peer origin → host[:port] dialled instead (hosts.<name>.webConnect)
   const peerTokenKeychains = {}; // peer origin → Keychain service of the token its web.auth asks for (hosts.<name>.webTokenKeychain)
+  const peerTokenFiles = {}; // peer origin → file holding that token (hosts.<name>.webTokenFile; wins over the Keychain item)
   const sshHosts = {}; // name → ssh destination (the "Open in editor" Remote-SSH links)
   const hostAddrs = {}; // name → the hostname of its web url (which machine a browser is on)
   const sharedHosts = []; // hosts.<name>.shared: shared sheds, kept out of the default view and the Inbox
@@ -421,6 +436,10 @@ export function normalizeConfig(
       if (typeof host.webTokenKeychain !== 'string' || !host.webTokenKeychain.trim()) throw new Error(`config.hosts.${name}.webTokenKeychain must be a Keychain service name`);
       peerTokenKeychains[new URL(peers[name]).origin] = host.webTokenKeychain.trim();
     }
+    if (host.webTokenFile != null) {
+      if (typeof host.webTokenFile !== 'string' || !host.webTokenFile.trim()) throw new Error(`config.hosts.${name}.webTokenFile must be a file path`);
+      peerTokenFiles[new URL(peers[name]).origin] = expandHome(host.webTokenFile.trim(), home);
+    }
   }
 
   const web = raw.web == null ? {} : raw.web;
@@ -446,8 +465,9 @@ export function normalizeConfig(
 
   // web.auth: every request needs the token in this Keychain item, from loopback too (lib/auth.mjs);
   // passwordKeychain: a second, typeable secret for /login (a phone).
+  // tokenFile / passwordFile: the same secrets in files (hosts without a Keychain); a file wins.
   const auth = web.auth == null ? null : web.auth;
-  if (auth != null && !isObject(auth)) throw new Error('config.web.auth must be an object { keychain, passwordKeychain }');
+  if (auth != null && !isObject(auth)) throw new Error('config.web.auth must be an object { keychain, passwordKeychain, tokenFile, passwordFile }');
   const keychainName = (v, key) => {
     if (v == null) return null;
     if (typeof v !== 'string' || !v.trim()) throw new Error(`config.web.auth.${key} must be a Keychain service name`);
@@ -455,7 +475,14 @@ export function normalizeConfig(
   };
   const authKeychain = auth ? keychainName(auth.keychain, 'keychain') : null;
   const authPasswordKeychain = auth ? keychainName(auth.passwordKeychain, 'passwordKeychain') : null;
-  if (auth && !authKeychain) throw new Error('config.web.auth.keychain is required (the Keychain service holding the token)');
+  const authFile = (v, key) => {
+    if (v == null) return null;
+    if (typeof v !== 'string' || !v.trim()) throw new Error(`config.web.auth.${key} must be a file path`);
+    return expandHome(v.trim(), home);
+  };
+  const authTokenFile = auth ? authFile(auth.tokenFile, 'tokenFile') : null;
+  const authPasswordFile = auth ? authFile(auth.passwordFile, 'passwordFile') : null;
+  if (auth && !authKeychain && !authTokenFile) throw new Error('config.web.auth.keychain (or tokenFile) is required (where the token is kept)');
 
   // web.editor: the "Open in editor" link scheme (lib/editor.mjs); null hides it.
   let editor = DEFAULT_EDITOR;
@@ -469,8 +496,11 @@ export function normalizeConfig(
   const uiRaw = env.FLEET_WEB_UI || (typeof web.ui === 'string' && web.ui ? web.ui : null);
   const uiDir = resolveUiDir(uiRaw, { webRoot, home });
 
-  const spawnDirs = spawnDirsFor(raw.spawnDirs, self.trim(), home);
-  const hiddenSpawnDirs = hiddenSpawnDirsFor(raw.spawnDirs, self.trim(), home);
+  // `spawn: false`: this host never runs agent sessions (an always-on server that only serves the
+  // web app and its single-home services). It offers no spawn dirs and every spawn route refuses.
+  const spawn = spawnAllowed(raw);
+  const spawnDirs = spawn ? spawnDirsFor(raw.spawnDirs, self.trim(), home) : [];
+  const hiddenSpawnDirs = spawn ? hiddenSpawnDirsFor(raw.spawnDirs, self.trim(), home) : [];
 
   let quickReplies = null;
   if (web.quickReplies != null) {
@@ -801,7 +831,10 @@ export function normalizeConfig(
     peerProxies,
     peerConnects,
     peerTokenKeychains,
+    peerTokenFiles,
     authKeychain,
+    authTokenFile,
+    authPasswordFile,
     authPasswordKeychain,
     sshHosts,
     hostAddrs,
@@ -822,6 +855,7 @@ export function normalizeConfig(
     // GitHub identities a spawned session can act as (`ghIdentities`): names and logins only —
     // the launcher comes from `fleet gh-identity launcher`, which owns the shim.
     ghIdentities: ghIdentitiesOf(raw),
+    spawn,
     spawnDirs,
     hiddenSpawnDirs,
     uiDir,
