@@ -836,6 +836,12 @@ first seen (the UI's "new" dot).
 
 ## Slack links
 
+**Untrusted text** (`web/lib/untrusted.mjs`): what people write in Slack, on GitHub or in Veranda is typed
+into a session, a multi-line delivery as a bracketed paste. Every bridge passes it (and people's names)
+through `sanitizeText` / `sanitizeName` before building a prompt: escape sequences (CSI, OSC, DCS…, 7- and
+8-bit), bracketed-paste markers, C0/C1 controls but `\n`/`\t`, and invisible bidi / zero-width characters
+are removed, so an `ESC[201~` in a message cannot end the paste and type the rest as keys.
+
 A session, for a while, talks with the people in one Slack thread / channel / DM (`web/lib/slack.mjs`,
 [CLI](cli.md#slack-links), Details → Slack in the web UI). One host's server runs the bridge
 (`slack.host`, best the always-on one); the others proxy `/api/slack` there. A host with its own

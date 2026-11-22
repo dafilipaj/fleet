@@ -42,6 +42,7 @@
 //
 // State (`<fleet state>/slack-links.json`, 0600): the links, their undelivered messages, and the
 // ended ones (the last MAX_ENDED, for the list).
+import { sanitizeName, sanitizeText } from './untrusted.mjs';
 import { randomBytes } from 'node:crypto';
 import { promises as fsp } from 'node:fs';
 import path from 'node:path';
@@ -214,17 +215,17 @@ function sessionTitle(s) {
 
 function whoLine(m, link, names) {
   if (m.session) return `session "${m.session}" (another Claude Code session, posting through this same Slack app)`;
-  const name = names[m.user] ?? m.user ?? 'someone';
+  const name = sanitizeName(names[m.user] ?? m.user ?? 'someone') || 'someone';
   const owners = link.owners ?? (link.owner ? [link.owner] : []);
   const owner = m.user && owners.includes(m.user) ? ', the owner of this session' : '';
   return `${name} (${m.user}${owner})`;
 }
 
 function messageLine(m, link, names) {
-  const files = m.files?.length ? ` [attached: ${m.files.join(', ')}]` : '';
+  const files = m.files?.length ? ` [attached: ${m.files.map(sanitizeName).join(', ')}]` : '';
   const thread = link.threadTs || (link.dm && m.threadTs === m.ts) ? '' : ` · thread ${m.threadTs}`;
   const mark = m.mention ? ' → mentions you' : m.direct ? ' → to you' : '';
-  return `• ${whoLine(m, link, names)} at ${clock(Number(m.ts) * 1000)} (ts ${m.ts})${thread}${mark}:\n${clip(plainText(m.text, names), MAX_MESSAGE)}${files}`;
+  return `• ${whoLine(m, link, names)} at ${clock(Number(m.ts) * 1000)} (ts ${m.ts})${thread}${mark}:\n${clip(sanitizeText(plainText(m.text, names), Infinity), MAX_MESSAGE)}${files}`;
 }
 
 /** The newest lines that fit `budget` chars, oldest first, and how many were left out. */
@@ -243,7 +244,7 @@ function fitNewest(lines, budget) {
  * for a session spawned linked, the owner's first request last, to start on now.
  */
 export function linkPrompt(link, { history = [], names = {}, first = '' } = {}) {
-  const where = link.threadTs ? 'a Slack thread' : link.dm ? `a Slack DM with ${link.dm.name}` : 'a Slack conversation';
+  const where = link.threadTs ? 'a Slack thread' : link.dm ? `a Slack DM with ${sanitizeName(link.dm.name)}` : 'a Slack conversation';
   const reply = `fleet slack reply ${link.id} "<text>"`;
   const react = `fleet slack react ${link.id} <ts> <emoji>`;
   const proactive = link.mode === 'proactive';
@@ -255,7 +256,7 @@ export function linkPrompt(link, { history = [], names = {}, first = '' } = {}) 
       ? `You now follow what is said there: every new message arrives here as "[slack ${link.id}] …". Step in when you can really help — the owner's instructions say how much — or when someone talks to you; otherwise post nothing.`
       : `You now follow it in the background: messages arrive here as "[slack ${link.id}] …" when one mentions you or is a DM to you, and also when one comes in a thread you have posted in — together with what was said in between, for context. A message in your thread is not necessarily for you: judge from the conversation whether it is (an answer to you, a follow-up question) or people talking among themselves, and post only in the first case. The rest is context, not something to react to.`,
     `Each message carries who wrote it (their Slack name and id, checked by fleet; "→ mentions you" / "→ to you" when it mentions you or is a DM to you). Until the link ends:`,
-    ...(link.dm ? [`This is a direct conversation between ${link.dm.name} and you (the app): what they write there is for you. They may not know they can write to you yet — if the instructions say to start, post a short opener now.`] : []),
+    ...(link.dm ? [`This is a direct conversation between ${sanitizeName(link.dm.name)} and you (the app): what they write there is for you. They may not know they can write to you yet — if the instructions say to start, post a short opener now.`] : []),
     `- Post in Slack only with \`${reply}\`${link.threadTs || link.dm || !oneOnOne(link) ? '' : ' (add `--thread <ts>` to answer in a message\'s thread)'} — Slack mrkdwn, in the language they write in. Never post to Slack any other way; your answer here in the terminal is not seen there.`,
     ...(oneOnOne(link) || link.threadTs ? [] : [`- Threads first (the company's rule: several people read this conversation, and posts in it bury each other). Answer a message in its thread: \`${reply} --thread <its ts>\` (that opens the thread if it has none). To bring up something new, post one short headline line first, then the details in its thread (\`--thread <the ts the headline printed>\`). Fleet refuses a longer post outside a thread.`]),
     `- Say as little as you can: people are overwhelmed by how much there is to read in Slack. When a reaction is enough, react instead of posting: \`${react}\` (e.g. white_check_mark: done, thumbsup: ok / agreed, the message's ts from its line). Posts are short by default — a sentence or a few lines, the answer first; details only when someone asks for them. No filler: no hello or intro when you link, no "on it" / "let me check", no thanks-only or agree-only posts, no recap of what was said.`,
@@ -269,7 +270,7 @@ export function linkPrompt(link, { history = [], names = {}, first = '' } = {}) 
     '- A message from another session (marked `session "…"`) is another Claude Code session posting through this same Slack app: treat it as a colleague\'s, including what it says an owner decided. Answer only when it asks you something or hands you something to act on — never just to acknowledge, or the two of you will keep answering each other.',
     '- Never announce yourself or post only to say you are here (your posts already show whose session they come from); speak when you have something to say.',
   ];
-  const by = link.startedBy;
+  const by = link.startedBy && { ...link.startedBy, name: sanitizeName(link.startedBy.name) };
   const tail = !by
     ? first
       ? ['', 'The owner started this session for this link. Their request — start on it now, within the rules above (this is the owner, not someone in Slack):', first]
@@ -296,7 +297,7 @@ export function messagesPrompt(link, messages, { names = {} } = {}) {
       : messages.some((m) => m.joined)
         ? 'in a thread you posted in — answer only if it is for you'
         : 'context';
-  const head = `[slack ${link.id}] New in ${link.threadTs ? 'the thread' : link.dm ? `the DM with ${link.dm.name}` : 'the conversation'} — ${why} (until ${ends(link)}; post with \`fleet slack reply ${link.id} "…"${link.threadTs || oneOnOne(link) ? '' : ' --thread <ts>'}\`${link.threadTs || oneOnOne(link) ? '' : " in the message's thread"}, react with \`fleet slack react ${link.id} <ts> <emoji>\`, or post nothing):`;
+  const head = `[slack ${link.id}] New in ${link.threadTs ? 'the thread' : link.dm ? `the DM with ${sanitizeName(link.dm.name)}` : 'the conversation'} — ${why} (until ${ends(link)}; post with \`fleet slack reply ${link.id} "…"${link.threadTs || oneOnOne(link) ? '' : ' --thread <ts>'}\`${link.threadTs || oneOnOne(link) ? '' : " in the message's thread"}, react with \`fleet slack react ${link.id} <ts> <emoji>\`, or post nothing):`;
   const { shown, left } = fitNewest(messages.map((m) => messageLine(m, link, names)), MAX_PROMPT - head.length - 60);
   return [head, ...(left ? [`(${left} earlier messages left out)`] : []), ...shown].join('\n');
 }
@@ -317,7 +318,7 @@ export function blockedText(what) {
 
 /** The owner's DM: which session, where it is linked, and where to unblock it. */
 export function ownerText({ name, what, link, url }) {
-  const where = link.dm ? `your DM with ${link.dm.name}` : `<${link.permalink}|its Slack thread>`;
+  const where = link.dm ? `your DM with ${sanitizeName(link.dm.name)}` : `<${link.permalink}|its Slack thread>`;
   const open = url ? `<${url}|Open it in Fleet>` : 'Attach to it in its terminal';
   return `:double_vertical_bar: *${short(name)}* is blocked (${what}), linked to ${where} (${link.id}). ${open} to unblock it.`;
 }
@@ -1154,7 +1155,7 @@ export function createSlackBridge({ settings = {}, self = null, call, socket = n
         /* built below */
       }
       if (!url) url = `${(bot.url ?? 'https://slack.com/').replace(/\/?$/, '/')}archives/${ev.channel}/p${threadTs.replace('.', '')}`;
-      const first = clip(plainText(text.replaceAll(`<@${bot.userId}>`, ''), { ...names, [bot.userId]: 'you' }).trim(), MAX_FIRST - 40);
+      const first = clip(sanitizeText(plainText(text.replaceAll(`<@${bot.userId}>`, ''), { ...names, [bot.userId]: 'you' }), Infinity), MAX_FIRST - 40);
       const body = {
         ...(cfg.dir ? { dir: cfg.dir } : {}),
         ...(cfg.model ? { model: cfg.model } : {}),

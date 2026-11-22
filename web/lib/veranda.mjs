@@ -28,6 +28,7 @@
 import http from 'node:http';
 import { randomBytes, randomInt } from 'node:crypto';
 import { promises as fsp } from 'node:fs';
+import { sanitizeName, sanitizeText } from './untrusted.mjs';
 import path from 'node:path';
 
 import { findSession } from './util.mjs';
@@ -42,7 +43,10 @@ export const MAX_TITLE = 120;
 export const MAX_REPLY = 20000;
 /** One guest message as typed into the session (the rest is cut, and says so). */
 export const MAX_GUEST_TEXT = 2000;
-const MAX_NAME = 60;
+
+/** Guest text → plain text (`untrusted.mjs`). Kept under this name for the tests and callers. */
+export const sanitizeGuestText = (text, max = MAX_GUEST_TEXT) => sanitizeText(text, max);
+export { sanitizeName };
 /** One delivery: the send cap is 8000; the newest messages that fit. */
 export const MAX_PROMPT = 7800;
 const MAX_PENDING = 200;
@@ -116,45 +120,6 @@ export function makePassphrase(rand = randomInt) {
 // shell command, `/` a slash command, `#` writes memory, and control characters, escape sequences
 // or bracketed-paste markers could act as keys (a multi-line delivery is a bracketed paste: an
 // ESC[201~ inside it would end the paste and the rest would be typed as keys).
-
-/**
- * Guest text → plain text: CR/CRLF → LF; ANSI/VT escape sequences (CSI, OSC, DCS/SOS/PM/APC, any
- * other ESC sequence, and their 8-bit C1 forms) and bracketed-paste markers removed; every other
- * C0/C1 control character and DEL removed (only `\n` and `\t` stay); bidi overrides and other
- * invisible format characters removed, U+2028/U+2029 → `\n`; at most two blank lines in a row;
- * trimmed; cut at `max` chars (saying so).
- */
-export function sanitizeGuestText(text, max = MAX_GUEST_TEXT) {
-  let t = String(text ?? '');
-  t = t
-    .replace(/\r\n?/g, '\n')
-    .replace(/[\u2028\u2029]/g, '\n')
-    // 7-bit escape sequences: CSI, OSC (to BEL or ST), DCS / SOS / PM / APC (to ST), then any ESC + one char.
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]?/g, '')
-    .replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\|$)/g, '')
-    .replace(/\x1b[PX^_][\s\S]*?(?:\x1b\\|$)/g, '')
-    .replace(/\x1b[\s\S]?/g, '')
-    // 8-bit forms: CSI (0x9B), OSC (0x9D), DCS/SOS/PM/APC (0x90, 0x98, 0x9E, 0x9F) to ST (0x9C) or BEL.
-    .replace(/\x9b[0-?]*[ -/]*[@-~]?/g, '')
-    .replace(/[\x90\x98\x9d\x9e\x9f][\s\S]*?(?:\x07|\x9c|$)/g, '')
-    // Bracketed-paste markers whose ESC was already gone (or typed as text).
-    .replace(/\[20[01]~/g, '')
-    // Every other control character but \n and \t; DEL; C1.
-    .replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '')
-    // Invisible format characters that could hide or reorder text: zero-width, bidi, BOM.
-    .replace(/[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff]/g, '')
-    .replace(/[ \t]+$/gm, '')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-  if (t.length > max) t = `${t.slice(0, max)} … (cut, ${t.length - max} more chars)`;
-  return t;
-}
-
-/** A guest's name or username for one line: sanitised, whitespace collapsed, short. */
-export function sanitizeName(name) {
-  const n = sanitizeGuestText(name, 500).replace(/\s+/g, ' ').trim();
-  return n.length > MAX_NAME ? `${n.slice(0, MAX_NAME - 1)}…` : n;
-}
 
 /**
  * A guest message's lines, each quoted with `> `: no guest line ever starts a line of the prompt,

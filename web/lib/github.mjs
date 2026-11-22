@@ -31,6 +31,7 @@
 //
 // State (`<fleet state>/github-links.json`, 0600): the links, what each has seen, the ended
 // ones, the review requests that started a session, and when the bridge first ran.
+import { sanitizeName, sanitizeText } from './untrusted.mjs';
 import { randomBytes } from 'node:crypto';
 import { promises as fsp } from 'node:fs';
 import path from 'node:path';
@@ -230,12 +231,12 @@ function clip(text, max) {
 }
 
 const sha7 = (s) => (s ? String(s).slice(0, 7) : '?');
-const quote = (body) => clip(body, MAX_BODY).replace(/\n/g, '\n    ');
+const quote = (body) => clip(sanitizeText(body, Infinity), MAX_BODY).replace(/\n/g, '\n    ');
 const ref = (l) => `${l.repo}#${l.number}`;
 
 /** How the session answers an event, so it never has to look the command up. */
 function eventLine(l, e) {
-  const who = `@${e.actor ?? e.author ?? 'someone'}`;
+  const who = `@${sanitizeName(e.actor ?? e.author ?? '') || 'someone'}`;
   if (e.type === 'request') return `- ${who} requested your review${e.at ? ` (${e.at})` : ''}.`;
   const where = e.kind === 'thread' ? `in the review thread on \`${e.path ?? '?'}${e.line ? `:${e.line}` : ''}\`${e.resolved ? ' (resolved)' : ''} — answer with \`gh api repos/${l.repo}/pulls/${l.number}/comments/${e.thread}/replies -f body='…'\`` : e.kind === 'review' ? `in a review (${String(e.state ?? '').toLowerCase()})` : 'in a PR comment';
   const what = e.type === 'reply' ? 'replied' : e.type === 'mention' ? 'mentioned you' : 'wrote';
@@ -260,7 +261,7 @@ function fitNewest(lines, budget) {
 /** The prompt that starts a link: what it is, how to answer, the task, then what to do now. */
 export function linkPrompt(l, pr, { first = '', resumed = false } = {}) {
   const lines = [
-    `[github ${l.id}] This session is linked to the GitHub pull request ${l.url} — "${clip(pr?.title ?? l.title ?? '', 200)}"${pr?.author ? ` by @${pr.author}` : ''}${pr?.draft ? ' (draft)' : ''}. You act on it as @${l.login} (this host's \`gh\`).`,
+    `[github ${l.id}] This session is linked to the GitHub pull request ${l.url} — "${clip(sanitizeText(pr?.title ?? l.title ?? '', 200).replace(/\s+/g, ' '), 200)}"${pr?.author ? ` by @${sanitizeName(pr.author)}` : ''}${pr?.draft ? ' (draft)' : ''}. You act on it as @${l.login} (this host's \`gh\`).`,
     `Until the link ends (the PR is merged or closed, or \`fleet github unlink ${l.id}\`), Fleet types in here what happens on it that is for you: a review requested (or re-requested) from @${l.login}, a reply in a review thread you commented in, a comment or review that mentions @${l.login}. Other people's comments come along as context. Pushes, CI and the rest are not sent: read them with gh when you need them.`,
     'Answer on GitHub, not here: the people are there, nobody reads this terminal.',
     `- a review: \`gh pr review ${l.number} -R ${l.repo} --comment|--request-changes|--approve --body '…'\`; line comments: \`gh api repos/${l.repo}/pulls/${l.number}/reviews --input <json>\` (event, body, comments[path, line, body])`,
