@@ -26,14 +26,16 @@ phone ──http──▶ workstation:7777 (self=workstation) ──http──�
 ```
 server.mjs            wiring: config → deps → API → HTTP server → listen
 lib/config.mjs        shared fleet config loader + binary resolution
-lib/fleet-cli.mjs     the ONLY place that invokes the `fleet` CLI (`list --json`, `name --all --settled --adopt-tmux`, `usage --json`, `config set`, `--local stack … --json`, `--local restore … --json`, …)
+lib/fleet-cli.mjs     the ONLY place that invokes the `fleet` CLI (`list --json`, `name --all --settled --adopt-tmux`, `usage --json`, `usage check --json`, `usage override`, `config set`, `--local stack … --json`, `--local restore … --json`, …)
 lib/fleet.mjs         local discovery: cache (2s TTL), in-flight de-dup, never throws
 lib/backends.mjs      peek/send/keys straight to tmux / iTerm2 (osascript)
 lib/transcript.mjs    transcript JSONL → chat messages (Claude Code; Codex rollouts and pi sessions via the row's `transcript` path)
 lib/spawn-dirs.mjs    Settings → Start directories: validate a `spawnDirs` list, write it via `fleet config set`, hot-reload
 lib/repos.mjs         Settings → Git repos: `fleet repos` list/sync/timer, validate + write the `repos` config key
 lib/jobs.mjs          Bots screen: `fleet jobs` (alias of `fleet bots`) list / show / run now / enable|disable, job-name validation
-lib/spawn.mjs         new tmux session + `claude [--model <id>] [-n <name>] '<prompt>'`, auto-accept folder trust
+lib/spawn.mjs         new tmux session + `claude [--model <id>] [-n <name>] '<prompt>'`, auto-accept folder trust; holds while the host is busy, starts on the fallback harness when the subscription is at its limit
+lib/load.mjs          host load monitor (memory pressure / PSI + load per core, hysteresis), its state file for the CLI, Settings → Host load, `retryWhileBusy`, the owner's load DMs
+lib/usage.mjs         subscription fallback around `fleet usage check`: config `usage` settings + validation, the hold mark, the owner's limit / recovery DMs
 lib/kill.mjs          close a session: SIGTERM/SIGKILL Claude, then its tmux session/window or iTerm tab
 lib/autoname.mjs      periodic `fleet name --all --settled --adopt-tmux` (display titles) + the spawn pass
 lib/titles.mjs        the brief's `## Title` → `~/.claude/fleet-names.json` (source `brief`)
@@ -178,11 +180,15 @@ JSON everywhere, same origin, no auth. Errors are `{ "error": "message" }`.
 | POST | `/api/hosts/:host/sessions/:id/send` | `{ text }` (1..8000 chars, not blank) | `{ ok: true }` |
 | POST | `/api/hosts/:host/sessions/:id/keys` | `{ key }`, one of `Enter`, `Escape`, `Up`, `Down` | `{ ok: true }` |
 | POST | `/api/hosts/:host/sessions/:id/rename` | `{ title }` (trimmed, 1..64 chars, one line) | `{ ok: true, host, id, result, title, from, tmux, message, … }` — the `fleet rename --json` report. **409** `{ error, result: "held", held: "waiting", … }` when the session is waiting on a prompt (nothing typed); 400 bad title; 404 unknown session; 502/504 CLI failure / timeout. Proxied once to a peer like the other session actions |
-| POST | `/api/hosts/:host/spawn` | `{ name?, dir?, prompt?, model?, harness?, ghIdentity?, embed? }` | `{ ok, host, name, dir, tmuxSession, command, trusted, model, harness }` — `harness`: `claude` (default) \| `codex` \| `pi` |
+| POST | `/api/hosts/:host/spawn` | `{ name?, dir?, prompt?, model?, harness?, ghIdentity?, embed?, ignoreLoad?, noFallback?, ctx? }` | `{ ok, host, name, dir, tmuxSession, command, trusted, model, harness }` — `harness`: `claude` (default) \| `codex` \| `pi`; `usage: { primary, note, fellBack }` when its subscription was at its limit. 409 `{ overloaded: true[, usage: true] }` while held (a busy host; for `ctx: "auto"`, both subscriptions at their limit) |
 | GET | `/api/hosts/:host/harnesses` | `?refresh=1` skips the 10 min cache | `{ host, harnesses: [{ id, label, command, installed, models: [{ id, label }] }] }` — `fleet --local harness list --json`; Claude's models are `web.models`; a CLI without `harness` → Claude alone. Proxied once to a peer |
 | POST | `/api/hosts/:host/sessions/:id/kill` | `{}` | `{ ok: true, host, id, name, process, terminal }` |
 | POST | `/api/hosts/:host/sessions/:id/sleep` | `{}` | `{ ok: true, host, id, name, sessionId, title, process, terminal, dormant: DormantView }` (`fleet sleep`) |
 | GET | `/api/hosts/:host/usage` | `?refresh=1` skips the CLI's 60s cache | `{ host, account, limits: [{ kind, group, label, model, percent, severity, resets_at, active }], extra_usage, fetched_at, stale, error }` — `fleet usage --json` (docs/architecture.md → Subscription usage); 502 with the CLI's reason, 504 on timeout. Proxied once to a peer |
+| GET | `/api/hosts/:host/usage/check` | `?harness=claude\|codex\|pi&model=&ctx=manual\|auto\|bot` | `{ host, enabled, primary, harness, model, fellBack, note, hold, primaryState, fallback, overrideUntil? }` — `fleet --local usage check --json` (docs/architecture.md → Subscription fallback) |
+| GET / PUT | `/api/hosts/:host/usage/settings` | PUT: a `usage` patch (`enabled`, `fallback.<harness>`, `limits.{session,weekly,paceMargin}`) | `{ host, settings, defaults, overrideUntil, checks: { claude, codex }, spawn }` — Settings → Usage limits; PUT writes `fleet config set usage`, live at once; 400 on junk |
+| POST | `/api/hosts/:host/usage/override` | `{ minutes }` (0–1440, 0 ends it) | the settings view — `fleet usage override` |
+| GET / PUT | `/api/hosts/:host/load` | PUT: a `resources` patch | Settings → Host load (docs/architecture.md → Host load); also `/load/sample`, `/load/override`, `/load/processes`, `/load/restart` |
 | POST | `/api/hosts/:host/prs/checkout` | `{ pr: "owner/repo#123" }` | `{ host, worktree: { owner, repo, number, branch, path, repoPath, created, contextLine, editorUrl, … } }` — `fleet --local pr checkout --json` + the worktree's editor link; 400 on a bad ref, 502 with the CLI's reason (no clone, fetch failed). Proxied once to a peer (5 min) |
 | POST | `/api/hosts/:host/prs/seen` | `{ pr: "owner/repo#123" }` | `{ host, pr, seenAt }` — `fleet --local pr seen --json`: out of the Unseen mentions column; 400 on a bad ref, 501 when the CLI has no `pr seen`. Proxied once to a peer |
 | POST | `/api/hosts/:host/prs/spawn` | `{ pr, prompt?, name?, model?, harness? }` (validated like `spawn` before anything is fetched) | `{ host, worktree, spawn: SpawnResponse }` — the checkout, then the spawner in `worktree.path` with `contextLine` + `prompt`. Proxied once to a peer |
