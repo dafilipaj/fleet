@@ -13,6 +13,7 @@
 //     grouping: { enabled, model, host },   (enabled/model are read by the CLI)
 //     inbox: { host, scanMinutes, workHours, workDays, model, briefModel, briefMinutes, language, comms, scanRules, slackMinutes, slackModel, slackRules },
 //     slack: { host, owner, owners, bridges, spawn },
+//     veranda: { host, socket, url, defaultMinutes, notices: { waiting, ended } }   (opt-in),
 //     spawn (false: this host runs no agent sessions),
 //     tmux, fleetBin, claude, spawnDirs: [ { label, paths: { host: dir }, hidden? } ] }
 //
@@ -336,6 +337,59 @@ export function githubSpawn(raw) {
 }
 
 /**
+ * `veranda` (opt-in): `{ host, socket, url, defaultMinutes?, notices? }`. `host` runs the bridge (the
+ * others proxy /api/veranda there); `socket` is Veranda's bot API unix socket on that host; `url`
+ * is where guests open Veranda (printed with the passphrase). Absent → `{ configured: false }`.
+ * FLEET_WEB_VERANDA=0 turns the bridge off on a server.
+ */
+export function verandaConfig(raw, { self = DEFAULT_SELF, env = {}, home = os.homedir() } = {}) {
+  if (raw == null) return { configured: false, enabled: false, host: null, socket: null, url: null, defaultMinutes: 120, notices: {} };
+  if (!isObject(raw)) throw new Error('config.veranda must be an object { host, socket, url, defaultMinutes, notices }');
+  const str = (k) => {
+    const v = raw[k];
+    if (v == null) return null;
+    if (typeof v !== 'string' || !v.trim()) throw new Error(`config.veranda.${k} must be a non-empty string`);
+    return v.trim();
+  };
+  const host = str('host');
+  let socket = str('socket');
+  if (socket != null) {
+    socket = expandHome(socket, home);
+    if (!path.isAbsolute(socket)) throw new Error(`config.veranda.socket must be an absolute path (or start with ~): ${raw.socket}`);
+  }
+  const url = str('url');
+  if (url != null) {
+    let u;
+    try {
+      u = new URL(url);
+    } catch {
+      u = null;
+    }
+    if (!u || !/^https?:$/.test(u.protocol)) throw new Error(`config.veranda.url must be an http(s) URL: ${url}`);
+  }
+  let defaultMinutes = 120;
+  if (raw.defaultMinutes != null) {
+    const n = Number(raw.defaultMinutes);
+    if (!Number.isInteger(n) || n < 1 || n > 30 * 24 * 60) throw new Error('config.veranda.defaultMinutes must be minutes, 1–43200 (30 days)');
+    defaultMinutes = n;
+  }
+  const notices = {};
+  if (raw.notices != null) {
+    if (!isObject(raw.notices)) throw new Error('config.veranda.notices must be an object { waiting, ended }');
+    for (const k of ['waiting', 'ended']) {
+      const v = raw.notices[k];
+      if (v == null) continue;
+      if (typeof v !== 'string' || !v.trim() || v.length > 500) throw new Error(`config.veranda.notices.${k} must be a short text (max 500 chars)`);
+      notices[k] = v.trim();
+    }
+  }
+  let enabled = host != null && host === String(self).trim();
+  if (enabled && !socket) throw new Error('config.veranda.socket is required on the bridge host (veranda.host)');
+  if (env.FLEET_WEB_VERANDA != null && env.FLEET_WEB_VERANDA !== '' && /^(0|false|off|no)$/i.test(env.FLEET_WEB_VERANDA)) enabled = false;
+  return { configured: true, enabled, host, socket, url, defaultMinutes, notices };
+}
+
+/**
  * `slack.spawn`: a mention of this bridge's app in a thread no session follows opens a new
  * session there, linked to that thread (lib/slack.mjs). Read only on the bridge's own server.
  * `{ host?, dir?, model?, harness?, ghIdentity?, minutes?, mode?, task?, from? }` —
@@ -646,6 +700,9 @@ export function normalizeConfig(
   slack.enabled = slack.host != null && slack.host === self.trim();
   if (env.FLEET_WEB_SLACK != null && env.FLEET_WEB_SLACK !== '' && /^(0|false|off|no)$/i.test(env.FLEET_WEB_SLACK)) slack.enabled = false;
 
+  // veranda: Veranda links (lib/veranda.mjs) — opt-in: without the section nothing runs or shows.
+  const veranda = verandaConfig(raw.veranda, { self, env, home });
+
   // github: GitHub links (lib/github.mjs). One host runs the bridge (`github.host`), polling the
   // notifications of its own `gh` account; `spawn` starts a session on a review request.
   // FLEET_WEB_GITHUB=0 turns it off on this server.
@@ -865,6 +922,7 @@ export function normalizeConfig(
     grouping,
     inbox,
     slack,
+    veranda,
     github,
     uploads,
     files,

@@ -42,6 +42,7 @@ import { validateDormantRequest } from './dormant.mjs';
 import { validJobName } from './jobs.mjs';
 import { MAX_FIRST, MAX_TASK, MODES, SlackError, isPersonTarget, linkMinutes, parseSlackUrl, validLinkId } from './slack.mjs';
 import { GithubError, validLinkId as validGithubLinkId } from './github.mjs';
+import { VerandaError } from './veranda.mjs';
 
 export const API_VERSION = 1;
 
@@ -147,6 +148,10 @@ const HARNESS_IDS = ['claude', 'codex', 'pi'];
 // Fallback effort levels for a CLI that predates `efforts` in `fleet harness list`.
 const DEFAULT_EFFORTS = { claude: ['low', 'medium', 'high', 'xhigh', 'max'], codex: ['minimal', 'low', 'medium', 'high', 'xhigh'], pi: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] };
 const SLACK_LINK_ACTION_ROUTE = /^\/api\/slack\/links\/([^/]+)\/(unlink|relink)$/;
+/** Veranda links (opt-in): POST /api/veranda/<action>. */
+const VERANDA_ACTIONS = new Set(['link', 'unlink', 'extend', 'reply', 'history']);
+/** The actions a session runs from its own pane: the caller's host is this server's, unless proxied. */
+const VERANDA_FROM_PANE = new Set(['reply', 'history']);
 const GITHUB_UNLINK_ROUTE = /^\/api\/github\/links\/([^/]+)\/unlink$/;
 /** `fleet slack history | thread | file`: the linked session reads its conversation (read-only). */
 const SLACK_READS = new Set(['history', 'thread', 'file']);
@@ -246,6 +251,7 @@ export function createApi({
   grouper = null,
   inbox = null,
   slack = null,
+  veranda = null,
   github = null,
   groupingDiscoveryMs = 5 * 60 * 1000,
   name = 'fleet-web',
@@ -974,6 +980,66 @@ export function createApi({
     }
   }
 
+  /**
+   * Veranda links (lib/veranda.mjs; opt-in: config `veranda`), on the `veranda.host` server; the
+   * others proxy there once (`?local=1`, never chained). GET status → `{ configured, enabled, host,
+   * url, links, ended }`; POST link / unlink / extend / reply / history. A request from this
+   * machine (not proxied) is stamped with where its caller runs: `host` for a pane-based reply or
+   * read, `callerHost` for every action — a proxying server stamps its own name the same way.
+   */
+  async function handleVeranda(req, url, action) {
+    const local = url.searchParams.get('local') === '1';
+    const cfg = config.veranda ?? { configured: false };
+    const host = cfg.host ?? null;
+    if (!cfg.configured) {
+      if (action === 'status') return { status: 200, body: { configured: false, enabled: false, host: null, links: [], ended: [] } };
+      return { status: 409, body: { error: 'Veranda links are not set up (no veranda section in the config)' } };
+    }
+    let body = action === 'status' ? null : ((await readJsonBody(req)) ?? {});
+    if (body != null && (typeof body !== 'object' || Array.isArray(body))) throw new HttpError('body must be a JSON object', 400);
+    if (body != null && !local) {
+      body = { ...body, callerHost: config.self };
+      // A pane is this machine's: a reply / read names it, a link by pane links a session here.
+      if (VERANDA_FROM_PANE.has(action) || body.pane) body.host = config.self;
+      else if (typeof body.host !== 'string' || !body.host) body.host = config.self;
+    }
+    if (!host) {
+      if (action === 'status') return { status: 200, body: { configured: true, enabled: false, host: null, error: 'no host runs Veranda links (veranda.host)', links: [], ended: [] } };
+      return { status: 409, body: { error: 'no host runs Veranda links (veranda.host)' } };
+    }
+    if (host !== config.self) {
+      if (local) return { status: 409, body: { error: `this server is not the Veranda bridge ${host}` } };
+      const peerUrl = config.peers[host];
+      if (!peerUrl) return { status: 409, body: { error: `Veranda bridge "${host}" is not a peer with a web URL` } };
+      const r = await proxyToPeer(peerUrl, {
+        method: action === 'status' ? 'GET' : 'POST',
+        pathname: url.pathname,
+        ...(body == null ? {} : { body: JSON.stringify(body) }),
+        timeoutMs: peerProxyTimeoutMs,
+      });
+      if (action === 'status' && r.status !== 200) return { status: 200, body: { configured: true, enabled: false, host, error: r.body?.error ?? `HTTP ${r.status} from ${host}`, links: [], ended: [] } };
+      return r;
+    }
+    if (!veranda) {
+      if (action === 'status') return { status: 200, body: { configured: true, enabled: false, host, error: 'Veranda links are off on this server (FLEET_WEB_VERANDA)', links: [], ended: [] } };
+      return { status: 409, body: { error: 'Veranda links are off on this server (FLEET_WEB_VERANDA)' } };
+    }
+    try {
+      if (action === 'status') return { status: 200, body: { host: config.self, ...(await veranda.status()) } };
+      if (action === 'link') {
+        const target = body.host;
+        if (target !== config.self && !config.peers[target]) throw new HttpError(`unknown host: ${target} (not a peer with a web url)`, 400);
+        const l = await veranda.link(body);
+        refreshFleet();
+        return { status: 200, body: l };
+      }
+      return { status: 200, body: await veranda[action](body) };
+    } catch (err) {
+      if (err instanceof VerandaError) throw new HttpError(err.message, err.status);
+      throw err;
+    }
+  }
+
   async function handleSlack(req, url, action, id = null) {
     const local = url.searchParams.get('local') === '1';
     if (action === 'status') return slackStatus(local);
@@ -1264,6 +1330,16 @@ export function createApi({
     if (gu) {
       if (req.method !== 'POST') throw new HttpError('method not allowed', 405);
       return handleGithub(req, url, 'unlink', decodeURIComponent(gu[1]));
+    }
+
+    if (url.pathname === '/api/veranda') {
+      if (req.method !== 'GET') throw new HttpError('method not allowed', 405);
+      return handleVeranda(req, url, 'status');
+    }
+
+    if (url.pathname.startsWith('/api/veranda/') && VERANDA_ACTIONS.has(url.pathname.slice('/api/veranda/'.length))) {
+      if (req.method !== 'POST') throw new HttpError('method not allowed', 405);
+      return handleVeranda(req, url, url.pathname.slice('/api/veranda/'.length));
     }
 
     if (url.pathname === '/api/slack/spawn') {

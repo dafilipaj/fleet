@@ -43,6 +43,7 @@ import { createAgentAsk, createInbox } from './lib/inbox.mjs';
 import { SLACK_USER_TOKEN_NAME } from './lib/inbox-slack.mjs';
 import { createPromptQueue } from './lib/queue.mjs';
 import { TOKEN_NAMES, createSlackApi, createSlackBridge, createSlackDownload, createSocketClient } from './lib/slack.mjs';
+import { createVerandaBridge, createVerandaClient } from './lib/veranda.mjs';
 import { createGithubBridge } from './lib/github.mjs';
 import { fetchPeerHost, proxyToPeer, setPeerConnects, setPeerProxies, setPeerTokens } from './lib/peers.mjs';
 import { createDormant } from './lib/dormant.mjs';
@@ -167,6 +168,30 @@ const inbox = config.inbox.enabled
       log,
     })
   : null;
+// A linked session (Slack, Veranda) may run on any host: a peer is asked, and typed into, through
+// its web server.
+async function linkedSessions(host) {
+  if (!host || host === config.self) {
+    const local = await fleet.localHost({ force: true });
+    return local.ok ? local.sessions : null;
+  }
+  const peerUrl = config.peers[host];
+  if (!peerUrl) return null;
+  const h = await fetchPeerHost(host, peerUrl, { timeoutMs: 8000 });
+  return h.ok ? h.sessions : null;
+}
+async function sendToLinked(session, text, host) {
+  if (!host || host === config.self) return backend.send(session, text);
+  const peerUrl = config.peers[host];
+  if (!peerUrl) throw new Error(`${host} is not a peer with a web url`);
+  const r = await proxyToPeer(peerUrl, {
+    method: 'POST',
+    pathname: `/api/hosts/${encodeURIComponent(host)}/sessions/${encodeURIComponent(session.session_id)}/send`,
+    body: JSON.stringify({ text }),
+    timeoutMs: 15000,
+  });
+  if (r.status !== 200) throw new Error(r.body?.error ?? `HTTP ${r.status} from ${host}`);
+}
 // Slack links: the bridge runs on the `slack.host` server only (the others proxy /api/slack there).
 let slack = null;
 if (config.slack.enabled) {
@@ -183,28 +208,8 @@ if (config.slack.enabled) {
     socket,
     self: config.self,
     // A link's session may run on any host: a peer is asked through its web server.
-    listSessions: async (host) => {
-      if (!host || host === config.self) {
-        const local = await fleet.localHost({ force: true });
-        return local.ok ? local.sessions : null;
-      }
-      const peerUrl = config.peers[host];
-      if (!peerUrl) return null;
-      const h = await fetchPeerHost(host, peerUrl, { timeoutMs: 8000 });
-      return h.ok ? h.sessions : null;
-    },
-    send: async (session, text, host) => {
-      if (!host || host === config.self) return backend.send(session, text);
-      const peerUrl = config.peers[host];
-      if (!peerUrl) throw new Error(`${host} is not a peer with a web url`);
-      const r = await proxyToPeer(peerUrl, {
-        method: 'POST',
-        pathname: `/api/hosts/${encodeURIComponent(host)}/sessions/${encodeURIComponent(session.session_id)}/send`,
-        body: JSON.stringify({ text }),
-        timeoutMs: 15000,
-      });
-      if (r.status !== 200) throw new Error(r.body?.error ?? `HTTP ${r.status} from ${host}`);
-    },
+    listSessions: linkedSessions,
+    send: sendToLinked,
     // slack.spawn: a mention opens a session on `host` — this server, else that peer's (a spawn
     // linked to Slack answers once the session is linked, ≤ ~1 min).
     spawn: async (host, body) => {
@@ -231,6 +236,19 @@ if (config.slack.enabled) {
     log,
   });
 }
+// Veranda links (opt-in, config `veranda`): the bridge runs on the `veranda.host` server only.
+const veranda = config.veranda.enabled
+  ? createVerandaBridge({
+      settings: config.veranda,
+      self: config.self,
+      client: createVerandaClient({ socket: config.veranda.socket }),
+      listSessions: linkedSessions,
+      send: sendToLinked,
+      file: path.join(fleetStateDir(process.env), 'veranda-links.json'),
+      auditFile: path.join(fleetStateDir(process.env), 'veranda-audit.log'),
+      log,
+    })
+  : null;
 // GitHub links: the bridge runs on the `github.host` server only, as this host's `gh` account.
 // It starts and resumes sessions on this host, through its own POST spawn and the fleet CLI.
 const github = config.github.enabled
@@ -348,6 +366,7 @@ const handleApi = createApi({
   grouper,
   inbox,
   slack,
+  veranda,
   github,
   queue,
   name: NAME,
@@ -463,6 +482,13 @@ servers[0].listen(config.port, addresses[0], () => {
   } else if (config.slack.host) {
     log(`[fleet-web] slack links: served by ${config.slack.host}`);
   }
+  if (veranda) {
+    // Polls only while a link is active.
+    veranda.start().catch((err) => log(`[fleet-web] veranda: ${err?.message ?? err}`));
+    log(`[fleet-web] veranda links on (bot API at ${config.veranda.socket})`);
+  } else if (config.veranda.host) {
+    log(`[fleet-web] veranda links: served by ${config.veranda.host}`);
+  }
   // The sync judges members on other hosts with the merged fleet (the warm snapshot when someone
   // is watching, else one fresh build); a sibling started on a peer is found in that peer's list.
   stacks.attach({
@@ -500,6 +526,7 @@ function shutdown(signal) {
   inbox?.stop();
   queue.stop();
   slack?.stop();
+  veranda?.stop();
   github?.stop();
   stacks.stop();
   operator.stop();
