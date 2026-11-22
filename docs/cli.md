@@ -237,7 +237,7 @@ from the web UI: Details → Links → **Add link** with the PR, and Edit (instr
 | Command | What |
 |---|---|
 | `fleet github [list] [--json]` | the bridge (its account, polling or failing, who may start sessions) and the active links |
-| `fleet github link <pr-url \| owner/repo#n> [--session <target>] [--task <instructions>] [--keep <12h\|1d\|never>] [--json]` | link a session of `github.host` (default: the one this runs in, by `$TMUX_PANE`) to an open PR. What is on the PR now counts as seen. One session per PR: another session's link must be unlinked first; the same session again renews it (task, keep). `--keep`: put the session to sleep (`fleet sleep`) once it has been idle that long; the next event resumes it. The link ends when the PR is merged or closed |
+| `fleet github link <pr-url \| owner/repo#n> [--session <target>] [--task <instructions>] [--keep <12h\|1d\|never>] [--json]` | link a session on any host (default: the one this runs in, by `$TMUX_PANE`) to an open PR. What is on the PR now counts as seen. One session per PR: another session's link must be unlinked first; the same session again renews it (task, keep). `--keep`: put the session to sleep (`fleet sleep`) once it has been idle that long; the next event resumes it. The link ends when the PR is merged or closed |
 | `fleet github unlink <gl-xxxxxx>` | end a link now |
 
 How it works ([architecture](architecture.md#github-links)): the machines are not reachable from the
@@ -273,7 +273,7 @@ UI: Details → Links → **Add link** with the task URL, and Edit (instructions
 | Command | What |
 |---|---|
 | `fleet productive [list] [--json]` | the bridge (its account, polling or failing, who may start sessions) and the active links |
-| `fleet productive link <task-url \| id> [--session <target>] [--task <instructions>] [--keep <12h\|1d\|never>] [--json]` | link a session of `productive.host` (default: the one this runs in, by `$TMUX_PANE`) to an open task. What is on the task now counts as seen. One session per task; the same session again renews it (task, keep). `--keep`: sleep after that long idle; the next event resumes it. The link ends when the task is closed |
+| `fleet productive link <task-url \| id> [--session <target>] [--task <instructions>] [--keep <12h\|1d\|never>] [--json]` | link a session on any host (default: the one this runs in, by `$TMUX_PANE`) to an open task. What is on the task now counts as seen. One session per task; the same session again renews it (task, keep). `--keep`: sleep after that long idle; the next event resumes it. The link ends when the task is closed |
 | `fleet productive reply <text \| -> [--file <path>] [--link <pl-xxxxxx>] [--session <target>] [--json]` | post a comment on the linked task (default: this session's link) as the account. Text with a little Markdown: paragraphs, `- ` lists, `**bold**`, `` `code` ``, links; `@[Person:<id>:<Name>]` mentions someone. `-` or no text: read stdin |
 | `fleet productive unlink <pl-xxxxxx>` | end a link now |
 

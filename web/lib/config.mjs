@@ -737,7 +737,21 @@ export function normalizeConfig(
   const gr = raw.github == null ? {} : raw.github;
   if (!isObject(gr)) throw new Error('config.github must be an object { host, spawn }');
   if (gr.host != null && (typeof gr.host !== 'string' || !gr.host.trim())) throw new Error('config.github.host must be a host name');
-  const github = { host: gr.host == null ? null : gr.host.trim(), spawn: githubSpawn(gr.spawn) };
+  // An app as the account (it has no user and no inbox): `gh` the command the bridge runs instead of gh (a
+  // wrapper that runs gh with the app's token), `cli` the one sessions post with, `login` its name,
+  // `notifications: false` (linked PRs are read every few minutes instead).
+  for (const k of ['gh', 'cli', 'login']) {
+    if (gr[k] != null && (typeof gr[k] !== 'string' || !/^[A-Za-z0-9_.~/-]+$/.test(gr[k].trim()))) throw new Error(`config.github.${k} must be a command or login (letters, digits, . _ - /)`);
+  }
+  if (gr.notifications != null && typeof gr.notifications !== 'boolean') throw new Error('config.github.notifications must be true or false');
+  const github = {
+    host: gr.host == null ? null : gr.host.trim(),
+    spawn: githubSpawn(gr.spawn),
+    gh: gr.gh ? expandHome(gr.gh.trim(), home) : null,
+    cli: gr.cli?.trim() || null,
+    login: gr.login?.trim() || null,
+    notifications: gr.notifications !== false,
+  };
   github.enabled = github.host != null && github.host === self.trim();
   if (env.FLEET_WEB_GITHUB != null && env.FLEET_WEB_GITHUB !== '' && /^(0|false|off|no)$/i.test(env.FLEET_WEB_GITHUB)) github.enabled = false;
 
@@ -758,7 +772,11 @@ export function normalizeConfig(
     keychain: pr.tokenFile ? (pr.keychain?.trim() ?? null) : (pr.keychain?.trim() ?? 'PRODUCTIVE_AUTH_TOKEN'),
     tokenFile: pr.tokenFile ? expandHome(pr.tokenFile.trim(), home) : null,
     spawn: productiveSpawn(pr.spawn),
+    // The account is a person who also works on the tasks (a personal token): only the comments the bridge
+    // posted are its own; that person's other comments and changes reach the session like anyone allowed.
+    person: pr.person === true,
   };
+  if (pr.person != null && typeof pr.person !== 'boolean') throw new Error('config.productive.person must be true or false');
   productive.enabled = productive.host != null && productive.host === self.trim();
   if (productive.enabled && !productive.org) throw new Error('config.productive.org is required on the bridge host (the organization id)');
   if (env.FLEET_WEB_PRODUCTIVE != null && env.FLEET_WEB_PRODUCTIVE !== '' && /^(0|false|off|no)$/i.test(env.FLEET_WEB_PRODUCTIVE)) productive.enabled = false;

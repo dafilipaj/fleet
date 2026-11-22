@@ -99,8 +99,8 @@ const freshDraft = (): Draft => ({
  * Details → Links: every link of the session in one place — Slack threads, a Veranda room, GitHub
  * PRs and Productive tasks it follows — with what each allows (Unlink, +1h, Edit), the ones it had
  * before ("Link again"), and "Add link": paste a Slack link or @person, a PR, a task or a room name,
- * and the form shows that kind's settings. GitHub and Productive links follow sessions on their
- * bridge's host only; a kind this fleet has no bridge for is not offered.
+ * and the form shows that kind's settings. A kind this fleet has no bridge for is not offered; each
+ * bridge reaches sessions on the other hosts through their web servers.
  */
 export function LinksSection({ host, session: s }: { host: string; session: Session | null }) {
   const slack = useSlack()
@@ -121,8 +121,8 @@ export function LinksSection({ host, session: s }: { host: string; session: Sess
       : k === 'veranda'
         ? Boolean(veranda?.configured && veranda.enabled)
         : k === 'github'
-          ? Boolean(github?.enabled && github.host === host)
-          : Boolean(productive?.enabled && productive.host === host),
+          ? Boolean(github?.enabled)
+          : Boolean(productive?.enabled),
   )
   const mine = <L extends { host: string | null; session: string }>(ls: L[] | undefined, bridge: string | null | undefined) =>
     (ls ?? []).filter((l) => (l.host ?? bridge) === host && l.session === sid)
@@ -458,7 +458,7 @@ export function LinksSection({ host, session: s }: { host: string; session: Sess
               />
             ) : null}
 
-            <p className="text-xs text-dimmer">{hint(draft, kind, url, valid, addable, github?.host ?? productive?.host ?? null)}</p>
+            <p className="text-xs text-dimmer">{hint(draft, kind, url, valid, addable, kind === 'github' ? (github?.login ? `@${github.login}` : null) : (productive?.me?.name ?? null))}</p>
 
             <div className="flex justify-end gap-2">
               <Button variant="ghost" size="lg" onClick={() => setDraft(null)}>
@@ -567,7 +567,7 @@ const followSub = (l: GithubLink | ProductiveLink, as: string | null) => [
   l.pending ? `${l.pending} waiting` : null,
 ]
 
-function hint(d: Draft, kind: LinkKind | null, url: string, valid: boolean, addable: LinkKind[], bridge: string | null) {
+function hint(d: Draft, kind: LinkKind | null, url: string, valid: boolean, addable: LinkKind[], account: string | null) {
   if (!kind) return url ? `Not a link this session can have — paste ${joinOr(addable.map((k) => PLACEHOLDER[k]))}.` : `Paste ${joinOr(addable.map((k) => PLACEHOLDER[k]))}.`
   if (url && !valid) {
     if (kind === 'veranda') return 'A room is 1–48 lowercase letters, digits or dashes.'
@@ -579,9 +579,9 @@ function hint(d: Draft, kind: LinkKind | null, url: string, valid: boolean, adda
     return `${how} ${url.startsWith('http') ? 'Invite the app first.' : url ? 'A person: the app DMs with them.' : ''}`.trim()
   }
   if (kind === 'veranda') return 'Opens the room with a new passphrase (shown here once). Guests with a Veranda account and the passphrase talk to this session until the link ends.'
-  const who = kind === 'github' ? 'reviews, comments and pushes on the PR' : 'comments and changes on the task'
+  const who = kind === 'github' ? 'review requests, mentions and replies in its threads on the PR' : 'comments and changes on the task'
   const ends = kind === 'github' ? 'the PR is merged or closed' : 'the task is closed'
-  return `${d.editing ? 'New instructions and sleep for this link. ' : ''}It gets the ${who} (throttled) and answers there as the bridge's account${bridge ? ` on ${bridge}` : ''}, until ${ends} or you unlink it.`
+  return `${d.editing ? 'New instructions and sleep for this link. ' : ''}It gets the ${who} (throttled) and answers there as ${account ?? "the bridge's account"}, until ${ends} or you unlink it.`
 }
 
 const slackPlaceName = (l: SlackLink) => (l.dm ? `DM with ${l.dm.name}` : l.threadTs ? 'Thread' : 'Conversation')

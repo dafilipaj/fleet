@@ -129,7 +129,7 @@ function fakeGithub() {
   };
 }
 
-function setup({ spawnCfg = { from: ['alex'], keep: 24 * 60 }, startAt = Date.parse('2026-01-01T00:00:00Z') } = {}) {
+function setup({ spawnCfg = { from: ['alex'], keep: 24 * 60 }, startAt = Date.parse('2026-01-01T00:00:00Z'), extra = {} } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-github-'));
   const gh = fakeGithub();
   let t = startAt;
@@ -139,7 +139,7 @@ function setup({ spawnCfg = { from: ['alex'], keep: 24 * 60 }, startAt = Date.pa
   const slept = [];
   const restored = [];
   const bridge = createGithubBridge({
-    settings: { spawn: spawnCfg },
+    settings: { spawn: spawnCfg, ...extra },
     self: 'shed',
     gh: gh.gh,
     listSessions: async () => sessions.map((s) => ({ ...s })),
@@ -448,6 +448,26 @@ test('link: an open PR, a live session; a second session on the same PR is refus
   assert.equal((await s.bridge.status()).links.length, 0);
 });
 
+test('an app as the account: login from the config, no notifications, linked PRs read every few minutes, sessions post with its cli', async () => {
+  const s = setup({ spawnCfg: null, extra: { login: 'fleetbot', cli: 'gh-fleetbot', notifications: false } });
+  s.sessions.push({ session_id: SID, handle: '%1', name: 'mine', status: 'idle' });
+  const pr = s.gh.pr(11);
+  const l = await s.bridge.link({ url: `${REPO}#11`, pane: '%1' });
+  assert.equal(l.login, 'fleetbot');
+  await s.tick();
+  assert.equal(s.sent.length, 1);
+  assert.match(s.sent[0].text, /`gh-fleetbot pr comment 11 -R /);
+  assert.match(s.sent[0].text, /post with `gh-fleetbot`/);
+  s.idle();
+  pr.comments.push({ id: 40, body: '@fleetbot please rebase', at: '7', author: user('alex') });
+  await s.tick();
+  await s.tick();
+  await s.tick();
+  assert.equal(s.sent.length, 2);
+  assert.match(s.sent[1].text, /please rebase/);
+  assert.equal(s.gh.calls.some((a) => a[1] === 'user' || a.includes('notifications')), false);
+});
+
 test('config: github.host enables the bridge on that host; spawn.from is a login list, keep a duration', () => {
   const cfg = normalizeConfig({ self: 'shed', github: { host: 'shed', spawn: { from: ['alex', '@Ana-B'], keep: '12h', dir: '~/work' } } }, { env: {} });
   assert.equal(cfg.github.enabled, true);
@@ -459,6 +479,10 @@ test('config: github.host enables the bridge on that host; spawn.from is a login
   assert.deepEqual(githubSpawn({}).from, []);
   assert.throws(() => githubSpawn({ from: ['not a login!'] }), /list of GitHub logins/);
   assert.throws(() => githubSpawn({ keep: '1m' }), /keep must be/);
+  const app = normalizeConfig({ self: 'hub', github: { host: 'hub', gh: 'gh-fleetbot', cli: 'gh-fleetbot', login: 'fleetbot', notifications: false } }, { env: {} }).github;
+  assert.deepEqual([app.gh, app.cli, app.login, app.notifications], ['gh-fleetbot', 'gh-fleetbot', 'fleetbot', false]);
+  assert.equal(normalizeConfig({ self: 'shed', github: { host: 'shed' } }, { env: {} }).github.notifications, true);
+  assert.throws(() => normalizeConfig({ self: 'shed', github: { host: 'shed', cli: 'gh; rm' } }, { env: {} }), /github.cli must be/);
 });
 
 test('GitHub comment bodies reach the prompt without control characters, escapes or paste markers', () => {

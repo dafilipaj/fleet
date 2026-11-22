@@ -977,6 +977,13 @@ export function createApi({
    * GET status, POST link `{ url, pane | session | tmuxSession, host, task?, keep? }` (a session
    * of the bridge's own host only), POST links/:id/unlink.
    */
+  /** The host of a session a GitHub / Productive link is asked for: this one, or a peer with a web URL. */
+  function linkHost(raw) {
+    const host = typeof raw === 'string' && raw ? raw : config.self;
+    if (host !== config.self && !config.peers[host]) throw new HttpError(`${host} is not a peer with a web URL`, 400);
+    return host;
+  }
+
   async function handleGithub(req, url, action, id = null) {
     const local = url.searchParams.get('local') === '1';
     const bridge = config.github?.host ?? null;
@@ -1003,10 +1010,10 @@ export function createApi({
         if (!validGithubLinkId(id)) throw new HttpError('link must look like gl-xxxxxx', 400);
         return { status: 200, body: await github.unlink(id) };
       }
-      const host = typeof body?.host === 'string' && body.host ? body.host : config.self;
-      if (host !== config.self) throw new HttpError(`GitHub links follow sessions on ${config.self} only (this session is on ${host})`, 400);
+      // A session on any host: the bridge lists and types into a peer's through its web server.
+      const host = linkHost(body?.host);
       const { url: prUrl, session, pane, tmuxSession, task, keep } = body ?? {};
-      return { status: 200, body: await github.link({ url: prUrl, session, pane, tmuxSession, task, keep }) };
+      return { status: 200, body: await github.link({ url: prUrl, session, pane, tmuxSession, task, keep, host }) };
     } catch (err) {
       if (err instanceof GithubError) throw new HttpError(err.message, err.status);
       throw err;
@@ -1051,14 +1058,13 @@ export function createApi({
         if (!validProductiveLinkId(id)) throw new HttpError('link must look like pl-xxxxxx', 400);
         return { status: 200, body: await productive.unlink(id) };
       }
-      const host = typeof body?.host === 'string' && body.host ? body.host : config.self;
-      if (host !== config.self) throw new HttpError(`Productive links follow sessions on ${config.self} only (this session is on ${host})`, 400);
+      const host = linkHost(body?.host);
       const { url: taskUrl, session, pane, tmuxSession, task, keep, link, body: text } = body ?? {};
       if (action === 'comment') {
         if (link != null && !validProductiveLinkId(link)) throw new HttpError('link must look like pl-xxxxxx', 400);
-        return { status: 200, body: await productive.comment({ link, session, pane, tmuxSession, body: text }) };
+        return { status: 200, body: await productive.comment({ link, session, pane, tmuxSession, body: text, host }) };
       }
-      return { status: 200, body: await productive.link({ url: taskUrl, session, pane, tmuxSession, task, keep }) };
+      return { status: 200, body: await productive.link({ url: taskUrl, session, pane, tmuxSession, task, keep, host }) };
     } catch (err) {
       if (err instanceof ProductiveError) throw new HttpError(err.message, err.status);
       if (err?.status && err.status >= 400 && err.status < 600) throw new HttpError(err.message, 502);

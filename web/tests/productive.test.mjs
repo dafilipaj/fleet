@@ -119,21 +119,24 @@ function fakeProductive() {
   };
 }
 
-function setup({ spawnCfg = { from: ['alex@example.com'], keep: 24 * 60 }, startAt = Date.parse('2026-01-01T00:00:00Z') } = {}) {
+function setup({ spawnCfg = { from: ['alex@example.com'], keep: 24 * 60 }, startAt = Date.parse('2026-01-01T00:00:00Z'), person = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-productive-'));
   const pr = fakeProductive();
   let t = startAt;
   const sessions = [];
   const sent = [];
   const spawned = [];
+  // Another host's sessions (a peer); null: it does not answer.
+  const remote = { laptop: [] };
+  const on = (host) => (!host || host === 'shed' ? sessions : remote[host]);
   const bridge = createProductiveBridge({
-    settings: { org: '109', spawn: spawnCfg },
+    settings: { org: '109', spawn: spawnCfg, ...(person ? { person: true } : {}) },
     self: 'shed',
     api: pr.api,
-    listSessions: async () => sessions.map((s) => ({ ...s })),
-    send: async (s, text) => {
-      sent.push({ session: s.session_id, text });
-      const live = sessions.find((x) => x.session_id === s.session_id);
+    listSessions: async (host) => on(host)?.map((s) => ({ ...s })) ?? null,
+    send: async (s, text, host) => {
+      sent.push({ session: s.session_id, text, host: host ?? null });
+      const live = on(host)?.find((x) => x.session_id === s.session_id);
       if (live) live.status = 'busy';
     },
     spawn: async (body) => {
@@ -150,6 +153,7 @@ function setup({ spawnCfg = { from: ['alex@example.com'], keep: 24 * 60 }, start
     bridge,
     pr,
     sessions,
+    remote,
     sent,
     spawned,
     advance: (ms) => {
@@ -368,6 +372,49 @@ test('link: an open task, a live session; a second session on the same task is r
   await assert.rejects(s.bridge.link({ url: 'nope', pane: '%2' }), /must be a Productive task/);
 });
 
+test('a session on another host: linked through its host, typed into there, left alone while that host does not answer', async () => {
+  const s = setup({ spawnCfg: null });
+  await s.bridge.tick();
+  s.pr.task(8);
+  s.remote.laptop.push({ session_id: SID, handle: '%3', status: 'idle', name: 'far' });
+  await assert.rejects(s.bridge.link({ url: '8', pane: '%3' }), /no live session %3 on shed/);
+  const l = await s.bridge.link({ url: '8', pane: '%3', host: 'laptop' });
+  assert.equal(l.host, 'laptop');
+  await s.tick();
+  assert.equal(s.sent.length, 1);
+  assert.equal(s.sent[0].host, 'laptop');
+  s.remote.laptop[0].status = 'idle';
+  s.pr.comment(8, ME, '<p>ping</p>', s.at(1000));
+  s.remote.laptop = null; // the peer is down: nothing is woken or started
+  s.pr.notify(8);
+  await s.tick();
+  await s.tick(5 * 60_000);
+  assert.equal(s.sent.length, 1);
+  assert.equal(s.spawned.length, 0);
+  // The session comments from its own host.
+  s.remote.laptop = [{ session_id: SID, handle: '%3', status: 'idle', name: 'far' }];
+  const r = await s.bridge.comment({ pane: '%3', host: 'laptop', body: 'done' });
+  assert.equal(r.taskId, '8');
+});
+
+test('person: an account that is also a person — its own comments wake the session, only what the bridge posted does not', async () => {
+  const s = setup({ spawnCfg: null, person: true });
+  await s.bridge.tick();
+  s.pr.task(8);
+  s.sessions.push({ session_id: SID, handle: '%1', status: 'idle', name: 'mine' });
+  await s.bridge.link({ url: '8', pane: '%1' });
+  await s.tick();
+  s.idle();
+  await s.bridge.comment({ pane: '%1', body: 'Posted by the session.' });
+  s.pr.comment(8, ME, '<p>Written by the person, in Productive.</p>', s.at(1000));
+  s.pr.notify(8);
+  await s.tick();
+  await s.tick(5 * 60_000);
+  assert.equal(s.sent.length, 2);
+  assert.match(s.sent[1].text, /Written by the person/);
+  assert.doesNotMatch(s.sent[1].text, /Posted by the session/);
+});
+
 test('config: productive.host enables the bridge on that host; org required there; from ids or emails', () => {
   const base = { self: 'shed' };
   const off = normalizeConfig({ ...base }, { env: {} });
@@ -382,4 +429,7 @@ test('config: productive.host enables the bridge on that host; org required ther
   assert.throws(() => normalizeConfig({ ...base, productive: { host: 'shed' } }, { env: {} }), /org is required/);
   assert.throws(() => productiveSpawn({ from: ['not an id'] }), /person ids or emails/);
   assert.deepEqual(productiveSpawn({ from: 'anyone' }).from, ['anyone']);
+  assert.equal(on.productive.person, false);
+  assert.equal(normalizeConfig({ ...base, productive: { host: 'shed', org: 1, person: true, tokenFile: '~/t' } }, { env: {} }).productive.person, true);
+  assert.throws(() => normalizeConfig({ ...base, productive: { host: 'shed', org: 1, person: 'yes' } }, { env: {} }), /person must be/);
 });

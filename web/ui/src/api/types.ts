@@ -439,6 +439,8 @@ export interface GithubLink {
 export interface GithubStatus {
   enabled: boolean
   host: string | null
+  /** The account the bridge acts as. */
+  login?: string | null
   error?: string | null
   links: GithubLink[]
   ended: GithubLink[]
@@ -473,6 +475,8 @@ export interface ProductiveLink {
 export interface ProductiveStatus {
   enabled: boolean
   host: string | null
+  /** The account (a person) the bridge acts as. */
+  me?: { id: string; name: string | null } | null
   error?: string | null
   links: ProductiveLink[]
   ended: ProductiveLink[]

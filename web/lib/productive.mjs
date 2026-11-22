@@ -63,6 +63,7 @@ const MAX_STARTED = 300;
 const MAX_HANDLED = 500;
 const MAX_BODY = 1500; // one comment as typed into the session
 const MAX_PROMPT = 7500; // the send cap is 8000
+const MAX_POSTED = 50; // comment ids a link posted, newest kept
 const MAX_HISTORY = 12; // comments shown in a new session's first prompt
 
 export class ProductiveError extends Error {
@@ -332,14 +333,16 @@ const tmuxName = (task) => `task-${task.number ?? task.id}`.replace(/[^A-Za-z0-9
 
 /**
  * @param deps
- *   settings      { org, spawn: { dir, model, harness, keep (minutes), from: [id | email], task } | null } — read live
+ *   settings      { org, spawn: { dir, model, harness, keep (minutes), from: [id | email], task } | null, person? } — read live
+ *                 `person`: the account is a person who also works on the tasks — only what the bridge posted is
+ *                 its own, and that person's comments wake the session like an allowed one's
  *   self          this host's name
  *   api           (method, path, body?) => Promise<json>  (Productive's REST API as the account; rejects with { status })
- *   listSessions  () => Promise<session[] | null>  (this host's)
- *   send          (session, text) => Promise
+ *   listSessions  (host) => Promise<session[] | null>  (a link's host: this one or a peer; null = no answer)
+ *   send          (session, text, host) => Promise
  *   spawn         (body) => Promise<{ name, tmuxSession }>  (null: no starting)
- *   sleep         (sessionId) => Promise
- *   restore       (args) => Promise<report>
+ *   sleep         (sessionId, host) => Promise
+ *   restore       (args, host) => Promise<report>
  *   file          the state file
  */
 export function createProductiveBridge({ settings = {}, self = null, api, listSessions, send, spawn = null, sleep = null, restore = null, file, now = Date.now, log = () => {}, tickMs = TICK_MS }) {
@@ -489,10 +492,10 @@ export function createProductiveBridge({ settings = {}, self = null, api, listSe
 
   const linkFor = (taskId) => state.links.find((l) => l.taskId === String(taskId)) ?? null;
 
-  async function addLink({ session, task, seenId, note = '', keep = null, startedBy = null, first = '' }) {
+  async function addLink({ session, task, seenId, note = '', keep = null, startedBy = null, first = '', host = null }) {
     const l = {
       id: `pl-${randomBytes(3).toString('hex')}`,
-      host: self,
+      host: host || self,
       session: session.session_id,
       sessionName: session.name ?? session.title ?? null,
       taskId: task.id,
@@ -526,26 +529,26 @@ export function createProductiveBridge({ settings = {}, self = null, api, listSe
     return mins;
   }
 
-  async function findLiveSession({ session: sessionId, pane, tmuxSession }) {
-    const sessions = (await listSessions()) ?? [];
+  async function findLiveSession({ session: sessionId, pane, tmuxSession, host = null }) {
+    const sessions = (await listSessions(host || self)) ?? [];
     let s = null;
     if (typeof sessionId === 'string' && sessionId) s = findSession(sessions, sessionId);
     else if (typeof pane === 'string' && pane) s = sessions.find((x) => x.handle === pane) ?? null;
     else if (typeof tmuxSession === 'string' && tmuxSession) s = sessions.find((x) => x.tmux_session === tmuxSession) ?? null;
     else throw new ProductiveError('session (or pane) is required');
-    if (!s) throw new ProductiveError(`no live session ${sessionId ?? pane ?? tmuxSession} on ${self ?? 'this host'}`, 404);
+    if (!s) throw new ProductiveError(`no live session ${sessionId ?? pane ?? tmuxSession} on ${host || self || 'this host'}`, 404);
     return s;
   }
 
   /** POST link: a session of this host follows a task (`url`: its URL or id). */
-  async function link({ url, session, pane, tmuxSession, task, keep }) {
+  async function link({ url, session, pane, tmuxSession, task, keep, host = null }) {
     await load();
     const id = parseTaskRef(url);
     if (!id) throw new ProductiveError('url must be a Productive task: https://app.productive.io/<org>/tasks/<id>, or its id');
     const note = typeof task === 'string' ? task.trim() : '';
     if (note.length > MAX_TASK) throw new ProductiveError(`task is too long (max ${MAX_TASK} chars)`);
     const keepMin = keepMinutes(keep);
-    const s = await findLiveSession({ session, pane, tmuxSession });
+    const s = await findLiveSession({ session, pane, tmuxSession, host });
     if (!s.session_id || s.session_id.startsWith('pid-')) throw new ProductiveError('this session has no session id yet — try again in a moment', 409);
     await whoami();
     let t;
@@ -568,7 +571,7 @@ export function createProductiveBridge({ settings = {}, self = null, api, listSe
       }
       throw new ProductiveError(`${taskRef(existing)} is already followed by ${existing.sessionName ?? existing.session} (${existing.id}) — unlink it first`, 409);
     }
-    const l = await addLink({ session: s, task: t, seenId: events.at(-1)?.id ?? 0, note, keep: keepMin });
+    const l = await addLink({ session: s, task: t, seenId: events.at(-1)?.id ?? 0, note, keep: keepMin, host });
     schedule(0);
     return view(l);
   }
@@ -583,7 +586,7 @@ export function createProductiveBridge({ settings = {}, self = null, api, listSe
   }
 
   /** POST comment: a comment on a linked task as the account — the link by id, or the asking session's. */
-  async function comment({ link: linkId, session, pane, tmuxSession, body }) {
+  async function comment({ link: linkId, session, pane, tmuxSession, body, host = null }) {
     await load();
     const text = typeof body === 'string' ? body.trim() : '';
     if (!text) throw new ProductiveError('body is required');
@@ -593,8 +596,8 @@ export function createProductiveBridge({ settings = {}, self = null, api, listSe
       l = state.links.find((x) => x.id === linkId);
       if (!l) throw new ProductiveError(`no active link ${linkId}`, 404);
     } else {
-      const s = await findLiveSession({ session, pane, tmuxSession });
-      const mine = state.links.filter((x) => x.session === s.session_id);
+      const s = await findLiveSession({ session, pane, tmuxSession, host });
+      const mine = state.links.filter((x) => x.session === s.session_id && (x.host || self) === (host || self));
       if (!mine.length) throw new ProductiveError(`${s.name ?? s.session_id} is not linked to a Productive task`, 404);
       if (mine.length > 1) throw new ProductiveError(`${s.name ?? s.session_id} follows several tasks (${mine.map((x) => `${x.id} ${taskRef(x)}`).join(', ')}) — name the link: --link <pl-…>`, 409);
       l = mine[0];
@@ -603,6 +606,8 @@ export function createProductiveBridge({ settings = {}, self = null, api, listSe
       data: { type: 'comments', attributes: { body: textToHtml(text) }, relationships: { task: { data: { type: 'tasks', id: l.taskId } } } },
     });
     const id = d?.data?.id ?? null;
+    // What it posted, so it never comes back as news (an account that is also a person is told apart by this).
+    if (id != null) l.posted = [...(l.posted ?? []), String(id)].slice(-MAX_POSTED);
     l.lastActive = now();
     await save();
     log(`[productive] ${l.id}: commented on ${taskRef(l)}`);
@@ -666,8 +671,9 @@ export function createProductiveBridge({ settings = {}, self = null, api, listSe
     l.title = t.title;
     if (!events.length) return;
     l.seenId = events.at(-1).id;
-    const from = await allowedIds();
-    const fresh = events.filter((e) => e.author.id !== me.id).map((e) => ({ ...e, type: classify(e, { me: me.id, from }) }));
+    const from = settings.person ? [...(await allowedIds()), me.id] : await allowedIds();
+    const own = (e) => (settings.person ? e.kind === 'comment' && (l.posted ?? []).includes(e.commentId) : e.author.id === me.id);
+    const fresh = events.filter((e) => !own(e)).map((e) => ({ ...e, type: classify(e, { me: me.id, from }) }));
     if (fresh.length) {
       l.pending.push(...fresh);
       l.lastEventAt = now();
@@ -724,7 +730,7 @@ export function createProductiveBridge({ settings = {}, self = null, api, listSe
     const deadline = now() + SPAWN_WAIT_MS;
     let s = null;
     while (!s) {
-      const sessions = (await listSessions()) ?? [];
+      const sessions = (await listSessions(self)) ?? [];
       s = sessions.find((x) => x.tmux_session === r?.tmuxSession && x.session_id && !x.session_id.startsWith('pid-')) ?? null;
       if (s) break;
       if (now() >= deadline) throw new Error(`${r?.name ?? 'the session'} started but never showed a session id`);
@@ -756,7 +762,7 @@ export function createProductiveBridge({ settings = {}, self = null, api, listSe
   async function deliver(l, s) {
     const text = l.intro ?? eventsPrompt(l, l.pending);
     const events = l.intro ? [] : l.pending.slice();
-    await send(s, text);
+    await send(s, text, l.host);
     lastDelivery.set(l.id, now());
     l.lastActive = now();
     l.delivered = (l.delivered ?? 0) + 1;
@@ -777,7 +783,7 @@ export function createProductiveBridge({ settings = {}, self = null, api, listSe
     if (l.wakeTries <= WAKE_TRIES && restore) {
       for (const args of [[l.session], ['--closed', l.session]]) {
         try {
-          const r = await restore(args);
+          const r = await restore(args, l.host);
           const launched = r?.restored?.flatMap((x) => x.launched ?? []) ?? [];
           const id = launched.find((x) => x.sessionId)?.sessionId;
           if (id && id !== l.session) l.session = id;
@@ -793,7 +799,7 @@ export function createProductiveBridge({ settings = {}, self = null, api, listSe
         }
       }
     }
-    if (!spawn) return;
+    if (!spawn || (l.host && l.host !== self)) return; // a new session starts only here
     try {
       const t = taskCache.get(l.taskId) ?? (await readTask(l.taskId));
       await startSession(t, { takeOver: l });
@@ -811,7 +817,7 @@ export function createProductiveBridge({ settings = {}, self = null, api, listSe
     }
     if (now() - (l.lastActive ?? l.createdAt) < l.keep * 60_000) return;
     try {
-      await sleep(l.session);
+      await sleep(l.session, l.host);
       l.asleep = true;
       await save();
       log(`[productive] ${l.id}: ${l.sessionName ?? l.session} asleep after ${l.keep} min idle`);
@@ -868,10 +874,14 @@ export function createProductiveBridge({ settings = {}, self = null, api, listSe
         }
       }
       if (!state.links.length) return;
-      const sessions = await listSessions();
-      if (!sessions) return;
+      // Each link's host, asked once a tick; a host that does not answer is left alone (not woken).
+      const lists = new Map();
       for (const l of [...state.links]) {
         if (busy.has(l.id)) continue;
+        const k = l.host || self;
+        if (!lists.has(k)) lists.set(k, await listSessions(k));
+        const sessions = lists.get(k);
+        if (!sessions) continue;
         const s = findSession(sessions, l.session);
         if (s) {
           const name = s.name ?? s.title;

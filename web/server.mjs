@@ -202,6 +202,39 @@ async function sendToLinked(session, text, host) {
   });
   if (r.status !== 200) throw new Error(r.body?.error ?? `HTTP ${r.status} from ${host}`);
 }
+// Put a linked session to sleep, or resume one, on its host (GitHub and Productive links' `keep`).
+async function sleepLinked(sessionId, host) {
+  if (!host || host === config.self) return cli.sleep({ target: sessionId });
+  const peerUrl = config.peers[host];
+  if (!peerUrl) throw new Error(`${host} is not a peer with a web url`);
+  const r = await proxyToPeer(peerUrl, {
+    method: 'POST',
+    pathname: `/api/hosts/${encodeURIComponent(host)}/sessions/${encodeURIComponent(sessionId)}/sleep`,
+    body: JSON.stringify({}),
+    timeoutMs: 45000,
+  });
+  if (r.status !== 200) throw new Error(r.body?.error ?? `HTTP ${r.status} from ${host}`);
+  return r.body;
+}
+// `args` as for `fleet restore`: [id] or ['--closed', id].
+async function restoreLinked(args, host) {
+  if (!host || host === config.self) return cli.restore(args);
+  const peerUrl = config.peers[host];
+  if (!peerUrl) throw new Error(`${host} is not a peer with a web url`);
+  const closed = args[0] === '--closed';
+  const r = await proxyToPeer(peerUrl, {
+    method: 'POST',
+    pathname: `/api/hosts/${encodeURIComponent(host)}/dormant/restore`,
+    body: JSON.stringify({ target: String(closed ? args[1] : args[0]), closed }),
+    timeoutMs: 90000,
+  });
+  if (r.status !== 200) {
+    const err = new Error(r.body?.error ?? `HTTP ${r.status} from ${host}`);
+    err.status = r.status;
+    throw err;
+  }
+  return r.body;
+}
 // Slack links: the bridge runs on the `slack.host` server only (the others proxy /api/slack there).
 let slack = null;
 if (config.slack.enabled) {
@@ -267,12 +300,11 @@ const github = config.github.enabled
   ? createGithubBridge({
       settings: config.github,
       self: config.self,
-      gh: (args, opts) => run(ghBin, args, opts),
-      listSessions: async () => {
-        const local = await fleet.localHost({ force: true });
-        return local.ok ? local.sessions : null;
-      },
-      send: (session, text) => backend.send(session, text),
+      // `github.gh`: a wrapper that runs gh as an app (its own token), instead of this host's gh.
+      gh: (args, opts) => run(config.github.gh ?? ghBin, args, opts),
+      // A link's session may run on any host, like Slack's.
+      listSessions: linkedSessions,
+      send: sendToLinked,
       // A host under heavy load: the error keeps `overloaded`, the bridge tries again next poll.
       spawn: async (body) => {
         const loopback = loopbackFor(config.bind);
@@ -286,8 +318,8 @@ const github = config.github.enabled
         if (r.status !== 200) throw spawnFailure(r, `HTTP ${r.status} from spawn`);
         return r.body;
       },
-      sleep: (sessionId) => cli.sleep({ target: sessionId }),
-      restore: (args) => cli.restore(args),
+      sleep: sleepLinked,
+      restore: restoreLinked,
       file: path.join(fleetStateDir(process.env), 'github-links.json'),
       log,
     })
@@ -302,11 +334,8 @@ const productive = config.productive.enabled
         org: config.productive.org,
         token: createSecret({ file: config.productive.tokenFile, service: config.productive.keychain, run, minLength: 16, log }),
       }),
-      listSessions: async () => {
-        const local = await fleet.localHost({ force: true });
-        return local.ok ? local.sessions : null;
-      },
-      send: (session, text) => backend.send(session, text),
+      listSessions: linkedSessions,
+      send: sendToLinked,
       spawn: async (body) => {
         const loopback = loopbackFor(config.bind);
         const base = `http://${loopback.includes(':') ? `[${loopback}]` : loopback}:${config.port}`;
@@ -319,8 +348,8 @@ const productive = config.productive.enabled
         if (r.status !== 200) throw spawnFailure(r, `HTTP ${r.status} from spawn`);
         return r.body;
       },
-      sleep: (sessionId) => cli.sleep({ target: sessionId }),
-      restore: (args) => cli.restore(args),
+      sleep: sleepLinked,
+      restore: restoreLinked,
       file: path.join(fleetStateDir(process.env), 'productive-links.json'),
       log,
     })
