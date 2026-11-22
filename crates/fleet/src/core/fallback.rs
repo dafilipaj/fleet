@@ -237,6 +237,7 @@ pub struct ProviderState {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FallbackState {
     pub harness: String,
     /// Installed, logged in, and on the other subscription.
