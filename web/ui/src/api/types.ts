@@ -305,6 +305,41 @@ export interface SlackLink {
   renewed?: boolean
 }
 
+/** A Veranda link (web/lib/veranda.mjs; opt-in): a session talks with the guests of one Veranda room until `until`. */
+export interface VerandaLink {
+  id: string
+  host: string | null
+  session: string
+  sessionName: string | null
+  room: string
+  title: string | null
+  /** The owner's instructions for the session. */
+  note: string
+  /** Where guests open Veranda (`veranda.url`). */
+  url: string | null
+  createdAt: number
+  until: number
+  minutes: number
+  pending: number
+  delivered: number
+  replies: number
+  /** What the room shows: the session's state as last mirrored. */
+  state: 'busy' | 'idle' | 'waiting' | null
+  endedAt: number | null
+  endReason: string | null
+}
+
+/** GET /api/veranda: the bridge on `veranda.host` (proxied there). `configured: false`: no `veranda` section — nothing to show. */
+export interface VerandaStatus {
+  configured: boolean
+  enabled: boolean
+  host: string | null
+  url?: string | null
+  error?: string | null
+  links: VerandaLink[]
+  ended: VerandaLink[]
+}
+
 /** A link's duration: minutes, or `forever` (no end). */
 export type SlackMinutes = number | 'forever'
 

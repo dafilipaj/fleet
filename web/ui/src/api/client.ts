@@ -68,6 +68,8 @@ import type {
   SlackMinutes,
   SlackSpawn,
   SlackStatus,
+  VerandaLink,
+  VerandaStatus,
   SleepResponse,
   SnoozeResponse,
   SpawnDirEntry,
@@ -488,6 +490,13 @@ export const api = {
   /** Link the session of an ended link to the same place again (same instructions and mode); no `minutes` = as long as before. */
   slackRelink: (id: string, minutes?: SlackMinutes, o: Opts = {}) =>
     request<SlackLink>(`/api/slack/links/${enc(id)}/relink`, { ...o, method: 'POST', body: minutes === undefined ? {} : { minutes } }),
+  /** Veranda links (opt-in): the bridge's state, from the `veranda.host` server (proxied). */
+  veranda: (o: Opts = {}) => request<VerandaStatus>('/api/veranda', o),
+  /** Close a Veranda room and end its link. */
+  verandaUnlink: (room: string, o: Opts = {}) => request<VerandaLink>('/api/veranda/unlink', { ...o, method: 'POST', body: { room } }),
+  /** A Veranda link (and its room) lasts `minutes` longer. */
+  verandaExtend: (room: string, minutes: number, o: Opts = {}) =>
+    request<VerandaLink>('/api/veranda/extend', { ...o, method: 'POST', body: { room, minutes } }),
   /** The live inbox: brief + everything waiting on you, from the inbox host (proxied). */
   inbox: (o: Opts = {}) => request<InboxResponse>('/api/inbox', o),
   /** Scan now: the Slack & email scan starts in the background, every other source is re-read. */
