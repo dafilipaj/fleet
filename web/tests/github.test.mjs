@@ -466,6 +466,14 @@ test('an app as the account: login from the config, no notifications, linked PRs
   assert.equal(s.sent.length, 2);
   assert.match(s.sent[1].text, /please rebase/);
   assert.equal(s.gh.calls.some((a) => a[1] === 'user' || a.includes('notifications')), false);
+  // A reply in a thread the app commented in (its login as `name[bot]` there) wakes it.
+  s.idle();
+  pr.threads.push({ path: 'a.js', line: 3, comments: [{ id: 50, body: 'Done.', at: '8', author: bot('fleetbot[bot]') }, { id: 51, body: 'Thanks, one more thing', at: '9', author: user('alex') }] });
+  await s.tick();
+  await s.tick();
+  await s.tick();
+  assert.equal(s.sent.length, 3);
+  assert.match(s.sent[2].text, /one more thing/);
 });
 
 test('config: github.host enables the bridge on that host; spawn.from is a login list, keep a duration', () => {

@@ -72,7 +72,9 @@ export class GithubError extends Error {
 
 export const validLinkId = (id) => typeof id === 'string' && LINK_ID_RE.test(id);
 export const validLogin = (s) => typeof s === 'string' && LOGIN_RE.test(s);
-const same = (a, b) => typeof a === 'string' && typeof b === 'string' && a.toLowerCase() === b.toLowerCase();
+// An app's login comes as `name` or `name[bot]` depending on the API: the same account.
+const bare = (x) => x.toLowerCase().replace(/\[bot\]$/, '');
+const same = (a, b) => typeof a === 'string' && typeof b === 'string' && bare(a) === bare(b);
 
 /** `https://github.com/o/r/pull/12` (any suffix) or `o/r#12` → `{ repo: 'o/r', number, url }`; null otherwise. */
 export function parsePrUrl(input) {
