@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowRightIcon, CalendarClockIcon, FolderIcon, GitForkIcon, LayersIcon, Loader2Icon, MessagesSquareIcon, MicIcon, PaperclipIcon, PlayIcon, SquareIcon } from 'lucide-react'
+import { ArrowRightIcon, CalendarClockIcon, EyeIcon, EyeOffIcon, FolderIcon, GitForkIcon, LayersIcon, Loader2Icon, MessagesSquareIcon, MicIcon, PaperclipIcon, PlayIcon, SquareIcon } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { api, ApiError } from '@/api/client'
@@ -196,6 +196,9 @@ function NewSessionForm({
     return hosts.find((h) => h.name === remembered)?.name ?? hosts[0]?.name ?? ''
   })
   const hostDirs = hosts.find((h) => h.name === host)?.dirs ?? []
+  // Hidden start directories (Settings → Start directories, `hidden`): offered behind a toggle.
+  const hostHidden = hosts.find((h) => h.name === host)?.hiddenDirs ?? []
+  const [showHidden, setShowHidden] = useState(false)
   // A prefilled dir (the session's cwd) is offered first when it is not one of the spawnDirs, and preselected.
   const prefillDir = prefill?.dir && host === prefill.host ? prefill.dir : null
   const fixed = !!prefill?.fixed && !!prefillDir
@@ -209,7 +212,10 @@ function NewSessionForm({
   const siblingMatch = sibling && !siblingSameHost && sibling.cwd ? (hostDirs.find((d) => sameFolderName(d.path, sibling.cwd ?? ''))?.label ?? null) : null
   const rememberedLabel =
     dirLabels[host] ?? (prefillDir ? dirs.find((d) => samePath(d.path, prefillDir))?.label : null) ?? siblingMatch ?? storage.get(dirKey(host))
-  const dir = dirs.find((d) => d.label === rememberedLabel) ?? dirs[0] ?? null
+  const pickedHidden = fixed ? null : (hostHidden.find((d) => d.label === rememberedLabel && !dirs.some((o) => o.label === d.label)) ?? null)
+  const dir = dirs.find((d) => d.label === rememberedLabel) ?? pickedHidden ?? dirs[0] ?? null
+  // A remembered hidden pick keeps the hidden ones shown.
+  const hiddenShown = !fixed && hostHidden.length > 0 && (showHidden || !!pickedHidden)
 
   const { models: claudeModels, voice: voiceEnabled } = useSettings()
   // Every host's harnesses are asked for when the form opens; until this host's answer is in, the
@@ -637,28 +643,61 @@ function NewSessionForm({
         </ToggleGroup>
       </Field>
     ) : null
+  const toggleHidden = () => {
+    // Hiding while a hidden one is picked: back to the first offered directory.
+    if (hiddenShown && pickedHidden) pickDir(dirs[0]?.label ?? '')
+    setShowHidden(!hiddenShown)
+  }
+  const hiddenOffered = !fixed && hostHidden.length > 0
+  const shownDirs = hiddenShown ? [...dirs, ...hostHidden.filter((h) => !dirs.some((d) => d.label === h.label))] : dirs
   const dirField = (
     <Field label="Directory">
-      {dirs.length ? (
-        <ToggleGroup
-          type="single"
-          value={dir?.label ?? ''}
-          onValueChange={(v) => v && pickDir(v)}
-          aria-label="Directory"
-          className="no-scrollbar w-full justify-start overflow-x-auto"
-        >
-          {dirs.map((d) => (
-            <ToggleGroupItem
-              key={d.label}
-              value={d.label}
-              title={shortCwd(d.path, 60)}
-              className="group h-10 shrink-0 gap-2 rounded-full border border-border bg-card px-4 text-sm data-[state=on]:border-primary/50 data-[state=on]:bg-accent"
+      {shownDirs.length || hiddenOffered ? (
+        <div className="flex min-w-0 items-center gap-2">
+          <ToggleGroup
+            type="single"
+            value={dir?.label ?? ''}
+            onValueChange={(v) => v && pickDir(v)}
+            aria-label="Directory"
+            className="no-scrollbar min-w-0 flex-1 justify-start overflow-x-auto"
+          >
+            {shownDirs.map((d) => {
+              const hidden = !dirs.includes(d)
+              return (
+                <ToggleGroupItem
+                  key={d.label}
+                  value={d.label}
+                  title={`${shortCwd(d.path, 60)}${hidden ? ' (hidden)' : ''}`}
+                  className={cn(
+                    'group h-10 shrink-0 gap-2 rounded-full border border-border bg-card px-4 text-sm data-[state=on]:border-primary/50 data-[state=on]:bg-accent',
+                    hidden && 'border-dashed text-muted-foreground data-[state=on]:text-foreground',
+                  )}
+                >
+                  {hidden ? (
+                    <EyeOffIcon className="size-4 shrink-0 text-dimmer group-data-[state=on]:text-primary" />
+                  ) : (
+                    <FolderIcon className="size-4 shrink-0 text-dimmer group-data-[state=on]:text-primary" />
+                  )}
+                  {d.label}
+                </ToggleGroupItem>
+              )
+            })}
+          </ToggleGroup>
+          {hiddenOffered ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              aria-pressed={hiddenShown}
+              title={hiddenShown ? 'Hide the hidden start directories' : `Show ${hostHidden.length} hidden start ${hostHidden.length === 1 ? 'directory' : 'directories'}`}
+              onClick={toggleHidden}
+              className="h-10 shrink-0 rounded-full px-3 text-xs text-muted-foreground"
             >
-              <FolderIcon className="size-4 shrink-0 text-dimmer group-data-[state=on]:text-primary" />
-              {d.label}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
+              {hiddenShown ? <EyeOffIcon /> : <EyeIcon />}
+              {hiddenShown ? 'Less' : `+${hostHidden.length} hidden`}
+            </Button>
+          ) : null}
+        </div>
       ) : (
         <p className="flex h-10 items-center text-sm text-dimmer">{host} advertises no directories.</p>
       )}

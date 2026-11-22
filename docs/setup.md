@@ -190,7 +190,8 @@ each reachable host's config (through `fleet config set spawnDirs …`); the run
 at once, no restart. `fleet config set spawnDirs '<json>'` on each host does the same by hand.
 The eye button on a row hides it (`"hidden": true`): the directory stays allowed for spawns — e.g.
 an app whose [embedded panel](architecture.md#embed-view) starts sessions in its own folder — but
-is no longer offered in New session.
+is no longer offered in New session up front: the form's **+N hidden** button next to the
+directories shows them there too.
 Editing this list is as powerful as spawning (it widens what spawn accepts), and like spawn it is
 unauthenticated — keep the web servers on a private network.
 

@@ -266,10 +266,18 @@ export function canSpawnOn(fleet: FleetResponse | null | undefined, host: string
 }
 
 /** Hosts a session can be spawned on: reachable ones that run agent sessions, with the directories each advertises. */
-export function spawnTargets(fleet: FleetResponse | null | undefined): { name: string; dirs: { label: string; path: string }[]; shared: boolean }[] {
+/** `hiddenDirs`: the host's hidden start directories (allowed, offered only on request in New session). */
+export function spawnTargets(
+  fleet: FleetResponse | null | undefined,
+): { name: string; dirs: { label: string; path: string }[]; hiddenDirs: { label: string; path: string }[]; shared: boolean }[] {
   const all = (fleet?.hosts ?? [])
     .filter((h) => h.ok !== false && h.spawn !== false)
-    .map((h) => ({ name: h.name, dirs: Array.isArray(h.spawnDirs) ? h.spawnDirs : [], shared: h.shared === true }))
+    .map((h) => ({
+      name: h.name,
+      dirs: Array.isArray(h.spawnDirs) ? h.spawnDirs : [],
+      hiddenDirs: Array.isArray(h.hiddenSpawnDirs) ? h.hiddenSpawnDirs : [],
+      shared: h.shared === true,
+    }))
   // The user's own hosts first (the default pick), shared sheds last.
   return [...all.filter((h) => !h.shared), ...all.filter((h) => h.shared)]
 }

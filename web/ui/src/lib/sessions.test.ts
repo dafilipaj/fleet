@@ -122,15 +122,15 @@ test('spawnTargets: reachable hosts with their dirs, shared sheds last', () => {
     self: 'a',
     hosts: [
       { name: 's', ok: true, sessions: [], shared: true },
-      { name: 'a', ok: true, sessions: [], spawnDirs: [{ label: 'Work', path: '/w' }] },
+      { name: 'a', ok: true, sessions: [], spawnDirs: [{ label: 'Work', path: '/w' }], hiddenSpawnDirs: [{ label: 'Old', path: '/o' }] },
       { name: 'b', ok: false, sessions: [] },
       { name: 'c', ok: true, sessions: [] },
     ],
   }
   expect(spawnTargets(fleet)).toEqual([
-    { name: 'a', dirs: [{ label: 'Work', path: '/w' }], shared: false },
-    { name: 'c', dirs: [], shared: false },
-    { name: 's', dirs: [], shared: true },
+    { name: 'a', dirs: [{ label: 'Work', path: '/w' }], hiddenDirs: [{ label: 'Old', path: '/o' }], shared: false },
+    { name: 'c', dirs: [], hiddenDirs: [], shared: false },
+    { name: 's', dirs: [], hiddenDirs: [], shared: true },
   ])
 })
 
