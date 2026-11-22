@@ -128,20 +128,35 @@ export function busyMessage(host, st) {
 
 export const BUSY_MARK = 'is under heavy load';
 
-/** The sampler. `current()` → the public state, or null while off. */
-export function createLoadMonitor({ settings, self, file, run, sample = (o) => sampleHost(o), now = Date.now, log = () => {} }) {
+/** The longest a manual override ("allow new sessions") may run. */
+export const MAX_OVERRIDE_MINUTES = 24 * 60;
+
+/**
+ * The sampler. It always samples (Settings → Host load shows the numbers even while off), but it
+ * holds spawns and writes the state file only while `settings.enabled`. `configure()` applies
+ * new settings live; `override(minutes)` lets new sessions start for a while whatever the load.
+ */
+export function createLoadMonitor({ settings: initial, self, file, run, sample = (o) => sampleHost(o), now = Date.now, log = () => {} }) {
+  let settings = initial;
   let st = null;
   let lastSample = null;
   let error = null;
   let timer = null;
+  let overrideUntil = 0;
 
   async function write(body) {
     if (!file) return;
+    if (!body) {
+      await fsp.rm(file, { force: true });
+      return;
+    }
     const tmp = `${file}.${process.pid}.tmp`;
     await fsp.mkdir(path.dirname(file), { recursive: true });
     await fsp.writeFile(tmp, JSON.stringify(body), { mode: 0o600 });
     await fsp.rename(tmp, file);
   }
+
+  const overridden = () => overrideUntil > now();
 
   async function tick() {
     const t = now();
@@ -157,23 +172,32 @@ export function createLoadMonitor({ settings, self, file, run, sample = (o) => s
     }
     const prevState = st?.state ?? 'ok';
     st = step(st, cls, t, settings);
-    if (st.state !== prevState) log(`[load] ${self}: ${prevState} → ${st.state}${st.reasons.length ? ` (${st.reasons.join(', ')})` : ''}`);
+    if (st.state !== prevState && settings.enabled) log(`[load] ${self}: ${prevState} → ${st.state}${st.reasons.length ? ` (${st.reasons.join(', ')})` : ''}`);
+    if (overrideUntil && !overridden()) {
+      overrideUntil = 0;
+      log(`[load] ${self}: override ended`);
+    }
     try {
-      await write(current());
+      await write(settings.enabled ? current() : null);
     } catch (err) {
       log(`[load] could not write ${file}: ${err.message}`);
     }
     return current();
   }
 
+  /** The verdict: what holds spawns (`state`), what the sample says now (`level`), the numbers. */
   function current() {
     if (!st) return null;
+    // An override reads as ok to everyone that gates on it (the CLI, the spawner, the alerts).
+    const state = overridden() ? 'ok' : st.state;
     return {
-      state: st.state,
+      state,
       since: st.since,
-      reasons: st.state === 'ok' ? [] : st.reasons,
+      reasons: state === 'ok' ? [] : st.reasons,
       level: st.level,
+      latest: st.latest ?? [],
       sample: lastSample,
+      ...(overridden() ? { override: { until: overrideUntil, held: st.state } } : {}),
       ...(error ? { error } : {}),
       updatedAt: now(),
     };
@@ -181,6 +205,7 @@ export function createLoadMonitor({ settings, self, file, run, sample = (o) => s
 
   /** The 409 a spawn answers on a busy host, or null. */
   function busy() {
+    if (!settings.enabled) return null;
     const c = current();
     if (!c || c.state === 'ok') return null;
     return busyMessage(self, c);
@@ -190,6 +215,21 @@ export function createLoadMonitor({ settings, self, file, run, sample = (o) => s
     tick,
     current,
     busy,
+    enabled: () => settings.enabled,
+    settings: () => settings,
+    /** New settings, live (Settings → Host load); the state machine keeps its history. */
+    configure(next) {
+      const was = settings.enabled;
+      settings = next;
+      if (was !== next.enabled) log(`[load] ${self}: monitor ${next.enabled ? 'on' : 'off'}`);
+      return tick();
+    },
+    /** Let new sessions start for `minutes` whatever the load (0: end it now). */
+    override(minutes) {
+      overrideUntil = minutes > 0 ? now() + Math.min(minutes, MAX_OVERRIDE_MINUTES) * 60 * 1000 : 0;
+      log(`[load] ${self}: ${minutes > 0 ? `new sessions allowed for ${minutes} min whatever the load` : 'override cleared'}`);
+      return tick();
+    },
     start() {
       tick().catch(() => {});
       timer = setInterval(() => tick().catch(() => {}), SAMPLE_MS);
@@ -200,6 +240,72 @@ export function createLoadMonitor({ settings, self, file, run, sample = (o) => s
       timer = null;
     },
   };
+}
+
+/** `ps -axo pid=,ppid=,rss=,pcpu=,comm=` → [{ pid, ppid, rssKb, cpu, comm }]. */
+export function parsePs(stdout) {
+  const out = [];
+  for (const line of String(stdout ?? '').split('\n')) {
+    const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+([\d.]+)\s+(.+?)\s*$/.exec(line);
+    if (m) out.push({ pid: Number(m[1]), ppid: Number(m[2]), rssKb: Number(m[3]), cpu: Number(m[4]), comm: m[5] });
+  }
+  return out;
+}
+
+/**
+ * What uses this machine: each session's process tree summed (its agent and everything it runs),
+ * heaviest first, and the heaviest other processes. `sessions`: this host's rows (`pid`).
+ */
+export function processUse(procs, sessions = [], { others = 8 } = {}) {
+  const kids = new Map();
+  for (const p of procs) {
+    if (!kids.has(p.ppid)) kids.set(p.ppid, []);
+    kids.get(p.ppid).push(p);
+  }
+  const byPid = new Map(procs.map((p) => [p.pid, p]));
+  const claimed = new Set();
+  const tree = (pid) => {
+    const all = [];
+    const stack = [pid];
+    while (stack.length) {
+      const x = stack.pop();
+      const p = byPid.get(x);
+      if (!p || claimed.has(x)) continue;
+      claimed.add(x);
+      all.push(p);
+      for (const k of kids.get(x) ?? []) stack.push(k.pid);
+    }
+    return all;
+  };
+  const mb = (kb) => Math.round(kb / 1024);
+  const rows = [];
+  for (const s of sessions) {
+    if (!Number.isInteger(s?.pid) || !byPid.has(s.pid)) continue;
+    const t = tree(s.pid);
+    rows.push({
+      id: s.session_id ?? null,
+      name: s.title || s.name || s.tmux_session || `pid ${s.pid}`,
+      status: s.status ?? null,
+      pid: s.pid,
+      processes: t.length,
+      rssMb: mb(t.reduce((a, p) => a + p.rssKb, 0)),
+      cpu: Math.round(t.reduce((a, p) => a + p.cpu, 0) * 10) / 10,
+    });
+  }
+  rows.sort((a, b) => b.rssMb - a.rssMb);
+  const rest = procs
+    .filter((p) => !claimed.has(p.pid))
+    .sort((a, b) => b.rssKb - a.rssKb)
+    .slice(0, others)
+    .map((p) => ({ pid: p.pid, name: path.basename(p.comm), rssMb: mb(p.rssKb), cpu: p.cpu }));
+  const total = procs.reduce((a, p) => a + p.rssKb, 0);
+  return { sessions: rows, others: rest, totalMb: mb(total), sessionsMb: rows.reduce((a, r) => a + r.rssMb, 0) };
+}
+
+/** Run `ps` here and break it down by session. */
+export async function readProcessUse({ run, sessions }) {
+  const { stdout } = await run('/bin/ps', ['-axo', 'pid=,ppid=,rss=,pcpu=,comm='], { timeout: 10000, maxBuffer: 16 * 1024 * 1024 });
+  return processUse(parsePs(stdout), sessions);
 }
 
 /** A state from a peer or the file: null when absent, malformed or stale. */
@@ -280,7 +386,8 @@ export function createLoadAlerts({ hosts, fetchLoad, notify, file, now = Date.no
       } catch {
         st = null;
       }
-      if (!st) continue;
+      // An override (Settings → Host load) is someone acting on it, not a recovery: no message.
+      if (!st || st.override) continue;
       const prev = told[host] ?? { state: 'ok' };
       if (st.state === prev.state) continue;
       // Only up, worse, or back to ok: critical → hot is still under load, no new message.

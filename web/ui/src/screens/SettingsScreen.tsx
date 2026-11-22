@@ -1,3 +1,4 @@
+import { HostLoadPanel } from '@/components/HostLoadPanel'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   ActivityIcon,
@@ -5,6 +6,7 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   FolderOpenIcon,
+  GaugeIcon,
   GitBranchIcon,
   InboxIcon,
   KeyboardIcon,
@@ -48,7 +50,7 @@ import { cn } from '@/lib/utils'
 const segItem =
   'h-9 flex-1 gap-1.5 rounded-md px-3 text-[0.8125rem] text-muted-foreground data-[state=on]:bg-background data-[state=on]:text-foreground data-[state=on]:shadow-sm dark:data-[state=on]:bg-accent'
 
-type SectionId = 'general' | 'models' | 'start-dirs' | 'repos' | 'stacks' | 'inbox' | 'slack' | 'status'
+type SectionId = 'general' | 'models' | 'start-dirs' | 'repos' | 'stacks' | 'inbox' | 'slack' | 'load' | 'status'
 
 /** Settings' sub-pages, in nav order: `#/settings/<id>`. */
 const SECTIONS: { id: SectionId; label: string; hint: string; icon: ReactNode }[] = [
@@ -59,6 +61,7 @@ const SECTIONS: { id: SectionId; label: string; hint: string; icon: ReactNode }[
   { id: 'stacks', label: 'Session stacks', hint: 'The lead prompt and sibling reports', icon: <LayersIcon /> },
   { id: 'inbox', label: 'Inbox', hint: 'Scan schedule, model, rules and usage', icon: <InboxIcon /> },
   { id: 'slack', label: 'Slack', hint: 'Sessions started from a mention', icon: <MessageSquareIcon /> },
+  { id: 'load', label: 'Host load', hint: 'Busy hosts, what uses them, when new sessions wait', icon: <GaugeIcon /> },
   { id: 'status', label: 'Status', hint: 'Hosts and diagnostics', icon: <ActivityIcon /> },
 ]
 
@@ -196,6 +199,12 @@ function SectionBody({ id }: { id: SectionId }) {
       return (
         <Section title="Sessions from Slack">
           <SlackSpawnEditor />
+        </Section>
+      )
+    case 'load':
+      return (
+        <Section title="Host load">
+          <HostLoadPanel />
         </Section>
       )
     case 'status':

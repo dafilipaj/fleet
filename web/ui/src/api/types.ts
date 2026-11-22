@@ -266,6 +266,49 @@ export interface HostLoad {
   /** Why, e.g. `memory pressure warn`, `load 2.4× cores`; empty when ok. */
   reasons: string[]
   updatedAt: number
+  /** New sessions allowed whatever the load until `until`; `held` is what the state would be. */
+  override?: { until: number; held: 'ok' | 'hot' | 'critical' }
+}
+
+export type LoadLevel = 'ok' | 'hot' | 'critical'
+
+/** What a host's sampler measured (macOS: `pressure` + swap; Linux: `psi`). */
+export interface LoadSample {
+  cores: number
+  load1: number
+  perCore: number
+  pressure?: 'normal' | 'warn' | 'critical' | null
+  swapUsedMb?: number | null
+  psi?: { some: number | null; full: number | null } | null
+}
+
+/** `resources` in a host's config. */
+export interface LoadSettings {
+  enabled: boolean
+  load: { hot: number; critical: number }
+  psi: { hot: number; critical: number }
+  enterSeconds: number
+  exitSeconds: number
+}
+
+/** GET /api/hosts/:host/load — Settings → Host load. */
+export interface HostLoadView {
+  host: string
+  enabled: boolean
+  settings: LoadSettings
+  defaults: LoadSettings
+  load: (Omit<HostLoad, 'state'> & { state: LoadLevel; level: LoadLevel; latest: string[]; sample: LoadSample | null; error?: string }) | null
+  /** This web server can be restarted from the UI (launchd / systemd brings it back). */
+  restart: boolean
+}
+
+/** GET /api/hosts/:host/load/processes — what uses the machine. */
+export interface HostProcesses {
+  host: string
+  sessions: { id: string | null; name: string; status: string | null; pid: number; processes: number; rssMb: number; cpu: number }[]
+  others: { pid: number; name: string; rssMb: number; cpu: number }[]
+  totalMb: number
+  sessionsMb: number
 }
 
 /** GET /api/fleet — self first, then peers. */

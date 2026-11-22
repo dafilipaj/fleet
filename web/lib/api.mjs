@@ -43,7 +43,7 @@ import { validJobName } from './jobs.mjs';
 import { MAX_FIRST, MAX_TASK, MODES, SlackError, isPersonTarget, linkMinutes, parseSlackUrl, validLinkId } from './slack.mjs';
 import { GithubError, validLinkId as validGithubLinkId } from './github.mjs';
 import { VerandaError } from './veranda.mjs';
-import { BUSY_MARK } from './load.mjs';
+import { BUSY_MARK, DEFAULTS as LOAD_DEFAULTS, MAX_OVERRIDE_MINUTES, loadSettings } from './load.mjs';
 
 /**
  * An error with a status → its HttpError. A host under heavy load (lib/load.mjs) answers 409 with
@@ -115,6 +115,7 @@ const MEMO_ROUTE = /^\/api\/memos\/([^/]+)(\/retry)?$/;
 const NOTES_ROUTE = /^\/api\/hosts\/([^/]+)\/notes\/(tree|search|file|raw)$/;
 const SPAWN_DIRS_ROUTE = /^\/api\/hosts\/([^/]+)\/spawn-dirs$/;
 const STACKS_ROUTE = /^\/api\/hosts\/([^/]+)\/stacks(\/sync|\/settings)?$/;
+const LOAD_ROUTE = /^\/api\/hosts\/([^/]+)\/load(\/sample|\/override|\/processes|\/restart)?$/;
 const STACK_ROUTE = /^\/api\/hosts\/([^/]+)\/stacks\/([^/]+)(\/spawn|\/rename|\/add|\/lead)?$/;
 const SESSION_STACK_SPAWN_ROUTE = /^\/api\/hosts\/([^/]+)\/sessions\/([^/]+)\/stack\/(spawn|link)$/;
 /** A sibling spawn may create a stack first (`stack ensure` → one model call, ≤ 150 s). */
@@ -234,6 +235,10 @@ export function createApi({
   transcripts,
   spawner,
   loadMonitor = null,
+  // () → { sessions, others, totalMb, sessionsMb }: what uses this machine (lib/load.mjs#readProcessUse).
+  loadProcesses = null,
+  // null, or () → void: restart this web server (only when launchd / systemd brings it back).
+  restartSelf = null,
   killer = null,
   cli = null,
   autoNamer = null,
@@ -303,8 +308,8 @@ export function createApi({
   // Each host advertises whether it has a notes explorer (like its spawnDirs).
   // …and its load (lib/load.mjs), when it watches it: the UI marks a host under heavy load.
   const loadInfo = () => {
-    const l = loadMonitor?.current();
-    return l ? { load: { state: l.state, since: l.since, reasons: l.reasons, updatedAt: l.updatedAt } } : {};
+    const l = loadMonitor?.enabled() ? loadMonitor.current() : null;
+    return l ? { load: { state: l.state, since: l.since, reasons: l.reasons, updatedAt: l.updatedAt, ...(l.override ? { override: l.override } : {}) } } : {};
   };
   const notesInfo = () => (notes ? { notes: { name: notes.name ?? null } } : {});
   // …and its session stacks, compact, so a peer can stamp the rows of their members on its side.
@@ -1307,7 +1312,7 @@ export function createApi({
     // This host's load (lib/load.mjs): what the Slack bridge's host polls for the owner's alerts.
     if (url.pathname === '/api/load') {
       if (req.method !== 'GET') throw new HttpError('method not allowed', 405);
-      return { status: 200, body: { host: config.self, enabled: !!loadMonitor, load: loadMonitor?.current() ?? null } };
+      return { status: 200, body: { host: config.self, enabled: !!loadMonitor?.enabled(), load: loadMonitor?.enabled() ? loadMonitor.current() : null } };
     }
 
     if (url.pathname === '/api/fleet') {
@@ -1882,6 +1887,16 @@ export function createApi({
       // Remote-SSH with our alias for that host) is built here, for proxied bodies too.
       if (!regen && r.status === 200) return { ...r, body: withBriefEditor(r.body, host, editorViewer(config, req)) };
       return r;
+    }
+
+    // Settings → Host load (lib/load.mjs): the verdict, its settings, an override, what uses the machine.
+    const ld = LOAD_ROUTE.exec(url.pathname);
+    if (ld) {
+      const host = decodeURIComponent(ld[1]);
+      const sub = ld[2] ?? '';
+      const allowed = sub === '' ? ['GET', 'PUT'] : sub === '/processes' ? ['GET'] : ['POST'];
+      if (!allowed.includes(req.method)) throw new HttpError('method not allowed', 405);
+      return forHost({ req, url, host, local: () => localLoad(req, sub) });
     }
 
     const sl = STACKS_ROUTE.exec(url.pathname);
@@ -2567,6 +2582,83 @@ export function createApi({
    * reportPromptDefault }` (a prompt `null` = its default); PUT any of `leadPrompt`,
    * `siblingReports`, `reportPrompt` (`null` / `""` = back to the default) → the same.
    */
+  /** This host's load view: Settings → Host load. */
+  function loadView() {
+    return {
+      host: config.self,
+      enabled: loadMonitor.enabled(),
+      settings: loadMonitor.settings(),
+      defaults: LOAD_DEFAULTS,
+      load: loadMonitor.current(),
+      restart: !!restartSelf,
+    };
+  }
+
+  /** The `resources` patch of a PUT → the whole object to store (validated; 400 on junk). */
+  function resourcesPatch(body, cur) {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) throw new HttpError('body must be an object', 400);
+    const next = { enabled: cur.enabled, load: { ...cur.load }, psi: { ...cur.psi }, enterSeconds: cur.enterSeconds, exitSeconds: cur.exitSeconds };
+    const pos = (v, name, max) => {
+      if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0 || v > max) throw new HttpError(`${name} must be a number above 0 and at most ${max}`, 400);
+      return v;
+    };
+    if ('enabled' in body) {
+      if (typeof body.enabled !== 'boolean') throw new HttpError('enabled must be true or false', 400);
+      next.enabled = body.enabled;
+    }
+    for (const group of ['load', 'psi']) {
+      if (!(group in body)) continue;
+      const g = body[group];
+      if (!g || typeof g !== 'object') throw new HttpError(`${group} must be an object`, 400);
+      const max = group === 'load' ? 64 : 100;
+      for (const k of ['hot', 'critical']) if (k in g) next[group][k] = pos(g[k], `${group}.${k}`, max);
+    }
+    if (next.load.critical < next.load.hot) throw new HttpError('load.critical must be at least load.hot', 400);
+    for (const k of ['enterSeconds', 'exitSeconds']) if (k in body) next[k] = pos(body[k], k, 3600);
+    return next;
+  }
+
+  async function localLoad(req, sub) {
+    if (!loadMonitor) throw new HttpError('host load is not available on this server — update fleet there', 501);
+    if (sub === '') {
+      if (req.method === 'PUT') {
+        const next = resourcesPatch(await readJsonBody(req), loadMonitor.settings());
+        if (typeof cli?.configSet !== 'function') throw new HttpError('config writes are not available on this server', 501);
+        try {
+          await cli.configSet({ key: 'resources', value: next, configFile: config.configFile ?? null });
+        } catch (err) {
+          throw new HttpError(`could not save the load settings: ${err?.message ?? err}`, err?.timedOut ? 504 : 502);
+        }
+        config.resources = loadSettings(next);
+        await loadMonitor.configure(config.resources);
+      }
+      return { status: 200, body: loadView() };
+    }
+    if (sub === '/sample') {
+      await loadMonitor.tick();
+      return { status: 200, body: loadView() };
+    }
+    if (sub === '/override') {
+      const body = await readJsonBody(req);
+      const m = body?.minutes;
+      if (!Number.isInteger(m) || m < 0 || m > MAX_OVERRIDE_MINUTES) throw new HttpError(`minutes must be a whole number from 0 to ${MAX_OVERRIDE_MINUTES}`, 400);
+      await loadMonitor.override(m);
+      return { status: 200, body: loadView() };
+    }
+    if (sub === '/processes') {
+      if (!loadProcesses) throw new HttpError('process listing is not available on this server', 501);
+      try {
+        return { status: 200, body: { host: config.self, ...(await loadProcesses()) } };
+      } catch (err) {
+        throw new HttpError(`could not list processes: ${err?.message ?? err}`, 502);
+      }
+    }
+    // /restart
+    if (!restartSelf) throw new HttpError('this web server does not run under launchd / systemd, so it would not come back — restart it by hand', 501);
+    restartSelf();
+    return { status: 200, body: { host: config.self, restarting: true } };
+  }
+
   async function localStackSettings(req) {
     if (!stacks) throw new HttpError('session stacks are not available on this server', 501);
     if (req.method === 'PUT') {

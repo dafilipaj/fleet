@@ -505,6 +505,9 @@ JSON over HTTP, errors as `{ "error": "..." }`. At a high level:
 
 | method | path | purpose |
 | --- | --- | --- |
+| GET / PUT | `/api/hosts/:host/load` | Settings → Host load: `{ host, enabled, settings, defaults, load, restart }`; PUT a `resources` patch (`enabled`, `load.{hot,critical}`, `psi.{hot,critical}`, `enterSeconds`, `exitSeconds`; 400 on junk) → written with `fleet config set resources`, applied live |
+| POST | `/api/hosts/:host/load/sample` · `/override` `{ minutes }` (0–1440, 0 ends it) · `/restart` | sample now · let new sessions start whatever the load · restart that web server (501 unless launchd / systemd runs it) — each answers the view (restart: `{ restarting: true }`) |
+| GET | `/api/hosts/:host/load/processes` | `{ host, sessions: [{ id, name, status, pid, processes, rssMb, cpu }], others: [{ pid, name, rssMb, cpu }], totalMb, sessionsMb }` |
 | GET | `/api/load` | `{ host, enabled, load }`: this host's load verdict (`load: { state, since, reasons, level, sample, updatedAt }`, null while `resources` is off) — see [Host load](#host-load) |
 | GET | `/api/health` | name, version, apiVersion, self, uptime, autoName (`lastRun`) |
 | GET | `/api/settings` | apiVersion, self, host names, quick replies, `transcribe: { enabled }` (this server has a transcription key), `speak: { enabled, voice }` (it can read replies aloud), `operator: { enabled, hosts }` (the [voice operator](#voice-operator) and where it runs), `focus: { host }` (`web.focus.host`, null when unset) |
@@ -1390,6 +1393,18 @@ idle session costs memory, not CPU, and a busy host is what matters.
   `critical`), or recovers; what it last said is kept in `<fleet state>/load-alerts.json`, so a
   restart does not repeat it. A host that does not answer is skipped. The UI marks a host under
   heavy load with a gauge beside its name (amber hot, red critical; the reasons in its title).
+- **Settings → Host load** (`web/ui/src/components/HostLoadPanel.tsx`): every host's verdict and
+  numbers (polled every 15 s), and per host:
+  - **Allow new sessions 30 min / 2 h**: an override — the host reads as `ok` to the spawner, the
+    CLI (the state file says `ok`) and the alerts (no "recovered" DM) until it ends or is ended;
+    it does not survive a restart;
+  - **What uses it**: each session's process tree summed (RSS, CPU), heaviest first, with
+    Deactivate (`sleep`: ends the agent, keeps it resumable) — the quickest way to free memory —
+    and the heaviest other processes;
+  - **Settings**: `resources` for that host, written with `fleet config set` and applied live (no
+    restart); the monitor samples while off too, so the numbers are there before you turn it on;
+  - **Sample now**, and **Restart web** when launchd (`fleet.web`) or systemd runs the server (it
+    comes back by itself); elsewhere the route answers 501.
 
 ## Session recovery
 

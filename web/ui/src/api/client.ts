@@ -83,6 +83,9 @@ import type {
   StackView,
   StackLeadResponse,
   StackSettings,
+  HostLoadView,
+  HostProcesses,
+  LoadSettings,
   StacksResponse,
   Task,
   TaskSpawnResponse,
@@ -400,6 +403,15 @@ export const api = {
   /** Make the member `session` the stack's lead (told so unless `quiet`), or — null — clear it. */
   setStackLead: (host: string, id: string, session: string | null, { quiet = false, ...o }: Opts & { quiet?: boolean } = {}) =>
     request<StackLeadResponse>(`${hostPath(host)}/stacks/${enc(id)}/lead`, { ...o, method: 'POST', body: { session, ...(quiet ? { quiet: true } : {}) } }),
+  /** Settings → Host load (web/lib/load.mjs). */
+  hostLoad: (host: string, o: Opts = {}) => request<HostLoadView>(`${hostPath(host)}/load`, o),
+  setHostLoad: (host: string, patch: Partial<Omit<LoadSettings, 'load' | 'psi'>> & { load?: Partial<LoadSettings['load']>; psi?: Partial<LoadSettings['psi']> }, o: Opts = {}) =>
+    request<HostLoadView>(`${hostPath(host)}/load`, { ...o, method: 'PUT', body: patch }),
+  sampleHostLoad: (host: string, o: Opts = {}) => request<HostLoadView>(`${hostPath(host)}/load/sample`, { ...o, method: 'POST', body: {} }),
+  /** Let new sessions start for `minutes` whatever the load (0 ends it). */
+  overrideHostLoad: (host: string, minutes: number, o: Opts = {}) => request<HostLoadView>(`${hostPath(host)}/load/override`, { ...o, method: 'POST', body: { minutes } }),
+  hostProcesses: (host: string, o: Opts = {}) => request<HostProcesses>(`${hostPath(host)}/load/processes`, o),
+  restartHostWeb: (host: string, o: Opts = {}) => request<{ host: string; restarting: boolean }>(`${hostPath(host)}/load/restart`, { ...o, method: 'POST', body: {} }),
   stackSettings: (host: string, o: Opts = {}) => request<StackSettings>(`${hostPath(host)}/stacks/settings`, o),
   setStackSettings: (host: string, patch: Partial<Pick<StackSettings, 'leadPrompt' | 'siblingReports' | 'reportPrompt'>>, o: Opts = {}) =>
     request<StackSettings>(`${hostPath(host)}/stacks/settings`, { ...o, method: 'PUT', body: patch }),

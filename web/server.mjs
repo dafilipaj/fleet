@@ -47,7 +47,7 @@ import { createVerandaBridge, createVerandaClient } from './lib/veranda.mjs';
 import { createGithubBridge } from './lib/github.mjs';
 import { fetchPeerHost, proxyToPeer, setPeerConnects, setPeerProxies, setPeerTokens } from './lib/peers.mjs';
 import { createDormant } from './lib/dormant.mjs';
-import { createLoadAlerts, createLoadMonitor, retryWhileBusy } from './lib/load.mjs';
+import { createLoadAlerts, createLoadMonitor, readProcessUse, retryWhileBusy } from './lib/load.mjs';
 import { createMemos } from './lib/memos.mjs';
 import { createApi } from './lib/api.mjs';
 import { createHttpServer } from './lib/app.mjs';
@@ -80,8 +80,8 @@ const cli = createFleetCli({ run, bin: config.fleetBin });
 // Host load (opt-in `resources.enabled`): sampled here, written where the CLI reads it. Off: a
 // state file a previous run left is removed, so nothing holds spawns on a stale verdict.
 const loadFile = path.join(fleetStateDir(process.env), 'load.json');
-const loadMonitor = config.resources.enabled ? createLoadMonitor({ settings: config.resources, self: config.self, file: loadFile, run, log }) : null;
-if (!loadMonitor) fs.promises.rm(loadFile, { force: true }).catch(() => {});
+// Always sampling (Settings → Host load shows it); it holds spawns and writes the file only while on.
+const loadMonitor = createLoadMonitor({ settings: config.resources, self: config.self, file: loadFile, run, log });
 /** A failed spawn POST → an Error that keeps `overloaded` (the host holds new sessions). */
 const spawnFailure = (r, fallback) => Object.assign(new Error(r.body?.error ?? fallback), { status: r.status, overloaded: r.body?.overloaded === true });
 const fleet = createFleet({ cli, self: config.self, ttlMs: 2000 });
@@ -335,6 +335,19 @@ const handleApi = createApi({
   transcripts,
   spawner,
   loadMonitor,
+  loadProcesses: async () => {
+    const host = await fleet.localHost({ force: true });
+    return readProcessUse({ run, sessions: host.ok ? host.sessions : [] });
+  },
+  // Only under a supervisor that starts it again (launchd KeepAlive: XPC_SERVICE_NAME; systemd:
+  // INVOCATION_ID); otherwise a restart from the UI would just stop it.
+  restartSelf:
+    process.env.XPC_SERVICE_NAME === 'fleet.web' || process.env.INVOCATION_ID
+      ? () => {
+          log('[fleet-web] restart asked from Settings → Host load');
+          setTimeout(() => shutdown('restart'), 300).unref?.();
+        }
+      : null,
   killer: createKiller({ run, tmux: config.tmux, closeIterm: (s) => backend.closeIterm(s) }),
   cli,
   autoNamer,
@@ -489,10 +502,8 @@ servers[0].listen(config.port, addresses[0], () => {
   } else if (config.github.host) {
     log(`[fleet-web] github links: served by ${config.github.host}`);
   }
-  if (loadMonitor) {
-    loadMonitor.start();
-    log(`[fleet-web] host load monitor on (load ${config.resources.load.hot}/${config.resources.load.critical}× cores; new sessions wait while hot)`);
-  }
+  loadMonitor.start();
+  if (config.resources.enabled) log(`[fleet-web] host load monitor on (load ${config.resources.load.hot}/${config.resources.load.critical}× cores; new sessions wait while hot)`);
   if (slack) {
     slack.start();
     // The owner hears when a host goes under heavy load, gets worse, or recovers.
@@ -500,10 +511,10 @@ servers[0].listen(config.port, addresses[0], () => {
       const alerts = createLoadAlerts({
         hosts: () => config.hosts,
         fetchLoad: async (host) => {
-          if (host === config.self) return loadMonitor?.current() ?? null;
+          if (host === config.self) return loadMonitor.enabled() ? loadMonitor.current() : null;
           if (!config.peers[host]) return null;
           const r = await proxyToPeer(config.peers[host], { method: 'GET', pathname: '/api/load', search: '', timeoutMs: 5000 });
-          return r.status === 200 ? r.body?.load ?? null : null;
+          return r.status === 200 && r.body?.enabled !== false ? r.body?.load ?? null : null;
         },
         notify: (text) => slack.notifyOwner(text),
         file: path.join(fleetStateDir(process.env), 'load-alerts.json'),
