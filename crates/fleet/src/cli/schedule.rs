@@ -356,6 +356,21 @@ pub fn tick(quiet: bool) -> Result<usize> {
                     break;
                 }
                 Action::Fire => {
+                    // Its subscription at the limit and the fallback too: stays pending.
+                    let model = e
+                        .model
+                        .as_deref()
+                        .map(clean_model)
+                        .transpose()
+                        .ok()
+                        .flatten()
+                        .flatten();
+                    if let Some(why) =
+                        crate::core::fallback::hold_reason(e.harness, model.as_deref())
+                    {
+                        log(quiet, &format!("{}: holding — {why}", e.id));
+                        break;
+                    }
                     match fire(&e, task.as_ref()) {
                         Ok(Some(session)) => {
                             log(quiet, &format!("{}: started tmux session {session}", e.id));
@@ -403,11 +418,12 @@ fn fire(e: &Entry, task: Option<&Task>) -> Result<Option<String>> {
         }
         None => e.prompt.clone(),
     };
-    let model = e.model.as_deref().map(clean_model).transpose()?.flatten();
+    let mut model = e.model.as_deref().map(clean_model).transpose()?.flatten();
+    let mut harness = e.harness;
+    crate::core::fallback::apply(&mut harness, &mut model, crate::core::fallback::Ctx::Bot)?;
     let launcher = crate::core::gh_identity::wrap(
-        &e.harness
-            .with_defaults(&e.harness.command(), model.as_deref()),
-        e.harness,
+        &harness.with_defaults(&harness.command(), model.as_deref()),
+        harness,
         e.gh_identity.as_deref(),
     )?;
     let name = schedule::default_name(e);
@@ -417,7 +433,7 @@ fn fire(e: &Entry, task: Option<&Task>) -> Result<Option<String>> {
             Prompt::Inline(&prompt),
             name.as_deref(),
             &launcher,
-            e.harness,
+            harness,
         );
         println!("dry-run: would start {}: {line}", e.id);
         return Ok(None);
@@ -430,7 +446,7 @@ fn fire(e: &Entry, task: Option<&Task>) -> Result<Option<String>> {
         None,
         false,
         &launcher,
-        e.harness,
+        harness,
         None,
     )?;
     Ok(Some(session.unwrap_or(desc)))

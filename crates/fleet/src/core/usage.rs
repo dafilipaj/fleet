@@ -365,6 +365,11 @@ struct OpenAiCreds {
 }
 
 /// Codex's ChatGPT login, or `None` (no Codex, or an API-key login: no plan limits).
+/// Codex is logged in with ChatGPT in `codex_home` (what the fallback needs).
+pub fn has_openai_login(codex_home: &Path) -> bool {
+    openai_credentials(codex_home).is_some()
+}
+
 fn openai_credentials(codex_home: &Path) -> Option<OpenAiCreds> {
     let text = std::fs::read_to_string(codex_home.join("auth.json")).ok()?;
     let v: Value = serde_json::from_str(&text).ok()?;

@@ -48,6 +48,7 @@ import { createGithubBridge } from './lib/github.mjs';
 import { fetchPeerHost, proxyToPeer, setPeerConnects, setPeerProxies, setPeerTokens } from './lib/peers.mjs';
 import { createDormant } from './lib/dormant.mjs';
 import { createLoadAlerts, createLoadMonitor, readProcessUse, retryWhileBusy } from './lib/load.mjs';
+import { createUsageAlerts } from './lib/usage.mjs';
 import { createMemos } from './lib/memos.mjs';
 import { createApi } from './lib/api.mjs';
 import { createHttpServer } from './lib/app.mjs';
@@ -230,7 +231,7 @@ if (config.slack.enabled) {
       const r = await proxyToPeer(base, {
         method: 'POST',
         pathname: `/api/hosts/${encodeURIComponent(local ? config.self : host)}/spawn`,
-        body: JSON.stringify(body),
+        body: JSON.stringify({ ...body, ctx: 'auto' }),
         timeoutMs: 120000,
       });
       if (r.status !== 200) throw spawnFailure(r, `HTTP ${r.status} from ${host}`);
@@ -278,7 +279,7 @@ const github = config.github.enabled
         const r = await proxyToPeer(base, {
           method: 'POST',
           pathname: `/api/hosts/${encodeURIComponent(config.self)}/spawn`,
-          body: JSON.stringify(body),
+          body: JSON.stringify({ ...body, ctx: 'auto' }),
           timeoutMs: 120000,
         });
         if (r.status !== 200) throw spawnFailure(r, `HTTP ${r.status} from spawn`);
@@ -320,6 +321,8 @@ const spawner = createSpawner({
   harnessDefaults: () => config.harnessDefaults,
   refuse: config.spawn === false ? noSpawnMessage(config.self) : null,
   busy: () => loadMonitor?.busy() ?? null,
+  // Subscription fallback (lib/usage.mjs): the CLI decides; off unless config `usage.enabled`.
+  place: (q) => (config.usage?.enabled ? cli.usageCheck(q) : Promise.resolve(null)),
 });
 const operator = createOperator({ config, fleet, spawner, backend, log });
 // One transcript reader: the chat and the review threads (their replies) share its cache.
@@ -503,6 +506,7 @@ servers[0].listen(config.port, addresses[0], () => {
     log(`[fleet-web] github links: served by ${config.github.host}`);
   }
   loadMonitor.start();
+  if (config.usage.enabled) log(`[fleet-web] subscription fallback on (${Object.entries(config.usage.fallback).filter(([, t]) => t).map(([f, t]) => `${f}→${t}`).join(', ')}; session ${config.usage.limits.session}%, weekly ${config.usage.limits.weekly}%)`);
   if (config.resources.enabled) log(`[fleet-web] host load monitor on (load ${config.resources.load.hot}/${config.resources.load.critical}× cores; new sessions wait while hot)`);
   if (slack) {
     slack.start();
@@ -521,6 +525,25 @@ servers[0].listen(config.port, addresses[0], () => {
         log,
       });
       setInterval(() => alerts.tick().catch((err) => log(`[load] alerts: ${err?.message ?? err}`)), 30 * 1000).unref();
+      // …and when a host's subscription reaches its limit or recovers (lib/usage.mjs).
+      const usageAlerts = createUsageAlerts({
+        hosts: () => config.hosts,
+        check: async (host, harness) => {
+          if (host === config.self) return config.usage?.enabled ? cli.usageCheck({ harness }) : null;
+          if (!config.peers[host]) return null;
+          const r = await proxyToPeer(config.peers[host], {
+            method: 'GET',
+            pathname: `/api/hosts/${encodeURIComponent(host)}/usage/check`,
+            search: `?harness=${harness}`,
+            timeoutMs: 25000,
+          });
+          return r.status === 200 ? r.body : null;
+        },
+        notify: (text) => slack.notifyOwner(text),
+        file: path.join(fleetStateDir(process.env), 'usage-alerts.json'),
+        log,
+      });
+      setInterval(() => usageAlerts.tick().catch((err) => log(`[usage] alerts: ${err?.message ?? err}`)), 5 * 60 * 1000).unref();
     }
     log(`[fleet-web] slack links on (Socket Mode; ${TOKEN_NAMES.bot} + ${TOKEN_NAMES.app} from env or Keychain)`);
   } else if (config.slack.host) {

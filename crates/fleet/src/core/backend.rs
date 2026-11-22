@@ -806,6 +806,12 @@ pub fn spawn_tagged(
             if let Some(t) = tag {
                 tag_pane(&win, t, &session, exists, name);
             }
+            // Started on the fallback harness (core::fallback): `fleet list` and the web mark it.
+            if let Some(note) = crate::core::fallback::take_pending_mark() {
+                let _ = crate::core::tools::tmux_cmd()
+                    .args(["set-option", "-p", "-t", &win, "@fleet_fallback", &note])
+                    .status();
+            }
             // Window already opened in `dir`; just run the launcher in it.
             let run = run_command(prompt, name, launcher, harness);
             crate::core::tools::tmux_cmd()

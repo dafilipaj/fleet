@@ -1130,6 +1130,13 @@ pub fn spawn(a: SpawnArgs) -> Result<()> {
         .map(commands::clean_model)
         .transpose()?
         .flatten();
+    // At its subscription's limit → the fallback harness (core::fallback).
+    let mut model = model;
+    crate::core::fallback::apply(
+        &mut opts.harness,
+        &mut model,
+        crate::core::fallback::Ctx::Manual,
+    )?;
     let e = ensure_for(&c, &src, a.label.as_deref(), a.no_llm)?;
     let id = e.stack.id();
     let path = c.path_of(&e.stack);
@@ -1594,6 +1601,14 @@ fn spawn_on(c: &Ctx, src: &Session, host: &str, a: SpawnArgs) -> Result<()> {
         .map(commands::clean_model)
         .transpose()?
         .flatten();
+    // At its subscription's limit → the fallback harness (core::fallback).
+    let mut opts = opts;
+    let mut model = model;
+    crate::core::fallback::apply(
+        &mut opts.harness,
+        &mut model,
+        crate::core::fallback::Ctx::Manual,
+    )?;
     let e = ensure_for(c, src, a.label.as_deref(), a.no_llm)?;
     let id = e.stack.id();
     let line = c.with_report(

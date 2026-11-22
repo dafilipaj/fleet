@@ -92,6 +92,9 @@ import type {
   TasksResponse,
   TranscribeResponse,
   UploadResponse,
+  UsageCheck,
+  UsageFallbackSettings,
+  UsageFallbackView,
   UsageResponse,
 } from './types'
 import type { GroupEdit } from '@/lib/groups'
@@ -438,6 +441,16 @@ export const api = {
   /** The Claude subscription limits of the account logged in on that host (`refresh` skips its 60s cache). */
   usage: (host: string, { refresh = false, ...o }: Opts & { refresh?: boolean } = {}) =>
     request<UsageResponse>(`${hostPath(host)}/usage${refresh ? '?refresh=1' : ''}`, o),
+  /** Where a new session of `harness` would start on `host` now (subscription fallback). */
+  usageCheck: (host: string, harness: string, model = '', o: Opts = {}) =>
+    request<UsageCheck>(`${hostPath(host)}/usage/check?harness=${enc(harness)}${model ? `&model=${enc(model)}` : ''}`, o),
+  /** Settings → Usage: the host's fallback settings and both checks. */
+  usageSettings: (host: string, o: Opts = {}) => request<UsageFallbackView>(`${hostPath(host)}/usage/settings`, o),
+  saveUsageSettings: (host: string, patch: Partial<UsageFallbackSettings>, o: Opts = {}) =>
+    request<UsageFallbackView>(`${hostPath(host)}/usage/settings`, { ...o, method: 'PUT', body: patch }),
+  /** Turn the check off for `minutes` (0 ends the override). */
+  usageOverride: (host: string, minutes: number, o: Opts = {}) =>
+    request<UsageFallbackView>(`${hostPath(host)}/usage/override`, { ...o, method: 'POST', body: { minutes } }),
 
   /** The GitHub PRs that need you, as `gh` on that host sees them (`refresh` skips its cache). */
   prs: (host: string, { refresh = false, ...o }: Opts & { refresh?: boolean } = {}) =>

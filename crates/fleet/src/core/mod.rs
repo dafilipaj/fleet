@@ -8,6 +8,7 @@ pub mod config;
 pub mod context;
 pub mod discovery;
 pub mod done;
+pub mod fallback;
 pub mod gh_identity;
 pub mod gh_watch;
 pub mod git;

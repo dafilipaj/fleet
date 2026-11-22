@@ -140,9 +140,13 @@ export function SessionRow({ session: s, now, selected, cursor, inStack }: Sessi
         <PrChip session={s} />
         <TaskChip session={s} />
         {cwd ? <span className="min-w-0 truncate font-mono">{cwd}</span> : null}
-        {harness !== 'claude' ? (
-          <span className={cn(chip, 'border-primary/40 text-primary')} title={s.model ?? undefined}>
+        {harness !== 'claude' || s.fallback ? (
+          <span
+            className={cn(chip, s.fallback ? 'border-amber-500/50 text-amber-700 dark:text-amber-400' : 'border-primary/40 text-primary')}
+            title={s.fallback ? `Started on the fallback: ${s.fallback}` : (s.model ?? undefined)}
+          >
             {harnessLabel(harness)}
+            {s.fallback ? ' · fallback' : ''}
           </span>
         ) : null}
         {backend !== 'unknown' && backend !== 'tmux' ? <span className={cn(chip, 'border-border')}>{backend}</span> : null}

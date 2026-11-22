@@ -12,6 +12,7 @@ explains the model and the semantics behind them.
 | `-n, --dry-run` | print what would run, run nothing (also `FLEET_DRY_RUN=1`) |
 | `--gh-identity <name>` | sessions this command spawns act on GitHub as that [GitHub identity](#github-identities), not as you (also `FLEET_GH_IDENTITY`) |
 | `--ignore-load` | start the session even while the machine is under heavy load (also `FLEET_IGNORE_LOAD=1`). With `resources.enabled` in the config, the web server watches the machine's memory pressure and CPU load; while it is `hot` or `critical`, `spawn`, `handoff`, `pr` / `task` / `stack spawn`, `restore` and `bots run` refuse with "`<host> is under heavy load (…) — new sessions wait until it recovers; add --ignore-load to start it anyway`", and `schedule tick` / `bots tick` hold the round (due entries fire once it recovers). See [Host load](architecture.md#host-load) |
+| `--no-fallback` | start on the asked-for harness even when its subscription is at its limit (also `FLEET_NO_FALLBACK=1`). With `usage.enabled` in the config, `spawn`, `handoff`, `pr` / `task` / `stack spawn` start on the fallback harness instead (a `usage: claude → codex: …` note on stderr); bots and scheduled sessions do the same, and wait when the fallback is at its limit too. See [Subscription fallback](architecture.md#subscription-fallback) |
 | `--json` | machine-readable output, where the command supports it |
 | `-h, --help`, `-V, --version` | |
 
@@ -63,6 +64,8 @@ the first rung with hits wins. Two hits on the same rung is an error that lists 
 | `fleet stack spawn <target> [prompt] [--harness <h>] [--name <n>] [--model <id>] [--dir <path>] [--on <host>] [--no-wait]` | spawn a **sibling** of `<target>`: a new session in its cwd (`--on`: on another host), in its stack (created around it first when it has none), told where the StackBrief is — see [Stacks](#stacks) |
 | `fleet watch [--interval 5] [--stuck 300] [--quiet] [--rows 1\|2\|auto] [--no-mouse]` | live dashboard + notifications on finished/stuck sessions |
 | `fleet usage [--json] [--refresh]` | the Claude subscription's usage limits on this host's login — current session (5h), weekly all models, weekly per model (e.g. Fable), extra usage — as bars with reset times; the numbers Claude Code's `/usage` shows. Then the ChatGPT plan Codex (and pi) bill against — current session, weekly, credits — when Codex is logged in with ChatGPT, as Codex's `/status` shows it. Cached 60s (`--refresh` skips it); a failed read serves the last one marked stale and backs off 2 minutes. `--json`: see [architecture](architecture.md#subscription-usage). `-H <host>` reads another machine's login |
+| `fleet usage check [--harness claude\|codex\|pi] [--model <id>] [--ctx manual\|auto\|bot] [--json]` | where a new session would start now: each subscription's state, the fallback, and the harness it starts on or why it would wait ([Subscription fallback](architecture.md#subscription-fallback)). `--ctx bot` adds the weekly pace check |
+| `fleet usage override <minutes>` | turn the subscription fallback check off on this machine for up to 1440 minutes (0 ends it) |
 | `fleet skill install [--force]\|show` | install / print the Claude Code skill (`~/.claude/skills/fleet/SKILL.md`; `--force` overwrites a different one) |
 
 `send`, `rename --force`, `name --apply` and `spawn` change a live agent's state — scripts and agents
@@ -966,6 +969,7 @@ Cancel. Web API: `GET /api/hosts/:host/schedule`, `POST /api/hosts/:host/schedul
 | `FLEET_HOST` | default target host (same as `-H`) |
 | `FLEET_DRY_RUN=1` | print what would run, run nothing |
 | `FLEET_IGNORE_LOAD=1` | start sessions on a machine under heavy load (same as `--ignore-load`) |
+| `FLEET_NO_FALLBACK=1` | keep the asked-for harness when its subscription is at its limit (same as `--no-fallback`) |
 | `FLEET_LOAD_FILE` | where the CLI reads the load verdict (default `${XDG_STATE_HOME:-~/.local/state}/fleet/load.json`, written by the web server) |
 | `FLEET_DEBUG=1` | trace what runs, on stderr |
 | `FLEET_CONNECT_TIMEOUT` | ssh connect timeout in seconds (default 5) |

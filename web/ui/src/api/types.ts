@@ -89,6 +89,11 @@ export interface Session {
   /** The app whose embedded Fleet panel started it (`fleet list --json` → `embed`, the pane's `@fleet_embed`); null / absent = none. */
   embed?: string | null
   /**
+   * Why it started on a fallback harness (`claude → codex: session 92%`; `fleet list --json` →
+   * `fallback`, the pane's `@fleet_fallback`, docs/architecture.md → Subscription fallback).
+   */
+  fallback?: string | null
+  /**
    * The git checkout its cwd is in (`fleet list --json` → `git`): branch (null = detached),
    * root, linked worktree or main checkout, GitHub `owner/name` of origin. Null outside one;
    * older CLIs omit it.
@@ -714,6 +719,8 @@ export interface SpawnRequest {
   embed?: string
   /** Start linked to Slack (only on `slack.host`): the prompt goes in with the link's intro. */
   slack?: { url: string; minutes: SlackMinutes; mode?: 'mention' | 'proactive'; task?: string }
+  /** Start on `harness` even when its subscription is at its limit (config `usage`). */
+  noFallback?: boolean
 }
 
 export interface SpawnResponse {
@@ -726,6 +733,10 @@ export interface SpawnResponse {
   trusted: boolean
   /** The link, when the spawn asked for one. */
   slack?: SlackLink
+  /** The harness it started on (the fallback's when `usage.fellBack`). */
+  harness?: string
+  /** Set when its subscription was at its limit: started on the fallback, or anyway. */
+  usage?: { primary: string; note: string | null; fellBack: boolean } | null
 }
 
 export interface KillResponse {
@@ -1176,6 +1187,45 @@ export interface UsageRead {
   stale: boolean
   /** With `stale`: why the refresh failed. With no `limits`: why there are none. */
   error: string | null
+}
+
+/** One subscription's verdict in a usage check (core/fallback.rs). */
+export interface UsageProviderState {
+  provider: 'claude' | 'openai' | string
+  exhausted: boolean
+  reasons: string[]
+}
+
+/** `GET …/usage/check`: where a new session of `primary` would start now. */
+export interface UsageCheck {
+  host?: string
+  enabled: boolean
+  primary: string
+  harness: string
+  model: string | null
+  fellBack: boolean
+  note: string | null
+  hold: string | null
+  primaryState: UsageProviderState
+  fallback: { harness: string; usable: boolean; whyNot?: string; state: UsageProviderState } | null
+  overrideUntil?: number | null
+}
+
+/** Config `usage` (Settings → Usage). */
+export interface UsageFallbackSettings {
+  enabled: boolean
+  fallback: Record<string, string | null>
+  limits: { session: number; weekly: number; paceMargin: number }
+}
+
+/** Settings → Usage, one host's. */
+export interface UsageFallbackView {
+  host: string
+  settings: UsageFallbackSettings
+  defaults: UsageFallbackSettings
+  overrideUntil: number | null
+  checks: Record<string, UsageCheck | { error: string }>
+  spawn: boolean
 }
 
 export interface UsageResponse extends UsageRead {

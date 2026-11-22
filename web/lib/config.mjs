@@ -19,6 +19,7 @@
 //
 // A missing config file is not an error: the server runs as a single local host
 // ("local", 127.0.0.1, no peers). A present-but-broken file is a hard error.
+import { usageSettings } from './usage.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -558,6 +559,8 @@ export function normalizeConfig(
   const hiddenSpawnDirs = spawn ? hiddenSpawnDirsFor(raw.spawnDirs, self.trim(), home) : [];
   // `resources`: the host load monitor (lib/load.mjs), opt-in.
   const resources = loadSettings(raw.resources);
+  // `usage`: the subscription fallback (lib/usage.mjs, core/fallback.rs), opt-in.
+  const usage = usageSettings(raw.usage);
 
   let quickReplies = null;
   if (web.quickReplies != null) {
@@ -917,6 +920,7 @@ export function normalizeConfig(
     ghIdentities: ghIdentitiesOf(raw),
     spawn,
     resources,
+    usage,
     spawnDirs,
     hiddenSpawnDirs,
     uiDir,

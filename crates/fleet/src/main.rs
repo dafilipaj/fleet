@@ -52,6 +52,11 @@ struct Cli {
     #[arg(long, global = true)]
     ignore_load: bool,
 
+    /// Start on the asked-for harness even when its subscription is at its limit (config
+    /// `usage`); env FLEET_NO_FALLBACK=1
+    #[arg(long, global = true)]
+    no_fallback: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -411,6 +416,8 @@ enum Commands {
     /// Subscription usage limits: Claude (session, weekly, per-model weekly, extra usage) and
     /// the ChatGPT plan Codex is logged in with (session, weekly, credits)
     Usage {
+        #[command(subcommand)]
+        cmd: Option<UsageCmd>,
         /// Machine-readable output (the web API's shape)
         #[arg(long)]
         json: bool,
@@ -668,6 +675,27 @@ struct NewArgs {
     /// Command to run in the new session (after --)
     #[arg(last = true)]
     cmd: Vec<String>,
+}
+
+#[derive(Subcommand, Clone)]
+enum UsageCmd {
+    /// Where a new session would start now: its harness, or the fallback when the
+    /// subscription is at its limit (config `usage`), or why it would wait
+    Check {
+        /// The harness asked for
+        #[arg(long, value_enum, default_value = "claude")]
+        harness: HarnessArg,
+        /// The model asked for
+        #[arg(long)]
+        model: Option<String>,
+        /// Who starts it: manual (never held), auto (Slack / GitHub), bot (also paced)
+        #[arg(long, default_value = "manual")]
+        ctx: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Turn the fallback check off for a while (0 ends it; at most 1440 minutes)
+    Override { minutes: i64 },
 }
 
 #[derive(Subcommand, Clone)]
@@ -1528,6 +1556,9 @@ fn run(cli: Cli) -> Result<i32> {
     if cli.ignore_load {
         fleet::core::load::set_ignore();
     }
+    if cli.no_fallback {
+        fleet::core::fallback::set_no_fallback();
+    }
     if let Some(h) = &cli.as_host {
         hosts::set_as_host(h);
     }
@@ -1626,7 +1657,16 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
             }
         }
         Commands::Peek { target, lines } => commands::peek(&target, lines)?,
-        Commands::Usage { json, refresh } => usage_cmd::run(json, refresh)?,
+        Commands::Usage { cmd, json, refresh } => match cmd {
+            None => usage_cmd::run(json, refresh)?,
+            Some(UsageCmd::Check {
+                harness,
+                model,
+                ctx,
+                json,
+            }) => usage_cmd::check(harness.into(), model.as_deref(), &ctx, json)?,
+            Some(UsageCmd::Override { minutes }) => usage_cmd::set_override(minutes)?,
+        },
         Commands::Github { cmd } => match cmd.unwrap_or(GithubCmd::List { json: false }) {
             GithubCmd::List { json } => github_cmd::list(json)?,
             GithubCmd::Link {

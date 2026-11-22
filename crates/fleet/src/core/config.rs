@@ -301,6 +301,8 @@ pub struct Config {
     /// `veranda` — Veranda links (opt-in; the web server reads it). Raw JSON: the CLI only asks
     /// whether it is there (the AskUserQuestion guard checks Veranda links only then).
     pub veranda: Value,
+    /// `usage` — subscription fallback (opt-in, `core::fallback`). Raw JSON, read leniently.
+    pub usage: Value,
 }
 
 impl Config {

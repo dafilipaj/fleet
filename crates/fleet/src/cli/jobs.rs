@@ -515,16 +515,27 @@ fn start(j: &Job, trigger: &str, slot: Option<i64>, branch: Option<&Branch>) -> 
         run: format!("{}/{id}", j.name),
         command: j.command.clone(),
     };
-    let launcher = j.harness.with_defaults(
-        j.command
+    // At its subscription's limit → the fallback harness (core::fallback), with that harness's
+    // own command and default model; both at the limit → held, before the run is recorded.
+    let mut harness = j.harness;
+    let mut model = model;
+    crate::core::fallback::apply(&mut harness, &mut model, crate::core::fallback::Ctx::Bot)
+        .map_err(|e| Error::Other(format!("{}: {e}", j.name)))?;
+    let command = if harness == j.harness {
+        j.command.clone()
+    } else {
+        None
+    };
+    let launcher = harness.with_defaults(
+        command
             .as_deref()
             .map(String::from)
-            .unwrap_or_else(|| j.harness.command())
+            .unwrap_or_else(|| harness.command())
             .as_str(),
         model.as_deref(),
     );
     let launcher =
-        match crate::core::gh_identity::wrap(&launcher, j.harness, j.gh_identity.as_deref()) {
+        match crate::core::gh_identity::wrap(&launcher, harness, j.gh_identity.as_deref()) {
             Ok(l) => l,
             Err(e) => return fail(run, e.to_string()),
         };
@@ -542,7 +553,7 @@ fn start(j: &Job, trigger: &str, slot: Option<i64>, branch: Option<&Branch>) -> 
         Prompt::None
     };
     if crate::core::hosts::dry_run() {
-        let line = backend::launch_command(&dir, prompt, Some(&name), &launcher, j.harness);
+        let line = backend::launch_command(&dir, prompt, Some(&name), &launcher, harness);
         if j.pull {
             println!(
                 "dry-run: would pull {} first (fetch, fast-forward only)",
@@ -574,7 +585,7 @@ fn start(j: &Job, trigger: &str, slot: Option<i64>, branch: Option<&Branch>) -> 
         None,
         false,
         &launcher,
-        j.harness,
+        harness,
         Some(&tag),
     ) {
         Ok((_, tmux)) => {
@@ -817,8 +828,28 @@ pub fn tick(quiet: bool) -> Result<()> {
         rows.get_or_insert_with(discovery::discover).clone()
     };
     let mut failed = 0;
+    // A bot whose subscription is at its limit, with no usable fallback (core::fallback), holds:
+    // nothing is consumed, a due slot fires once one recovers (within jobs::CATCH_UP_SECS).
+    let usage_hold = |j: &Job| -> Option<String> {
+        if !j.enabled {
+            return None;
+        }
+        let model = j
+            .model
+            .as_deref()
+            .map(clean_model)
+            .transpose()
+            .ok()
+            .flatten()
+            .flatten();
+        crate::core::fallback::hold_reason(j.harness, model.as_deref())
+    };
     for j in &s.jobs {
         if j.slack.is_some() {
+            if let Some(why) = usage_hold(j) {
+                log(quiet, &format!("{}: holding — {why}", j.name));
+                continue;
+            }
             match resident_tick(j, quiet, &mut rows) {
                 Ok((started, f)) => {
                     failed += f;
@@ -834,6 +865,11 @@ pub fn tick(quiet: bool) -> Result<()> {
             continue;
         }
         let Some(cron) = &j.cron else {
+            if let Some(why) = usage_hold(j) {
+                log(quiet, &format!("{}: holding — {why}", j.name));
+                cleanup(j, now, quiet, &mut rows)?;
+                continue;
+            }
             match github_tick(j, now, quiet, false) {
                 Ok(t) => {
                     failed += t.failed;
@@ -879,6 +915,12 @@ pub fn tick(quiet: bool) -> Result<()> {
                 );
             }
             Due::Fire(slot) => {
+                if let Some(why) = usage_hold(j) {
+                    // Not saved: the slot stays due.
+                    log(quiet, &format!("{}: holding — {why}", j.name));
+                    cleanup(j, now, quiet, &mut rows)?;
+                    continue;
+                }
                 jobs::save_state(&j.name, &st)?;
                 if let Some(why) = busy_reason(&rows_now(&mut rows), &j.name) {
                     push_run(

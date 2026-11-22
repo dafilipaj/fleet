@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowRightIcon, CalendarClockIcon, EyeIcon, EyeOffIcon, FolderIcon, GitForkIcon, LayersIcon, Loader2Icon, MessagesSquareIcon, MicIcon, PaperclipIcon, PlayIcon, SquareIcon } from 'lucide-react'
+import { ArrowRightIcon, CalendarClockIcon, EyeIcon, EyeOffIcon, FolderIcon, GitForkIcon, HourglassIcon, LayersIcon, Loader2Icon, MessagesSquareIcon, MicIcon, PaperclipIcon, PlayIcon, SquareIcon } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { api, ApiError } from '@/api/client'
 import { watchForSpawned } from '@/api/spawnWatch'
-import type { SlackMinutes } from '@/api/types'
+import type { SlackMinutes, UsageCheck } from '@/api/types'
 import { DropOverlay } from '@/components/DropOverlay'
 import { HostDot } from '@/components/HostBadge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -230,6 +230,27 @@ function NewSessionForm({
   const models = offered.find((h) => h.id === harness)?.models ?? claudeModels
   const [modelChoices, setModelChoices] = useState<Record<string, string | null>>({})
   const model = pickModel(models, modelChoices[harness] ?? storage.get(modelKey(harness)))
+  // Subscription fallback (config `usage`): where this harness would start now on this host. Marked
+  // when its subscription is at its limit; "Keep <harness>" overrides the fallback for this spawn.
+  const [usageCheck, setUsageCheck] = useState<UsageCheck | null>(null)
+  const [keepPrimary, setKeepPrimary] = useState(false)
+  useEffect(() => {
+    if (!host || harnessesLoading) return
+    const ctl = new AbortController()
+    const t = setTimeout(() => {
+      setUsageCheck(null)
+      setKeepPrimary(false)
+      api
+        .usageCheck(host, harness, model, { signal: ctl.signal })
+        .then((c) => setUsageCheck(c.enabled ? c : null))
+        .catch(() => {}) // an older host, or the check failed: nothing to mark
+    }, 0)
+    return () => {
+      clearTimeout(t)
+      ctl.abort()
+    }
+  }, [host, harness, model, harnessesLoading])
+  const exhausted = usageCheck?.primaryState.exhausted ? usageCheck : null
   const [prompt, setPrompt] = useState(() => prefill?.prompt ?? (sibling ? '' : loadDraft()))
   // Keep the draft on every change (attachments typed in included); a prefill / sibling is never a draft.
   const draftable = !prefill && !sibling
@@ -362,11 +383,14 @@ function NewSessionForm({
         harness: harness === 'claude' ? undefined : harness,
         embed: prefill?.embed || undefined,
         ...(linkTo ? { slack: { url: linkTo, minutes: slackMinutes, mode: slackMode } } : {}),
+        ...(keepPrimary ? { noFallback: true } : {}),
       })
       if (res.slack) void refreshSlack()
       // The draft stays until the session registers: a spawn that never shows up must not lose the prompt.
       onDone()
-      const id = toast.loading(`Starting ${res.name} on ${host}…`, { description: res.slack ? 'Linked to Slack' : `Waiting for ${who} to register` })
+      const startedWho = harnessLabel(res.harness ?? harness)
+      if (res.usage?.fellBack) toast.info(`${harnessLabel(res.usage.primary)} is at its usage limit — started on ${startedWho}`, { description: res.usage.note ?? undefined })
+      const id = toast.loading(`Starting ${res.name} on ${host}…`, { description: res.slack ? 'Linked to Slack' : `Waiting for ${startedWho} to register` })
       watchForSpawned(
         { host, name: res.name, tmuxSession: res.tmuxSession },
         {
@@ -509,12 +533,35 @@ function NewSessionForm({
           className="no-scrollbar w-full justify-start overflow-x-auto"
         >
           {offered.map((h) => (
-            <ToggleGroupItem key={h.id} value={h.id} title={h.command} className={chipClass}>
+            <ToggleGroupItem
+              key={h.id}
+              value={h.id}
+              title={exhausted && h.id === harness ? `At its usage limit: ${exhausted.primaryState.reasons.join(', ')}` : h.command}
+              className={chipClass}
+            >
+              {exhausted && h.id === harness ? <HourglassIcon className="size-3.5 text-amber-600 dark:text-amber-400" aria-label="at its usage limit" /> : null}
               {h.label}
             </ToggleGroupItem>
           ))}
         </ToggleGroup>
       )}
+      {exhausted && !sibling && !laterAt ? (
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-amber-700 dark:text-amber-400" role="status">
+          <span>
+            {who} is at its usage limit ({exhausted.primaryState.reasons.join(', ')}) —{' '}
+            {exhausted.fellBack && !keepPrimary
+              ? `starts on ${harnessLabel(exhausted.harness)} instead`
+              : exhausted.fellBack
+                ? `starts on ${who} anyway`
+                : `no usable fallback${exhausted.fallback?.whyNot ? ` (${exhausted.fallback.whyNot})` : ''}, starts on ${who} anyway`}
+          </span>
+          {exhausted.fellBack ? (
+            <button type="button" className="underline underline-offset-2 hover:text-foreground" onClick={() => setKeepPrimary((k) => !k)}>
+              {keepPrimary ? `Use ${harnessLabel(exhausted.harness)}` : `Keep ${who}`}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
     </Field>
   )
   const modelField = harnessesLoading ? (

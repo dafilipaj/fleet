@@ -253,6 +253,36 @@ export function createFleetCli({ run, bin = 'fleet', timeoutMs = 8000 } = {}) {
   }
 
   /**
+   * Where a new session would start now (`fleet --local usage check --json`, core/fallback.rs):
+   * `{ enabled, primary, harness, model, fellBack, note, hold, primaryState, fallback }`.
+   * `ctx`: manual (never held), auto (Slack / GitHub), bot (also paced).
+   */
+  async function usageCheck({ harness = 'claude', model = '', ctx = 'manual', timeoutMs: t = 20 * 1000 } = {}) {
+    const args = ['--local', 'usage', 'check', '--json', '--harness', String(harness), '--ctx', String(ctx)];
+    if (model) args.push('--model', String(model));
+    let stdout;
+    try {
+      ({ stdout } = await run(bin, args, { timeout: t, env: { ...process.env, NO_COLOR: '1' } }));
+    } catch (err) {
+      const e = wrap(err, 'fleet usage check', t);
+      const why = String(err?.stderr ?? '').replace(/^(fleet:\s*)?(Error:\s*)?/i, '').trim();
+      if (why && !e.timedOut) e.message = why;
+      e.missing = /unrecognized subcommand|unexpected argument/i.test(why);
+      throw e;
+    }
+    return parseObject(stdout, 'fleet usage check');
+  }
+
+  /** `fleet --local usage override <minutes>` (0 ends it). */
+  async function usageOverride(minutes, { timeoutMs: t = 10 * 1000 } = {}) {
+    try {
+      await run(bin, ['--local', 'usage', 'override', String(Math.round(minutes))], { timeout: t, env: { ...process.env, NO_COLOR: '1' } });
+    } catch (err) {
+      throw wrap(err, 'fleet usage override', t);
+    }
+  }
+
+  /**
    * The GitHub PRs that need you: `fleet --local prs --json [--refresh]` (docs/cli.md → Pull
    * requests). A fetch is four `gh` searches (several seconds each); a fresh cache is instant.
    */
@@ -656,6 +686,8 @@ export function createFleetCli({ run, bin = 'fleet', timeoutMs = 8000 } = {}) {
     groupCached,
     groupEdit,
     usage,
+    usageCheck,
+    usageOverride,
     harnesses,
     ghIdentityLauncher,
     prs,

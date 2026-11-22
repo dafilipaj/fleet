@@ -777,6 +777,14 @@ pub fn spawn(prompt: Option<String>, from: Option<String>, opts: SpawnOpts) -> R
         .map(clean_model)
         .transpose()?
         .flatten();
+    // At its subscription's limit → the fallback harness (core::fallback).
+    let mut opts = opts;
+    let mut model = model;
+    crate::core::fallback::apply(
+        &mut opts.harness,
+        &mut model,
+        crate::core::fallback::Ctx::Manual,
+    )?;
     let prompt = prompt.unwrap_or_default();
     let (prompt, backend_kind) = if opts.ask_done {
         (crate::core::done::with_instruction(&prompt), Backend::Tmux)
@@ -894,6 +902,14 @@ fn spawn_from(source: &str, extra: Option<String>, mut opts: SpawnOpts) -> Resul
         .map(clean_model)
         .transpose()?
         .flatten();
+    // At its subscription's limit → the fallback harness (core::fallback).
+    let mut opts = opts;
+    let mut model = model;
+    crate::core::fallback::apply(
+        &mut opts.harness,
+        &mut model,
+        crate::core::fallback::Ctx::Manual,
+    )?;
     let task = extra.as_deref().map(str::trim).filter(|e| !e.is_empty());
     let text = format!(
         "{}\n\n{}",
@@ -1070,6 +1086,14 @@ pub fn handoff(
         .map(clean_model)
         .transpose()?
         .flatten();
+    // At its subscription's limit → the fallback harness (core::fallback).
+    let mut opts = opts;
+    let mut model = model;
+    crate::core::fallback::apply(
+        &mut opts.harness,
+        &mut model,
+        crate::core::fallback::Ctx::Manual,
+    )?;
 
     let from = discovery::origin();
     let now = chrono::Local::now();

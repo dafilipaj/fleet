@@ -98,6 +98,10 @@ pub struct Session {
     /// The app whose embedded Fleet panel started it (the web embed view's `app`, the pane's
     /// `@fleet_embed` option); `null` when none.
     pub embed: Option<String>,
+    /// Why it started on a fallback harness (`claude → codex: session 92%`, the pane's
+    /// `@fleet_fallback`, see [`crate::core::fallback`]); `null` when it did not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<String>,
     /// The git checkout its cwd is in (`{ branch, root, linked, repo }`, see
     /// [`crate::core::git`]); `null` outside one. Stamped by `list`; `None` inside discovery.
     pub git: Option<crate::core::git::GitHead>,
@@ -139,6 +143,7 @@ impl Default for Session {
             origin: None,
             gh_identity: None,
             embed: None,
+            fallback: None,
             git: None,
             done: None,
             snooze: None,
@@ -262,6 +267,8 @@ pub struct Pane {
     pub gh_identity: String,
     /// The pane's `@fleet_embed` option: the app whose embedded panel started it (empty when none).
     pub embed: String,
+    /// The pane's `@fleet_fallback` option (empty when none).
+    pub fallback: String,
 }
 
 /// A canned fleet from `FLEET_FIXTURE=<path/to/sessions.json>`. Bypasses the
@@ -403,6 +410,7 @@ pub fn discover_checked() -> Result<Vec<Session>, String> {
                 .map(|p| p.gh_identity.clone())
                 .filter(|g| !g.is_empty()),
             embed: pane.map(|p| p.embed.clone()).filter(|e| !e.is_empty()),
+            fallback: pane.map(|p| p.fallback.clone()).filter(|e| !e.is_empty()),
             git: None,
             done: None,
             snooze: None,
@@ -498,6 +506,7 @@ fn harness_session(
             .map(|p| p.gh_identity.clone())
             .filter(|g| !g.is_empty()),
         embed: pane.map(|p| p.embed.clone()).filter(|e| !e.is_empty()),
+        fallback: pane.map(|p| p.fallback.clone()).filter(|e| !e.is_empty()),
         title: t.and_then(|t| harness::first_prompt(p.harness, &t.path)),
         model: state.model.or_else(|| p.model_arg()),
         context: state.context,
@@ -751,7 +760,7 @@ fn tmux_panes() -> HashMap<String, Pane> {
             "list-panes",
             "-a",
             "-F",
-            "#{pane_tty}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_id}\t#{window_name}\t#{session_name}\t#{@fleet_job_run}\t#{@fleet_gh_identity}\t#{@fleet_embed}",
+            "#{pane_tty}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_id}\t#{window_name}\t#{session_name}\t#{@fleet_job_run}\t#{@fleet_gh_identity}\t#{@fleet_embed}\t#{@fleet_fallback}",
         ])
         .output()
     else {
@@ -763,7 +772,7 @@ fn tmux_panes() -> HashMap<String, Pane> {
     map
 }
 
-/// `pane_tty \t target \t pane_id \t window_name \t session_name \t job_run \t gh_identity \t embed` -> (tty, pane).
+/// `pane_tty \t target \t pane_id \t window_name \t session_name \t job_run \t gh_identity \t embed \t fallback` -> (tty, pane).
 fn parse_pane(line: &str) -> Option<(String, Pane)> {
     let mut parts = line.split('\t');
     let ptty = parts.next()?;
@@ -776,6 +785,7 @@ fn parse_pane(line: &str) -> Option<(String, Pane)> {
     let job_run = parts.next().unwrap_or("").to_string();
     let gh_identity = parts.next().unwrap_or("").to_string();
     let embed = parts.next().unwrap_or("").to_string();
+    let fallback = parts.next().unwrap_or("").to_string();
     Some((
         ptty.to_string(),
         Pane {
@@ -786,6 +796,7 @@ fn parse_pane(line: &str) -> Option<(String, Pane)> {
             job_run,
             gh_identity,
             embed,
+            fallback,
         },
     ))
 }

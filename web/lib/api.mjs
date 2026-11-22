@@ -44,6 +44,7 @@ import { MAX_FIRST, MAX_TASK, MODES, SlackError, isPersonTarget, linkMinutes, pa
 import { GithubError, validLinkId as validGithubLinkId } from './github.mjs';
 import { VerandaError } from './veranda.mjs';
 import { BUSY_MARK, DEFAULTS as LOAD_DEFAULTS, MAX_OVERRIDE_MINUTES, loadSettings } from './load.mjs';
+import { DEFAULTS as USAGE_DEFAULTS, MAX_OVERRIDE_MINUTES as USAGE_MAX_OVERRIDE, USAGE_MARK, usagePatch, usageSettings } from './usage.mjs';
 
 /**
  * An error with a status → its HttpError. A host under heavy load (lib/load.mjs) answers 409 with
@@ -51,11 +52,16 @@ import { BUSY_MARK, DEFAULTS as LOAD_DEFAULTS, MAX_OVERRIDE_MINUTES, loadSetting
  */
 function statusHttpError(err) {
   const e = new HttpError(err.message, err.status);
-  if (err.overloaded || (err.status === 409 && String(err.message).includes(BUSY_MARK))) e.body = { overloaded: true };
+  if (err.overloaded || (err.status === 409 && (String(err.message).includes(BUSY_MARK) || String(err.message).includes(USAGE_MARK)))) e.body = { overloaded: true, ...(err.usage || String(err.message).includes(USAGE_MARK) ? { usage: true } : {}) };
   return e;
 }
 
 export const API_VERSION = 1;
+
+/** A spawn request's fallback options: `ctx: 'auto'` (Slack / GitHub bridges: may hold), `noFallback` (the dialog's override). */
+function spawnUsageOpts(body) {
+  return { ctx: body?.ctx === 'auto' ? 'auto' : 'manual', noFallback: body?.noFallback === true };
+}
 
 const SESSION_ROUTE = /^\/api\/hosts\/([^/]+)\/sessions\/([^/]+)\/(peek|messages|send|keys|answer|kill|sleep|snooze|rename|autoname)$/;
 const POST_ACTIONS = new Set(['send', 'keys', 'answer', 'kill', 'sleep', 'snooze', 'rename', 'autoname']);
@@ -125,6 +131,7 @@ const JOBS_ROUTE = /^\/api\/hosts\/([^/]+)\/jobs(?:\/([^/]+)(?:\/(run|enabled|re
 /** `fleet jobs run` starts a session (tmux + the agent): give a peer longer than the CLI's 60 s. */
 const JOB_RUN_PROXY_MS = 90 * 1000;
 const USAGE_ROUTE = /^\/api\/hosts\/([^/]+)\/usage$/;
+const USAGE_SUB_ROUTE = /^\/api\/hosts\/([^/]+)\/usage\/(check|settings|override)$/;
 const PRS_ROUTE = /^\/api\/hosts\/([^/]+)\/prs(?:\/(checkout|spawn|seen))?$/;
 /** A PR in the diff reviewer without a session: …/prs/:owner/:repo/:n/diff | files | ask | notes[/:note[/post]] | notes/handoff. */
 const PR_REVIEW_ROUTE = /^\/api\/hosts\/([^/]+)\/prs\/([^/]+)\/([^/]+)\/(\d{1,9})\/(diff|files|ask|notes)(?:\/([^/]+)(?:\/(post))?)?$/;
@@ -688,7 +695,7 @@ export function createApi({
       const nameGiven = check.nameGiven !== false || !config.autoName?.enabled;
       // Linked: it starts with no prompt, so nothing runs before it knows it is in Slack — the
       // prompt goes in with the link's intro, as its first prompt.
-      const result = await spawner.spawn({ ...check, ...(link ? { prompt: '' } : {}), nameGiven, force: body?.ignoreLoad === true });
+      const result = await spawner.spawn({ ...check, ...(link ? { prompt: '' } : {}), nameGiven, force: body?.ignoreLoad === true, ...spawnUsageOpts(body) });
       refreshFleet();
       if (link) {
         try {
@@ -1521,6 +1528,15 @@ export function createApi({
       return forHost({ req, url, host: decodeURIComponent(hr[1]), local: () => localHarnesses(url) });
     }
 
+    // Subscription fallback (lib/usage.mjs): where a spawn would start, Settings → Usage, an override.
+    const usb = USAGE_SUB_ROUTE.exec(url.pathname);
+    if (usb) {
+      const sub = usb[2];
+      const allowed = sub === 'check' ? ['GET'] : sub === 'settings' ? ['GET', 'PUT'] : ['POST'];
+      if (!allowed.includes(req.method)) throw new HttpError('method not allowed', 405);
+      return forHost({ req, url, host: decodeURIComponent(usb[1]), local: () => localUsageFallback(req, url, sub) });
+    }
+
     const us = USAGE_ROUTE.exec(url.pathname);
     if (us) {
       if (req.method !== 'GET') throw new HttpError('method not allowed', 405);
@@ -2259,7 +2275,7 @@ export function createApi({
     const nameGiven = check.nameGiven !== false || !config.autoName?.enabled;
     let result;
     try {
-      result = await spawner.spawn({ name: check.name, dir: worktree.path, prompt, nameGiven, model: check.model, harness: check.harness, ghIdentity: check.ghIdentity, force: body?.ignoreLoad === true });
+      result = await spawner.spawn({ name: check.name, dir: worktree.path, prompt, nameGiven, model: check.model, harness: check.harness, ghIdentity: check.ghIdentity, force: body?.ignoreLoad === true, ...spawnUsageOpts(body) });
     } catch (err) {
       if (err?.status) throw statusHttpError(err);
       throw err;
@@ -2339,7 +2355,7 @@ export function createApi({
     let result;
     try {
       const dir = await resolveAllowedDir(check.dir, roots);
-      result = await spawner.spawn({ name: check.name, dir, prompt, nameGiven, model: check.model, harness: check.harness, ghIdentity: check.ghIdentity, force: body?.ignoreLoad === true });
+      result = await spawner.spawn({ name: check.name, dir, prompt, nameGiven, model: check.model, harness: check.harness, ghIdentity: check.ghIdentity, force: body?.ignoreLoad === true, ...spawnUsageOpts(body) });
     } catch (err) {
       if (err?.status) throw statusHttpError(err);
       throw err;
@@ -2582,6 +2598,62 @@ export function createApi({
    * reportPromptDefault }` (a prompt `null` = its default); PUT any of `leadPrompt`,
    * `siblingReports`, `reportPrompt` (`null` / `""` = back to the default) → the same.
    */
+  /** Settings → Usage, this host's: the settings, an active override, both harness families' check. */
+  async function usageView() {
+    const settings = usageSettings(config.usage);
+    const checks = {};
+    if (typeof cli?.usageCheck === 'function') {
+      for (const harness of ['claude', 'codex']) {
+        checks[harness] = await cli.usageCheck({ harness }).catch((err) => ({ error: String(err?.message ?? err) }));
+      }
+    }
+    const overrideUntil = checks.claude?.overrideUntil ?? checks.codex?.overrideUntil ?? null;
+    return { host: config.self, settings, defaults: USAGE_DEFAULTS, overrideUntil, checks, spawn: config.spawn !== false };
+  }
+
+  async function localUsageFallback(req, url, sub) {
+    if (typeof cli?.usageCheck !== 'function') throw new HttpError('the usage check is not available on this server', 501);
+    try {
+      if (sub === 'check') {
+        const harness = url.searchParams.get('harness') || 'claude';
+        if (!['claude', 'codex', 'pi'].includes(harness)) throw new HttpError(`unknown harness: ${harness}`, 400);
+        const ctx = url.searchParams.get('ctx') || 'manual';
+        if (!['manual', 'auto', 'bot'].includes(ctx)) throw new HttpError(`ctx must be manual, auto or bot`, 400);
+        const model = url.searchParams.get('model') || '';
+        return { status: 200, body: { host: config.self, ...(await cli.usageCheck({ harness, model, ctx })) } };
+      }
+      if (sub === 'settings') {
+        if (req.method === 'PUT') {
+          let next;
+          try {
+            next = usagePatch(await readJsonBody(req), usageSettings(config.usage));
+          } catch (err) {
+            throw err instanceof HttpError ? err : new HttpError(err.message, err.status ?? 400);
+          }
+          if (typeof cli?.configSet !== 'function') throw new HttpError('config writes are not available on this server', 501);
+          try {
+            await cli.configSet({ key: 'usage', value: next, configFile: config.configFile ?? null });
+          } catch (err) {
+            throw new HttpError(`could not save the usage settings: ${err?.message ?? err}`, err?.timedOut ? 504 : 502);
+          }
+          config.usage = usageSettings(next);
+        }
+        return { status: 200, body: await usageView() };
+      }
+      const body = await readJsonBody(req);
+      const minutes = body?.minutes;
+      if (typeof minutes !== 'number' || !Number.isFinite(minutes) || minutes < 0 || minutes > USAGE_MAX_OVERRIDE) {
+        throw new HttpError(`minutes must be a number from 0 to ${USAGE_MAX_OVERRIDE}`, 400);
+      }
+      await cli.usageOverride(minutes);
+      return { status: 200, body: await usageView() };
+    } catch (err) {
+      if (err instanceof HttpError) throw err;
+      if (err?.missing) throw new HttpError('this host’s fleet CLI has no `usage check` — update it', 501);
+      throw new HttpError(String(err?.message ?? err), err?.timedOut ? 504 : 502);
+    }
+  }
+
   /** This host's load view: Settings → Host load. */
   function loadView() {
     return {
@@ -2775,7 +2847,7 @@ export function createApi({
     const nameGiven = check.nameGiven !== false || !config.autoName?.enabled;
     let result;
     try {
-      result = await spawner.spawn({ name: check.name, dir, prompt, nameGiven, model: check.model, harness: check.harness, ghIdentity: check.ghIdentity, force: body?.ignoreLoad === true });
+      result = await spawner.spawn({ name: check.name, dir, prompt, nameGiven, model: check.model, harness: check.harness, ghIdentity: check.ghIdentity, force: body?.ignoreLoad === true, ...spawnUsageOpts(body) });
     } catch (err) {
       if (err?.status) throw statusHttpError(err);
       throw err;

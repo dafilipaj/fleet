@@ -29,6 +29,66 @@ pub fn run(json: bool, refresh: bool) -> Result<()> {
     Ok(())
 }
 
+/// `fleet usage check`: where a spawn would start now (`core::fallback`).
+pub fn check(
+    h: crate::core::harness::Harness,
+    model: Option<&str>,
+    ctx: &str,
+    json: bool,
+) -> Result<()> {
+    use crate::core::fallback::{self, Ctx};
+    let ctx = Ctx::parse(ctx)
+        .ok_or_else(|| Error::Other(format!("--ctx: manual, auto or bot, not {ctx}")))?;
+    let d = fallback::decide(h, model, ctx);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&d)?);
+        return Ok(());
+    }
+    if !d.enabled {
+        let why = if d.override_until.is_some() {
+            "overridden"
+        } else {
+            "off (config usage.enabled)"
+        };
+        println!("{}: fallback check {why}", d.primary);
+        return Ok(());
+    }
+    let state = |s: &fallback::ProviderState| {
+        if s.exhausted {
+            format!("{} at its limit ({})", s.provider, s.reasons.join(", "))
+        } else {
+            format!("{} ok", s.provider)
+        }
+    };
+    println!("{}: {}", d.primary, state(&d.primary_state));
+    if let Some(f) = &d.fallback {
+        match &f.why_not {
+            Some(w) => println!("fallback {}: unusable ({w})", f.harness),
+            None => println!("fallback {}: {}", f.harness, state(&f.state)),
+        }
+    }
+    match (&d.hold, &d.note) {
+        (Some(h), _) => println!("→ waits: {h}"),
+        (None, Some(n)) => println!("→ starts on {}: {n}", d.harness),
+        (None, None) => println!("→ starts on {}", d.harness),
+    }
+    Ok(())
+}
+
+/// `fleet usage override <minutes>`.
+pub fn set_override(minutes: i64) -> Result<()> {
+    match crate::core::fallback::set_override(minutes)? {
+        Some(until) => {
+            let at = chrono::DateTime::from_timestamp_millis(until)
+                .map(|t| t.with_timezone(&Local).format("%H:%M").to_string())
+                .unwrap_or_default();
+            println!("fallback check off until {at}");
+        }
+        None => println!("fallback check back on"),
+    }
+    Ok(())
+}
+
 fn render(u: &Usage, now: DateTime<Utc>) -> String {
     let mut out = String::new();
     let openai = u.provider == "openai";

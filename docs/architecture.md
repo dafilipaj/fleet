@@ -197,6 +197,7 @@ server. Path: `$FLEET_CONFIG`, else `${XDG_CONFIG_HOME:-~/.config}/fleet/config.
 | `harnesses` | `{ codex: { command }, pi: { command } }`: how the [other harnesses](#other-harnesses) launch (default the bare name); plus, for `claude` / `codex` / `pi`, `model` and `effort`: the defaults a spawn uses when it picks none ([cli.md](cli.md#harnesses)). Read leniently |
 | `spawnDirs` | directories offered for new sessions, per host (`paths.<host>`); also edited from the web UI (Settings → Start directories, which writes it through `fleet config set`). They are also the spawn allow-list. An entry with `"hidden": true` stays on the allow-list (e.g. a dir only an app's [embedded panel](#embed-view) spawns in) but is not offered in the New session menu up front (its **+N hidden** button shows them); when a host has only hidden entries it offers Home, and the hidden dirs stay allowed. `fleet config show --resolved` lists them with `"hidden": true` |
 | `resources` | `{ enabled, load: { hot, critical }, psi: { hot, critical }, enterSeconds, exitSeconds }` (default off; 2 / 4 × cores, 10 / 10 %, 60 / 300 s): the web server watches this machine's load and holds new sessions while it is under heavy load — see [Host load](#host-load). Read at start |
+| `usage` | `{ enabled, fallback: { claude, codex, pi }, limits: { session, weekly, paceMargin } }` (default off; `claude→codex`, `codex→claude`, `pi→claude`; 90 / 95 %, 15 points): a spawn whose subscription is at its limit starts on the fallback harness — see [Subscription fallback](#subscription-fallback). Read on every CLI run; the web server applies a Settings save at once |
 | `spawn` | `false`: this machine never runs agent sessions — an always-on server that only serves the web app and its single-home services (Slack and GitHub bridges, inbox, grouping). Read by the machine it is set on (its own config; CLI and web server, the server at start). It offers no spawn dirs (`/api/fleet`: `spawn: false`, `spawnDirs` and `hiddenSpawnDirs` both `[]`), every web route that would start an agent on it answers **403** `{ error: "<host> does not run agent sessions (config spawn: false)", noSpawn: true }` (`/spawn` — so the embed view, the Slack and GitHub bridges' spawns on it — `prs/spawn`, the PR notes handoff, `tasks/spawn`, `schedule`, `jobs/:name/run`, `dormant/restore` (a dry run still answers), a stack sibling here, `POST /api/operator`, which then moves on to the next of `web.operator.hosts`); `restore.onBoot` is skipped; the web UI does not offer it in New session or the other spawn entry points; the CLI's `spawn`, `handoff`, `stack spawn` (here; `--on` another host is fine), `pr spawn`, `task spawn`, `schedule add`, `bots run` and `restore <target> \| --all` refuse with that message, locally or via `-H` (the remote CLI reads its own config). tmux-only commands (`new`, `tmux …`) and the bridges themselves keep working. Default (absent, or any other value): `true`, spawning as usual |
 | `tui` | dashboard preferences: `rows` (`"1"`, `"2"`, `"auto"`), `mouse` |
 | `naming` | generated names: `enabled`, `model` (default `haiku`), `syncTmux` (tmux name follows the title, default on), `autoTitle` |
@@ -509,6 +510,9 @@ JSON over HTTP, errors as `{ "error": "..." }`. At a high level:
 | POST | `/api/hosts/:host/load/sample` · `/override` `{ minutes }` (0–1440, 0 ends it) · `/restart` | sample now · let new sessions start whatever the load · restart that web server (501 unless launchd / systemd runs it) — each answers the view (restart: `{ restarting: true }`) |
 | GET | `/api/hosts/:host/load/processes` | `{ host, sessions: [{ id, name, status, pid, processes, rssMb, cpu }], others: [{ pid, name, rssMb, cpu }], totalMb, sessionsMb }` |
 | GET | `/api/load` | `{ host, enabled, load }`: this host's load verdict (`load: { state, since, reasons, level, sample, updatedAt }`, null while `resources` is off) — see [Host load](#host-load) |
+| GET | `/api/hosts/:host/usage/check?harness=&model=&ctx=` | where a new session would start now (`fleet usage check --json`, see [Subscription fallback](#subscription-fallback)): `{ host, enabled, primary, harness, model, fellBack, note, hold, primaryState, fallback, overrideUntil? }`; `ctx` `manual` (default) / `auto` / `bot` |
+| GET / PUT | `/api/hosts/:host/usage/settings` | Settings → Usage limits: `{ host, settings, defaults, overrideUntil, checks: { claude, codex }, spawn }`; PUT a `usage` patch (`enabled`, `fallback.<harness>` = another harness or `null`, `limits.{session,weekly,paceMargin}`; 400 on junk) → written with `fleet config set usage`, applied live |
+| POST | `/api/hosts/:host/usage/override` | `{ minutes }` (0–1440; 0 ends it): the check is off until then (`fleet usage override`) → the settings view |
 | GET | `/api/health` | name, version, apiVersion, self, uptime, autoName (`lastRun`) |
 | GET | `/api/settings` | apiVersion, self, host names, quick replies, `transcribe: { enabled }` (this server has a transcription key), `speak: { enabled, voice }` (it can read replies aloud), `operator: { enabled, hosts }` (the [voice operator](#voice-operator) and where it runs), `focus: { host }` (`web.focus.host`, null when unset) |
 | GET | `/api/fleet[?local=1]` | `{ self, hosts: [{ name, ok, error?, sessions, spawn?, spawnDirs, hiddenSpawnDirs?, home?, notes?, stacks? }], snapshotAt }` — `spawn: false` (present only then): that host runs no agent sessions (config [`spawn`](#config)); its `spawnDirs` and `hiddenSpawnDirs` are then `[]` and the UI offers no spawn there — `spawnDirs` (`[{ label, path }]`): what that host offers in New session, without its hidden entries (Home when it offers none); `hiddenSpawnDirs` (same shape, present only when it has any; older servers omit it): its `hidden: true` entries, allowed for spawns (the embed view checks `dir` against both) but not offered — `home`: that host's home directory (for `~/…` paths, e.g. the [embed view](#embed-view)'s `dir`); older servers omit it — `stacks`: that host's [session stacks](#session-stacks), compact (`{ id, label, host, lead, members: [{ session, host, live }] }`), from which the merged view stamps `stack: { id, label, host, lead }` on the rows of members running on *other* hosts; sessions are `list --json` objects + `host` (a Codex session with no transcript yet gets `session_id: "pid-<pid>"` until it has one) (`title` capped at 300 chars) + `editorUrl` (the "Open in editor" link for its cwd, built by the server that answered — see [Session briefs](#session-briefs)); the merged view is a warm background-refreshed snapshot |
@@ -1405,6 +1409,46 @@ idle session costs memory, not CPU, and a busy host is what matters.
     restart); the monitor samples while off too, so the numbers are there before you turn it on;
   - **Sample now**, and **Restart web** when launchd (`fleet.web`) or systemd runs the server (it
     comes back by itself); elsewhere the route answers 501.
+
+## Subscription fallback
+
+A shed has at most two subscriptions: Claude (the `claude` harness; pi on an `anthropic/…` model)
+and the ChatGPT plan (Codex; pi on its other models). Opt-in per machine (`usage.enabled`): every
+spawn names a primary harness, and when that harness's subscription is at its limit the session
+starts on the **fallback** harness instead (`usage.fallback`, default `claude→codex`,
+`codex→claude`, `pi→claude`), with that harness's own command and default model. One place
+decides, `core::fallback` (`fleet usage check`); the CLI's spawns call it directly, the web
+server's spawner through the CLI.
+
+- **At its limit**, from the usage reads of [Subscription usage](#subscription-usage) (cached
+  60 s): the current session at `limits.session` % (90), a weekly limit at `limits.weekly` % (95)
+  — a per-model weekly one (`Weekly · Fable`) only when the session's model is that model — or,
+  for **bots and scheduled sessions only**, a weekly limit running ahead of the week: used % above
+  the share of the week gone plus `limits.paceMargin` points (15). Extra usage does not count as
+  room: a subscription at its limit falls back even when pay-as-you-go is on.
+- **Usable fallback**: installed, logged in (Codex: a ChatGPT login in `$CODEX_HOME/auth.json`;
+  pi: `auth.json` in its agent dir), on the other subscription, and not at its limit itself.
+- **What a spawn gets**, by who starts it (`ctx`):
+
+  | | primary below its limit | at its limit, fallback usable | both at the limit / no usable fallback |
+  |---|---|---|---|
+  | `manual`: CLI spawns, the web's new-session form | primary | fallback (the form marks it and offers *Keep &lt;harness&gt;* → `noFallback`) | primary, with a warning |
+  | `auto`: Slack mentions, GitHub review requests | primary | fallback | **held**: 409 `overloaded` + `usage`, retried like a busy host (Slack: one note in the thread, then every 30 s for up to 1 h; GitHub: the next polls) |
+  | `bot`: bots (`bots tick` / `run`), scheduled sessions | primary (also paced) | fallback | **held**: the tick skips it; a due slot stays due (`jobs::CATCH_UP_SECS`), a schedule entry stays pending |
+
+  Restoring or resuming a session never switches (its transcript belongs to its harness), and the
+  operator always runs Claude.
+- **Marked**: a session started on the fallback carries the pane option `@fleet_fallback` (`claude
+  → codex: session 92%`), listed as `fallback` in `fleet list --json`; the web shows its agent chip
+  as `· fallback` with the reason.
+- **Fail-open**: a read that fails, or one older than 30 min, counts as below the limit; a check
+  that fails starts the primary.
+- **Overrides**: `--no-fallback` (env `FLEET_NO_FALLBACK=1`) keeps the primary for one command;
+  `fleet usage override <minutes>` (Settings → Usage limits → *Ignore limits 1 h*) turns the check
+  off for the machine until then (`~/.local/state/fleet/usage-override.json`).
+- **Alerts**: the Slack bridge's server asks every host's `usage/check` (claude and codex) every
+  5 minutes and DMs the owner when a subscription reaches its limit (and where its sessions go now)
+  or is below it again; what it told is kept in `usage-alerts.json`.
 
 ## Session recovery
 

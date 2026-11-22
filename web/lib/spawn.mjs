@@ -216,6 +216,9 @@ export function createSpawner({
   // () → null, or why this host holds new sessions now (lib/load.mjs): a spawn without `force`
   // answers 409 `overloaded` instead of starting.
   busy = () => null,
+  // async ({ harness, model, ctx }) → `fleet usage check` (lib/usage.mjs): where the session
+  // starts when its subscription is at the limit; null = no check. Fails open.
+  place = null,
 }) {
   const wait = sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
 
@@ -252,10 +255,24 @@ export function createSpawner({
   }
 
   /** @returns {{ name, dir, tmuxSession, command, trusted, model, harness, ghIdentity, embed }} */
-  async function spawn({ name, dir, prompt, nameGiven = true, model = '', harness = 'claude', ghIdentity = null, embed = null, force = false }) {
+  async function spawn({ name, dir, prompt, nameGiven = true, model = '', harness = 'claude', ghIdentity = null, embed = null, force = false, ctx = 'manual', noFallback = false }) {
     if (refuse) throw Object.assign(new Error(refuse), { status: 403, noSpawn: true });
     const held = force ? null : busy();
     if (held) throw Object.assign(new Error(held), { status: 409, overloaded: true });
+    // Its subscription at the limit (config `usage`): the fallback harness with its default
+    // model, or — automatic spawns, both at the limit — held like a busy host.
+    let usage = null;
+    if (place && !noFallback) {
+      const d = await place({ harness, model, ctx }).catch(() => null);
+      if (d?.hold && !force) throw Object.assign(new Error(d.hold), { status: 409, overloaded: true, usage: true });
+      if (d?.fellBack && d.harness) {
+        usage = { primary: harness, note: d.note ?? null, fellBack: true };
+        harness = d.harness;
+        model = '';
+      } else if (d?.note) {
+        usage = { primary: harness, note: d.note, fellBack: false };
+      }
+    }
     if (ghIdentity && !ghIdentities.some((i) => i.name === ghIdentity)) {
       throw Object.assign(new Error(`no GitHub identity "${ghIdentity}" in this host's fleet config`), { status: 400 });
     }
@@ -295,9 +312,10 @@ export function createSpawner({
     // The `fleet list` label; the shell already carries the identity.
     if (ghIdentity) await run(tmux, ['set-option', '-p', '-t', `${name}:`, '@fleet_gh_identity', ghIdentity], { timeout: 5000 }).catch(() => {});
     if (embed) await run(tmux, ['set-option', '-p', '-t', `${name}:`, '@fleet_embed', embed], { timeout: 5000 }).catch(() => {});
+    if (usage?.fellBack && usage.note) await run(tmux, ['set-option', '-p', '-t', `${name}:`, '@fleet_fallback', usage.note], { timeout: 5000 }).catch(() => {});
     const trusted = await acceptTrustPrompt(name, { harness });
     if (!trusted) await ensureStarted(name, { harness });
-    return { name, dir, tmuxSession: name, command, trusted, model: picked.model || null, harness, ghIdentity, embed };
+    return { name, dir, tmuxSession: name, command, trusted, model: picked.model || null, harness, ghIdentity, embed, usage };
   }
 
   /**
