@@ -1171,7 +1171,12 @@ export function createSlackBridge({ settings = {}, self = null, call, socket = n
         },
       };
       log(`[slack] mention from ${names[ev.user] ?? ev.user} in ${key}: opening a session on ${where}`);
-      const r = await spawn(host, body);
+      // A host under heavy load holds it (lib/load.mjs): say so once, it starts when the host recovers.
+      const onHold = async (why) => {
+        log(`[slack] mention in ${key}: held, ${why}`);
+        await call('chat.postMessage', { channel: ev.channel, thread_ts: threadTs, text: `${clip(why, 300)}. I'll open the session as soon as it recovers (up to an hour).` });
+      };
+      const r = await spawn(host, body, { onHold });
       log(`[slack] ${r?.slack?.id ?? '?'}: ${r?.name ?? 'session'} on ${where} started from ${key}`);
     } catch (err) {
       const why = err?.message ?? String(err);
@@ -1368,7 +1373,16 @@ export function createSlackBridge({ settings = {}, self = null, call, socket = n
     t.unref?.();
   }
 
+  /** A DM to the owner (`slack.owner`) from the bot: the host load alerts (lib/load.mjs). */
+  async function notifyOwner(text) {
+    if (!settings.owner) throw new Error('no slack.owner to tell');
+    const channel = (await call('conversations.open', { users: settings.owner })).channel?.id;
+    if (!channel) throw new Error('could not open a DM with the owner');
+    await call('chat.postMessage', { channel, text });
+  }
+
   return {
+    notifyOwner,
     link,
     relink,
     unlink,

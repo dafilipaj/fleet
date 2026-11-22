@@ -43,6 +43,17 @@ import { validJobName } from './jobs.mjs';
 import { MAX_FIRST, MAX_TASK, MODES, SlackError, isPersonTarget, linkMinutes, parseSlackUrl, validLinkId } from './slack.mjs';
 import { GithubError, validLinkId as validGithubLinkId } from './github.mjs';
 import { VerandaError } from './veranda.mjs';
+import { BUSY_MARK } from './load.mjs';
+
+/**
+ * An error with a status → its HttpError. A host under heavy load (lib/load.mjs) answers 409 with
+ * `overloaded: true`, which the UI turns into a confirm (then the same request with `ignoreLoad`).
+ */
+function statusHttpError(err) {
+  const e = new HttpError(err.message, err.status);
+  if (err.overloaded || (err.status === 409 && String(err.message).includes(BUSY_MARK))) e.body = { overloaded: true };
+  return e;
+}
 
 export const API_VERSION = 1;
 
@@ -210,6 +221,7 @@ export const DEFAULT_QUICK_REPLIES = [
  *   inbox       lib/inbox.mjs instance when THIS host runs the inbox (absent → proxy to
  *               config.inbox.host, or a disabled response)
  *   warmFleet   keep the merged /api/fleet warm in the background (lib/snapshot.mjs)
+ *   loadMonitor lib/load.mjs#createLoadMonitor when `resources.enabled` (GET /api/load, `load` on this host)
  *   name, version, startedAt   for /api/health
  *   fetchPeerHost, proxyToPeer, streamToPeer, streamFromPeer (optional, for tests)
  * @returns {(req, url) => Promise<{status, body}>}  throws HttpError / BackendError.
@@ -221,6 +233,7 @@ export function createApi({
   backend,
   transcripts,
   spawner,
+  loadMonitor = null,
   killer = null,
   cli = null,
   autoNamer = null,
@@ -288,6 +301,11 @@ export function createApi({
     throw Object.assign(new HttpError(noSpawnMessage(config.self), 403), { body: { error: noSpawnMessage(config.self), noSpawn: true } });
   }
   // Each host advertises whether it has a notes explorer (like its spawnDirs).
+  // …and its load (lib/load.mjs), when it watches it: the UI marks a host under heavy load.
+  const loadInfo = () => {
+    const l = loadMonitor?.current();
+    return l ? { load: { state: l.state, since: l.since, reasons: l.reasons, updatedAt: l.updatedAt } } : {};
+  };
   const notesInfo = () => (notes ? { notes: { name: notes.name ?? null } } : {});
   // …and its session stacks, compact, so a peer can stamp the rows of their members on its side.
   const stacksInfo = () => (stacks ? { stacks: stacks.compact() } : {});
@@ -297,7 +315,7 @@ export function createApi({
   // `home`: a `~/…` path from the UI (the embed view's `dir`) is matched against the absolute
   // spawnDirs and session cwds.
   async function buildFleet({ force = false } = {}) {
-    const selfHost = stampOperator({ ...(await fleet.localHost({ force })), ...spawnDirsInfo(), home: os.homedir(), ...notesInfo(), ...stacksInfo() });
+    const selfHost = stampOperator({ ...(await fleet.localHost({ force })), ...spawnDirsInfo(), ...loadInfo(), home: os.homedir(), ...notesInfo(), ...stacksInfo() });
     const peerNames = Object.keys(config.peers);
     const peerHosts = await Promise.all(
       peerNames.map((n) => fetchPeerHost(n, config.peers[n], { timeoutMs: peerFleetTimeoutMs })),
@@ -339,7 +357,7 @@ export function createApi({
     const withEditors = (body) => ({ ...body, hosts: body.hosts.map((h) => withSessionEditors(h, ec)) });
     if (url.searchParams.get('local') === '1') {
       // Peers poll this: the local host (2s TTL cache), never the merged snapshot.
-      const selfHost = stampOperator({ ...(await fleet.localHost()), ...spawnDirsInfo(), home: os.homedir(), ...notesInfo(), ...stacksInfo() });
+      const selfHost = stampOperator({ ...(await fleet.localHost()), ...spawnDirsInfo(), ...loadInfo(), home: os.homedir(), ...notesInfo(), ...stacksInfo() });
       return { status: 200, body: withEditors({ self: config.self, hosts: [selfHost] }) };
     }
     if (snapshot) return { status: 200, body: withEditors(await snapshot.get()) };
@@ -665,7 +683,7 @@ export function createApi({
       const nameGiven = check.nameGiven !== false || !config.autoName?.enabled;
       // Linked: it starts with no prompt, so nothing runs before it knows it is in Slack — the
       // prompt goes in with the link's intro, as its first prompt.
-      const result = await spawner.spawn({ ...check, ...(link ? { prompt: '' } : {}), nameGiven });
+      const result = await spawner.spawn({ ...check, ...(link ? { prompt: '' } : {}), nameGiven, force: body?.ignoreLoad === true });
       refreshFleet();
       if (link) {
         try {
@@ -682,7 +700,7 @@ export function createApi({
       }
       return { status: 200, body: { ok: true, host: config.self, ...result } };
     } catch (err) {
-      if (err?.status) throw new HttpError(err.message, err.status);
+      if (err?.status) throw statusHttpError(err);
       throw err;
     }
   }
@@ -1137,7 +1155,7 @@ export function createApi({
       if (r.started) refreshFleet();
       return { status: 200, body: r };
     } catch (err) {
-      if (err?.status) throw new HttpError(err.message, err.status);
+      if (err?.status) throw statusHttpError(err);
       throw err;
     }
   }
@@ -1284,6 +1302,12 @@ export function createApi({
         return r;
       }
       throw new HttpError(`no operator host answered (${tried.join('; ')})`, 503);
+    }
+
+    // This host's load (lib/load.mjs): what the Slack bridge's host polls for the owner's alerts.
+    if (url.pathname === '/api/load') {
+      if (req.method !== 'GET') throw new HttpError('method not allowed', 405);
+      return { status: 200, body: { host: config.self, enabled: !!loadMonitor, load: loadMonitor?.current() ?? null } };
     }
 
     if (url.pathname === '/api/fleet') {
@@ -1621,7 +1645,7 @@ export function createApi({
               const r = await differ.filesAt(top, { base: url.searchParams.get('base'), tree: url.searchParams.get('tree'), paths: url.searchParams.getAll('path'), full: url.searchParams.get('full') === '1' });
               return { status: 200, body: { host: config.self, id: session.session_id, root: top, ...r } };
             } catch (err) {
-              if (err?.status) throw new HttpError(err.message, err.status);
+              if (err?.status) throw statusHttpError(err);
               throw err;
             }
           }
@@ -1687,7 +1711,7 @@ export function createApi({
             const body = await differ.diff(cwd, { base: url.searchParams.get('base'), since: url.searchParams.get('since') });
             return { status: 200, body: { host: config.self, id: session.session_id, ...body } };
           } catch (err) {
-            if (err?.status) throw new HttpError(err.message, err.status);
+            if (err?.status) throw statusHttpError(err);
             throw err;
           }
         },
@@ -1728,7 +1752,7 @@ export function createApi({
                         : await reviews.update(session, tid, body);
             return { status: 200, body: { host: config.self, id: session.session_id, ...r } };
           } catch (err) {
-            if (err?.status) throw new HttpError(err.message, err.status);
+            if (err?.status) throw statusHttpError(err);
             throw err;
           }
         },
@@ -1760,7 +1784,7 @@ export function createApi({
             const ask = asks.start({ cwd, resume: session.session_id, prompt, question: String(body.question).trim(), label });
             return { status: 200, body: { host: config.self, id: session.session_id, ask } };
           } catch (err) {
-            if (err?.status) throw new HttpError(err.message, err.status);
+            if (err?.status) throw statusHttpError(err);
             throw err;
           }
         },
@@ -1782,7 +1806,7 @@ export function createApi({
             if (req.method === 'DELETE') return { status: 200, body: { host: config.self, ...asks.cancel(askId) } };
             return { status: 200, body: { host: config.self, ask: asks.get(askId) } };
           } catch (err) {
-            if (err?.status) throw new HttpError(err.message, err.status);
+            if (err?.status) throw statusHttpError(err);
             throw err;
           }
         },
@@ -1823,7 +1847,7 @@ export function createApi({
                           : await queue.edit(session, itemId, body);
             return { status: 200, body: { host: config.self, id: session.session_id, ...r } };
           } catch (err) {
-            if (err?.status) throw new HttpError(err.message, err.status);
+            if (err?.status) throw statusHttpError(err);
             throw err;
           }
         },
@@ -2107,7 +2131,7 @@ export function createApi({
     const prRef = `${pr.owner}/${pr.repo}#${pr.number}`;
     const repoPath = typeof pr.local?.repoPath === 'string' && path.isAbsolute(pr.local.repoPath) ? pr.local.repoPath : null;
     const fail = (err) => {
-      if (err?.status) throw new HttpError(err.message, err.status);
+      if (err?.status) throw statusHttpError(err);
       throw err;
     };
     const info = { owner: pr.owner, repo: pr.repo, number: pr.number, title: pr.title, url: pr.url, author: pr.author, headBranch: pr.headBranch, baseBranch: pr.baseBranch, headOid: pr.headOid ?? null, draft: pr.draft };
@@ -2220,9 +2244,9 @@ export function createApi({
     const nameGiven = check.nameGiven !== false || !config.autoName?.enabled;
     let result;
     try {
-      result = await spawner.spawn({ name: check.name, dir: worktree.path, prompt, nameGiven, model: check.model, harness: check.harness, ghIdentity: check.ghIdentity });
+      result = await spawner.spawn({ name: check.name, dir: worktree.path, prompt, nameGiven, model: check.model, harness: check.harness, ghIdentity: check.ghIdentity, force: body?.ignoreLoad === true });
     } catch (err) {
-      if (err?.status) throw new HttpError(err.message, err.status);
+      if (err?.status) throw statusHttpError(err);
       throw err;
     }
     refreshFleet();
@@ -2268,7 +2292,7 @@ export function createApi({
     if (!id) throw new HttpError('task must be a Productive task id or link', 400);
     const cliError = (err) => {
       if (err?.missing) return new HttpError('this host’s fleet CLI has no `task` command — update it', 501);
-      return new HttpError(String(err?.message ?? err), err?.timedOut ? 504 : 502);
+            return new HttpError(String(err?.message ?? err), err?.timedOut ? 504 : 502);
     };
     if (action === 'status') {
       const status = typeof body?.status === 'string' ? body.status.trim() : '';
@@ -2300,9 +2324,9 @@ export function createApi({
     let result;
     try {
       const dir = await resolveAllowedDir(check.dir, roots);
-      result = await spawner.spawn({ name: check.name, dir, prompt, nameGiven, model: check.model, harness: check.harness, ghIdentity: check.ghIdentity });
+      result = await spawner.spawn({ name: check.name, dir, prompt, nameGiven, model: check.model, harness: check.harness, ghIdentity: check.ghIdentity, force: body?.ignoreLoad === true });
     } catch (err) {
-      if (err?.status) throw new HttpError(err.message, err.status);
+      if (err?.status) throw statusHttpError(err);
       throw err;
     }
     refreshFleet();
@@ -2347,7 +2371,7 @@ export function createApi({
     try {
       dir = await resolveAllowedDir(check.dir, spawnRoots(config));
     } catch (err) {
-      if (err?.status) throw new HttpError(err.message, err.status);
+      if (err?.status) throw statusHttpError(err);
       throw err;
     }
     try {
@@ -2488,7 +2512,7 @@ export function createApi({
       return { status: 202, body: { host: config.self, id: sid, started: r.started, queued: r.queued, generating: r.generating } };
     } catch (err) {
       if (err?.status === 429) return { status: 429, body: { error: err.message, retryAfterMs: err.retryAfterMs ?? null } };
-      if (err?.status) throw new HttpError(err.message, err.status);
+      if (err?.status) throw statusHttpError(err);
       throw err;
     }
   }
@@ -2659,9 +2683,9 @@ export function createApi({
     const nameGiven = check.nameGiven !== false || !config.autoName?.enabled;
     let result;
     try {
-      result = await spawner.spawn({ name: check.name, dir, prompt, nameGiven, model: check.model, harness: check.harness, ghIdentity: check.ghIdentity });
+      result = await spawner.spawn({ name: check.name, dir, prompt, nameGiven, model: check.model, harness: check.harness, ghIdentity: check.ghIdentity, force: body?.ignoreLoad === true });
     } catch (err) {
-      if (err?.status) throw new HttpError(err.message, err.status);
+      if (err?.status) throw statusHttpError(err);
       throw err;
     }
     refreshFleet();

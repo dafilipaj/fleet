@@ -10,6 +10,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { BUSY_MARK } from './load.mjs';
+
 /** A job name as the UI may send it (config keys are free-form; the web only passes these). */
 export const JOB_NAME_RE = /^[A-Za-z0-9_-]{1,40}$/;
 
@@ -24,6 +26,7 @@ function failure(err) {
   if (err?.missing) return { status: 501, body: { error: MISSING } };
   if (err?.notFound) return { status: 404, body: { error: String(err.message) } };
   if (err?.busy) return { status: 409, body: { error: String(err.message), busy: true } };
+  if (String(err?.message ?? '').includes(BUSY_MARK)) return { status: 409, body: { error: String(err.message), overloaded: true } };
   return { status: err?.timedOut ? 504 : 502, body: { error: String(err?.message ?? err) } };
 }
 
@@ -73,7 +76,7 @@ export function createJobs({ cli, self, home = os.homedir(), exists = fs.existsS
     if (!validJobName(name)) return { status: 400, body: { error: 'bad job name' } };
     if (body?.force != null && typeof body.force !== 'boolean') return { status: 400, body: { error: 'force must be true or false' } };
     try {
-      const output = await cli.jobRunNow(name, { force: body?.force === true });
+      const output = await cli.jobRunNow(name, { force: body?.force === true, ignoreLoad: body?.ignoreLoad === true });
       return { status: 200, body: { host: self, name, output } };
     } catch (err) {
       return failure(err);

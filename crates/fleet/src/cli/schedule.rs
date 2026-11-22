@@ -268,6 +268,11 @@ fn log(quiet: bool, line: &str) {
 /// The scheduled-session part of `bots tick`: re-read tasks, fire what is due, record what was
 /// missed. → how many failed to start.
 pub fn tick(quiet: bool) -> Result<usize> {
+    // A host under heavy load holds the round: due entries stay pending until it recovers.
+    if let Some(why) = crate::core::load::hold_reason() {
+        log(quiet, &format!("holding: {why}"));
+        return Ok(0);
+    }
     let now = Local::now().timestamp_millis();
     let pending: Vec<Entry> = schedule::load()
         .entries

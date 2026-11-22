@@ -183,7 +183,7 @@ export function createOperator({ config, fleet, spawner, backend = null, now = D
     await prepare();
     const existing = await find({ force: true });
     if (existing) return { host: config.self, dir, session: existing, started: false, tmuxSession: existing.tmux_session ?? null };
-    const result = await spawner.spawn({ name: OPERATOR_NAME, dir, prompt: '', nameGiven: true, model: config.operator.model, harness: 'claude' });
+    const result = await spawner.spawn({ name: OPERATOR_NAME, dir, prompt: '', nameGiven: true, model: config.operator.model, harness: 'claude', force: true });
     return { host: config.self, dir, session: null, started: true, tmuxSession: result.tmuxSession };
   }
 

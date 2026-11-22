@@ -253,7 +253,19 @@ export interface Host {
   notes?: { name: string | null }
   /** A shared shed (config `hosts.<name>.shared`, as the serving host sees it): out of the default view, the Inbox and the waiting count. Older servers omit it. */
   shared?: boolean
+  /** That host's load, when its server watches it (config `resources.enabled`); absent otherwise. */
+  load?: HostLoad
   sessions: Session[]
+}
+
+/** A host's load verdict (web/lib/load.mjs): `hot` / `critical` hold new sessions there. */
+export interface HostLoad {
+  state: 'ok' | 'hot' | 'critical'
+  /** When it went into this state (epoch ms). */
+  since: number
+  /** Why, e.g. `memory pressure warn`, `load 2.4× cores`; empty when ok. */
+  reasons: string[]
+  updatedAt: number
 }
 
 /** GET /api/fleet — self first, then peers. */

@@ -24,6 +24,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { DEFAULT_EDITOR, EDITORS } from './editor.mjs';
+import { loadSettings } from './load.mjs';
 
 export const DEFAULT_PORT = 7777;
 export const DEFAULT_SELF = 'local';
@@ -555,6 +556,8 @@ export function normalizeConfig(
   const spawn = spawnAllowed(raw);
   const spawnDirs = spawn ? spawnDirsFor(raw.spawnDirs, self.trim(), home) : [];
   const hiddenSpawnDirs = spawn ? hiddenSpawnDirsFor(raw.spawnDirs, self.trim(), home) : [];
+  // `resources`: the host load monitor (lib/load.mjs), opt-in.
+  const resources = loadSettings(raw.resources);
 
   let quickReplies = null;
   if (web.quickReplies != null) {
@@ -913,6 +916,7 @@ export function normalizeConfig(
     // the launcher comes from `fleet gh-identity launcher`, which owns the shim.
     ghIdentities: ghIdentitiesOf(raw),
     spawn,
+    resources,
     spawnDirs,
     hiddenSpawnDirs,
     uiDir,

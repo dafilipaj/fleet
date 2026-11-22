@@ -92,6 +92,7 @@ import type {
   UsageResponse,
 } from './types'
 import type { GroupEdit } from '@/lib/groups'
+import { confirmLoad } from '@/lib/loadConfirm'
 
 /** A failed request. `status` is the HTTP status, or 0 when the network is unreachable. */
 export class ApiError extends Error {
@@ -120,6 +121,8 @@ export interface RequestOptions {
   keepalive?: boolean
 }
 
+const isPlainBody = (b: unknown): b is Record<string, unknown> => b != null && typeof b === 'object' && !Array.isArray(b) && !(b instanceof Blob)
+
 export async function request<T>(path: string, { signal, method = 'GET', body, file, keepalive }: RequestOptions = {}): Promise<T> {
   const init: RequestInit = { method, signal, headers: {} }
   if (keepalive) init.keepalive = true
@@ -146,6 +149,11 @@ export async function request<T>(path: string, { signal, method = 'GET', body, f
   if (!res.ok) {
     // This server's web.auth wants a sign-in (a peer's 401 comes back without the header).
     if (res.status === 401 && res.headers.get('x-fleet-auth') === 'login' && typeof window !== 'undefined') window.location.assign('/login')
+    // A host under heavy load holds new sessions (web/lib/load.mjs): ask, then the same request with `ignoreLoad`.
+    if (res.status === 409 && (data as { overloaded?: boolean } | null)?.overloaded && isPlainBody(body) && !body.ignoreLoad) {
+      const why = (data as { error?: string }).error ?? 'the host is under heavy load'
+      if (await confirmLoad(why)) return request<T>(path, { signal, method, body: { ...body, ignoreLoad: true }, keepalive })
+    }
     const msg = (data as { error?: string } | null)?.error
     throw new ApiError(msg || `HTTP ${res.status}`, res.status, data)
   }

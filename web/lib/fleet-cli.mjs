@@ -549,8 +549,8 @@ export function createFleetCli({ run, bin = 'fleet', timeoutMs = 8000 } = {}) {
   }
 
   /** Start a run now: `fleet --local jobs run [--force] <name>` → its one-line human report. */
-  async function jobRunNow(name, { force = false, timeoutMs: t = 60 * 1000 } = {}) {
-    const out = await jobsRun(['run', ...(force ? ['--force'] : []), '--', String(name)], t);
+  async function jobRunNow(name, { force = false, ignoreLoad = false, timeoutMs: t = 60 * 1000 } = {}) {
+    const out = await jobsRun([...(ignoreLoad ? ['--ignore-load'] : []), 'run', ...(force ? ['--force'] : []), '--', String(name)], t);
     return out.trim();
   }
 

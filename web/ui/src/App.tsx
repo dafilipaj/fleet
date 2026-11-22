@@ -2,6 +2,7 @@ import { Redirect, Route, Router, Switch } from 'wouter'
 import { useHashLocation } from 'wouter/use-hash-location'
 
 import { MemoRecorderHost } from '@/components/MemoRecorder'
+import { LoadConfirmHost } from '@/components/LoadConfirmHost'
 import { Scratchpad } from '@/components/Scratchpad'
 import { StackUi } from '@/components/stack/StackUi'
 import { Toaster } from '@/components/ui/sonner'
@@ -129,6 +130,8 @@ function FleetApp() {
               {/* Voice memos: recover unsaved recordings, announce saved ones. */}
               <MemoRecorderHost />
             </Router>
+            {/* A spawn on a host under heavy load asks first (lib/loadConfirm). */}
+            <LoadConfirmHost />
             <Toaster position={desktop ? 'bottom-right' : 'top-center'} offset={desktop ? { bottom: 112, right: 16 } : undefined} />
           </TooltipProvider>
         </TasksProvider>
@@ -155,6 +158,7 @@ function EmbedApp() {
         <FleetProvider>
           <TooltipProvider>
             <Router hook={useHashLocation}>{embed ? <EmbedScreen params={embed} /> : null}</Router>
+            <LoadConfirmHost />
             <Toaster position="top-center" />
           </TooltipProvider>
         </FleetProvider>

@@ -23,7 +23,7 @@ use fleet::tui::watch;
     after_help = "Bare `fleet` opens the dashboard on a terminal (a one-shot `list` when piped).\n\
 Host: -H <name> runs the command on that host over ssh (it needs fleet installed there).\n\
 tmux-session and machine commands (tmux, enter, last, new, exec, ssh) default to `defaultHost`; everything else to this machine.\n\
-Env: FLEET_CONFIG FLEET_HOST FLEET_DRY_RUN FLEET_DEBUG FLEET_CONNECT_TIMEOUT FLEET_MUX FLEET_REMOTE_TIMEOUT FLEET_CMD FLEET_GH_IDENTITY FLEET_TMUX FLEET_SNAPSHOT NO_COLOR"
+Env: FLEET_CONFIG FLEET_HOST FLEET_DRY_RUN FLEET_DEBUG FLEET_CONNECT_TIMEOUT FLEET_MUX FLEET_REMOTE_TIMEOUT FLEET_CMD FLEET_GH_IDENTITY FLEET_IGNORE_LOAD FLEET_TMUX FLEET_SNAPSHOT NO_COLOR"
 )]
 struct Cli {
     /// Target host (a configured name, or any ssh destination); env FLEET_HOST
@@ -46,6 +46,11 @@ struct Cli {
     /// as you; env FLEET_GH_IDENTITY, which a session passes on to everything it spawns
     #[arg(long, global = true, value_name = "NAME")]
     gh_identity: Option<String>,
+
+    /// Start a session even while this machine is under heavy load (the web server's load
+    /// monitor, `resources` in the config); env FLEET_IGNORE_LOAD=1
+    #[arg(long, global = true)]
+    ignore_load: bool,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -1519,6 +1524,9 @@ fn target(cli_host: Option<&str>, local: bool, scope: Scope) -> Result<Target> {
 fn run(cli: Cli) -> Result<i32> {
     if cli.dry_run {
         hosts::set_dry_run();
+    }
+    if cli.ignore_load {
+        fleet::core::load::set_ignore();
     }
     if let Some(h) = &cli.as_host {
         hosts::set_as_host(h);

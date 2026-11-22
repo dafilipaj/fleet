@@ -558,6 +558,8 @@ fn start(j: &Job, trigger: &str, slot: Option<i64>, branch: Option<&Branch>) -> 
     if let Err(e) = crate::core::config::get().ensure_spawn_allowed() {
         return fail(run, e.to_string());
     }
+    // A busy host (core::load): refused before the run is recorded — not a failed run.
+    crate::core::load::ensure_not_busy().map_err(|e| Error::Other(format!("{}: {e}", j.name)))?;
     if j.slack.is_some()
         && let Err(e) = crate::cli::slack::check_linkable()
     {
@@ -798,6 +800,12 @@ fn log(quiet: bool, line: &str) {
 /// slots, close the idle sessions of runs past their `keep`; then the scheduled sessions
 /// (`fleet schedule`).
 pub fn tick(quiet: bool) -> Result<()> {
+    // A host under heavy load holds the round: nothing is consumed, a due slot fires once it
+    // has recovered (within jobs::CATCH_UP_SECS).
+    if let Some(why) = crate::core::load::hold_reason() {
+        log(quiet, &format!("holding: {why}"));
+        return Ok(());
+    }
     let s = Settings::load();
     if !quiet {
         warn_problems(&s);

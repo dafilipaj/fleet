@@ -8,6 +8,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 import { HttpError } from './http.mjs';
+import { BUSY_MARK } from './load.mjs';
 
 export const MAX_DORMANT_TARGET = 200;
 /** One dormant tmux session or Claude session; `--all` restores every one of them. */
@@ -34,6 +35,7 @@ export function dormantHttpError(err) {
     return e;
   }
   if (err?.exitCode === 3) return new HttpError(msg, 404);
+  if (msg.includes(BUSY_MARK)) return Object.assign(new HttpError(msg, 409), { body: { error: msg, overloaded: true } });
   return new HttpError(`fleet restore failed: ${msg}`, 502);
 }
 
@@ -47,17 +49,19 @@ export function validateDormantRequest(body, { allowDryRun = false, allowAll = t
   const dryRun = allowDryRun && b.dryRun === true;
   if (b.closed != null && typeof b.closed !== 'boolean') throw new HttpError('closed must be true or false', 400);
   const closed = b.closed === true;
+  // A restore on a host under heavy load asks first (lib/load.mjs); the confirm sends this.
+  const ignoreLoad = b.ignoreLoad === true ? { ignoreLoad: true } : {};
   if (b.all === true) {
     if (b.target != null) throw new HttpError('give either target or all, not both', 400);
     if (closed && !allowAll) throw new HttpError('recently closed sessions are resumed one at a time (no all)', 400);
-    return { all: true, target: null, dryRun, closed };
+    return { all: true, target: null, dryRun, closed, ...ignoreLoad };
   }
   if (typeof b.target !== 'string') throw new HttpError('target must be a string (or all: true)', 400);
   const target = b.target.trim();
   if (!target || target.length > MAX_DORMANT_TARGET || /[\0\r\n]/.test(target)) {
     throw new HttpError(`target must be one non-empty line of at most ${MAX_DORMANT_TARGET} characters`, 400);
   }
-  return { all: false, target, dryRun, closed };
+  return { all: false, target, dryRun, closed, ...ignoreLoad };
 }
 
 /**
@@ -85,9 +89,9 @@ export function createDormant({ cli, log = () => {} }) {
    * `{ host, restored: [Restored], failed: [{ target, error }] }`. `closed`: a recently closed
    * session (`--closed`; never with `all`).
    */
-  async function restore({ target = null, all = false, dryRun = false, closed = false } = {}) {
+  async function restore({ target = null, all = false, dryRun = false, closed = false, ignoreLoad = false } = {}) {
     if (closed && all) throw new HttpError('recently closed sessions are resumed one at a time (no all)', 400);
-    const args = [...(dryRun ? ['--dry-run'] : []), ...(closed ? ['--closed'] : []), ...(all ? ['--all'] : ['--', target])];
+    const args = [...(ignoreLoad ? ['--ignore-load'] : []), ...(dryRun ? ['--dry-run'] : []), ...(closed ? ['--closed'] : []), ...(all ? ['--all'] : ['--', target])];
     const report = await call(args, { timeoutMs: all ? RESTORE_ALL_MS : RESTORE_ONE_MS });
     if (!dryRun) {
       const ok = (report.restored ?? []).map((r) => r?.session ?? r?.from).filter(Boolean);

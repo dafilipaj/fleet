@@ -7,6 +7,7 @@ import './api.test.mjs';
 import './transcript.test.mjs';
 import './spawn.test.mjs';
 import './kill.test.mjs';
+import './load.test.mjs';
 import './autoname.test.mjs';
 import './snapshot.test.mjs';
 import './ui.test.mjs';

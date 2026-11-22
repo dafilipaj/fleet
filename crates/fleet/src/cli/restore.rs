@@ -34,6 +34,9 @@ pub fn run(o: RestoreOpts) -> Result<()> {
     }
     if o.target.is_some() || o.all {
         crate::core::config::get().ensure_spawn_allowed()?;
+        if !crate::core::hosts::dry_run() {
+            crate::core::load::ensure_not_busy()?;
+        }
     }
     // Record first: the first command after a reboot is what turns the old boot dormant.
     let snap = snapshot::refresh()?;

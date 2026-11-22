@@ -59,10 +59,27 @@ export const HOST_COLOR_SLOTS = 4
 // marks a shared shed wherever a host name is drawn.
 let hostOrder: string[] = []
 let sharedHosts = new Set<string>()
+// Hosts under heavy load (`load.state` hot / critical), with why — drawn on every host badge.
+let loadedHosts = new Map<string, { state: 'hot' | 'critical'; reasons: string[] }>()
 
-export function setKnownHosts(hosts: { name: string; shared?: boolean }[] | null | undefined): void {
+export function setKnownHosts(hosts: { name: string; shared?: boolean; load?: { state: string; reasons?: string[] } }[] | null | undefined): void {
   hostOrder = (hosts ?? []).map((h) => h.name).sort()
   sharedHosts = new Set((hosts ?? []).filter((h) => h.shared === true).map((h) => h.name))
+  loadedHosts = new Map(
+    (hosts ?? [])
+      .filter((h) => h.load?.state === 'hot' || h.load?.state === 'critical')
+      .map((h) => [h.name, { state: h.load!.state as 'hot' | 'critical', reasons: h.load!.reasons ?? [] }]),
+  )
+}
+
+/** A host under heavy load (its new sessions wait), or null. */
+export function hostLoad(host: string | null | undefined): { state: 'hot' | 'critical'; reasons: string[] } | null {
+  return host != null ? (loadedHosts.get(host) ?? null) : null
+}
+
+/** "under heavy load (memory pressure warn, load 2.4× cores)" for a title / tooltip. */
+export function hostLoadText(load: { state: string; reasons: string[] }): string {
+  return `under heavy load${load.reasons.length ? ` (${load.reasons.join(', ')})` : ''}: new sessions wait until it recovers`
 }
 
 /** Whether the fleet marks `host` as a shared shed (`hosts.<name>.shared`). */

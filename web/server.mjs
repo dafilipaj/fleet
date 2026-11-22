@@ -47,6 +47,7 @@ import { createVerandaBridge, createVerandaClient } from './lib/veranda.mjs';
 import { createGithubBridge } from './lib/github.mjs';
 import { fetchPeerHost, proxyToPeer, setPeerConnects, setPeerProxies, setPeerTokens } from './lib/peers.mjs';
 import { createDormant } from './lib/dormant.mjs';
+import { createLoadAlerts, createLoadMonitor, retryWhileBusy } from './lib/load.mjs';
 import { createMemos } from './lib/memos.mjs';
 import { createApi } from './lib/api.mjs';
 import { createHttpServer } from './lib/app.mjs';
@@ -76,6 +77,13 @@ setPeerProxies(config.peerProxies);
 setPeerConnects(config.peerConnects);
 
 const cli = createFleetCli({ run, bin: config.fleetBin });
+// Host load (opt-in `resources.enabled`): sampled here, written where the CLI reads it. Off: a
+// state file a previous run left is removed, so nothing holds spawns on a stale verdict.
+const loadFile = path.join(fleetStateDir(process.env), 'load.json');
+const loadMonitor = config.resources.enabled ? createLoadMonitor({ settings: config.resources, self: config.self, file: loadFile, run, log }) : null;
+if (!loadMonitor) fs.promises.rm(loadFile, { force: true }).catch(() => {});
+/** A failed spawn POST → an Error that keeps `overloaded` (the host holds new sessions). */
+const spawnFailure = (r, fallback) => Object.assign(new Error(r.body?.error ?? fallback), { status: r.status, overloaded: r.body?.overloaded === true });
 const fleet = createFleet({ cli, self: config.self, ttlMs: 2000 });
 const backend = createBackend({ run, tmux: config.tmux });
 const autoNamer = createAutoNamer({
@@ -212,7 +220,9 @@ if (config.slack.enabled) {
     send: sendToLinked,
     // slack.spawn: a mention opens a session on `host` — this server, else that peer's (a spawn
     // linked to Slack answers once the session is linked, ≤ ~1 min).
-    spawn: async (host, body) => {
+    // A host under heavy load holds the spawn: `onHold` tells the thread once, it starts when the
+    // host recovers (lib/load.mjs#retryWhileBusy).
+    spawn: (host, body, { onHold } = {}) => retryWhileBusy(async () => {
       const local = !host || host === config.self;
       const loopback = loopbackFor(config.bind);
       const base = local ? `http://${loopback.includes(':') ? `[${loopback}]` : loopback}:${config.port}` : config.peers[host];
@@ -223,9 +233,9 @@ if (config.slack.enabled) {
         body: JSON.stringify(body),
         timeoutMs: 120000,
       });
-      if (r.status !== 200) throw new Error(r.body?.error ?? `HTTP ${r.status} from ${host}`);
+      if (r.status !== 200) throw spawnFailure(r, `HTTP ${r.status} from ${host}`);
       return r.body;
-    },
+    }, { onHold }),
     file: path.join(fleetStateDir(process.env), 'slack-links.json'),
     download: createSlackDownload({ getToken: getBotToken }),
     // The owner's DM about a blocked session links to it in the web UI of the session's host.
@@ -261,6 +271,7 @@ const github = config.github.enabled
         return local.ok ? local.sessions : null;
       },
       send: (session, text) => backend.send(session, text),
+      // A host under heavy load: the error keeps `overloaded`, the bridge tries again next poll.
       spawn: async (body) => {
         const loopback = loopbackFor(config.bind);
         const base = `http://${loopback.includes(':') ? `[${loopback}]` : loopback}:${config.port}`;
@@ -270,7 +281,7 @@ const github = config.github.enabled
           body: JSON.stringify(body),
           timeoutMs: 120000,
         });
-        if (r.status !== 200) throw new Error(r.body?.error ?? `HTTP ${r.status} from spawn`);
+        if (r.status !== 200) throw spawnFailure(r, `HTTP ${r.status} from spawn`);
         return r.body;
       },
       sleep: (sessionId) => cli.sleep({ target: sessionId }),
@@ -308,6 +319,7 @@ const spawner = createSpawner({
   ghIdentityLauncher: (name, launcher) => cli.ghIdentityLauncher(name, launcher),
   harnessDefaults: () => config.harnessDefaults,
   refuse: config.spawn === false ? noSpawnMessage(config.self) : null,
+  busy: () => loadMonitor?.busy() ?? null,
 });
 const operator = createOperator({ config, fleet, spawner, backend, log });
 // One transcript reader: the chat and the review threads (their replies) share its cache.
@@ -322,6 +334,7 @@ const handleApi = createApi({
   backend,
   transcripts,
   spawner,
+  loadMonitor,
   killer: createKiller({ run, tmux: config.tmux, closeIterm: (s) => backend.closeIterm(s) }),
   cli,
   autoNamer,
@@ -476,8 +489,28 @@ servers[0].listen(config.port, addresses[0], () => {
   } else if (config.github.host) {
     log(`[fleet-web] github links: served by ${config.github.host}`);
   }
+  if (loadMonitor) {
+    loadMonitor.start();
+    log(`[fleet-web] host load monitor on (load ${config.resources.load.hot}/${config.resources.load.critical}× cores; new sessions wait while hot)`);
+  }
   if (slack) {
     slack.start();
+    // The owner hears when a host goes under heavy load, gets worse, or recovers.
+    if (config.slack.owner) {
+      const alerts = createLoadAlerts({
+        hosts: () => config.hosts,
+        fetchLoad: async (host) => {
+          if (host === config.self) return loadMonitor?.current() ?? null;
+          if (!config.peers[host]) return null;
+          const r = await proxyToPeer(config.peers[host], { method: 'GET', pathname: '/api/load', search: '', timeoutMs: 5000 });
+          return r.status === 200 ? r.body?.load ?? null : null;
+        },
+        notify: (text) => slack.notifyOwner(text),
+        file: path.join(fleetStateDir(process.env), 'load-alerts.json'),
+        log,
+      });
+      setInterval(() => alerts.tick().catch((err) => log(`[load] alerts: ${err?.message ?? err}`)), 30 * 1000).unref();
+    }
     log(`[fleet-web] slack links on (Socket Mode; ${TOKEN_NAMES.bot} + ${TOKEN_NAMES.app} from env or Keychain)`);
   } else if (config.slack.host) {
     log(`[fleet-web] slack links: served by ${config.slack.host}`);

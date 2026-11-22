@@ -314,6 +314,9 @@ const tmuxName = (repo, number) => `review-${String(repo).split('/').pop()}-${nu
  *   restore       (args) => Promise<report>  (`fleet restore … --json`)
  *   file          the state file
  */
+const HELD_RETRY_MS = 30 * 1000;
+const HELD_MAX_MS = 60 * 60 * 1000;
+
 export function createGithubBridge({ settings = {}, self = null, gh, listSessions, send, spawn = null, sleep = null, restore = null, file, now = Date.now, log = () => {}, tickMs = TICK_MS }) {
   let state = { since: null, links: [], ended: [], started: [], handled: {} };
   let loaded = false;
@@ -330,6 +333,10 @@ export function createGithubBridge({ settings = {}, self = null, gh, listSession
   const busy = new Set(); // link ids being delivered / woken
   const lastDelivery = new Map();
   const starting = new Set(); // PR keys a session is being started for
+  // Review requests held while the host is under heavy load (lib/load.mjs): PR key → { pr, at }.
+  // Tried again every HELD_RETRY_MS, given up after HELD_MAX_MS.
+  const held = new Map();
+  let nextHeld = 0;
   const prCache = new Map(); // PR key → the last state read (for prompts)
   let ticking = false;
 
@@ -610,6 +617,14 @@ export function createGithubBridge({ settings = {}, self = null, gh, listSession
       const l = await startSession(pr, { first: requestPrompt(pr, req.actor, login), startedBy: { login: req.actor, at: req.at } });
       log(`[github] ${l.id}: ${l.sessionName} started by @${req.actor}'s review request on ${ref(l)}`);
     } catch (err) {
+      if (err?.overloaded) {
+        // The host holds new sessions (lib/load.mjs): not consumed, the tick tries it again.
+        state.started = state.started.filter((k) => k !== req.key);
+        await save();
+        if (!held.has(key)) log(`[github] ${pr.repo}#${pr.number}: held, ${err.message}`);
+        held.set(key, { pr, at: held.get(key)?.at ?? now() });
+        return;
+      }
       log(`[github] ${pr.repo}#${pr.number}: could not start a session: ${err?.message ?? err}`);
     } finally {
       starting.delete(key);
@@ -783,6 +798,21 @@ export function createGithubBridge({ settings = {}, self = null, gh, listSession
           lastModified = null; // the whole list again next time
           nextPoll = now() + ERROR_BACKOFF_MS;
           log(`[github] poll failed: ${lastError}`);
+        }
+      }
+      // Review requests held for a busy host: try again, or give up after an hour.
+      if (held.size && now() >= nextHeld) {
+        nextHeld = now() + HELD_RETRY_MS;
+        for (const [key, h] of [...held]) {
+          held.delete(key);
+          if (now() - h.at >= HELD_MAX_MS) {
+            log(`[github] ${h.pr.repo}#${h.pr.number}: gave up, the host stayed under heavy load for an hour`);
+            continue;
+          }
+          if (!starting.has(key)) {
+            await maybeStart(h.pr);
+            if (held.has(key)) held.set(key, { ...held.get(key), at: h.at });
+          }
         }
       }
       // Linked PRs, now and then, notification or not (a merge, a missed notification).

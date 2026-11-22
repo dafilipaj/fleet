@@ -213,6 +213,9 @@ export function createSpawner({
   // null, or the reason this host refuses every spawn (config `spawn: false`): a backstop behind
   // the routes' own checks, so nothing that reaches the spawner starts an agent here.
   refuse = null,
+  // () → null, or why this host holds new sessions now (lib/load.mjs): a spawn without `force`
+  // answers 409 `overloaded` instead of starting.
+  busy = () => null,
 }) {
   const wait = sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
 
@@ -249,8 +252,10 @@ export function createSpawner({
   }
 
   /** @returns {{ name, dir, tmuxSession, command, trusted, model, harness, ghIdentity, embed }} */
-  async function spawn({ name, dir, prompt, nameGiven = true, model = '', harness = 'claude', ghIdentity = null, embed = null }) {
+  async function spawn({ name, dir, prompt, nameGiven = true, model = '', harness = 'claude', ghIdentity = null, embed = null, force = false }) {
     if (refuse) throw Object.assign(new Error(refuse), { status: 403, noSpawn: true });
+    const held = force ? null : busy();
+    if (held) throw Object.assign(new Error(held), { status: 409, overloaded: true });
     if (ghIdentity && !ghIdentities.some((i) => i.name === ghIdentity)) {
       throw Object.assign(new Error(`no GitHub identity "${ghIdentity}" in this host's fleet config`), { status: 400 });
     }

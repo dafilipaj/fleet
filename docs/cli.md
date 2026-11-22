@@ -11,6 +11,7 @@ explains the model and the semantics behind them.
 | `--local` | run on this machine, never over ssh |
 | `-n, --dry-run` | print what would run, run nothing (also `FLEET_DRY_RUN=1`) |
 | `--gh-identity <name>` | sessions this command spawns act on GitHub as that [GitHub identity](#github-identities), not as you (also `FLEET_GH_IDENTITY`) |
+| `--ignore-load` | start the session even while the machine is under heavy load (also `FLEET_IGNORE_LOAD=1`). With `resources.enabled` in the config, the web server watches the machine's memory pressure and CPU load; while it is `hot` or `critical`, `spawn`, `handoff`, `pr` / `task` / `stack spawn`, `restore` and `bots run` refuse with "`<host> is under heavy load (…) — new sessions wait until it recovers; add --ignore-load to start it anyway`", and `schedule tick` / `bots tick` hold the round (due entries fire once it recovers). See [Host load](architecture.md#host-load) |
 | `--json` | machine-readable output, where the command supports it |
 | `-h, --help`, `-V, --version` | |
 
@@ -964,6 +965,8 @@ Cancel. Web API: `GET /api/hosts/:host/schedule`, `POST /api/hosts/:host/schedul
 | `FLEET_CONFIG` | config file path (default `${XDG_CONFIG_HOME:-~/.config}/fleet/config.json`) |
 | `FLEET_HOST` | default target host (same as `-H`) |
 | `FLEET_DRY_RUN=1` | print what would run, run nothing |
+| `FLEET_IGNORE_LOAD=1` | start sessions on a machine under heavy load (same as `--ignore-load`) |
+| `FLEET_LOAD_FILE` | where the CLI reads the load verdict (default `${XDG_STATE_HOME:-~/.local/state}/fleet/load.json`, written by the web server) |
 | `FLEET_DEBUG=1` | trace what runs, on stderr |
 | `FLEET_CONNECT_TIMEOUT` | ssh connect timeout in seconds (default 5) |
 | `FLEET_REMOTE_TIMEOUT` | limit for one captured remote call, e.g. a host in `list --all-hosts` (default 15 s) |
