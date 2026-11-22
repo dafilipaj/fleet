@@ -284,7 +284,7 @@ export function processUse(procs, sessions = [], { others = 8 } = {}) {
     const t = tree(s.pid);
     rows.push({
       id: s.session_id ?? null,
-      name: s.title || s.name || s.tmux_session || `pid ${s.pid}`,
+      name: s.name || s.tmux_session || s.title || `pid ${s.pid}`,
       status: s.status ?? null,
       pid: s.pid,
       processes: t.length,

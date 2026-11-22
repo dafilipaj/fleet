@@ -236,15 +236,15 @@ test('processUse: a session counts its whole process tree; the rest are the heav
   );
   assert.equal(ps.length, 5);
   const u = processUse(ps, [
-    { session_id: 'a', title: 'big one', status: 'idle', pid: 100 },
+    { session_id: 'a', name: 'big-one', title: 'a long first prompt', status: 'idle', pid: 100 },
     { session_id: 'b', name: 'small', status: 'busy', pid: 300 },
     { session_id: 'c', name: 'gone', pid: 999 },
   ]);
   assert.deepEqual(
-    u.sessions.map((s) => [s.id, s.rssMb, s.cpu, s.processes]),
+    u.sessions.map((s) => [s.id, s.name, s.rssMb, s.cpu, s.processes]),
     [
-      ['a', 310, 42.5, 3],
-      ['b', 20, 50, 1],
+      ['a', 'big-one', 310, 42.5, 3],
+      ['b', 'small', 20, 50, 1],
     ],
   );
   assert.deepEqual(u.others, [{ pid: 200, name: 'Browser', rssMb: 500, cpu: 1 }]);
