@@ -28,7 +28,7 @@ const ME = '900';
 const ALEX = '11';
 const STRANGER = '12';
 const SID = 'aaaaaaaa-0000-0000-0000-000000000001';
-const PEOPLE = { [ME]: ['Mak', 'Studić'], [ALEX]: ['Alex', 'Ant'], [STRANGER]: ['Sam', 'Stranger'] };
+const PEOPLE = { [ME]: ['Bo', 'Bott'], [ALEX]: ['Alex', 'Ant'], [STRANGER]: ['Sam', 'Stranger'] };
 const mention = (id, label) => `@[{"type":"person","id":"${id}","label":"${label}","avatar_url":null}]`;
 
 function fakeProductive() {
@@ -169,7 +169,7 @@ async function linked(opts) {
   const s = setup(opts);
   await s.bridge.tick(); // first run: `since` is now
   s.pr.task(7, { number: 42 });
-  s.pr.comment(7, ALEX, `<p>${mention(ME, 'Mak Studić')} can you look at this?</p>`, s.at(1000));
+  s.pr.comment(7, ALEX, `<p>${mention(ME, 'Bo Bott')} can you look at this?</p>`, s.at(1000));
   s.pr.notify(7, { mention: true });
   await s.tick();
   await s.tick();
@@ -196,10 +196,10 @@ test('notificationTask: the task a notification is about (its own, or a todo/com
 });
 
 test('comment bodies: mentions found (raw or &quot;-escaped), HTML to text, text to HTML with real mentions', () => {
-  const html = `<div>${mention(ME, 'Mak Studić')} see <a href="https://x.dev/a">the PR</a><br>and &amp; more</div><ul><li>one</li></ul>`;
+  const html = `<div>${mention(ME, 'Bo Bott')} see <a href="https://x.dev/a">the PR</a><br>and &amp; more</div><ul><li>one</li></ul>`;
   assert.deepEqual([...mentionIds(html)], [ME]);
   assert.deepEqual([...mentionIds(html.replace(/"/g, '&quot;'))], [ME]);
-  assert.equal(htmlToText(html), '@Mak Studić see the PR (https://x.dev/a)\nand & more\n\n- one');
+  assert.equal(htmlToText(html), '@Bo Bott see the PR (https://x.dev/a)\nand & more\n\n- one');
   const out = textToHtml('Done: **merged** `x<y>`.\n\n- a\n- b\n\nThanks @[Person:11:Alex Ant], see https://x.dev');
   assert.equal(
     out,
@@ -242,7 +242,7 @@ test('activityEvents: comments with text and mentions, changes, oldest first; co
     ],
     included: [
       { type: 'people', id: ALEX, attributes: { first_name: 'Alex', last_name: 'Ant' } },
-      { type: 'comments', id: 'c1', attributes: { body: `<p>hey ${mention(ME, 'Mak')}</p>` } },
+      { type: 'comments', id: 'c1', attributes: { body: `<p>hey ${mention(ME, 'Bo')}</p>` } },
     ],
   };
   const ev = activityEvents(data);
@@ -260,8 +260,8 @@ test('a mention by an allowed person starts one linked session; its intro carrie
   assert.equal(s.sent.length, 1);
   const intro = s.sent[0].text;
   assert.match(intro, /\[productive pl-[0-9a-f]{6}\] This session is linked to the Productive task #42 "Task 7" \(project Acme\): https:\/\/app\.productive\.io\/109-productive\/tasks\/7/);
-  assert.match(intro, /You act on it as Mak Studić \(person 900\)/);
-  assert.match(intro, /Alex Ant \(person 11\) mentioned you on this task:\n {4}@Mak Studić can you look at this\?/);
+  assert.match(intro, /You act on it as Bo Bott \(person 900\)/);
+  assert.match(intro, /Alex Ant \(person 11\) mentioned you on this task:\n {4}@Bo Bott can you look at this\?/);
   assert.match(intro, /The task description:\n {4}Do the thing\./);
   assert.match(intro, /fleet productive reply/);
   const st = await s.bridge.status();
@@ -278,11 +278,11 @@ test('a mention by an allowed person starts one linked session; its intro carrie
 test('a mention by someone not in spawn.from, or from before the bridge ran, starts nothing', async () => {
   const s = setup();
   s.pr.task(3);
-  s.pr.comment(3, ALEX, `<p>${mention(ME, 'Mak')} old</p>`, s.at(-3600_000));
+  s.pr.comment(3, ALEX, `<p>${mention(ME, 'Bo')} old</p>`, s.at(-3600_000));
   s.pr.notify(3, { mention: true });
   await s.bridge.tick();
   s.pr.task(4);
-  s.pr.comment(4, STRANGER, `<p>${mention(ME, 'Mak')} please</p>`, s.at(1000));
+  s.pr.comment(4, STRANGER, `<p>${mention(ME, 'Bo')} please</p>`, s.at(1000));
   s.pr.notify(4, { mention: true });
   await s.tick();
   assert.equal(s.spawned.length, 0);
