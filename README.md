@@ -95,6 +95,7 @@ Building the whole setup from scratch (always-on Mac, Tailscale, ssh, tmux, phon
 | setup | `init` · `config path\|show\|edit\|set` · `install --host <name>` |
 | pull requests | `prs` — the GitHub PRs that need you (unseen @mentions, yours, waiting on your review, waiting on their author), through `gh`, with their local worktrees · `pr checkout\|spawn` — a PR in a worktree, a session on it |
 | GitHub links | `github` — a session follows one pull request: review requests, replies in its review threads and mentions are typed into it; a review request can start one |
+| Productive links | `productive` — a session follows one Productive task: its comments and changes are typed into it (throttled), it answers with `productive reply`; a mention can start one |
 | Productive tasks | `tasks` · `task show\|status\|spawn\|schedule` — your open Productive tasks (due soon, in progress, to do), moved between statuses, a session started on one now or on its start date |
 | later | `schedule add --at <when> \| --task <task>` · `schedule` · `schedule cancel` — one-off sessions started later on this host |
 | git repos | `repos` · `repos sync` · `repos install-service` — fetch + fast-forward every repo under `~/Code`, on a timer |

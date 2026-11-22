@@ -66,7 +66,7 @@ test('statusMeta / statusLabel', () => {
 test('listView: flat, sorted by last activity, counts per status', () => {
   const v = listView(fleet, {})
   expect(v.sessions.map((x) => x.session_id)).toEqual(['b', 'c', 'a'])
-  expect(v.counts).toEqual({ all: 3, waiting: 1, busy: 1, idle: 1, scheduled: 0, slack: 0, veranda: 0, github: 0, embedded: 0 })
+  expect(v.counts).toEqual({ all: 3, waiting: 1, busy: 1, idle: 1, scheduled: 0, slack: 0, veranda: 0, github: 0, productive: 0, embedded: 0 })
 })
 
 test('listView: a prompt moves a session, a turn ending does not', () => {
@@ -234,7 +234,7 @@ test('listView: job sessions only under Scheduled, except waiting ones', () => {
 
   const all = listView(f, {})
   expect(all.sessions.map((x) => x.session_id)).toEqual(['job-wait', 'mine'])
-  expect(all.counts).toEqual({ all: 2, waiting: 1, busy: 1, idle: 0, scheduled: 3, slack: 0, veranda: 0, github: 0, embedded: 0 })
+  expect(all.counts).toEqual({ all: 2, waiting: 1, busy: 1, idle: 0, scheduled: 3, slack: 0, veranda: 0, github: 0, productive: 0, embedded: 0 })
 
   // "Scheduled" shows only job sessions, waiting ones included.
   const sched = listView(f, { status: 'scheduled' })

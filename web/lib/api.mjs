@@ -42,6 +42,7 @@ import { validateDormantRequest } from './dormant.mjs';
 import { validJobName } from './jobs.mjs';
 import { MAX_FIRST, MAX_TASK, MODES, SlackError, isPersonTarget, linkMinutes, parseSlackUrl, validLinkId } from './slack.mjs';
 import { GithubError, validLinkId as validGithubLinkId } from './github.mjs';
+import { ProductiveError, validLinkId as validProductiveLinkId } from './productive.mjs';
 import { VerandaError } from './veranda.mjs';
 import { BUSY_MARK, DEFAULTS as LOAD_DEFAULTS, MAX_OVERRIDE_MINUTES, loadSettings } from './load.mjs';
 import { DEFAULTS as USAGE_DEFAULTS, MAX_OVERRIDE_MINUTES as USAGE_MAX_OVERRIDE, USAGE_MARK, usagePatch, usageSettings } from './usage.mjs';
@@ -172,6 +173,7 @@ const VERANDA_ACTIONS = new Set(['link', 'unlink', 'extend', 'reply', 'history']
 /** The actions a session runs from its own pane: the caller's host is this server's, unless proxied. */
 const VERANDA_FROM_PANE = new Set(['reply', 'history']);
 const GITHUB_UNLINK_ROUTE = /^\/api\/github\/links\/([^/]+)\/unlink$/;
+const PRODUCTIVE_UNLINK_ROUTE = /^\/api\/productive\/links\/([^/]+)\/unlink$/;
 /** `fleet slack history | thread | file`: the linked session reads its conversation (read-only). */
 const SLACK_READS = new Set(['history', 'thread', 'file']);
 const SLACK_ACTIONS = new Set(['/api/slack/link', '/api/slack/reply', '/api/slack/react', ...[...SLACK_READS].map((a) => `/api/slack/${a}`)]);
@@ -278,6 +280,7 @@ export function createApi({
   slack = null,
   veranda = null,
   github = null,
+  productive = null,
   groupingDiscoveryMs = 5 * 60 * 1000,
   name = 'fleet-web',
   version = '0.0.0',
@@ -1017,6 +1020,52 @@ export function createApi({
    * machine (not proxied) is stamped with where its caller runs: `host` for a pane-based reply or
    * read, `callerHost` for every action — a proxying server stamps its own name the same way.
    */
+  /**
+   * Productive links (lib/productive.mjs), on the `productive.host` server; the others proxy there
+   * once. GET status, POST link `{ url, pane | session | tmuxSession, host, task?, keep? }`, POST
+   * comment `{ link? | pane | session, host, body }` (a comment as the account), POST links/:id/unlink.
+   */
+  async function handleProductive(req, url, action, id = null) {
+    const local = url.searchParams.get('local') === '1';
+    const bridge = config.productive?.host ?? null;
+    const body = action === 'status' ? null : await readJsonBody(req);
+    if (!bridge) {
+      if (action === 'status') return { status: 200, body: { enabled: false, host: null, links: [], ended: [] } };
+      return { status: 409, body: { error: 'no server runs Productive links (productive.host)' } };
+    }
+    if (bridge !== config.self) {
+      if (local) return { status: 409, body: { error: `this server is not the Productive bridge ${bridge}` } }; // never chain
+      const peerUrl = config.peers[bridge];
+      if (!peerUrl) return { status: 409, body: { error: `Productive bridge "${bridge}" is not a peer with a web URL` } };
+      return proxyToPeer(peerUrl, {
+        method: action === 'status' ? 'GET' : 'POST',
+        pathname: url.pathname,
+        ...(body == null ? {} : { body: JSON.stringify(body) }),
+        timeoutMs: peerProxyTimeoutMs,
+      });
+    }
+    if (!productive) return { status: 409, body: { error: 'Productive links are off on this server (FLEET_WEB_PRODUCTIVE)' } };
+    try {
+      if (action === 'status') return { status: 200, body: await productive.status() };
+      if (action === 'unlink') {
+        if (!validProductiveLinkId(id)) throw new HttpError('link must look like pl-xxxxxx', 400);
+        return { status: 200, body: await productive.unlink(id) };
+      }
+      const host = typeof body?.host === 'string' && body.host ? body.host : config.self;
+      if (host !== config.self) throw new HttpError(`Productive links follow sessions on ${config.self} only (this session is on ${host})`, 400);
+      const { url: taskUrl, session, pane, tmuxSession, task, keep, link, body: text } = body ?? {};
+      if (action === 'comment') {
+        if (link != null && !validProductiveLinkId(link)) throw new HttpError('link must look like pl-xxxxxx', 400);
+        return { status: 200, body: await productive.comment({ link, session, pane, tmuxSession, body: text }) };
+      }
+      return { status: 200, body: await productive.link({ url: taskUrl, session, pane, tmuxSession, task, keep }) };
+    } catch (err) {
+      if (err instanceof ProductiveError) throw new HttpError(err.message, err.status);
+      if (err?.status && err.status >= 400 && err.status < 600) throw new HttpError(err.message, 502);
+      throw err;
+    }
+  }
+
   async function handleVeranda(req, url, action) {
     const local = url.searchParams.get('local') === '1';
     const cfg = config.veranda ?? { configured: false };
@@ -1366,6 +1415,22 @@ export function createApi({
     if (gu) {
       if (req.method !== 'POST') throw new HttpError('method not allowed', 405);
       return handleGithub(req, url, 'unlink', decodeURIComponent(gu[1]));
+    }
+
+    if (url.pathname === '/api/productive') {
+      if (req.method !== 'GET') throw new HttpError('method not allowed', 405);
+      return handleProductive(req, url, 'status');
+    }
+
+    if (url.pathname === '/api/productive/link' || url.pathname === '/api/productive/comment') {
+      if (req.method !== 'POST') throw new HttpError('method not allowed', 405);
+      return handleProductive(req, url, url.pathname.endsWith('/comment') ? 'comment' : 'link');
+    }
+
+    const pu = PRODUCTIVE_UNLINK_ROUTE.exec(url.pathname);
+    if (pu) {
+      if (req.method !== 'POST') throw new HttpError('method not allowed', 405);
+      return handleProductive(req, url, 'unlink', decodeURIComponent(pu[1]));
     }
 
     if (url.pathname === '/api/veranda') {

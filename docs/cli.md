@@ -262,6 +262,39 @@ merged or closed, such a session is put to sleep as soon as it is idle (after a 
 an ended link shows `retired: true` then. Sessions linked by hand are left alone. `github.spawn`
 applies within a few seconds; `github.host` needs a restart of the web server.
 
+### Productive links
+
+A session follows one Productive task, as the Productive account (a person in the organization)
+whose API token the bridge host holds: comments and changes on the task are typed into it, and it
+answers with `fleet productive reply`, which posts a comment as that account.
+
+| Command | What |
+|---|---|
+| `fleet productive [list] [--json]` | the bridge (its account, polling or failing, who may start sessions) and the active links |
+| `fleet productive link <task-url \| id> [--session <target>] [--task <instructions>] [--keep <12h\|1d\|never>] [--json]` | link a session of `productive.host` (default: the one this runs in, by `$TMUX_PANE`) to an open task. What is on the task now counts as seen. One session per task; the same session again renews it (task, keep). `--keep`: sleep after that long idle; the next event resumes it. The link ends when the task is closed |
+| `fleet productive reply <text \| -> [--file <path>] [--link <pl-xxxxxx>] [--session <target>] [--json]` | post a comment on the linked task (default: this session's link) as the account. Text with a little Markdown: paragraphs, `- ` lists, `**bold**`, `` `code` ``, links; `@[Person:<id>:<Name>]` mentions someone. `-` or no text: read stdin |
+| `fleet productive unlink <pl-xxxxxx>` | end a link now |
+
+How it works ([architecture](architecture.md#productive-links)): one host's web server
+(`productive.host`) polls its account's notifications every minute. A notification only names a
+task; the bridge then reads the task's activity feed (comments and changes) and compares it with
+the newest activity the link has seen. Linked tasks are also re-read every 3 minutes. What wakes
+the session: a comment that mentions the account, any comment by someone in `productive.spawn.from`,
+and any change on the task (status, assignee, todos…). Comments by others go along as context; the
+account's own activity never comes back. **Throttled**: a burst goes in as one prompt once the task
+has been quiet for a while (20 s after a mention, 45 s otherwise), at least 30 s (a mention), 2 min
+(comments) or 10 min (changes only) after the last delivery, and only into an idle session.
+
+**Starting a session from Productive**: with `productive.spawn` set, a mention of the account on a
+task no session follows opens a new session on `productive.host` (named `task-<number>`), linked to
+the task, with the task, its description, its recent comments and the mention as its first prompt —
+only when the comment's author is in `productive.spawn.from` (Productive person ids or emails, or
+`"anyone"`; none = nobody), and only for mentions made after the bridge first ran.
+`fleet config set productive '{"host":"<host>","org":"<org id>","spawn":{"dir":"~/work","model":"opus","keep":"1d","from":["<email>"]}}'`.
+The token: a Keychain item (`productive.keychain`, its service name, default
+`PRODUCTIVE_AUTH_TOKEN`) or a file (`productive.tokenFile`, mode 0600). `productive.spawn` applies
+within a few seconds; the rest needs a restart of the web server.
+
 ### Briefs
 
 A brief is a small markdown file per session — what it is doing, the resources it produced (PRs,

@@ -338,6 +338,28 @@ export function githubSpawn(raw) {
   return { dir: str('dir'), model: str('model'), harness: str('harness'), task: str('task'), keep, from };
 }
 
+const PRODUCTIVE_FROM_RE = /^(\d+|[^\s@]+@[^\s@]+\.[^\s@]+)$/;
+
+/**
+ * `productive.spawn`: a mention of this host's Productive account on a task no session follows
+ * opens a new session for it, linked to the task (lib/productive.mjs). `{ dir?, model?, harness?,
+ * keep?, task?, from }` like `github.spawn`; `from`: Productive person ids or emails ("anyone" for
+ * everyone; none = nobody).
+ */
+export function productiveSpawn(raw) {
+  if (raw == null || raw === false) return null;
+  if (!isObject(raw)) throw new Error('config.productive.spawn must be an object { dir, model, harness, keep, task, from }');
+  let from = [];
+  if (raw.from != null) {
+    if (raw.from === 'anyone') from = ['anyone'];
+    else if (Array.isArray(raw.from) && raw.from.every((u) => (typeof u === 'string' || Number.isSafeInteger(u)) && PRODUCTIVE_FROM_RE.test(String(u).trim()))) from = raw.from.map((u) => String(u).trim().toLowerCase());
+    else throw new Error('config.productive.spawn.from must be "anyone" or a list of Productive person ids or emails');
+  }
+  // The rest is github.spawn's shape (dir, model, harness, task, keep).
+  const g = githubSpawn({ ...raw, from: [] });
+  return { ...g, from };
+}
+
 /**
  * `veranda` (opt-in): `{ host, socket, url, defaultMinutes?, notices? }`. `host` runs the bridge (the
  * others proxy /api/veranda there); `socket` is Veranda's bot API unix socket on that host; `url`
@@ -719,6 +741,28 @@ export function normalizeConfig(
   github.enabled = github.host != null && github.host === self.trim();
   if (env.FLEET_WEB_GITHUB != null && env.FLEET_WEB_GITHUB !== '' && /^(0|false|off|no)$/i.test(env.FLEET_WEB_GITHUB)) github.enabled = false;
 
+  // productive: Productive links (lib/productive.mjs). One host runs the bridge (`productive.host`),
+  // polling the inbox of the Productive account whose API token it holds (`keychain`: a Keychain
+  // service, default PRODUCTIVE_AUTH_TOKEN; or `tokenFile`); `org` the organization id; `spawn`
+  // starts a session on a mention. FLEET_WEB_PRODUCTIVE=0 turns it off on this server.
+  const pr = raw.productive == null ? {} : raw.productive;
+  if (!isObject(pr)) throw new Error('config.productive must be an object { host, org, keychain, tokenFile, spawn }');
+  if (pr.host != null && (typeof pr.host !== 'string' || !pr.host.trim())) throw new Error('config.productive.host must be a host name');
+  if (pr.org != null && !/^\d+$/.test(String(pr.org).trim())) throw new Error('config.productive.org must be an organization id (a number)');
+  for (const k of ['keychain', 'tokenFile']) {
+    if (pr[k] != null && (typeof pr[k] !== 'string' || !pr[k].trim())) throw new Error(`config.productive.${k} must be a non-empty string`);
+  }
+  const productive = {
+    host: pr.host == null ? null : pr.host.trim(),
+    org: pr.org == null ? null : String(pr.org).trim(),
+    keychain: pr.tokenFile ? (pr.keychain?.trim() ?? null) : (pr.keychain?.trim() ?? 'PRODUCTIVE_AUTH_TOKEN'),
+    tokenFile: pr.tokenFile ? expandHome(pr.tokenFile.trim(), home) : null,
+    spawn: productiveSpawn(pr.spawn),
+  };
+  productive.enabled = productive.host != null && productive.host === self.trim();
+  if (productive.enabled && !productive.org) throw new Error('config.productive.org is required on the bridge host (the organization id)');
+  if (env.FLEET_WEB_PRODUCTIVE != null && env.FLEET_WEB_PRODUCTIVE !== '' && /^(0|false|off|no)$/i.test(env.FLEET_WEB_PRODUCTIVE)) productive.enabled = false;
+
   // web.uploads: where dropped/pasted files are stored (lib/uploads.mjs).
   const wu = web.uploads == null ? {} : web.uploads;
   if (!isObject(wu)) throw new Error('config.web.uploads must be an object { dir, maxMB, retentionDays }');
@@ -932,6 +976,7 @@ export function normalizeConfig(
     slack,
     veranda,
     github,
+    productive,
     uploads,
     files,
     notes,
@@ -1002,13 +1047,15 @@ export function createSlackSettingsReloader({ config, env = process.env, home = 
       return false;
     }
     seen = m;
-    const snap = () => JSON.stringify([config.slack.owners, config.slack.spawn, config.github?.spawn ?? null]);
+    const snap = () => JSON.stringify([config.slack.owners, config.slack.spawn, config.github?.spawn ?? null, config.productive?.spawn ?? null]);
     const before = snap();
     config.slack.owner = fresh.slack.owner;
     config.slack.owners = fresh.slack.owners;
     config.slack.spawn = fresh.slack.spawn;
     // github.spawn too: the GitHub bridge reads it on every review request.
     if (config.github && fresh.github) config.github.spawn = fresh.github.spawn;
+    // productive.spawn as well (read on every mention).
+    if (config.productive && fresh.productive) config.productive.spawn = fresh.productive.spawn;
     return snap() !== before;
   };
 }

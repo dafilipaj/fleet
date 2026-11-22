@@ -425,6 +425,31 @@ export interface GithubStatus {
   ended: GithubLink[]
 }
 
+/** A Productive link (web/lib/productive.mjs): a session follows one task as the bridge's Productive account. */
+export interface ProductiveLink {
+  id: string
+  host: string
+  session: string
+  sessionName: string | null
+  taskId: string
+  number: string | null
+  url: string
+  title: string | null
+  me: { id: string; name: string | null }
+  createdAt: number
+  endedAt: number | null
+  endReason: string | null
+}
+
+/** GET /api/productive: the bridge on `productive.host` (proxied there). `enabled: false`: no bridge. */
+export interface ProductiveStatus {
+  enabled: boolean
+  host: string | null
+  error?: string | null
+  links: ProductiveLink[]
+  ended: ProductiveLink[]
+}
+
 /** A link's duration: minutes, or `forever` (no end). */
 export type SlackMinutes = number | 'forever'
 

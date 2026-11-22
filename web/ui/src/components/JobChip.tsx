@@ -1,4 +1,4 @@
-import { AppWindowIcon, BotIcon, GitPullRequestIcon, MessagesSquareIcon, UsersRoundIcon, type LucideIcon } from 'lucide-react'
+import { AppWindowIcon, BotIcon, GitPullRequestIcon, ListTodoIcon, MessagesSquareIcon, UsersRoundIcon, type LucideIcon } from 'lucide-react'
 
 import type { Session } from '@/api/types'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -58,6 +58,7 @@ const FILTER_ICONS: Partial<Record<StatusFilterId, LucideIcon>> = {
   slack: MessagesSquareIcon,
   veranda: UsersRoundIcon,
   github: GitPullRequestIcon,
+  productive: ListTodoIcon,
   embedded: AppWindowIcon,
 }
 

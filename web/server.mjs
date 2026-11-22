@@ -45,6 +45,7 @@ import { createPromptQueue } from './lib/queue.mjs';
 import { TOKEN_NAMES, createSlackApi, createSlackBridge, createSlackDownload, createSocketClient } from './lib/slack.mjs';
 import { createVerandaBridge, createVerandaClient } from './lib/veranda.mjs';
 import { createGithubBridge } from './lib/github.mjs';
+import { createProductiveApi, createProductiveBridge } from './lib/productive.mjs';
 import { fetchPeerHost, proxyToPeer, setPeerConnects, setPeerProxies, setPeerTokens } from './lib/peers.mjs';
 import { createDormant } from './lib/dormant.mjs';
 import { createLoadAlerts, createLoadMonitor, readProcessUse, retryWhileBusy } from './lib/load.mjs';
@@ -291,6 +292,39 @@ const github = config.github.enabled
       log,
     })
   : null;
+// Productive links: the bridge runs on the `productive.host` server only, as the Productive
+// account whose API token this host holds. Starts and resumes sessions like the GitHub bridge.
+const productive = config.productive.enabled
+  ? createProductiveBridge({
+      settings: config.productive,
+      self: config.self,
+      api: createProductiveApi({
+        org: config.productive.org,
+        token: createSecret({ file: config.productive.tokenFile, service: config.productive.keychain, run, minLength: 16, log }),
+      }),
+      listSessions: async () => {
+        const local = await fleet.localHost({ force: true });
+        return local.ok ? local.sessions : null;
+      },
+      send: (session, text) => backend.send(session, text),
+      spawn: async (body) => {
+        const loopback = loopbackFor(config.bind);
+        const base = `http://${loopback.includes(':') ? `[${loopback}]` : loopback}:${config.port}`;
+        const r = await proxyToPeer(base, {
+          method: 'POST',
+          pathname: `/api/hosts/${encodeURIComponent(config.self)}/spawn`,
+          body: JSON.stringify({ ...body, ctx: 'auto' }),
+          timeoutMs: 120000,
+        });
+        if (r.status !== 200) throw spawnFailure(r, `HTTP ${r.status} from spawn`);
+        return r.body;
+      },
+      sleep: (sessionId) => cli.sleep({ target: sessionId }),
+      restore: (args) => cli.restore(args),
+      file: path.join(fleetStateDir(process.env), 'productive-links.json'),
+      log,
+    })
+  : null;
 // Prompt queue: messages typed while a session works go in one per run, once it is idle again.
 const queue = createPromptQueue({
   file: path.join(fleetStateDir(process.env), 'prompt-queue.json'),
@@ -397,6 +431,7 @@ const handleApi = createApi({
   slack,
   veranda,
   github,
+  productive,
   queue,
   name: NAME,
   version: VERSION,
@@ -491,7 +526,7 @@ servers[0].listen(config.port, addresses[0], () => {
     log(`[fleet-web] inbox: served by ${config.inbox.host}`);
   }
   queue.start();
-  if (slack || github) {
+  if (slack || github || productive) {
     // slack.owner / slack.spawn / github.spawn: live from the config file (`fleet config set`), no restart.
     const reloadSlack = createSlackSettingsReloader({ config, log });
     setInterval(() => {
@@ -504,6 +539,13 @@ servers[0].listen(config.port, addresses[0], () => {
     log(`[fleet-web] github links on (notifications of this host's gh; review requests start sessions: ${config.github.spawn ? (from.length ? from.join(', ') : 'nobody') : 'off'})`);
   } else if (config.github.host) {
     log(`[fleet-web] github links: served by ${config.github.host}`);
+  }
+  if (productive) {
+    productive.start();
+    const from = config.productive.spawn?.from ?? [];
+    log(`[fleet-web] productive links on (inbox of this host's Productive account; mentions start sessions: ${config.productive.spawn ? (from.length ? `${from.length} people` : 'nobody') : 'off'})`);
+  } else if (config.productive.host) {
+    log(`[fleet-web] productive links: served by ${config.productive.host}`);
   }
   loadMonitor.start();
   if (config.usage.enabled) log(`[fleet-web] subscription fallback on (${Object.entries(config.usage.fallback).filter(([, t]) => t).map(([f, t]) => `${f}→${t}`).join(', ')}; session ${config.usage.limits.session}%, weekly ${config.usage.limits.weekly}%)`);
@@ -595,6 +637,7 @@ function shutdown(signal) {
   slack?.stop();
   veranda?.stop();
   github?.stop();
+  productive?.stop();
   stacks.stop();
   operator.stop();
   uploader.stop();

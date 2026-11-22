@@ -45,10 +45,10 @@ export function backgroundLabel(bg: Session['background']): string {
   return [n ? `${n} agent${n === 1 ? '' : 's'}` : '', bg.shells ? `${bg.shells} shell${bg.shells === 1 ? '' : 's'}` : ''].filter(Boolean).join(', ')
 }
 
-export type StatusFilterId = 'all' | 'waiting' | 'busy' | 'idle' | 'scheduled' | 'slack' | 'veranda' | 'github' | 'embedded'
+export type StatusFilterId = 'all' | 'waiting' | 'busy' | 'idle' | 'scheduled' | 'slack' | 'veranda' | 'github' | 'productive' | 'embedded'
 
-/** The bridges a session can be linked to: people there talk to it (Slack thread, Veranda room, GitHub PR). */
-export type LinkKind = 'slack' | 'veranda' | 'github'
+/** The bridges a session can be linked to: people there talk to it (Slack thread, Veranda room, GitHub PR, Productive task). */
+export type LinkKind = 'slack' | 'veranda' | 'github' | 'productive'
 /** Per bridge, the `host/session_id` keys of the sessions with an active link (`linkedKeys`); a missing one = none. */
 export type Linked = Partial<Record<LinkKind, ReadonlySet<string>>>
 
@@ -61,7 +61,7 @@ export interface StatusFilter {
 }
 
 /** The filters for sessions set aside from the rest (bots, links, app panels): a chip only when there are some. */
-export const SET_ASIDE: StatusFilterId[] = ['scheduled', 'slack', 'veranda', 'github', 'embedded']
+export const SET_ASIDE: StatusFilterId[] = ['scheduled', 'slack', 'veranda', 'github', 'productive', 'embedded']
 
 export const STATUS_FILTERS: StatusFilter[] = [
   { id: 'all', label: 'All', match: () => true },
@@ -74,10 +74,11 @@ export const STATUS_FILTERS: StatusFilter[] = [
   { id: 'slack', label: 'Slack', match: (s, l) => isLinked(s, l.slack), title: 'Sessions linked to Slack: people in a thread talk to them' },
   { id: 'veranda', label: 'Veranda', match: (s, l) => isLinked(s, l.veranda), title: 'Sessions linked to a Veranda room: its guests talk to them' },
   { id: 'github', label: 'GitHub', match: (s, l) => isLinked(s, l.github), title: 'Sessions linked to a GitHub pull request: they follow it and answer there' },
+  { id: 'productive', label: 'Productive', match: (s, l) => isLinked(s, l.productive), title: 'Sessions linked to a Productive task: they follow its comments and answer there' },
   { id: 'embedded', label: 'Apps', match: (s) => isEmbedSession(s), title: "Sessions started from an app's Fleet panel (embed view)" },
 ]
 
-/** The filters worth a chip: Bots / Slack / Veranda / GitHub / Apps only when there are such sessions, or it is the one picked. */
+/** The filters worth a chip: Bots / the link kinds / Apps only when there are such sessions, or it is the one picked. */
 export function visibleStatusFilters(counts: Record<StatusFilterId, number> | null, current: StatusFilterId): StatusFilter[] {
   return STATUS_FILTERS.filter((f) => !SET_ASIDE.includes(f.id) || current === f.id || (counts?.[f.id] ?? 0) > 0)
 }
@@ -170,7 +171,7 @@ const NOT_LINKED: Linked = {}
  */
 export function setAside(s: Session, linked: Linked = NOT_LINKED): boolean {
   if (statusMeta(s.status).key === 'waiting') return false
-  return isJobSession(s) || isEmbedSession(s) || isLinked(s, linked.slack) || isLinked(s, linked.veranda) || isLinked(s, linked.github)
+  return isJobSession(s) || isEmbedSession(s) || isLinked(s, linked.slack) || isLinked(s, linked.veranda) || isLinked(s, linked.github) || isLinked(s, linked.productive)
 }
 
 /**

@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react'
 import { useFleet } from '@/hooks/useFleet'
 import { usePersistentState } from '@/hooks/usePersistentState'
 import { useGithub } from '@/hooks/useGithub'
+import { useProductive } from '@/hooks/useProductive'
 import { useSlack } from '@/hooks/useSlack'
 import { useVeranda } from '@/hooks/useVeranda'
 import { relTime } from '@/lib/format'
@@ -37,13 +38,15 @@ export function useSessionList(now: number) {
   const slackStatus = useSlack()
   const verandaStatus = useVeranda()
   const githubStatus = useGithub()
+  const productiveStatus = useProductive()
   const linked = useMemo<Linked>(
     () => ({
       slack: linkedKeys(slackStatus?.enabled ? slackStatus.links : null),
       veranda: linkedKeys(verandaStatus?.enabled ? verandaStatus.links : null, verandaStatus?.host ?? null),
       github: linkedKeys(githubStatus?.enabled ? githubStatus.links : null, githubStatus?.host ?? null),
+      productive: linkedKeys(productiveStatus?.enabled ? productiveStatus.links : null, productiveStatus?.host ?? null),
     }),
-    [slackStatus, verandaStatus, githubStatus],
+    [slackStatus, verandaStatus, githubStatus, productiveStatus],
   )
   // Snoozes run out on the clock, not on a poll: the minute is enough.
   const minute = Math.floor(now / 60_000) * 60_000

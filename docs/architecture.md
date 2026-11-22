@@ -215,6 +215,7 @@ server. Path: `$FLEET_CONFIG`, else `${XDG_CONFIG_HOME:-~/.config}/fleet/config.
 | `slack` | [Slack links](#slack-links): `host` (the host whose web server runs the bridge; peers proxy `/api/slack` there — unset = off), `owner` (your Slack user id `U…`: your messages in a linked thread are marked as the owner's), `owners` (a list of such ids, for a machine several people own, e.g. a shared shed: each is marked as an owner, may start sessions with a mention when `spawn.from` is unset, and `owner` is added first), `bridges` (`{ "<host>": "<bridge host>" }`: that host's sessions are linked by another bridge, one with its own Slack app; set it on every server you link from), `spawn` (read by the bridge's server: a mention of its app [opens a session](#slack-links) — `{ host (default: this one), dir (a spawn dir there; `~/…` = that host's home; none = its first), model, harness, ghIdentity, minutes (`1d`), mode, task, from }`, `from`: `"anyone"` in a channel the app is in, or a list of user ids; default the owners only). `FLEET_WEB_SLACK=0` turns it off on a server |
 | `veranda` | [Veranda links](#veranda-links), **opt-in** — without it nothing runs, polls or shows: `host` (the host whose web server runs the bridge; peers proxy `/api/veranda` there), `socket` (Veranda's bot API unix socket on that host, absolute or `~/…`; required there), `url` (where guests open Veranda, printed with the passphrase), `defaultMinutes` (120; 1–43200), `notices` (`{ waiting, ended }`: the texts Fleet posts in the room; default short English — set them for Veranda's language). `FLEET_WEB_VERANDA=0` turns it off on a server |
 | `github` | [GitHub links](#github-links): `host` (the host whose web server runs the bridge, as its `gh` account — unset = off; peers proxy `/api/github` there), `spawn` (`{ dir, model, harness, keep (`1d`; a duration, or `never`), task, from }`: a review requested from the account by a login in `from` — or `"anyone"` — on a PR no session follows opens a linked session; none = off; read live). `FLEET_WEB_GITHUB=0` turns it off on a server |
+| `productive` | [Productive links](#productive-links): `host` (the host whose web server runs the bridge — unset = off; peers proxy `/api/productive` there), `org` (the organization id; required there), `keychain` (the Keychain service of the account's API token, default `PRODUCTIVE_AUTH_TOKEN`) or `tokenFile` (0600), `spawn` (`{ dir, model, harness, keep (`1d`; a duration, or `never`), task, from }`: a mention of the account by a person in `from` — Productive person ids or emails, or `"anyone"` — on a task no session follows opens a linked session; none = off; read live). `FLEET_WEB_PRODUCTIVE=0` turns it off on a server |
 
 Rules: `~` is expanded at use time; unknown keys are preserved when the CLI rewrites the file
 (writes go through the raw JSON, never the typed view); a missing file is fine — this machine is
@@ -555,6 +556,10 @@ JSON over HTTP, errors as `{ "error": "..." }`. At a high level:
 | GET | `/api/github` | [GitHub links](#github-links): `{ enabled, host, login, since, lastPollAt, error, spawn, links: [GhLink], ended: [GhLink] }` — GhLink = `{ id, host, session, sessionName, repo, number, url, title, login, task, keep \| null (minutes), createdAt, startedBy: { login, at } \| null, pending, waking, delivered, asleep, endedAt, endReason, retired }` (`endReason`: `merged`, `closed`, `unlinked`; `retired`: a session the bridge started was put to sleep after its PR ended); served by `github.host`, proxied by the others (`enabled: false` when none is set) |
 | POST | `/api/github/link` | `{ url, host, session \| pane \| tmuxSession, task?, keep? }` → GhLink (`renewed: true` when that session already followed that PR). 400: not a PR URL, a session on another host than `github.host`, a bad `keep`; 404: no such session or PR; 409: the PR is not open, or another session follows it |
 | POST | `/api/github/links/:id/unlink` | end the link now → GhLink |
+| GET | `/api/productive` | [Productive links](#productive-links): `{ enabled, host, me: { id, name }, since, lastPollAt, error, spawn, links: [PLink], ended: [PLink] }` — PLink = `{ id, host, session, sessionName, taskId, number, url, title, me, task, keep \| null (minutes), createdAt, startedBy: { id, name, at } \| null, pending, waking, delivered, asleep, endedAt, endReason }` (`endReason`: `closed`, `gone`, `unlinked`); served by `productive.host`, proxied by the others (`enabled: false` when none is set) |
+| POST | `/api/productive/link` | `{ url (a task URL or id), host, session \| pane \| tmuxSession, task?, keep? }` → PLink (`renewed: true` when that session already followed that task). 400: not a task, a session on another host, a bad `keep`; 404: no such session or task; 409: the task is closed, or another session follows it |
+| POST | `/api/productive/comment` | `{ host, link? \| session \| pane \| tmuxSession, body }` → `{ ok, link, taskId, url, comment }`: a comment on the linked task as the account (`body`: text with a little Markdown, `@[Person:<id>:<Name>]` mentions). 404: the session follows no task; 409: it follows several (name the link) |
+| POST | `/api/productive/links/:id/unlink` | end the link now → PLink |
 | GET | `/api/slack` | [Slack links](#slack-links): `{ enabled, host, error?, socket: { connected, error }, bot: { userId, team, url }, owner, links: [Link], ended: [Link], bridges? }` (with `slack.bridges`: `links` / `ended` of every bridge, `bridges: [{ host, enabled, error?, socket, bot }]`; `host`, `socket`, `bot` stay `slack.host`'s) — Link = `{ id, host, session, sessionName, channel, threadTs \| null, permalink, task, mode, createdAt, until \| null, minutes \| null, pending, delivered, replies, endedAt, endReason, startedBy, blocked }` (`blocked`: `{ at, what }` while its session waits on the owner and the thread was told, else null; `until: null`: no end, it lasts until unlinked; `minutes`: the duration it was linked for, null = no end; `startedBy`: `{ user, name, owner }` when a mention started its session, else null); `spawn`: this bridge's `slack.spawn` (`{ host, dir, model, harness, ghIdentity, mode, task, minutes, from }`, `host` resolved) when it opens sessions on a mention, else null; `bot.name`: the app's bot user name; with `slack.bridges` each of `bridges` carries its own `spawn`; served by `slack.host`, proxied by the others (`enabled: false` when none is set) |
 | POST | `/api/slack/link` | `{ host, session \| pane \| tmuxSession, url \| user, minutes (1–10080, or like `2h`, `2d`, `1w`, or `forever`: no end), task?, mode?: mention \| proactive, first? }` (`user`, or a `url` that is not `http…`: a person — `@name` / name / `U…` — and the link is the app's DM with them; the Link then has `dm: { user, name }`) → Link (`renewed: true` when that session already followed that thread). 400: a bad link or duration, a session on another host, a conversation the app cannot see; 404: no such session |
 | PUT | `/api/slack/spawn` | `{ bridge? (default `slack.host`), spawn: { host?, dir?, model?, harness?, ghIdentity?, minutes?, mode?, task?, from? } \| null }` → that bridge's `/api/slack` status: changes only the fields given of its `slack.spawn` (the rest keep their current values; a field given as `null` goes back to its default: `minutes` 1d, `from` the owner only, the others unset), saves it (`fleet config set`) and applies it at once, no restart; `spawn: null` turns it off (Settings → Slack). Served by the bridge, proxied there once. 400: a bad duration / mode / `from`, a `host` that is neither the bridge nor a peer; 404: an unknown bridge |
@@ -1034,6 +1039,39 @@ session id) with an intro that says to read the PR first.
 State (`<fleet state>/github-links.json`, 0600): `since`, the links (with their seen keys and
 pending events), the last 20 ended, the started request keys and the handled notification
 threads.
+
+## Productive links
+
+A session follows one Productive task as the bridge host's Productive account
+(`web/lib/productive.mjs`, [CLI](cli.md#productive-links)) — the GitHub links' counterpart, with a
+task as the scope. One host's server runs the bridge (`productive.host`) with that account's API
+token (Keychain or file); the session never sees the token: it comments through
+`POST /api/productive/comment`. Each shed with its own Productive account runs its own bridge.
+
+No webhooks: the bridge polls `GET /notifications` (the account's inbox) every minute. A
+notification whose `last_action_at` it has not handled names a task (its target, or the parent of a
+todo or comment); for a linked task, or any task when it may start sessions, the bridge reads
+`GET /activities?filter[task_id]=…&include=creator,comment` (newest 50: comments with their body,
+and changes with their changeset). Activity ids grow, so a link remembers only the newest it has
+seen; a restart or a missed notification delivers nothing twice. Linked tasks are also re-read
+every 3 minutes (`GET /tasks/:id`: a closed task ends the link). Events: `mention` (a comment whose
+body mentions the account — Productive stores mentions inline as `@[{"type":"person","id":…}]`),
+`comment` (by a person in `spawn.from`), `change` wake the session; other people's comments are
+`context`; the account's own activity is dropped. Comment bodies are HTML, typed in as text
+(mentions as `@Name`, links as `text (url)`). Throttle: delivery waits until the newest event is
+20 s (a mention) or 45 s old and the last delivery 30 s (mention), 2 min (comment) or 10 min
+(changes only) ago, and the session is idle; then one prompt (≤ 7500 chars, newest first to fit).
+
+Spawn (`productive.spawn`): the newest comment mentioning the account on an unlinked task, made
+after the bridge first ran, by a person in `from` (emails are looked up once per change of the
+list), opens a session through this host's `POST /api/hosts/:host/spawn` (named `task-<number>`),
+linked as soon as it has a session id; the intro carries the task (title, project, description),
+its recent comments and the mention. Each mention starts at most one session (`started`). Sleep,
+resume and take-over as for GitHub links.
+
+State (`<fleet state>/productive-links.json`, 0600): `since`, the links (with the newest activity
+seen and pending events), the last 20 ended, the started mention keys and the handled
+notifications.
 
 ## Session briefs
 

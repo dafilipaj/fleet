@@ -5,9 +5,9 @@ use colored::Colorize;
 
 use fleet::cli::{
     brief as brief_cmd, commands, config_cmd, github as github_cmd, group, hosts as host_cmds,
-    init, jobs as jobs_cmd, prs as prs_cmd, repos as repos_cmd, restore, schedule as schedule_cmd,
-    skill, slack as slack_cmd, stack as stack_cmds, tasks as tasks_cmd, tmux as tmux_cmds,
-    usage as usage_cmd, veranda as veranda_cmd, web,
+    init, jobs as jobs_cmd, productive as productive_cmd, prs as prs_cmd, repos as repos_cmd,
+    restore, schedule as schedule_cmd, skill, slack as slack_cmd, stack as stack_cmds,
+    tasks as tasks_cmd, tmux as tmux_cmds, usage as usage_cmd, veranda as veranda_cmd, web,
 };
 use fleet::core::config;
 use fleet::core::discovery::Backend;
@@ -400,6 +400,13 @@ enum Commands {
         cmd: Option<GithubCmd>,
     },
 
+    /// Productive links: a session follows one Productive task — its comments and changes are
+    /// typed in, it answers with `fleet productive reply` (`productive.host`)
+    Productive {
+        #[command(subcommand)]
+        cmd: Option<ProductiveCmd>,
+    },
+
     /// Slack links: a session talks, for a while, with the people in one Slack thread (`slack.host`)
     Slack {
         #[command(subcommand)]
@@ -738,6 +745,55 @@ enum GithubCmd {
     /// End a link now
     Unlink {
         /// The link id (gl-xxxxxx)
+        link: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProductiveCmd {
+    /// The bridge (polling?) and the active links
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Link a session to a Productive task (default: this session); ends when the task is closed
+    Link {
+        /// The task: https://app.productive.io/<org>/tasks/<id>, or its id
+        url: String,
+        /// The session to link (default: the one this command runs in, by $TMUX_PANE)
+        #[arg(long, value_name = "TARGET")]
+        session: Option<String>,
+        /// Your instructions for it on this task
+        #[arg(long)]
+        task: Option<String>,
+        /// Put the session to sleep after it has been idle this long (like 12h, 1d); the next
+        /// event resumes it (default: never)
+        #[arg(long, value_name = "DURATION")]
+        keep: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Post a comment on the linked task, as the bridge's Productive account
+    Reply {
+        /// The comment (Markdown-lite; `-` or nothing: read stdin)
+        text: Option<String>,
+        /// Read the comment from this file
+        #[arg(long, value_name = "PATH")]
+        file: Option<String>,
+        /// The link (pl-xxxxxx; default: the one of this session)
+        #[arg(long)]
+        link: Option<String>,
+        /// The session whose link to answer on (default: the one this command runs in)
+        #[arg(long, value_name = "TARGET")]
+        session: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// End a link now
+    Unlink {
+        /// The link id (pl-xxxxxx)
         link: String,
         #[arg(long)]
         json: bool,
@@ -1683,6 +1739,36 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
                 json,
             )?,
             GithubCmd::Unlink { link, json } => github_cmd::unlink(&link, json)?,
+        },
+        Commands::Productive { cmd } => match cmd.unwrap_or(ProductiveCmd::List { json: false }) {
+            ProductiveCmd::List { json } => productive_cmd::list(json)?,
+            ProductiveCmd::Link {
+                url,
+                session,
+                task,
+                keep,
+                json,
+            } => productive_cmd::link(
+                &url,
+                session.as_deref(),
+                task.as_deref(),
+                keep.as_deref(),
+                json,
+            )?,
+            ProductiveCmd::Reply {
+                text,
+                file,
+                link,
+                session,
+                json,
+            } => productive_cmd::reply(
+                text.as_deref(),
+                file.as_deref(),
+                link.as_deref(),
+                session.as_deref(),
+                json,
+            )?,
+            ProductiveCmd::Unlink { link, json } => productive_cmd::unlink(&link, json)?,
         },
         Commands::Veranda { cmd } => match cmd.unwrap_or(VerandaCmd::Status { json: false }) {
             VerandaCmd::Status { json } => veranda_cmd::status(json)?,

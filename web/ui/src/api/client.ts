@@ -70,6 +70,7 @@ import type {
   SlackStatus,
   VerandaLink,
   GithubStatus,
+  ProductiveStatus,
   VerandaStatus,
   SleepResponse,
   SnoozeResponse,
@@ -526,6 +527,8 @@ export const api = {
     request<SlackLink>(`/api/slack/links/${enc(id)}/relink`, { ...o, method: 'POST', body: minutes === undefined ? {} : { minutes } }),
   /** GitHub links: the bridge's state, from the `github.host` server (proxied). */
   github: (o: Opts = {}) => request<GithubStatus>('/api/github', o),
+  /** Productive links: the bridge's state, from the `productive.host` server (proxied). */
+  productive: (o: Opts = {}) => request<ProductiveStatus>('/api/productive', o),
   /** Veranda links (opt-in): the bridge's state, from the `veranda.host` server (proxied). */
   veranda: (o: Opts = {}) => request<VerandaStatus>('/api/veranda', o),
   /** Close a Veranda room and end its link. */
