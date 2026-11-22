@@ -45,7 +45,7 @@ import { GithubError, validLinkId as validGithubLinkId } from './github.mjs';
 import { ProductiveError, validLinkId as validProductiveLinkId } from './productive.mjs';
 import { VerandaError } from './veranda.mjs';
 import { BUSY_MARK, DEFAULTS as LOAD_DEFAULTS, MAX_OVERRIDE_MINUTES, loadSettings } from './load.mjs';
-import { DEFAULTS as USAGE_DEFAULTS, MAX_OVERRIDE_MINUTES as USAGE_MAX_OVERRIDE, USAGE_MARK, usagePatch, usageSettings } from './usage.mjs';
+import { DEFAULTS as USAGE_DEFAULTS, MAX_OVERRIDE_MINUTES as USAGE_MAX_OVERRIDE, USAGE_MARK, usagePatch, usageSettings, usageStored } from './usage.mjs';
 
 /**
  * An error with a status → its HttpError. A host under heavy load (lib/load.mjs) answers 409 with
@@ -1368,7 +1368,7 @@ export function createApi({
     // This host's load (lib/load.mjs): what the Slack bridge's host polls for the owner's alerts.
     if (url.pathname === '/api/load') {
       if (req.method !== 'GET') throw new HttpError('method not allowed', 405);
-      return { status: 200, body: { host: config.self, enabled: !!loadMonitor?.enabled(), load: loadMonitor?.enabled() ? loadMonitor.current() : null } };
+      return { status: 200, body: { host: config.self, enabled: !!loadMonitor?.enabled(), alerts: loadMonitor?.settings?.().alerts !== false, load: loadMonitor?.enabled() ? loadMonitor.current() : null } };
     }
 
     if (url.pathname === '/api/fleet') {
@@ -2697,7 +2697,7 @@ export function createApi({
           }
           if (typeof cli?.configSet !== 'function') throw new HttpError('config writes are not available on this server', 501);
           try {
-            await cli.configSet({ key: 'usage', value: next, configFile: config.configFile ?? null });
+            await cli.configSet({ key: 'usage', value: usageStored(next), configFile: config.configFile ?? null });
           } catch (err) {
             throw new HttpError(`could not save the usage settings: ${err?.message ?? err}`, err?.timedOut ? 504 : 502);
           }
@@ -2731,19 +2731,24 @@ export function createApi({
     };
   }
 
-  /** The `resources` patch of a PUT → the whole object to store (validated; 400 on junk). */
+  /**
+   * The `resources` patch of a PUT → the object to store (validated; 400 on junk). Only what
+   * differs from the defaults is stored, so a later release's better defaults still reach a host
+   * whose settings were once saved.
+   */
   function resourcesPatch(body, cur) {
     if (!body || typeof body !== 'object' || Array.isArray(body)) throw new HttpError('body must be an object', 400);
-    const next = { enabled: cur.enabled, load: { ...cur.load }, psi: { ...cur.psi }, enterSeconds: cur.enterSeconds, exitSeconds: cur.exitSeconds };
+    const next = structuredClone(cur);
     const pos = (v, name, max) => {
       if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0 || v > max) throw new HttpError(`${name} must be a number above 0 and at most ${max}`, 400);
       return v;
     };
-    if ('enabled' in body) {
-      if (typeof body.enabled !== 'boolean') throw new HttpError('enabled must be true or false', 400);
-      next.enabled = body.enabled;
+    for (const k of ['enabled', 'alerts']) {
+      if (!(k in body)) continue;
+      if (typeof body[k] !== 'boolean') throw new HttpError(`${k} must be true or false`, 400);
+      next[k] = body[k];
     }
-    for (const group of ['load', 'psi']) {
+    for (const group of ['load', 'memory', 'psi']) {
       if (!(group in body)) continue;
       const g = body[group];
       if (!g || typeof g !== 'object') throw new HttpError(`${group} must be an object`, 400);
@@ -2751,8 +2756,19 @@ export function createApi({
       for (const k of ['hot', 'critical']) if (k in g) next[group][k] = pos(g[k], `${group}.${k}`, max);
     }
     if (next.load.critical < next.load.hot) throw new HttpError('load.critical must be at least load.hot', 400);
-    for (const k of ['enterSeconds', 'exitSeconds']) if (k in body) next[k] = pos(body[k], k, 3600);
-    return next;
+    // Free memory: critical is the lower share.
+    if (next.memory.critical > next.memory.hot) throw new HttpError('memory.critical must be at most memory.hot', 400);
+    for (const k of ['enterSeconds', 'criticalEnterSeconds', 'exitSeconds']) if (k in body) next[k] = pos(body[k], k, 3600);
+    const stored = { enabled: next.enabled };
+    for (const [k, v] of Object.entries(next)) {
+      if (k === 'enabled') continue;
+      const d = LOAD_DEFAULTS[k];
+      if (v && typeof v === 'object') {
+        const diff = Object.fromEntries(Object.entries(v).filter(([kk, vv]) => d?.[kk] !== vv));
+        if (Object.keys(diff).length) stored[k] = diff;
+      } else if (v !== d) stored[k] = v;
+    }
+    return stored;
   }
 
   async function localLoad(req, sub) {

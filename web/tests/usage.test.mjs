@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { createSpawner } from '../lib/spawn.mjs';
-import { DEFAULTS, USAGE_MARK, createUsageAlerts, isUsageHold, usagePatch, usageSettings } from '../lib/usage.mjs';
+import { DEFAULTS, USAGE_MARK, createUsageAlerts, isUsageHold, usagePatch, usageSettings, usageStored } from '../lib/usage.mjs';
 
 const tmp = () => fsp.mkdtemp(path.join(os.tmpdir(), 'fleet-usage-'));
 
@@ -24,6 +24,11 @@ test('usagePatch: validates, keeps what it does not touch', () => {
   for (const bad of [[], { enabled: 'yes' }, { fallback: { claude: 'claude' } }, { fallback: { gpt: 'claude' } }, { limits: { session: 0 } }, { limits: { paceMargin: 101 } }]) {
     assert.throws(() => usagePatch(bad, cur), (err) => err.status === 400, JSON.stringify(bad));
   }
+});
+
+test('usageStored: enabled plus only what differs from the defaults', () => {
+  assert.deepEqual(usageStored(usageSettings({ enabled: true })), { enabled: true });
+  assert.deepEqual(usageStored(usagePatch({ fallback: { codex: null }, limits: { weekly: 97 } }, usageSettings({ enabled: true }))), { enabled: true, fallback: { codex: null }, limits: { weekly: 97 } });
 });
 
 /** A spawner whose tmux is a fake: records what it types; the agent always "starts". */

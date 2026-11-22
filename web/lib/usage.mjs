@@ -73,6 +73,16 @@ export function usagePatch(body, cur) {
   return next;
 }
 
+/** What to store from full settings: `enabled` and only what differs from the defaults. */
+export function usageStored(next) {
+  const out = { enabled: next.enabled };
+  const fb = Object.fromEntries(Object.entries(next.fallback).filter(([k, v]) => DEFAULTS.fallback[k] !== v));
+  if (Object.keys(fb).length) out.fallback = fb;
+  const lim = Object.fromEntries(Object.entries(next.limits).filter(([k, v]) => DEFAULTS.limits[k] !== v));
+  if (Object.keys(lim).length) out.limits = lim;
+  return out;
+}
+
 /** A spawn's 409 body when it was held for usage (Slack and GitHub retry on `overloaded`). */
 export function isUsageHold(err) {
   return String(err?.message ?? '').includes(USAGE_MARK);

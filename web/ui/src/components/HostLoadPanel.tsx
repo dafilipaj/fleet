@@ -182,8 +182,14 @@ function HostCard({ host, loaded, onView }: { host: string; loaded: Loaded | und
 
       {s ? (
         <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-xs text-dimmer sm:grid-cols-4">
-          <Metric label="Load" value={`${s.perCore}× cores`} hint={`${s.load1} on ${s.cores} cores`} warn={v.enabled ? s.perCore >= v.settings.load.hot : false} />
-          {s.pressure ? <Metric label="Memory pressure" value={s.pressure} warn={s.pressure !== 'normal'} /> : null}
+          <Metric
+            label={s.load5 != null ? 'Load (5 min)' : 'Load'}
+            value={`${s.perCore}× cores`}
+            hint={`${s.load5 ?? s.load1} on ${s.cores} cores${s.load5 != null ? `; 1 min: ${s.load1}` : ''}`}
+            warn={v.enabled ? s.perCore >= v.settings.load.hot : false}
+          />
+          {s.freePct != null ? <Metric label="Memory free" value={`${s.freePct}%`} warn={s.freePct < (v.settings.memory?.hot ?? 10)} /> : null}
+          {s.pressure ? <Metric label="Memory pressure" value={s.pressure} warn={s.pressure === 'critical'} /> : null}
           {s.swapUsedMb != null ? <Metric label="Swap used" value={`${(s.swapUsedMb / 1024).toFixed(1)} GB`} /> : null}
           {s.psi ? <Metric label="Memory stalls" value={`${s.psi.some ?? 0}% some · ${s.psi.full ?? 0}% full`} warn={(s.psi.some ?? 0) >= v.settings.psi.hot} /> : null}
           {l?.level && l.level !== l.state ? <Metric label="Right now" value={l.level} hint={l.latest.join(', ')} /> : null}
@@ -349,7 +355,7 @@ function SettingsForm({ view, onSaved }: { view: HostLoadView; onSaved: (v: Host
         </span>
         <Switch checked={form.enabled} onCheckedChange={(enabled) => setForm({ ...form, enabled })} />
       </label>
-      {field('Hot at load', form.load.hot, (hot) => setForm({ ...form, load: { ...form.load, hot } }), `× cores (1-minute average; default ${view.defaults.load.hot})`)}
+      {field('Hot at load', form.load.hot, (hot) => setForm({ ...form, load: { ...form.load, hot } }), `× cores (5-minute average; default ${view.defaults.load.hot})`)}
       {field('Critical at load', form.load.critical, (critical) => setForm({ ...form, load: { ...form.load, critical } }), `× cores (default ${view.defaults.load.critical})`)}
       {linux
         ? field('Hot at memory stalls', form.psi.hot, (hot) => setForm({ ...form, psi: { ...form.psi, hot } }), `% of time some tasks wait on memory (default ${view.defaults.psi.hot})`, '1')
@@ -357,15 +363,40 @@ function SettingsForm({ view, onSaved }: { view: HostLoadView; onSaved: (v: Host
       {linux
         ? field('Critical at memory stalls', form.psi.critical, (critical) => setForm({ ...form, psi: { ...form.psi, critical } }), `% of time all tasks wait (default ${view.defaults.psi.critical})`, '1')
         : null}
-      {!linux ? <div className="text-xs text-dimmer">Memory: hot at macOS memory pressure “warn”, critical at “critical”.</div> : null}
+      {!linux
+        ? field('Hot below free memory', form.memory?.hot ?? view.defaults.memory.hot, (hot) => setForm({ ...form, memory: { ...(form.memory ?? view.defaults.memory), hot } }), `% (default ${view.defaults.memory.hot})`, '1')
+        : null}
+      {!linux
+        ? field(
+            'Critical below free memory',
+            form.memory?.critical ?? view.defaults.memory.critical,
+            (critical) => setForm({ ...form, memory: { ...(form.memory ?? view.defaults.memory), critical } }),
+            `% (default ${view.defaults.memory.critical}); macOS memory pressure “critical” always counts`,
+            '1',
+          )
+        : null}
       {field('Goes hot after', form.enterSeconds, (enterSeconds) => setForm({ ...form, enterSeconds }), `seconds above the threshold (default ${view.defaults.enterSeconds})`, '15')}
+      {field(
+        'Goes critical after',
+        form.criticalEnterSeconds ?? view.defaults.criticalEnterSeconds,
+        (criticalEnterSeconds) => setForm({ ...form, criticalEnterSeconds }),
+        `seconds above the critical threshold (default ${view.defaults.criticalEnterSeconds})`,
+        '15',
+      )}
       {field('Recovers after', form.exitSeconds, (exitSeconds) => setForm({ ...form, exitSeconds }), `seconds below it (default ${view.defaults.exitSeconds})`, '15')}
+      <label className="flex items-center gap-2 text-sm">
+        <span className="min-w-0 flex-1">
+          Slack DM when it goes critical
+          <span className="block text-xs text-dimmer">And when it is no longer critical. Off for a second fleet on the same machine.</span>
+        </span>
+        <Switch checked={form.alerts !== false} onCheckedChange={(alerts) => setForm({ ...form, alerts })} />
+      </label>
       {error ? <div className="text-sm text-destructive">{error}</div> : null}
       <div className="flex gap-2">
         <Button size="sm" disabled={saving} onClick={() => void save()}>
           {saving ? <Loader2Icon className="animate-spin" /> : null} Save on {view.host}
         </Button>
-        <Button variant="ghost" size="sm" disabled={saving} onClick={() => setForm({ ...view.defaults, enabled: form.enabled })}>
+        <Button variant="ghost" size="sm" disabled={saving} onClick={() => setForm({ ...view.defaults, enabled: form.enabled, alerts: form.alerts })}>
           Defaults
         </Button>
       </div>

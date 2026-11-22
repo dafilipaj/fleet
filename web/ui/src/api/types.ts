@@ -281,8 +281,13 @@ export type LoadLevel = 'ok' | 'hot' | 'critical'
 export interface LoadSample {
   cores: number
   load1: number
+  /** 5-minute load average (older servers: absent). */
+  load5?: number
+  /** The 5-minute average per core (older servers: the 1-minute one). */
   perCore: number
   pressure?: 'normal' | 'warn' | 'critical' | null
+  /** macOS: free memory in % (`kern.memorystatus_level`). */
+  freePct?: number | null
   swapUsedMb?: number | null
   psi?: { some: number | null; full: number | null } | null
 }
@@ -291,9 +296,14 @@ export interface LoadSample {
 export interface LoadSettings {
   enabled: boolean
   load: { hot: number; critical: number }
+  /** macOS: free memory in % below which it is hot / critical. */
+  memory: { hot: number; critical: number }
   psi: { hot: number; critical: number }
   enterSeconds: number
+  criticalEnterSeconds: number
   exitSeconds: number
+  /** DM the owner when this host goes critical and when it recovers. */
+  alerts: boolean
 }
 
 /** GET /api/hosts/:host/load — Settings → Host load. */

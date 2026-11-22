@@ -557,10 +557,11 @@ servers[0].listen(config.port, addresses[0], () => {
       const alerts = createLoadAlerts({
         hosts: () => config.hosts,
         fetchLoad: async (host) => {
-          if (host === config.self) return loadMonitor.enabled() ? loadMonitor.current() : null;
+          // A host with `resources.alerts: false` (a second fleet on the same machine) is not told about.
+          if (host === config.self) return loadMonitor.enabled() && loadMonitor.settings().alerts !== false ? loadMonitor.current() : null;
           if (!config.peers[host]) return null;
           const r = await proxyToPeer(config.peers[host], { method: 'GET', pathname: '/api/load', search: '', timeoutMs: 5000 });
-          return r.status === 200 && r.body?.enabled !== false ? r.body?.load ?? null : null;
+          return r.status === 200 && r.body?.enabled !== false && r.body?.alerts !== false ? r.body?.load ?? null : null;
         },
         notify: (text) => slack.notifyOwner(text),
         file: path.join(fleetStateDir(process.env), 'load-alerts.json'),

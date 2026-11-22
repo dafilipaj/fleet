@@ -34,7 +34,7 @@ lib/spawn-dirs.mjs    Settings → Start directories: validate a `spawnDirs` lis
 lib/repos.mjs         Settings → Git repos: `fleet repos` list/sync/timer, validate + write the `repos` config key
 lib/jobs.mjs          Bots screen: `fleet jobs` (alias of `fleet bots`) list / show / run now / enable|disable, job-name validation
 lib/spawn.mjs         new tmux session + `claude [--model <id>] [-n <name>] '<prompt>'`, auto-accept folder trust; holds while the host is busy, starts on the fallback harness when the subscription is at its limit
-lib/load.mjs          host load monitor (memory pressure / PSI + load per core, hysteresis), its state file for the CLI, Settings → Host load, `retryWhileBusy`, the owner's load DMs
+lib/load.mjs          host load monitor (free memory / PSI + 5-minute load per core, hysteresis), its state file for the CLI, Settings → Host load, `retryWhileBusy`, the owner's DMs when a host goes critical
 lib/usage.mjs         subscription fallback around `fleet usage check`: config `usage` settings + validation, the hold mark, the owner's limit / recovery DMs
 lib/kill.mjs          close a session: SIGTERM/SIGKILL Claude, then its tmux session/window or iTerm tab
 lib/autoname.mjs      periodic `fleet name --all --settled --adopt-tmux` (display titles) + the spawn pass

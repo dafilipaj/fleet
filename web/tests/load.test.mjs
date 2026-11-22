@@ -27,12 +27,18 @@ test('loadSettings: off by default, defaults for anything malformed', () => {
   assert.equal(loadSettings(undefined).enabled, false);
   const s = loadSettings({ enabled: true, load: { hot: 'x', critical: 6 }, exitSeconds: -1 });
   assert.equal(s.enabled, true);
-  assert.deepEqual(s.load, { hot: 2, critical: 6 });
+  assert.deepEqual(s.load, { hot: 3, critical: 6 });
+  assert.deepEqual(s.memory, { hot: 10, critical: 5 });
   assert.equal(s.exitSeconds, 300);
+  assert.equal(s.enterSeconds, 300);
+  assert.equal(s.criticalEnterSeconds, 60);
+  assert.equal(s.alerts, true);
+  assert.equal(loadSettings({ alerts: false }).alerts, false);
 });
 
 test('parseDarwin / parsePsi', () => {
-  assert.deepEqual(parseDarwin('1\ntotal = 2048.00M  used = 542.31M  free = 1505.69M  (encrypted)\n'), { pressure: 'normal', swapUsedMb: 542 });
+  assert.deepEqual(parseDarwin('1\n42\ntotal = 2048.00M  used = 542.31M  free = 1505.69M  (encrypted)\n'), { pressure: 'normal', freePct: 42, swapUsedMb: 542 });
+  assert.deepEqual(parseDarwin('1\ntotal = 2048.00M  used = 542.31M  free = 1505.69M  (encrypted)\n'), { pressure: 'normal', freePct: null, swapUsedMb: 542 });
   assert.equal(parseDarwin('2\n').pressure, 'warn');
   assert.equal(parseDarwin('4\n').pressure, 'critical');
   assert.equal(parseDarwin('').pressure, null);
@@ -41,11 +47,14 @@ test('parseDarwin / parsePsi', () => {
 
 test('classify: the worse of memory and CPU, with reasons', () => {
   assert.deepEqual(classify({ pressure: 'normal', perCore: 0.9 }, S), { level: 'ok', reasons: [] });
-  assert.equal(classify({ pressure: 'warn', perCore: 0.5 }, S).level, 'hot');
-  assert.equal(classify({ pressure: 'normal', perCore: 2.5 }, S).level, 'hot');
-  const c = classify({ pressure: 'critical', perCore: 2.5 }, S);
+  assert.equal(classify({ pressure: 'warn', freePct: 40, perCore: 0.5 }, S).level, 'ok', 'warn alone is the kernel compressing');
+  assert.equal(classify({ pressure: 'normal', perCore: 2.5 }, S).level, 'ok', 'a build on every core');
+  assert.equal(classify({ pressure: 'normal', perCore: 3.2 }, S).level, 'hot');
+  assert.deepEqual(classify({ pressure: 'warn', freePct: 8, perCore: 0.5 }, S), { level: 'hot', reasons: ['8% memory free'] });
+  assert.equal(classify({ pressure: 'warn', freePct: 4, perCore: 0.5 }, S).level, 'critical');
+  const c = classify({ pressure: 'critical', perCore: 3.5 }, S);
   assert.equal(c.level, 'critical');
-  assert.deepEqual(c.reasons, ['memory pressure critical', 'load 2.5× cores']);
+  assert.deepEqual(c.reasons, ['memory pressure critical', '5-min load 3.5× cores']);
   assert.equal(classify({ psi: { some: 15, full: 1 }, perCore: 0.1 }, S).level, 'hot');
   assert.equal(classify({ psi: { some: 40, full: 12 }, perCore: 0.1 }, S).level, 'critical');
 });
@@ -78,7 +87,7 @@ test('monitor: writes the state file; an unreadable sample counts as ok (fail-op
   let t = 0;
   let fail = false;
   const m = createLoadMonitor({
-    settings: { ...S, enterSeconds: 0 },
+    settings: { ...S, enterSeconds: 0, criticalEnterSeconds: 0 },
     self: 'workstation',
     file,
     now: () => t,
@@ -143,7 +152,7 @@ test('retryWhileBusy: holds while overloaded (onHold once), then runs; other err
   );
 });
 
-test('alerts: DM on up, on worse, on recovery — not on critical → hot, not twice, not for silent hosts', async () => {
+test('alerts: DM only on critical and when it leaves critical — not for hot, not twice, not for silent hosts', async () => {
   const dir = await tmp();
   let t = 1_000_000;
   const states = { workstation: null, laptop: null };
@@ -162,34 +171,35 @@ test('alerts: DM on up, on worse, on recovery — not on critical → hot, not t
   const a = mk();
   const at = (state, reasons = []) => ({ state, reasons, since: t, updatedAt: t });
   await a.tick();
-  assert.equal(sent.length, 0);
-  states.workstation = at('hot', ['load 2.5× cores']);
+  states.workstation = at('hot', ['5-min load 3.2× cores']);
+  await a.tick();
+  states.workstation = at('ok');
+  await a.tick();
+  assert.equal(sent.length, 0, 'hot comes and goes quietly');
+  states.workstation = at('critical', ['memory pressure critical']);
   await a.tick();
   await a.tick();
   assert.equal(sent.length, 1);
-  assert.match(sent[0], /workstation\* is under heavy load \(hot: load 2.5× cores\)/);
-  states.workstation = at('critical', ['memory pressure critical']);
-  await a.tick();
-  assert.equal(sent.length, 2);
-  states.workstation = at('hot');
-  await a.tick();
-  assert.equal(sent.length, 2);
+  assert.match(sent[0], /workstation\* is critically loaded: memory pressure critical/);
   // a restart remembers what was told
   const b = mk();
   await b.tick();
-  assert.equal(sent.length, 2);
+  assert.equal(sent.length, 1);
   t += 20 * 60_000;
+  states.workstation = at('hot');
+  await b.tick();
+  assert.equal(sent.length, 2);
+  assert.match(sent[1], /workstation\* is no longer critical \(after 20 min\)\. It is still busy/);
   states.workstation = at('ok');
   await b.tick();
-  assert.equal(sent.length, 3);
-  assert.match(sent[2], /workstation\* has recovered \(under load for 20 min\)/);
+  assert.equal(sent.length, 2, 'hot → ok after a critical: already told');
 });
 
 test('monitor: off holds nothing and writes no file; configure turns it on live; override lets sessions start', async () => {
   const dir = await tmp();
   const file = path.join(dir, 'load.json');
   let t = 0;
-  const m = createLoadMonitor({ settings: { ...S, enabled: false, enterSeconds: 0 }, self: 'workstation', file, now: () => t, sample: async () => ({ pressure: 'warn', perCore: 1 }) });
+  const m = createLoadMonitor({ settings: { ...S, enabled: false, enterSeconds: 0 }, self: 'workstation', file, now: () => t, sample: async () => ({ pressure: 'warn', freePct: 7, perCore: 1 }) });
   await m.tick();
   t = 1000;
   await m.tick();
@@ -215,10 +225,10 @@ test('monitor: off holds nothing and writes no file; configure turns it on live;
 test('alerts: an override is not a recovery', async () => {
   const dir = await tmp();
   const sent = [];
-  let st = { state: 'hot', reasons: [], since: 0, updatedAt: Date.now() };
+  let st = { state: 'critical', reasons: [], since: 0, updatedAt: Date.now() };
   const a = createLoadAlerts({ hosts: () => ['workstation'], fetchLoad: async () => st, notify: async (x) => sent.push(x), file: path.join(dir, 'a.json') });
   await a.tick();
-  st = { state: 'ok', reasons: [], since: 0, updatedAt: Date.now(), override: { until: Date.now() + 1e6, held: 'hot' } };
+  st = { state: 'ok', reasons: [], since: 0, updatedAt: Date.now(), override: { until: Date.now() + 1e6, held: 'critical' } };
   await a.tick();
   assert.equal(sent.length, 1);
 });
@@ -289,12 +299,12 @@ test('API: /api/hosts/<self>/load — view, PUT settings through config set (liv
   assert.equal(got.body.restart, true);
   assert.equal(got.body.load.sample.perCore, 0.4);
 
-  const put = await call('PUT', '/api/hosts/laptop/load', { enabled: true, load: { hot: 3 } });
+  const put = await call('PUT', '/api/hosts/laptop/load', { enabled: true, load: { hot: 4 } });
   assert.equal(put.status, 200);
   assert.equal(put.body.enabled, true);
-  assert.equal(monitor.settings().load.hot, 3, 'applied live');
+  assert.equal(monitor.settings().load.hot, 4, 'applied live');
   assert.equal(sets[0].key, 'resources');
-  assert.deepEqual(sets[0].value, { enabled: true, load: { hot: 3, critical: 4 }, psi: { hot: 10, critical: 10 }, enterSeconds: 60, exitSeconds: 300 });
+  assert.deepEqual(sets[0].value, { enabled: true, load: { hot: 4 } }, 'only what differs from the defaults is stored');
   for (const body of [{ enabled: 'yes' }, { load: { hot: -1 } }, { load: { hot: 5, critical: 4 } }, { exitSeconds: 99999 }, []]) {
     assert.equal((await call('PUT', '/api/hosts/laptop/load', body)).status, 400, JSON.stringify(body));
   }

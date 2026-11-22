@@ -196,7 +196,7 @@ server. Path: `$FLEET_CONFIG`, else `${XDG_CONFIG_HOME:-~/.config}/fleet/config.
 | `claude` | command that launches Claude Code in spawned sessions (default `claude`) |
 | `harnesses` | `{ codex: { command }, pi: { command } }`: how the [other harnesses](#other-harnesses) launch (default the bare name); plus, for `claude` / `codex` / `pi`, `model` and `effort`: the defaults a spawn uses when it picks none ([cli.md](cli.md#harnesses)). Read leniently |
 | `spawnDirs` | directories offered for new sessions, per host (`paths.<host>`); also edited from the web UI (Settings → Start directories, which writes it through `fleet config set`). They are also the spawn allow-list. An entry with `"hidden": true` stays on the allow-list (e.g. a dir only an app's [embedded panel](#embed-view) spawns in) but is not offered in the New session menu up front (its **+N hidden** button shows them); when a host has only hidden entries it offers Home, and the hidden dirs stay allowed. `fleet config show --resolved` lists them with `"hidden": true` |
-| `resources` | `{ enabled, load: { hot, critical }, psi: { hot, critical }, enterSeconds, exitSeconds }` (default off; 2 / 4 × cores, 10 / 10 %, 60 / 300 s): the web server watches this machine's load and holds new sessions while it is under heavy load — see [Host load](#host-load). Read at start |
+| `resources` | `{ enabled, load: { hot, critical }, memory: { hot, critical }, psi: { hot, critical }, enterSeconds, criticalEnterSeconds, exitSeconds, alerts }` (default off; 3 / 5 × cores (5-minute average), 10 / 5 % memory free (macOS), 10 / 10 % (PSI), 300 / 60 / 300 s, alerts on): the web server watches this machine's load and holds new sessions while it is under heavy load — see [Host load](#host-load). Settings → Host load stores only what differs from the defaults. Read at start |
 | `usage` | `{ enabled, fallback: { claude, codex, pi }, limits: { session, weekly, paceMargin } }` (default off; `claude→codex`, `codex→claude`, `pi→claude`; 90 / 95 %, 15 points): a spawn whose subscription is at its limit starts on the fallback harness — see [Subscription fallback](#subscription-fallback). Read on every CLI run; the web server applies a Settings save at once |
 | `spawn` | `false`: this machine never runs agent sessions — an always-on server that only serves the web app and its single-home services (Slack and GitHub bridges, inbox, grouping). Read by the machine it is set on (its own config; CLI and web server, the server at start). It offers no spawn dirs (`/api/fleet`: `spawn: false`, `spawnDirs` and `hiddenSpawnDirs` both `[]`), every web route that would start an agent on it answers **403** `{ error: "<host> does not run agent sessions (config spawn: false)", noSpawn: true }` (`/spawn` — so the embed view, the Slack and GitHub bridges' spawns on it — `prs/spawn`, the PR notes handoff, `tasks/spawn`, `schedule`, `jobs/:name/run`, `dormant/restore` (a dry run still answers), a stack sibling here, `POST /api/operator`, which then moves on to the next of `web.operator.hosts`); `restore.onBoot` is skipped; the web UI does not offer it in New session or the other spawn entry points; the CLI's `spawn`, `handoff`, `stack spawn` (here; `--on` another host is fine), `pr spawn`, `task spawn`, `schedule add`, `bots run` and `restore <target> \| --all` refuse with that message, locally or via `-H` (the remote CLI reads its own config). tmux-only commands (`new`, `tmux …`) and the bridges themselves keep working. Default (absent, or any other value): `true`, spawning as usual |
 | `tui` | dashboard preferences: `rows` (`"1"`, `"2"`, `"auto"`), `mouse` |
@@ -1408,14 +1408,18 @@ Opt-in per machine (`resources.enabled`), so a shed is not overloaded by its own
 (`web/lib/load.mjs`, `crates/fleet/src/core/load.rs`). It does not cap the number of sessions: an
 idle session costs memory, not CPU, and a busy host is what matters.
 
-- **Sampling.** The web server samples every 15 s: the 1-minute load average per core (both OSes),
-  and memory pressure — on macOS `kern.memorystatus_vm_pressure_level` (normal / warn / critical,
-  plus `vm.swapusage` for the record), on Linux PSI `/proc/pressure/memory` (`some` / `full`
-  avg60). A sample is `hot` from memory pressure warn, PSI `some` ≥ `psi.hot` or load ≥ `load.hot`
-  × cores; `critical` from memory pressure critical, PSI `full` ≥ `psi.critical` or load ≥
-  `load.critical` × cores.
-- **State, with hysteresis.** `ok` → `hot` / `critical` once the higher level has held for
-  `enterSeconds`; back down once a lower one has held for `exitSeconds`. The verdict goes to
+- **Sampling.** The web server samples every 15 s: the **5-minute** load average per core (both
+  OSes; a build that takes every core for a few minutes stays below `hot`), and memory — on macOS
+  free memory `kern.memorystatus_level` (%) and `kern.memorystatus_vm_pressure_level` (normal /
+  warn / critical; plus `vm.swapusage` for the record), on Linux PSI `/proc/pressure/memory`
+  (`some` / `full` avg60). A sample is `hot` from free memory < `memory.hot` %, PSI `some` ≥
+  `psi.hot` or load ≥ `load.hot` × cores; `critical` from memory pressure critical, free memory
+  < `memory.critical` %, PSI `full` ≥ `psi.critical` or load ≥ `load.critical` × cores. macOS
+  pressure `warn` alone counts for nothing: it is the kernel compressing memory, which a Mac
+  running a VM and a dozen agents does all day.
+- **State, with hysteresis.** `ok` → `hot` once it has held for `enterSeconds` (5 min), → `critical`
+  once that has held for `criticalEnterSeconds` (1 min); back down once a lower level has held for
+  `exitSeconds` (5 min). The verdict goes to
   `<fleet state>/load.json` (`{ state, since, reasons, level, sample, updatedAt }`, 0600), on this
   host in `/api/fleet` (`load: { state, since, reasons, updatedAt }`) and at `GET /api/load`.
 - **What waits.** While `hot` or `critical`, a new session on this host:
@@ -1435,9 +1439,11 @@ idle session costs memory, not CPU, and a busy host is what matters.
   than 90 s (the server is down, the machine slept); with `resources` off the server removes the
   file at start.
 - **Alerts.** The Slack bridge's server (`slack.host`, with `slack.owner`) polls every host's
-  `/api/load` every 30 s and DMs the owner when one goes under heavy load, gets worse (→
-  `critical`), or recovers; what it last said is kept in `<fleet state>/load-alerts.json`, so a
-  restart does not repeat it. A host that does not answer is skipped. The UI marks a host under
+  `/api/load` every 30 s and DMs the owner **only** when one goes `critical`, and when it is no
+  longer critical after such a DM; `hot` holds automatic sessions quietly and shows only in the
+  UI. What it last said is kept in `<fleet state>/load-alerts.json`, so a restart does not repeat
+  it. A host that does not answer is skipped, and so is one with `resources.alerts: false` (a
+  second fleet on the same machine, so that one machine alerts once). The UI marks a host under
   heavy load with a gauge beside its name (amber hot, red critical; the reasons in its title).
 - **Settings → Host load** (`web/ui/src/components/HostLoadPanel.tsx`): every host's verdict and
   numbers (polled every 15 s), and per host:

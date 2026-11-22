@@ -17,13 +17,21 @@ export const SAMPLE_MS = 15 * 1000;
 export const STALE_MS = 90 * 1000;
 export const DEFAULTS = {
   enabled: false,
-  /** 1-minute load average per core. */
-  load: { hot: 2, critical: 4 },
+  /** 5-minute load average per core (a build that takes every core for a few minutes stays below). */
+  load: { hot: 3, critical: 5 },
+  /** macOS: free memory in % (`kern.memorystatus_level`) below which it is hot / critical. Memory
+   * pressure `warn` alone is the kernel compressing, not trouble; `critical` always counts. */
+  memory: { hot: 10, critical: 5 },
   /** Linux PSI, avg60 in %: `some` for hot, `full` for critical. */
   psi: { hot: 10, critical: 10 },
-  /** How long a higher level must hold before the state goes up, and a lower one before it comes down. */
-  enterSeconds: 60,
+  /** How long a higher level must hold before the state goes up (critical: `criticalEnterSeconds`),
+   * and a lower one before it comes down. */
+  enterSeconds: 300,
+  criticalEnterSeconds: 60,
   exitSeconds: 300,
+  /** DM the owner when this host goes critical and when it recovers (the Slack bridge's server
+   * sends them). Off for a second fleet on the same machine, so one machine alerts once. */
+  alerts: true,
 };
 
 const rank = (l) => Math.max(0, LEVELS.indexOf(l));
@@ -35,20 +43,28 @@ export function loadSettings(raw) {
   return {
     enabled: r.enabled === true,
     load: { hot: num(r.load?.hot, DEFAULTS.load.hot), critical: num(r.load?.critical, DEFAULTS.load.critical) },
+    memory: { hot: num(r.memory?.hot, DEFAULTS.memory.hot), critical: num(r.memory?.critical, DEFAULTS.memory.critical) },
     psi: { hot: num(r.psi?.hot, DEFAULTS.psi.hot), critical: num(r.psi?.critical, DEFAULTS.psi.critical) },
     enterSeconds: num(r.enterSeconds, DEFAULTS.enterSeconds),
+    criticalEnterSeconds: num(r.criticalEnterSeconds, DEFAULTS.criticalEnterSeconds),
     exitSeconds: num(r.exitSeconds, DEFAULTS.exitSeconds),
+    alerts: r.alerts !== false,
   };
 }
 
-/** `sysctl -n kern.memorystatus_vm_pressure_level vm.swapusage` → { pressure, swapUsedMb }. */
+/**
+ * `sysctl -n kern.memorystatus_vm_pressure_level kern.memorystatus_level vm.swapusage` →
+ * { pressure, freePct, swapUsedMb }. (An older two-line answer, without the free %, still parses.)
+ */
 export function parseDarwin(stdout) {
   const lines = String(stdout ?? '').trim().split('\n');
   const level = Number.parseInt(lines[0], 10);
   // 1 normal, 2 warn, 4 critical
   const pressure = level >= 4 ? 'critical' : level >= 2 ? 'warn' : level >= 1 ? 'normal' : null;
-  const used = /used = ([\d.]+)M/.exec(lines[1] ?? '');
-  return { pressure, swapUsedMb: used ? Math.round(Number(used[1])) : null };
+  const swapLine = lines.find((l) => /used = /.test(l)) ?? '';
+  const used = /used = ([\d.]+)M/.exec(swapLine);
+  const free = lines.length >= 3 && /^\s*\d+\s*$/.test(lines[1]) ? Number.parseInt(lines[1], 10) : null;
+  return { pressure, freePct: free != null && free >= 0 && free <= 100 ? free : null, swapUsedMb: used ? Math.round(Number(used[1])) : null };
 }
 
 /** `/proc/pressure/memory` → { some, full } avg60 in %. */
@@ -64,10 +80,12 @@ export function parsePsi(text) {
 /** One sample of this machine. Throws when nothing can be read (the caller counts that as ok). */
 export async function sampleHost({ platform = process.platform, run, readFile = (p) => fsp.readFile(p, 'utf8') } = {}) {
   const cores = typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length;
-  const load1 = os.loadavg()[0];
-  const sample = { cores, load1: Math.round(load1 * 100) / 100, perCore: Math.round((load1 / Math.max(1, cores)) * 100) / 100 };
+  const [load1, load5] = os.loadavg();
+  const r2 = (x) => Math.round(x * 100) / 100;
+  // perCore is the 5-minute average: what decides. load1 is shown beside it.
+  const sample = { cores, load1: r2(load1), load5: r2(load5), perCore: r2(load5 / Math.max(1, cores)) };
   if (platform === 'darwin') {
-    const { stdout } = await run('/usr/sbin/sysctl', ['-n', 'kern.memorystatus_vm_pressure_level', 'vm.swapusage'], { timeout: 5000 });
+    const { stdout } = await run('/usr/sbin/sysctl', ['-n', 'kern.memorystatus_vm_pressure_level', 'kern.memorystatus_level', 'vm.swapusage'], { timeout: 5000 });
     Object.assign(sample, parseDarwin(stdout));
   } else if (platform === 'linux') {
     try {
@@ -87,14 +105,18 @@ export function classify(sample, s = loadSettings({ enabled: true })) {
     if (rank(l) > rank(level)) level = l;
     reasons.push(why);
   };
+  const mem = s.memory ?? DEFAULTS.memory;
   if (sample.pressure === 'critical') raise('critical', 'memory pressure critical');
-  else if (sample.pressure === 'warn') raise('hot', 'memory pressure warn');
+  if (sample.freePct != null) {
+    if (sample.freePct < mem.critical) raise('critical', `${sample.freePct}% memory free`);
+    else if (sample.freePct < mem.hot) raise('hot', `${sample.freePct}% memory free`);
+  }
   if (sample.psi) {
     if (sample.psi.full != null && sample.psi.full >= s.psi.critical) raise('critical', `memory stalls ${sample.psi.full}% (full)`);
     else if (sample.psi.some != null && sample.psi.some >= s.psi.hot) raise('hot', `memory stalls ${sample.psi.some}% (some)`);
   }
-  if (sample.perCore >= s.load.critical) raise('critical', `load ${sample.perCore}× cores`);
-  else if (sample.perCore >= s.load.hot) raise('hot', `load ${sample.perCore}× cores`);
+  if (sample.perCore >= s.load.critical) raise('critical', `5-min load ${sample.perCore}× cores`);
+  else if (sample.perCore >= s.load.hot) raise('hot', `5-min load ${sample.perCore}× cores`);
   return { level, reasons };
 }
 
@@ -108,7 +130,8 @@ export function step(prev, { level, reasons }, now, s) {
   if (rank(level) > rank(p.state)) {
     next.downSince = null;
     next.upSince = p.upSince ?? now;
-    if (now - next.upSince >= s.enterSeconds * 1000) Object.assign(next, { state: level, since: now, upSince: null, reasons });
+    const wait = level === 'critical' ? (s.criticalEnterSeconds ?? s.enterSeconds) : s.enterSeconds;
+    if (now - next.upSince >= wait * 1000) Object.assign(next, { state: level, since: now, upSince: null, reasons });
   } else if (rank(level) < rank(p.state)) {
     next.upSince = null;
     next.downSince = p.downSince ?? now;
@@ -366,14 +389,16 @@ export function createLoadAlerts({ hosts, fetchLoad, notify, file, now = Date.no
     }
   }
 
+  // Only `critical` is worth a DM: `hot` holds automatic sessions quietly (the gauge in the UI
+  // shows it) and passes on its own. The recovery DM follows only a critical one.
   function text(host, st, prev) {
-    if (st.state === 'ok') {
+    if (st.state !== 'critical') {
       const mins = prev?.since ? Math.max(1, Math.round((now() - prev.since) / 60000)) : null;
-      return `:white_check_mark: *${host}* has recovered${mins ? ` (under load for ${mins} min)` : ''}. New sessions start again; held ones go in now.`;
+      const still = st.state === 'hot' ? ' It is still busy, so automatic sessions keep waiting a little.' : ' New sessions start again; held ones go in now.';
+      return `:white_check_mark: *${host}* is no longer critical${mins ? ` (after ${mins} min)` : ''}.${still}`;
     }
-    const icon = st.state === 'critical' ? ':rotating_light:' : ':warning:';
     const why = st.reasons?.length ? `: ${st.reasons.join(', ')}` : '';
-    return `${icon} *${host}* is under heavy load (${st.state}${why}). New automatic sessions wait until it recovers; one you start asks first.`;
+    return `:rotating_light: *${host}* is critically loaded${why}. New automatic sessions wait until it recovers; one you start asks first.`;
   }
 
   async function tick() {
@@ -388,18 +413,14 @@ export function createLoadAlerts({ hosts, fetchLoad, notify, file, now = Date.no
       }
       // An override (Settings → Host load) is someone acting on it, not a recovery: no message.
       if (!st || st.override) continue;
-      const prev = told[host] ?? { state: 'ok' };
-      if (st.state === prev.state) continue;
-      // Only up, worse, or back to ok: critical → hot is still under load, no new message.
-      if (st.state === 'hot' && prev.state === 'critical') {
-        told[host] = { ...prev, state: 'hot' };
-        changed = true;
-        continue;
-      }
+      const prev = told[host] ?? {};
+      const wasCritical = prev.critical ?? prev.state === 'critical'; // older files kept `state`
+      const critical = st.state === 'critical';
+      if (critical === wasCritical) continue;
       try {
-        await notify(text(host, st, prev));
-        log(`[load] told the owner: ${host} ${prev.state} → ${st.state}`);
-        told[host] = { state: st.state, since: st.state === 'ok' ? null : prev.state === 'ok' ? st.since ?? now() : prev.since };
+        await notify(text(host, st, { since: prev.since }));
+        log(`[load] told the owner: ${host} ${critical ? 'critical' : `no longer critical (${st.state})`}`);
+        told[host] = { critical, since: critical ? st.since ?? now() : null };
         changed = true;
       } catch (err) {
         log(`[load] could not DM the owner about ${host}: ${err.message}`);
