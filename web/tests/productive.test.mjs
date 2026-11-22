@@ -247,7 +247,7 @@ test('activityEvents: comments with text and mentions, changes, oldest first; co
   };
   const ev = activityEvents(data);
   assert.deepEqual(ev.map((e) => [e.id, e.kind]), [[1, 'comment'], [2, 'change']]);
-  assert.equal(ev[0].body, 'hey @Mak');
+  assert.equal(ev[0].body, 'hey @Bo');
   assert.deepEqual(ev[0].mentions, [ME]);
   assert.equal(ev[0].author.name, null);
   assert.deepEqual(ev[1].changes, ['closed: false → true']);
