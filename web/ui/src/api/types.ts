@@ -421,6 +421,15 @@ export interface GithubLink {
   url: string
   title: string | null
   login: string
+  /** Instructions from whoever linked it ('' = the work of this session). */
+  task: string
+  /** Minutes idle before the session sleeps (woken by the next event); null = never. */
+  keep: number | null
+  startedBy: string | null
+  pending: number
+  waking: boolean
+  delivered: number
+  asleep: boolean
   createdAt: number
   endedAt: number | null
   endReason: string | null
@@ -446,6 +455,15 @@ export interface ProductiveLink {
   url: string
   title: string | null
   me: { id: string; name: string | null }
+  /** Instructions from whoever linked it ('' = the work of this session). */
+  task: string
+  /** Minutes idle before the session sleeps (woken by the next event); null = never. */
+  keep: number | null
+  startedBy: string | null
+  pending: number
+  waking: boolean
+  delivered: number
+  asleep: boolean
   createdAt: number
   endedAt: number | null
   endReason: string | null

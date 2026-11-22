@@ -745,6 +745,12 @@ function slack() {
     links: [{ id: 'sl-3c9e1a', host: 'workstation', session: SID(8), sessionName: 'Billing questions (#billing)', channel: 'C04BILLING', threadTs: '1761.0001', permalink: 'https://acme.slack.com/archives/C04BILLING/p1761', dm: null,
       task: 'Answer questions about the invoice rounding fix and when the affected invoices can be re-issued. Do not promise dates.', mode: 'mention', createdAt: t - 2 * HR, until: t + 6 * HR, minutes: 480, pending: 0, delivered: 5, replies: 3, endedAt: null, endReason: null }] }
 }
+// GitHub and Productive links: the bridges run on workstation; the #billing session follows a task, and followed #482 before
+const followLink = (o) => ({ host: 'workstation', session: SID(8), sessionName: 'Billing questions (#billing)', task: '', keep: 1440, startedBy: null, pending: 0, waking: false, delivered: 0, asleep: false, createdAt: now() - 3 * HR, endedAt: null, endReason: null, retired: false, ...o })
+const github = () => ({ enabled: true, host: 'workstation', links: [],
+  ended: [followLink({ id: 'gl-5b20aa', repo: 'acme/acme-api', number: 482, url: 'https://github.com/acme/acme-api/pull/482', title: 'Fix invoice total rounding', login: 'acme-fleet', task: 'Answer review comments on the rounding fix.', delivered: 2, endedAt: now() - HR, endReason: 'unlinked' })] })
+const productive = () => ({ enabled: true, host: 'workstation', ended: [],
+  links: [followLink({ id: 'pl-7d10c2', taskId: '2090', number: '430', url: 'https://app.productive.io/1-acme/tasks/2090', title: 'Re-issue the three affected invoices', me: { id: '9001', name: 'Acme Fleet' }, task: 'Answer finance on the task and post the credit notes there.', delivered: 4 })] })
 const focusStatus = (host) => ({ host, active: false, remainingMs: 0, endsAt: null, apps: ['Slack', 'Mail'], stale: false })
 
 // ---------------------------------------------------------------- server
@@ -760,6 +766,8 @@ function route(method, p, q, b) {
   if ((m = p.match(/^\/api\/memos\/([^/]+)$/))) return memo(decodeURIComponent(m[1]))
   if (p === '/api/inbox' || p.startsWith('/api/inbox/')) return inbox()
   if (p === '/api/slack' || p.startsWith('/api/slack/')) return slack()
+  if (p === '/api/github' || p.startsWith('/api/github/')) return github()
+  if (p === '/api/productive' || p.startsWith('/api/productive/')) return productive()
   if (p === '/api/transcribe') return { text: 'run the e2e suite twenty times and tell me how many fail', model: 'demo' }
   if (!(m = p.match(/^\/api\/hosts\/([^/]+)\/(.*)$/))) return null
   const host = decodeURIComponent(m[1]); const rest = m[2]

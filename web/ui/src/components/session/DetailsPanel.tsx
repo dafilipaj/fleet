@@ -17,8 +17,7 @@ import { api, sessionErrorMessage } from '@/api/client'
 import type { Session } from '@/api/types'
 import { BeadsSection } from '@/components/session/BeadsSection'
 import { BriefSection, type BriefSectionProps } from '@/components/session/BriefSection'
-import { SlackLinkSection } from '@/components/SlackLink'
-import { VerandaSection } from '@/components/VerandaLink'
+import { LinksSection } from '@/components/LinksSection'
 import { SnoozePicker } from '@/components/session/SnoozePicker'
 import { Button } from '@/components/ui/button'
 import { Drawer, DrawerContent, DrawerDescription, DrawerHeader, DrawerTitle } from '@/components/ui/drawer'
@@ -318,9 +317,7 @@ export function DetailsPanel(p: DetailsPanelProps & { variant: 'drawer' | 'panel
 
           <BriefSection {...p.brief} desktop={panel} cancelEditRef={p.cancelEditRef} />
 
-          <SlackLinkSection host={p.host} session={s} />
-
-          <VerandaSection host={p.host} session={s} />
+          <LinksSection host={p.host} session={s} />
 
           <Section title="Session">
             {p.stack ? (

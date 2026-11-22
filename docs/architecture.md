@@ -848,6 +848,17 @@ the state file's usage log (per day and kind — `scan`, `slack`, `brief` — 31
 calls), shown in Settings → Inbox (today, 7 and 30 days). State (`<fleet state>/inbox.json`): the scan's items and time, the brief, when each item was
 first seen (the UI's "new" dot).
 
+## Links in the web UI
+
+Details → **Links** (`web/ui/src/components/LinksSection.tsx`) shows every link of a session in one
+list — Slack threads, the Veranda room, the PRs and tasks it follows — each with what it allows
+(Unlink; +1h for Veranda; Edit for GitHub and Productive: instructions and sleep-after-idle, a second
+`POST …/link` for the same session), then the ended ones it can have again ("Link again"; not a
+merged or closed PR, not a closed task). **Add link** takes one input: a Slack link or `@person`, a
+PR link or `owner/repo#n`, a Productive task URL or a Veranda room name; the kind is told from what
+was pasted (or picked) and the form shows that kind's settings. A kind is offered only when its
+bridge runs (`enabled`), and GitHub and Productive only for sessions on their bridge's host.
+
 ## Slack links
 
 **Untrusted text** (`web/lib/untrusted.mjs`): what people write in Slack, on GitHub or in Veranda is typed
@@ -857,7 +868,7 @@ through `sanitizeText` / `sanitizeName` before building a prompt: escape sequenc
 are removed, so an `ESC[201~` in a message cannot end the paste and type the rest as keys.
 
 A session, for a while, talks with the people in one Slack thread / channel / DM (`web/lib/slack.mjs`,
-[CLI](cli.md#slack-links), Details → Slack in the web UI). One host's server runs the bridge
+[CLI](cli.md#slack-links), Details → Links in the web UI). One host's server runs the bridge
 (`slack.host`, best the always-on one); the others proxy `/api/slack` there. A host with its own
 Slack app runs its own bridge: `slack.bridges.<host> = <host>` on the other servers sends a link or
 reply for that host's sessions there (a bridge refuses one proxied to it for a host it does not
@@ -943,7 +954,7 @@ Veranda is a **separate, self-hosted group chat** — not part of Fleet, its cod
 for people who are not on the tailnet ("guests", with Veranda accounts). A bot client opens a
 **room** with a passphrase and an expiry; guests log in, enter the passphrase and chat. Veranda
 never calls out and knows nothing about Fleet: Fleet integrates with it the way it does with Slack,
-as a bot client (`web/lib/veranda.mjs`, [CLI](cli.md#veranda-links), Details → Veranda).
+as a bot client (`web/lib/veranda.mjs`, [CLI](cli.md#veranda-links), Details → Links).
 
 - **Bot API**: HTTP over a unix socket (`veranda.socket`; the socket's file permission is the
   auth; no `Origin` header), JSON both ways: `GET /bot/health`, `PUT /bot/rooms/:name { passphrase?,
@@ -955,8 +966,8 @@ as a bot client (`web/lib/veranda.mjs`, [CLI](cli.md#veranda-links), Details →
   (`?local=1`, never chained). A request is stamped with where its caller runs (`callerHost`, and
   `host` for a pane). Sessions on any host can be linked: the bridge lists and types into them
   through their host's web server, as Slack's does.
-- **Details → Veranda** (web UI): the session's link (time left, +1h, Unlink); without one, "Link
-  to Veranda" (room, how long, title, instructions) and "Link again" for each room the session was
+- **Details → Links** (web UI): the session's link (time left, +1h, Unlink); without one, "Add link"
+  with a room name (how long, title, instructions) and "Link again" for each room the session was
   linked to before (same title, instructions and duration, a new passphrase). Both are `POST
   /api/veranda/link`; the passphrase it answers shows in the panel until dismissed, with Copy.
 - **Link**: `fleet veranda link --room <name>` generates the passphrase — three short words and two

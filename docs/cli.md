@@ -161,12 +161,12 @@ the machine's own credentials. Shim, empty config dir and note live in
 
 For a while, a session talks with the people in one Slack thread (or a whole channel or DM): what
 they write there is typed into it, and it answers there. You decide which session, which thread,
-for how long and what it may help with — the web UI's **Link to Slack** (session Details), or:
+for how long and what it may help with — the web UI's **Add link** (session Details → Links), or:
 
 | Command | What |
 |---|---|
 | `fleet slack [list] [--json]` | the bridge (connected?) and the active links |
-| `fleet slack link <slack-url \| @person> --for <30m\|2h\|1w\|90\|forever> [--session <target>] [--task <instructions>] [--proactive] [--json]` | link a session (default: the one this runs in, by `$TMUX_PANE`). A message link is its thread; a channel / DM link is all of it; a person (`@name`, a name or their user id `U…` — instead of a link) is the app's DM with them, opened if new (several matches: an error with the candidates). Needs the `im:write` scope and the app's Messages tab on. `--task`: your instructions (what it may help with, tone, when to step in). `--proactive`: it sees every message and steps in when it judges it should; default: it is woken only when someone mentions the app, DMs it or writes in a thread it has posted in (then it judges itself whether the message is for it), and gets what was said in between as context. Linking the same session to the same thread again renews it (new time limit, instructions, mode). Up to a week, or `forever`: no end, until unlinked. An ended link can be relinked in one click from the web UI (Details → Slack → **Link again**) |
+| `fleet slack link <slack-url \| @person> --for <30m\|2h\|1w\|90\|forever> [--session <target>] [--task <instructions>] [--proactive] [--json]` | link a session (default: the one this runs in, by `$TMUX_PANE`). A message link is its thread; a channel / DM link is all of it; a person (`@name`, a name or their user id `U…` — instead of a link) is the app's DM with them, opened if new (several matches: an error with the candidates). Needs the `im:write` scope and the app's Messages tab on. `--task`: your instructions (what it may help with, tone, when to step in). `--proactive`: it sees every message and steps in when it judges it should; default: it is woken only when someone mentions the app, DMs it or writes in a thread it has posted in (then it judges itself whether the message is for it), and gets what was said in between as context. Linking the same session to the same thread again renews it (new time limit, instructions, mode). Up to a week, or `forever`: no end, until unlinked. An ended link can be relinked in one click from the web UI (Details → Links → **Link again**) |
 | `fleet slack unlink <sl-xxxxxx>` | end a link now |
 | `fleet slack reply <sl-xxxxxx> <text> [--thread <ts>]` | post in the linked thread — what the linked session runs to answer. Prints the new message's `ts` and permalink (`--json`: `{ link, channel, ts, threadTs, permalink }`), e.g. to reply in a thread it just started. Refused (exit 3) once the link has ended, and for any session but the linked one. Threads first: in a channel or group DM link, a post outside a thread must be a one-line headline (≤ 300 chars) whose details go in its thread — anything longer is refused (400); a one-on-one DM is exempt |
 | `fleet slack react <sl-xxxxxx> <ts> <emoji> [--remove] [--json]` | an emoji reaction (a Slack name like `white_check_mark`, colons optional) on a message of the linked conversation — what the linked session runs when a reaction says enough (`--json`: `{ link, channel, ts, emoji, removed }`). Each message typed in carries its `ts`. Already there / already gone is not an error. Same rules as `reply`: the linked session only, while linked (exit 3 after). Needs `reactions:write` |
@@ -231,7 +231,8 @@ time (closing the room) and when the session is gone.
 ### GitHub links
 
 A session follows one pull request, as the GitHub account of the bridge host's `gh`: what happens
-there that is for that account is typed into it, and it answers on GitHub with `gh` itself.
+there that is for that account is typed into it, and it answers on GitHub with `gh` itself. Also
+from the web UI: Details → Links → **Add link** with the PR, and Edit (instructions, sleep) on a link.
 
 | Command | What |
 |---|---|
@@ -266,7 +267,8 @@ applies within a few seconds; `github.host` needs a restart of the web server.
 
 A session follows one Productive task, as the Productive account (a person in the organization)
 whose API token the bridge host holds: comments and changes on the task are typed into it, and it
-answers with `fleet productive reply`, which posts a comment as that account.
+answers with `fleet productive reply`, which posts a comment as that account. Also from the web
+UI: Details → Links → **Add link** with the task URL, and Edit (instructions, sleep) on a link.
 
 | Command | What |
 |---|---|

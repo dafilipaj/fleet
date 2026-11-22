@@ -61,6 +61,9 @@ const SHOTS = [
   ['d-tasks', DESKTOP, async (p) => { await p.go(U + '#/tasks') }],
   ['d-task', DESKTOP, async (p) => { await p.go(U + '#/tasks/2090', { }); await p.sleep(800) }],
   ['d-slack', DESKTOP, async (p) => { await p.go(U + SLK) }],
+  // Details → Links: a Slack thread and a Productive task on one session, a PR it followed before; then Add link with a PR pasted
+  ['d-links', DESKTOP, async (p) => { await p.go(U + SLK); await p.eval(`[...document.querySelectorAll('h3')].find((h) => h.textContent === 'Links')?.scrollIntoView({ block: 'start' })`); await p.sleep(700) }],
+  ['d-links-add', DESKTOP, async (p) => { await p.go(U + SLK); await p.eval(`[...document.querySelectorAll('h3')].find((h) => h.textContent === 'Links')?.scrollIntoView({ block: 'start' })`); await p.click('Add link', { sel: 'button', ms: 400 }); await p.type('https://github.com/acme/acme-web/pull/1310', 900) }],
   ['d-done', DESKTOP, async (p) => { await p.go(U + DONE) }],
   ['d-later', DESKTOP, async (p) => { await p.go(U + INV); await p.key('o', { meta: true, shift: true, ms: 1200 }); await p.click('=Later', { ms: 900 }) }],
   ['d-host', DESKTOP, async (p) => { await p.go(U + INV); await p.eval(`(() => { const b = [...document.querySelectorAll('button')].find((e) => (e.getAttribute('aria-label') || '').startsWith('workstation: ')); const r = b.getBoundingClientRect(); b.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 })); return true })()`); await p.sleep(900) }],
