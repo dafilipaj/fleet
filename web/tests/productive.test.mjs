@@ -44,7 +44,11 @@ function fakeProductive() {
     calls.push(`${method} ${p}`);
     if (method === 'GET' && p.startsWith('organization_memberships')) {
       return {
-        data: [{ id: ME, relationships: { person: { data: { type: 'people', id: ME } }, organization: { data: { type: 'organizations', id: '109' } } } }],
+        // A person in two organizations: the bridge takes the one of settings.org.
+        data: [
+          { id: '5', relationships: { person: { data: { type: 'people', id: '5' } }, organization: { data: { type: 'organizations', id: '1' } } } },
+          { id: ME, relationships: { person: { data: { type: 'people', id: ME } }, organization: { data: { type: 'organizations', id: '109' } } } },
+        ],
         included: [person(ME), { type: 'organizations', id: '109', attributes: { name: 'Productive' } }],
       };
     }

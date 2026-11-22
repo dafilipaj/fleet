@@ -406,7 +406,9 @@ export function createProductiveBridge({ settings = {}, self = null, api, listSe
   async function whoami() {
     if (me) return me;
     const d = await api('GET', 'organization_memberships?include=person,organization');
-    const m = d?.data?.[0];
+    // A person in several organizations has a membership in each: the one of `settings.org`.
+    const ms = d?.data ?? [];
+    const m = ms.find((x) => String(x.relationships?.organization?.data?.id) === String(settings.org)) ?? (ms.length === 1 ? ms[0] : null);
     const pid = m?.relationships?.person?.data?.id;
     if (pid == null) throw new Error('organization_memberships gave no person');
     const inc = (type, id) => (d.included ?? []).find((x) => x.type === type && String(x.id) === String(id))?.attributes ?? {};
