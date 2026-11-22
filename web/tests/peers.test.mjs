@@ -15,7 +15,7 @@ async function fixtures() {
     const url = new URL(req.url, 'http://x');
     if (url.pathname === '/api/fleet') {
       res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify({ hosts: [{ name: 'studio', ok: true, fetchedAt: 1, sessions: [{ name: 's1' }] }] }));
+      res.end(JSON.stringify({ hosts: [{ name: 'studio', ok: true, fetchedAt: 1, load: { state: 'hot', since: 1, reasons: ['load 2.5× cores'], updatedAt: 1 }, sessions: [{ name: 's1' }] }] }));
     } else if (url.pathname === '/api/echo') {
       let body = '';
       req.on('data', (c) => (body += c));
@@ -44,6 +44,7 @@ test('a peer with webProxy is reached through the proxy, others directly', async
     const host = await fetchPeerHost('studio', peerUrl);
     assert.equal(host.ok, true);
     assert.deepEqual(host.sessions.map((s) => s.name), ['s1']);
+    assert.equal(host.load.state, 'hot'); // its load verdict comes through
 
     const r = await proxyToPeer(peerUrl, { method: 'POST', pathname: '/api/echo', body: '{"a":1}' });
     assert.deepEqual(r, { status: 200, body: { method: 'POST', local: '1', body: '{"a":1}' } });
