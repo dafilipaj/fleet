@@ -955,6 +955,10 @@ as a bot client (`web/lib/veranda.mjs`, [CLI](cli.md#veranda-links), Details →
   (`?local=1`, never chained). A request is stamped with where its caller runs (`callerHost`, and
   `host` for a pane). Sessions on any host can be linked: the bridge lists and types into them
   through their host's web server, as Slack's does.
+- **Details → Veranda** (web UI): the session's link (time left, +1h, Unlink); without one, "Link
+  to Veranda" (room, how long, title, instructions) and "Link again" for each room the session was
+  linked to before (same title, instructions and duration, a new passphrase). Both are `POST
+  /api/veranda/link`; the passphrase it answers shows in the panel until dismissed, with Copy.
 - **Link**: `fleet veranda link --room <name>` generates the passphrase — three short words and two
   digits (`plava-kava-sunce-17`; ~265 plain words, `crypto.randomInt`, ≈ 30 bits; guests also need
   a Veranda account) — opens the room (`PUT` with it, `label` = the session's name) and answers it

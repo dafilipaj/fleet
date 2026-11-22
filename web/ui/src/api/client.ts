@@ -531,6 +531,9 @@ export const api = {
   productive: (o: Opts = {}) => request<ProductiveStatus>('/api/productive', o),
   /** Veranda links (opt-in): the bridge's state, from the `veranda.host` server (proxied). */
   veranda: (o: Opts = {}) => request<VerandaStatus>('/api/veranda', o),
+  /** Open (or reopen) a Veranda room with a new passphrase and link a session to it; the answer carries the passphrase, shown only this once. */
+  verandaLink: (body: { host: string; session: string; room: string; minutes: number; title?: string; note?: string }, o: Opts = {}) =>
+    request<VerandaLink & { passphrase: string }>('/api/veranda/link', { ...o, method: 'POST', body }),
   /** Close a Veranda room and end its link. */
   verandaUnlink: (room: string, o: Opts = {}) => request<VerandaLink>('/api/veranda/unlink', { ...o, method: 'POST', body: { room } }),
   /** A Veranda link (and its room) lasts `minutes` longer. */
