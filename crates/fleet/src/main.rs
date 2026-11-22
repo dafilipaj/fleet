@@ -7,7 +7,7 @@ use fleet::cli::{
     brief as brief_cmd, commands, config_cmd, github as github_cmd, group, hosts as host_cmds,
     init, jobs as jobs_cmd, prs as prs_cmd, repos as repos_cmd, restore, schedule as schedule_cmd,
     skill, slack as slack_cmd, stack as stack_cmds, tasks as tasks_cmd, tmux as tmux_cmds,
-    usage as usage_cmd, web,
+    usage as usage_cmd, veranda as veranda_cmd, web,
 };
 use fleet::core::config;
 use fleet::core::discovery::Backend;
@@ -394,6 +394,13 @@ enum Commands {
     Slack {
         #[command(subcommand)]
         cmd: Option<SlackCmd>,
+    },
+
+    /// Veranda links (opt-in): a session talks, for a while, with the guests in one room of
+    /// Veranda, a separate self-hosted group chat (`veranda.host`)
+    Veranda {
+        #[command(subcommand)]
+        cmd: Option<VerandaCmd>,
     },
 
     /// Subscription usage limits: Claude (session, weekly, per-model weekly, extra usage) and
@@ -817,6 +824,76 @@ enum SlackCmd {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum VerandaCmd {
+    /// The bridge and the active links
+    #[command(alias = "list")]
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Open (or reopen) a Veranda room with a new passphrase and link a session to it (default:
+    /// the one this command runs in). Prints the passphrase once, to pass on to the guests
+    Link {
+        /// The session to link (default: this one, by $TMUX_PANE)
+        session: Option<String>,
+        /// The room's name: lowercase letters, digits and dashes (one session per room)
+        #[arg(long)]
+        room: String,
+        /// How long: minutes, or like 30m, 2h, 1d, 1w (max 30 days; default `veranda.defaultMinutes`, 2h)
+        #[arg(long = "for", value_name = "DURATION")]
+        duration: Option<String>,
+        /// The room's title, shown to the guests
+        #[arg(long)]
+        title: Option<String>,
+        /// Your instructions for the session: what it may help the guests with
+        #[arg(long)]
+        note: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Close the room and end the link (default: this session's)
+    Unlink {
+        /// The room (default: the one this session is linked to)
+        #[arg(long)]
+        room: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Let a link (and its room) last longer — not from the linked session itself
+    Extend {
+        /// How much longer: minutes, or like 30m, 2h, 1d (at most 30 days from now in all)
+        #[arg(long = "for", value_name = "DURATION")]
+        duration: String,
+        /// The room (default: the one this session is linked to)
+        #[arg(long)]
+        room: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Post in this session's room (markdown) — what a linked session runs to answer
+    Reply {
+        /// The message (markdown, at most 20000 characters)
+        text: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Read this session's room since it was linked (read-only)
+    History {
+        /// Messages per page (1–200, default 50)
+        #[arg(long)]
+        limit: Option<u32>,
+        /// The next page: the id the previous page printed
+        #[arg(long)]
+        after: Option<u64>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Claude Code PreToolUse hook (matcher `AskUserQuestion`): the same as `fleet slack guard`,
+    /// which covers Slack and Veranda links
+    Guard,
 }
 
 #[derive(Subcommand)]
@@ -1558,6 +1635,33 @@ set one with: fleet config set hosts.{h}.ssh <alias>"
                 json,
             )?,
             GithubCmd::Unlink { link, json } => github_cmd::unlink(&link, json)?,
+        },
+        Commands::Veranda { cmd } => match cmd.unwrap_or(VerandaCmd::Status { json: false }) {
+            VerandaCmd::Status { json } => veranda_cmd::status(json)?,
+            VerandaCmd::Link {
+                session,
+                room,
+                duration,
+                title,
+                note,
+                json,
+            } => veranda_cmd::link(
+                session.as_deref(),
+                &room,
+                duration.as_deref(),
+                title.as_deref(),
+                note.as_deref(),
+                json,
+            )?,
+            VerandaCmd::Unlink { room, json } => veranda_cmd::unlink(room.as_deref(), json)?,
+            VerandaCmd::Extend {
+                duration,
+                room,
+                json,
+            } => veranda_cmd::extend(&duration, room.as_deref(), json)?,
+            VerandaCmd::Reply { text, json } => veranda_cmd::reply(&text, json)?,
+            VerandaCmd::History { limit, after, json } => veranda_cmd::history(limit, after, json)?,
+            VerandaCmd::Guard => slack_cmd::guard()?,
         },
         Commands::Slack { cmd } => match cmd.unwrap_or(SlackCmd::List { json: false }) {
             SlackCmd::List { json } => slack_cmd::list(json)?,

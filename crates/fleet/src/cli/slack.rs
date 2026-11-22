@@ -21,7 +21,7 @@ pub(crate) fn request(method: &str, path: &str, body: Option<&Value>) -> Result<
 }
 
 /// `request` with its own time limit (a file comes back whole).
-fn request_within(
+pub(crate) fn request_within(
     method: &str,
     path: &str,
     body: Option<&Value>,
@@ -569,9 +569,11 @@ fn guard_decision(
     }))
 }
 
-/// `fleet slack guard`: a Claude Code PreToolUse hook (matcher `AskUserQuestion`). It denies the
-/// prompt while the session is linked to Slack and tells it to ask in the thread. Fails open: no
-/// web server, no bridge or bad input lets the call through — a hook must never wedge a session.
+/// `fleet slack guard` (also `fleet veranda guard`): a Claude Code PreToolUse hook (matcher
+/// `AskUserQuestion`). It denies the prompt while the session is linked to Slack and tells it to
+/// ask in the thread — or, with a `veranda` section in the config, while it is linked to a
+/// Veranda room, and tells it to ask there. Fails open: no web server, no bridge or bad input lets
+/// the call through — a hook must never wedge a session.
 pub fn guard() -> Result<()> {
     use std::io::Read;
     let mut raw = String::new();
@@ -585,7 +587,11 @@ pub fn guard() -> Result<()> {
         let (status, v) = request_within("GET", "/api/slack", None, 4).ok()?;
         status.starts_with('2').then_some(v)
     };
-    if let Some(out) = guard_decision(&input, links, chrono::Utc::now().timestamp_millis()) {
+    let now = chrono::Utc::now().timestamp_millis();
+    let out = guard_decision(&input, links, now).or_else(|| {
+        crate::cli::veranda::guard_decision(&input, crate::cli::veranda::guard_links, now)
+    });
+    if let Some(out) = out {
         println!("{out}");
     }
     Ok(())

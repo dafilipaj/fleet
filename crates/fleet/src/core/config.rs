@@ -298,6 +298,9 @@ pub struct Config {
     /// serves the web app and its single-home services). Raw JSON, read leniently: only an
     /// explicit `false` turns spawning off (see [`Config::spawn_allowed`]).
     pub spawn: Value,
+    /// `veranda` — Veranda links (opt-in; the web server reads it). Raw JSON: the CLI only asks
+    /// whether it is there (the AskUserQuestion guard checks Veranda links only then).
+    pub veranda: Value,
 }
 
 impl Config {

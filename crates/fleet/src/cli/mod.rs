@@ -19,4 +19,5 @@ pub mod stack;
 pub mod tasks;
 pub mod tmux;
 pub mod usage;
+pub mod veranda;
 pub mod web;
