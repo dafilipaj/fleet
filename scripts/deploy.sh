@@ -10,7 +10,9 @@
 # ~/.local/bin/fleet (where `fleet install` and the launchd agent expect it), replaced
 # atomically. Restart: the `fleet.web` launchd agent (`fleet web install-service`), else the
 # `fleet-web` systemd user unit (what `fleet web install-service` prints on Linux), else a tmux
-# session `fleet-web`, else it only tells you to restart the server yourself.
+# session `fleet-web`, else it only tells you to restart the server yourself. A Claude Code skill
+# installed earlier (`fleet skill install`, ~/.claude/skills/fleet/SKILL.md) is refreshed to the new
+# binary's; a machine without one is left without one.
 set -eu
 
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -36,6 +38,12 @@ mkdir -p "$HOME/.local/bin"
 cp target/release/fleet "$HOME/.local/bin/.fleet.new"
 mv -f "$HOME/.local/bin/.fleet.new" "$HOME/.local/bin/fleet"
 say "installed $("$HOME/.local/bin/fleet" --version)"
+
+skill="$HOME/.claude/skills/fleet/SKILL.md"
+if [ -f "$skill" ] && ! "$HOME/.local/bin/fleet" skill show | cmp -s - "$skill"; then
+  "$HOME/.local/bin/fleet" --local skill install --force >/dev/null
+  say "refreshed the fleet skill"
+fi
 
 say "build the web UI"
 "$HOME/.local/bin/fleet" web build --dir "$repo/web" --install >/dev/null
