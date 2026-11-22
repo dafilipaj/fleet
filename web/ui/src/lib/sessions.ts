@@ -1,5 +1,5 @@
 // Session list logic: status metadata, filtering, search, sorting — pure, unit-tested.
-import type { FleetResponse, Session, SessionStatus, SlackLink } from '@/api/types'
+import type { FleetResponse, Session, SessionStatus } from '@/api/types'
 import { isBack, isSnoozed } from '@/lib/snooze'
 
 export type StatusKey = SessionStatus
@@ -45,32 +45,39 @@ export function backgroundLabel(bg: Session['background']): string {
   return [n ? `${n} agent${n === 1 ? '' : 's'}` : '', bg.shells ? `${bg.shells} shell${bg.shells === 1 ? '' : 's'}` : ''].filter(Boolean).join(', ')
 }
 
-export type StatusFilterId = 'all' | 'waiting' | 'busy' | 'idle' | 'scheduled' | 'slack' | 'embedded'
+export type StatusFilterId = 'all' | 'waiting' | 'busy' | 'idle' | 'scheduled' | 'slack' | 'veranda' | 'github' | 'embedded'
+
+/** The bridges a session can be linked to: people there talk to it (Slack thread, Veranda room, GitHub PR). */
+export type LinkKind = 'slack' | 'veranda' | 'github'
+/** Per bridge, the `host/session_id` keys of the sessions with an active link (`linkedKeys`); a missing one = none. */
+export type Linked = Partial<Record<LinkKind, ReadonlySet<string>>>
+
 export interface StatusFilter {
   id: StatusFilterId
   label: string
-  /** `slack`: the `host/session_id` keys of the sessions linked to Slack (`slackLinked`). */
-  match: (s: Session, slack: ReadonlySet<string>) => boolean
+  match: (s: Session, linked: Linked) => boolean
   /** The chip's tooltip. */
   title?: string
 }
 
-/** The filters for sessions set aside from the rest (bots, Slack, app panels): a chip only when there are some. */
-const SET_ASIDE: StatusFilterId[] = ['scheduled', 'slack', 'embedded']
+/** The filters for sessions set aside from the rest (bots, links, app panels): a chip only when there are some. */
+export const SET_ASIDE: StatusFilterId[] = ['scheduled', 'slack', 'veranda', 'github', 'embedded']
 
 export const STATUS_FILTERS: StatusFilter[] = [
   { id: 'all', label: 'All', match: () => true },
   { id: 'waiting', label: 'Needs you', match: (s) => statusMeta(s.status).key === 'waiting' },
   { id: 'busy', label: 'Busy', match: (s) => statusMeta(s.status).key === 'busy' },
   { id: 'idle', label: 'Idle', match: (s) => statusMeta(s.status).key === 'idle' },
-  // Only the sessions bots started / linked to Slack / an app's embedded panel started (every
-  // other filter leaves them out unless waiting).
+  // Only the sessions bots started / linked to Slack, Veranda or GitHub / an app's embedded panel
+  // started (every other filter leaves them out unless waiting).
   { id: 'scheduled', label: 'Bots', match: (s) => isJobSession(s), title: 'Sessions started by bots' },
-  { id: 'slack', label: 'Slack', match: (s, slack) => isSlackSession(s, slack), title: 'Sessions linked to Slack: people in a thread talk to them' },
+  { id: 'slack', label: 'Slack', match: (s, l) => isLinked(s, l.slack), title: 'Sessions linked to Slack: people in a thread talk to them' },
+  { id: 'veranda', label: 'Veranda', match: (s, l) => isLinked(s, l.veranda), title: 'Sessions linked to a Veranda room: its guests talk to them' },
+  { id: 'github', label: 'GitHub', match: (s, l) => isLinked(s, l.github), title: 'Sessions linked to a GitHub pull request: they follow it and answer there' },
   { id: 'embedded', label: 'Apps', match: (s) => isEmbedSession(s), title: "Sessions started from an app's Fleet panel (embed view)" },
 ]
 
-/** The filters worth a chip: Bots / Apps only when there are such sessions, or it is the one picked. */
+/** The filters worth a chip: Bots / Slack / Veranda / GitHub / Apps only when there are such sessions, or it is the one picked. */
 export function visibleStatusFilters(counts: Record<StatusFilterId, number> | null, current: StatusFilterId): StatusFilter[] {
   return STATUS_FILTERS.filter((f) => !SET_ASIDE.includes(f.id) || current === f.id || (counts?.[f.id] ?? 0) > 0)
 }
@@ -139,28 +146,35 @@ export function isEmbedSession(s: Pick<Session, 'embed'>): boolean {
   return Boolean(s.embed)
 }
 
-/** The `host/session_id` keys of the sessions with an active Slack link. */
-export function slackLinked(links: readonly Pick<SlackLink, 'host' | 'session'>[] | null | undefined): ReadonlySet<string> {
-  return new Set((links ?? []).map((l) => `${l.host}/${l.session}`))
+/**
+ * The `host/session_id` keys of the sessions with an active link (Slack, Veranda, GitHub). A link
+ * without a host (Veranda's on the bridge itself) is on `fallbackHost`.
+ */
+export function linkedKeys(
+  links: readonly { host?: string | null; session: string }[] | null | undefined,
+  fallbackHost: string | null = null,
+): ReadonlySet<string> {
+  return new Set((links ?? []).map((l) => `${l.host ?? fallbackHost}/${l.session}`))
 }
 
-/** A session linked to Slack (web/lib/slack.mjs): people in a thread talk to it, not you. */
-export function isSlackSession(s: Pick<Session, 'host' | 'session_id'>, slack: ReadonlySet<string>): boolean {
-  return slack.has(`${s.host}/${s.session_id}`)
+/** A session in `keys` (`linkedKeys`): people on that bridge talk to it, not you. */
+export function isLinked(s: Pick<Session, 'host' | 'session_id'>, keys: ReadonlySet<string> | undefined): boolean {
+  return !!keys?.has(`${s.host}/${s.session_id}`)
 }
 
-const NO_SLACK: ReadonlySet<string> = new Set()
+const NOT_LINKED: Linked = {}
 
 /**
- * Job, Slack and embed sessions stay out of every filter but their own (Bots / Slack / Apps) —
+ * Job, linked (Slack / Veranda / GitHub) and embed sessions stay out of every filter but their own —
  * except one waiting on you, which always shows (and always counts).
  */
-export function setAside(s: Session, slack: ReadonlySet<string> = NO_SLACK): boolean {
-  return (isJobSession(s) || isSlackSession(s, slack) || isEmbedSession(s)) && statusMeta(s.status).key !== 'waiting'
+export function setAside(s: Session, linked: Linked = NOT_LINKED): boolean {
+  if (statusMeta(s.status).key === 'waiting') return false
+  return isJobSession(s) || isEmbedSession(s) || isLinked(s, linked.slack) || isLinked(s, linked.veranda) || isLinked(s, linked.github)
 }
 
 /**
- * `host` null = every host. Bots / Slack / Apps show only job / Slack-linked / embed sessions;
+ * `host` null = every host. Bots / Slack / Veranda / GitHub / Apps show only their own sessions;
  * the other filters show the rest, plus those waiting on you. Snoozed sessions (their time still
  * ahead of `now`) are left out — they live in Snoozed (`snoozedView`); one back from a snooze
  * goes on top.
@@ -171,13 +185,13 @@ export function listView(
     query = '',
     hosts = null,
     status = 'all',
-    slack = NO_SLACK,
+    linked = NOT_LINKED,
     now = Date.now(),
-  }: { query?: string; hosts?: ReadonlySet<string> | null; status?: StatusFilterId; slack?: ReadonlySet<string>; now?: number },
+  }: { query?: string; hosts?: ReadonlySet<string> | null; status?: StatusFilterId; linked?: Linked; now?: number },
 ): ListView {
   const matched = allSessions(fleet).filter((s) => (hosts == null || hosts.has(s.host)) && !isSnoozed(s, now) && matchesSearch(s, query))
-  const visible = matched.filter((s) => !setAside(s, slack))
-  const scope = (f: StatusFilter) => (SET_ASIDE.includes(f.id) ? matched : visible).filter((s) => f.match(s, slack))
+  const visible = matched.filter((s) => !setAside(s, linked))
+  const scope = (f: StatusFilter) => (SET_ASIDE.includes(f.id) ? matched : visible).filter((s) => f.match(s, linked))
   const counts = Object.fromEntries(STATUS_FILTERS.map((f) => [f.id, scope(f).length])) as Record<StatusFilterId, number>
   const backFirst = (a: Session, b: Session) => Number(isBack(b, now)) - Number(isBack(a, now)) || byLastPrompt(a, b)
   return { sessions: clusterByStack(scope(findStatusFilter(status)).sort(backFirst)), counts }

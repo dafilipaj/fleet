@@ -69,6 +69,7 @@ import type {
   SlackSpawn,
   SlackStatus,
   VerandaLink,
+  GithubStatus,
   VerandaStatus,
   SleepResponse,
   SnoozeResponse,
@@ -523,6 +524,8 @@ export const api = {
   /** Link the session of an ended link to the same place again (same instructions and mode); no `minutes` = as long as before. */
   slackRelink: (id: string, minutes?: SlackMinutes, o: Opts = {}) =>
     request<SlackLink>(`/api/slack/links/${enc(id)}/relink`, { ...o, method: 'POST', body: minutes === undefined ? {} : { minutes } }),
+  /** GitHub links: the bridge's state, from the `github.host` server (proxied). */
+  github: (o: Opts = {}) => request<GithubStatus>('/api/github', o),
   /** Veranda links (opt-in): the bridge's state, from the `veranda.host` server (proxied). */
   veranda: (o: Opts = {}) => request<VerandaStatus>('/api/veranda', o),
   /** Close a Veranda room and end its link. */

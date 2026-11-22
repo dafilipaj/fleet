@@ -16,11 +16,11 @@ import {
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import type { SessionListState } from '@/hooks/useSessionList'
 import { isShared, normalizeSelection, selectionLabel, type HostScope } from '@/lib/hosts'
-import { STATUS_FILTERS, visibleStatusFilters, type StatusFilterId } from '@/lib/sessions'
+import { SET_ASIDE, STATUS_FILTERS, visibleStatusFilters, type StatusFilterId } from '@/lib/sessions'
 import { cn } from '@/lib/utils'
 
 /** The kinds of session the segmented toggle switches between; the rest are status filters. */
-const KINDS: StatusFilterId[] = ['scheduled', 'slack', 'embedded']
+const KINDS = SET_ASIDE
 const SESSIONS = 'sessions'
 
 const segment = 'h-7 gap-1 rounded-md px-2.5 text-xs text-muted-foreground data-[state=on]:bg-accent data-[state=on]:text-accent-foreground'
@@ -39,7 +39,7 @@ const TOUCH = {
 }
 
 /**
- * Sessions | Bots (| Slack | Apps) toggle, then status and host pickers behind one icon each.
+ * Sessions | Bots (| Slack | Veranda | GitHub | Apps) toggle, then status and host pickers behind one icon each.
  * `spread`: the pickers sit at the row's right end. `touch`: phone-sized (the mobile list).
  * `hostPicker={false}`: no host menu (the desktop top bar has the HostRail instead).
  */
@@ -50,7 +50,7 @@ export function SessionFilters({ list, spread = false, touch = false, hostPicker
   const { fleet, status, setStatus, hostNames, view, fleetCounts } = list
   const counts = fleet ? view.counts : null
   const kind = KINDS.includes(status) ? status : SESSIONS
-  // The status picked under Sessions, restored when coming back from Bots / Slack / Apps.
+  // The status picked under Sessions, restored when coming back from Bots / a link kind / Apps.
   const lastStatus = useRef<StatusFilterId>('all')
   const pickKind = (v: string) => {
     if (!v || v === kind) return
@@ -60,7 +60,7 @@ export function SessionFilters({ list, spread = false, touch = false, hostPicker
 
   const statusFilters = STATUS_FILTERS.filter((f) => !KINDS.includes(f.id))
   // Which kinds get a chip follows every host, not the host filter: the bar keeps its shape.
-  const kinds = visibleStatusFilters(fleet ? fleetCounts : null, status).filter((f) => f.id === 'slack' || f.id === 'embedded')
+  const kinds = visibleStatusFilters(fleet ? fleetCounts : null, status).filter((f) => KINDS.includes(f.id) && f.id !== 'scheduled')
   const current = statusFilters.find((f) => f.id === status)
   const statusActive = kind === SESSIONS && status !== 'all'
 

@@ -400,6 +400,31 @@ export interface VerandaStatus {
   ended: VerandaLink[]
 }
 
+/** A GitHub link (web/lib/github.mjs): a session follows one pull request as the bridge's `gh` account. */
+export interface GithubLink {
+  id: string
+  host: string
+  session: string
+  sessionName: string | null
+  repo: string
+  number: number
+  url: string
+  title: string | null
+  login: string
+  createdAt: number
+  endedAt: number | null
+  endReason: string | null
+}
+
+/** GET /api/github: the bridge on `github.host` (proxied there). `enabled: false`: no bridge. */
+export interface GithubStatus {
+  enabled: boolean
+  host: string | null
+  error?: string | null
+  links: GithubLink[]
+  ended: GithubLink[]
+}
+
 /** A link's duration: minutes, or `forever` (no end). */
 export type SlackMinutes = number | 'forever'
 

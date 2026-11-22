@@ -10,8 +10,8 @@ import {
   sessionDone,
   findSpawned,
   setAside,
-  isSlackSession,
-  slackLinked,
+  isLinked,
+  linkedKeys,
   isEmbedSession,
   isJobSession,
   keepOrder,
@@ -66,7 +66,7 @@ test('statusMeta / statusLabel', () => {
 test('listView: flat, sorted by last activity, counts per status', () => {
   const v = listView(fleet, {})
   expect(v.sessions.map((x) => x.session_id)).toEqual(['b', 'c', 'a'])
-  expect(v.counts).toEqual({ all: 3, waiting: 1, busy: 1, idle: 1, scheduled: 0, slack: 0, embedded: 0 })
+  expect(v.counts).toEqual({ all: 3, waiting: 1, busy: 1, idle: 1, scheduled: 0, slack: 0, veranda: 0, github: 0, embedded: 0 })
 })
 
 test('listView: a prompt moves a session, a turn ending does not', () => {
@@ -234,7 +234,7 @@ test('listView: job sessions only under Scheduled, except waiting ones', () => {
 
   const all = listView(f, {})
   expect(all.sessions.map((x) => x.session_id)).toEqual(['job-wait', 'mine'])
-  expect(all.counts).toEqual({ all: 2, waiting: 1, busy: 1, idle: 0, scheduled: 3, slack: 0, embedded: 0 })
+  expect(all.counts).toEqual({ all: 2, waiting: 1, busy: 1, idle: 0, scheduled: 3, slack: 0, veranda: 0, github: 0, embedded: 0 })
 
   // "Scheduled" shows only job sessions, waiting ones included.
   const sched = listView(f, { status: 'scheduled' })
@@ -290,20 +290,49 @@ test('Slack-linked sessions: set aside like bot sessions, in their own Slack fil
       },
     ],
   }
-  const slack = slackLinked([
+  const slack = linkedKeys([
     { host: 'workstation', session: 'linked-idle' },
     { host: 'workstation', session: 'linked-wait' },
     { host: 'laptop', session: 'mine' },
   ])
-  expect(isSlackSession(s({ host: 'workstation', session_id: 'linked-idle' }), slack)).toBe(true)
-  expect(isSlackSession(s({ host: 'workstation', session_id: 'mine' }), slack)).toBe(false)
+  expect(isLinked(s({ host: 'workstation', session_id: 'linked-idle' }), slack)).toBe(true)
+  expect(isLinked(s({ host: 'workstation', session_id: 'mine' }), slack)).toBe(false)
   // Without the links (Slack off, not loaded yet) nothing is set aside.
   expect(listView(f, {}).sessions.map((x) => x.session_id)).toEqual(['linked-wait', 'linked-idle', 'mine'])
-  const all = listView(f, { slack })
+  const all = listView(f, { linked: { slack } })
   expect(all.sessions.map((x) => x.session_id)).toEqual(['linked-wait', 'mine'])
   expect(all.counts.slack).toBe(2)
-  expect(listView(f, { status: 'slack', slack }).sessions.map((x) => x.session_id)).toEqual(['linked-wait', 'linked-idle'])
+  expect(listView(f, { status: 'slack', linked: { slack } }).sessions.map((x) => x.session_id)).toEqual(['linked-wait', 'linked-idle'])
   expect(visibleStatusFilters(all.counts, 'all').map((x) => x.id)).toEqual(['all', 'waiting', 'busy', 'idle', 'slack'])
+})
+
+test('listView: Veranda- and GitHub-linked sessions only under their own filter, except waiting ones', () => {
+  const f: FleetResponse = {
+    self: 'laptop',
+    hosts: [
+      {
+        name: 'workstation',
+        ok: true,
+        sessions: [
+          s({ host: 'workstation', session_id: 'mine', status: 'busy', updated_at: 100 }),
+          s({ host: 'workstation', session_id: 'room', status: 'idle', updated_at: 200 }),
+          s({ host: 'workstation', session_id: 'pr', status: 'idle', updated_at: 300 }),
+          s({ host: 'workstation', session_id: 'pr-wait', status: 'waiting', updated_at: 400 }),
+        ],
+      },
+    ],
+  }
+  // A Veranda link without a host is on the bridge's host.
+  const veranda = linkedKeys([{ host: null, session: 'room' }], 'workstation')
+  const github = linkedKeys([{ host: 'workstation', session: 'pr' }, { host: 'workstation', session: 'pr-wait' }])
+  const linked = { veranda, github }
+  const all = listView(f, { linked })
+  expect(all.sessions.map((x) => x.session_id)).toEqual(['pr-wait', 'mine'])
+  expect(all.counts.veranda).toBe(1)
+  expect(all.counts.github).toBe(2)
+  expect(listView(f, { status: 'veranda', linked }).sessions.map((x) => x.session_id)).toEqual(['room'])
+  expect(listView(f, { status: 'github', linked }).sessions.map((x) => x.session_id)).toEqual(['pr-wait', 'pr'])
+  expect(visibleStatusFilters(all.counts, 'all').map((x) => x.id)).toEqual(['all', 'waiting', 'busy', 'idle', 'veranda', 'github'])
 })
 
 test('stackRuns: 2+ adjacent members of one stack form a group; a lone member stays a row', () => {

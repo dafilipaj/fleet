@@ -2,14 +2,16 @@ import { useMemo, useState } from 'react'
 
 import { useFleet } from '@/hooks/useFleet'
 import { usePersistentState } from '@/hooks/usePersistentState'
+import { useGithub } from '@/hooks/useGithub'
 import { useSlack } from '@/hooks/useSlack'
+import { useVeranda } from '@/hooks/useVeranda'
 import { relTime } from '@/lib/format'
 import { DEFAULT_SELECTION, isShared, parseSelection, resolveSelection, serializeSelection, type HostSelection } from '@/lib/hosts'
-import { allSessions, findStatusFilter, keepOrder, listView, slackLinked, snoozedView, statusSummary, type StatusFilterId } from '@/lib/sessions'
+import { allSessions, findStatusFilter, keepOrder, linkedKeys, listView, snoozedView, statusSummary, type Linked, type StatusFilterId } from '@/lib/sessions'
 
 /**
  * The session list's state, shared by the mobile list screen and the desktop sidebar:
- * search, status + host filters (persisted in `fleet.filter` / `fleet.hostFilter`; Bots / Slack / Apps
+ * search, status + host filters (persisted in `fleet.filter` / `fleet.hostFilter`; Bots / Slack / Veranda / GitHub / Apps
  * are status filters; the host filter is a scope or a multi-select, lib/hosts.ts), the filtered view,
  * per-host counts, the header summary (own hosts only: a shared shed's sessions are not yours to
  * answer) and the "updated Xs ago" note.
@@ -33,17 +35,26 @@ export function useSessionList(now: number) {
   const ownHosts = useMemo(() => new Set(hosts.filter((h) => !isShared(h)).map((h) => h.name)), [hosts])
 
   const slackStatus = useSlack()
-  const slack = useMemo(() => slackLinked(slackStatus?.enabled ? slackStatus.links : null), [slackStatus])
+  const verandaStatus = useVeranda()
+  const githubStatus = useGithub()
+  const linked = useMemo<Linked>(
+    () => ({
+      slack: linkedKeys(slackStatus?.enabled ? slackStatus.links : null),
+      veranda: linkedKeys(verandaStatus?.enabled ? verandaStatus.links : null, verandaStatus?.host ?? null),
+      github: linkedKeys(githubStatus?.enabled ? githubStatus.links : null, githubStatus?.host ?? null),
+    }),
+    [slackStatus, verandaStatus, githubStatus],
+  )
   // Snoozes run out on the clock, not on a poll: the minute is enough.
   const minute = Math.floor(now / 60_000) * 60_000
-  const live = useMemo(() => listView(fleet, { query, hosts: hostSet, status, slack, now: minute }), [fleet, query, hostSet, status, slack, minute])
+  const live = useMemo(() => listView(fleet, { query, hosts: hostSet, status, linked, now: minute }), [fleet, query, hostSet, status, linked, minute])
   // The order the list froze in (session keys); null when it follows the live order.
   const [frozenOrder, setFrozenOrder] = useState<string[] | null>(null)
   const setFrozen = (on: boolean) => setFrozenOrder(on ? live.sessions.map((s) => `${s.host}/${s.session_id}`) : null)
   const view = useMemo(() => (frozenOrder ? { ...live, sessions: keepOrder(live.sessions, frozenOrder) } : live), [live, frozenOrder])
-  // Counts over every host, unfiltered: which kind chips (Slack / Apps) exist, so picking a host
+  // Counts over every host, unfiltered: which kind chips (Slack / Veranda / GitHub / Apps) exist, so picking a host
   // without such sessions does not drop a chip and shift the bar.
-  const fleetCounts = useMemo(() => listView(fleet, { query: '', hosts: null, status, slack, now: minute }).counts, [fleet, status, slack, minute])
+  const fleetCounts = useMemo(() => listView(fleet, { query: '', hosts: null, status, linked, now: minute }).counts, [fleet, status, linked, minute])
   const hostCounts = useMemo(() => {
     const counts = new Map<string, number>()
     for (const s of allSessions(fleet)) counts.set(s.host, (counts.get(s.host) ?? 0) + 1)
