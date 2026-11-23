@@ -749,6 +749,7 @@ export function SessionScreen({
           speech={speech}
           thinking={status === 'busy' || outbox.some((it) => it.state !== 'sent')}
           canRecord={settings.voice}
+          serverVoice={settings.speak}
           autoSpeak={autoSpeak}
           onAutoSpeak={setAutoSpeak}
           onMic={onMic}

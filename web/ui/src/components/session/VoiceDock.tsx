@@ -15,6 +15,8 @@ export interface VoiceDockProps {
   thinking: boolean
   /** Voice input works on this server (a transcription key). */
   canRecord: boolean
+  /** This server reads replies with its OpenAI voice (a speech key); else the device's voice. */
+  serverVoice: boolean
   autoSpeak: boolean
   onAutoSpeak: (on: boolean) => void
   onMic: () => void
@@ -24,8 +26,10 @@ export interface VoiceDockProps {
   lockedReason?: string | null
 }
 
+const NO_TRANSCRIBE = 'Voice input is off on this server (no transcription key)'
+
 /** Voice mode's footer in place of the composer: a big mic, what is happening, a small text field. */
-export function VoiceDock({ voice, speech, thinking, canRecord, autoSpeak, onAutoSpeak, onMic, onType, onExit, lockedReason }: VoiceDockProps) {
+export function VoiceDock({ voice, speech, thinking, canRecord, serverVoice, autoSpeak, onAutoSpeak, onMic, onType, onExit, lockedReason }: VoiceDockProps) {
   const [draft, setDraft] = useState('')
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
@@ -36,7 +40,9 @@ export function VoiceDock({ voice, speech, thinking, canRecord, autoSpeak, onAut
 
   const phase = lockedReason
     ? lockedReason
-    : voice.state === 'recording'
+    : !canRecord
+      ? NO_TRANSCRIBE
+      : voice.state === 'recording'
       ? `Listening… ${formatElapsed(now - (voice.startedAt ?? now))} — tap to send`
       : voice.state === 'transcribing'
         ? 'Transcribing…'
@@ -59,7 +65,7 @@ export function VoiceDock({ voice, speech, thinking, canRecord, autoSpeak, onAut
             variant="ghost"
             size="icon"
             aria-label={autoSpeak ? 'Read replies aloud: on' : 'Read replies aloud: off'}
-            title={autoSpeak ? 'Replies are read aloud' : 'Replies are not read aloud'}
+            title={`${autoSpeak ? 'Replies are read aloud' : 'Replies are not read aloud'}${serverVoice ? '' : " (this device's voice: no speech key on this server)"}`}
             onClick={() => {
               if (autoSpeak) speech.stop()
               onAutoSpeak(!autoSpeak)
@@ -92,7 +98,7 @@ export function VoiceDock({ voice, speech, thinking, canRecord, autoSpeak, onAut
           onClick={onMic}
           disabled={!canRecord || Boolean(lockedReason)}
           aria-label={voice.state === 'recording' ? 'Stop and send' : voice.state === 'transcribing' ? 'Cancel' : 'Speak'}
-          title={canRecord ? undefined : 'Voice input is off on this server (no transcription key)'}
+          title={canRecord ? undefined : NO_TRANSCRIBE}
           className={cn(
             'grid size-24 place-items-center rounded-full shadow-lg transition-transform active:scale-95 disabled:opacity-40',
             voice.state === 'recording' ? 'animate-pulse bg-destructive text-white' : 'bg-primary text-primary-foreground',
