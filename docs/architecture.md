@@ -718,6 +718,24 @@ gets `/clear`. Claude Code then starts a new session (a new session id, an empty
 the next conversation starts fresh and the app shows no history. A cleared session has no context
 until it is used, which keeps it from being cleared again.
 
+## Voice mode (any session)
+
+The wave button in a session's header turns **voice mode** on for that session, on this device
+(localStorage `fleet.voiceMode.<host>/<id>`): for driving or walking, when talking beats reading.
+The composer gives way to a dock with a big mic (the same recorder as everywhere, with the
+operator's cancellable pause before sending), a small text field, read-aloud on/off and the
+reading speed. The screen is kept on (Wake Lock), since a locked phone stops polling and playback.
+
+- Turning it on sends the session a brief (`VOICE_BRIEF` in `web/ui/src/lib/voiceMode.ts`):
+  answer in two to four short spoken sentences, and act as an orchestrator that delegates real
+  work to background subagents (or new sessions) so it stays free to talk.
+- Every message sent in voice mode starts with `[voice mode]`; the brief scopes its rules to tagged
+  messages, so the tag keeps them in force after a compaction and untagged messages (voice mode
+  off) get normal replies. No message is sent when it turns off.
+- Each new final reply is read aloud like the operator's (`replyToSpeak`, `speechChunks`), never
+  the replies already there when voice mode came on, never over a recording. While the session
+  is busy, a message goes to the prompt queue, as from the composer.
+
 ## Voice prompts
 
 Every mic button — the operator, a session's composer, the new-session prompt — opens the same

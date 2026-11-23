@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import {
+  AudioLinesIcon,
   ChevronLeftIcon,
   CircleAlertIcon,
   CircleCheckBigIcon,
@@ -25,6 +26,7 @@ import { ChatView } from '@/components/session/ChatView'
 import { CompactHint } from '@/components/session/CompactHint'
 import { Composer, type ComposerApi } from '@/components/session/Composer'
 import { QueuePanel } from '@/components/session/QueuePanel'
+import { VoiceDock } from '@/components/session/VoiceDock'
 import { BackgroundPanel } from '@/components/BackgroundWork'
 import { FilePreview } from '@/components/session/FilePreview'
 import { OutboxBubbles } from '@/components/session/OutboxBubbles'
@@ -44,6 +46,9 @@ import { useSettings } from '@/hooks/useSettings'
 import { openStackLink, openStackSheet, type SiblingTarget } from '@/hooks/useStackUi'
 import { useSwipeBack } from '@/hooks/useSwipeBack'
 import { useSessionTitle } from '@/hooks/useTitles'
+import { useSpeechPlayer } from '@/hooks/useSpeechPlayer'
+import { useVoice } from '@/hooks/useVoice'
+import { useWakeLock } from '@/hooks/useWakeLock'
 import { CHAT_LIMITS, CHAT_POLL_MS, nextChatLimit } from '@/lib/chat'
 import { continueDraft } from '@/lib/brief'
 import { modelLabel, relTime, shortCwd } from '@/lib/format'
@@ -54,9 +59,14 @@ import { isBack } from '@/lib/snooze'
 import { prReviewHref, reviewHref } from '@/lib/review'
 import { stacksKnown } from '@/lib/stacks'
 import { isUndoBackspace } from '@/lib/shortcuts'
+import { conversation, replyToSpeak } from '@/lib/operator'
+import { storage } from '@/lib/storage'
+import { VOICE_BRIEF, tagVoice, voiceModeKey } from '@/lib/voiceMode'
 import { STATUS_TEXT } from '@/lib/styles'
 import { clampDetailsWidth, DETAILS_DEFAULT_W, DETAILS_MAX_W, DETAILS_MIN_W, detailsWidth } from '@/lib/layout'
 import { cn } from '@/lib/utils'
+
+const parseBool = (r: string) => (r === 'true' ? true : r === 'false' ? false : undefined)
 
 interface ChatState {
   messages: Message[]
@@ -364,6 +374,87 @@ export function SessionScreen({
     return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [hasPending])
 
+  const titleKey = `${host}/${id}`
+  const { title: shownTitle } = useSessionTitle(session, titleKey)
+  const name = session ? shownTitle : chat?.name || id.slice(0, 8)
+
+  // --- voice mode (lib/voiceMode.ts) ----------------------------------------
+  // On this device, per session: a big mic instead of the composer, every message tagged, each
+  // new final reply read aloud, the screen kept on.
+  const vmKey = voiceModeKey(host, id)
+  const [vmTick, setVmTick] = useState(0)
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- vmTick: re-read after a toggle
+  const voiceMode = useMemo(() => storage.get(vmKey) === '1', [vmKey, vmTick])
+  const [autoSpeak, setAutoSpeak] = usePersistentState<boolean>('fleet.voiceMode.speak', true, parseBool)
+  const speech = useSpeechPlayer()
+  const { speak } = speech
+  useWakeLock(voiceMode && !gone)
+
+  const voiceSend = (text: string): boolean => {
+    const t = tagVoice(text)
+    if (!t || lockedReason) return false
+    if (queueing) return enqueue(t)
+    box.add(t, 0, tailAnchor(chatRef.current?.messages))
+    setJumpSignal((n) => n + 1)
+    return true
+  }
+  const voiceSendRef = useRef(voiceSend)
+  useEffect(() => {
+    voiceSendRef.current = voiceSend
+  })
+  const voiceRec = useVoice({
+    // A rejection keeps the take on the recorder instead of losing it.
+    onText: (text) => {
+      if (!voiceSendRef.current(text)) throw new Error(lockedReason ?? 'Not sent')
+    },
+    hint: [name, session?.cwd?.split('/').pop()].filter(Boolean).join(', '),
+    label: name,
+    confirm: true,
+  })
+  const setVoiceMode = (on: boolean) => {
+    if (on) storage.set(vmKey, '1')
+    else storage.remove(vmKey)
+    setVmTick((n) => n + 1)
+    if (on) {
+      speech.unlock()
+      voiceSend(VOICE_BRIEF)
+    } else {
+      speech.stop()
+      if (voiceRec.state !== 'idle') voiceRec.cancel()
+    }
+  }
+  const onMic = () => {
+    if (speech.state !== 'idle') speech.stop()
+    if (voiceRec.state === 'recording') return voiceRec.stop()
+    if (voiceRec.state === 'transcribing') return voiceRec.cancel()
+    speech.unlock()
+    voiceRec.start()
+  }
+
+  // Read each new final reply aloud — never the ones already there when voice mode came on.
+  const turns = useMemo(() => conversation(chat?.messages ?? []), [chat?.messages])
+  const spoken = useRef<{ session: string; key: string | null } | null>(null)
+  const recording = voiceRec.state !== 'idle'
+  const harness = session?.harness ?? 'claude'
+  useEffect(() => {
+    if (!voiceMode || !chat) {
+      spoken.current = null
+      return
+    }
+    // The turn's identity across polls (its index shifts as the window slides).
+    const keyed = turns.map((t) => ({ ...t, key: `${t.ts ?? ''}:${t.text.length}:${t.text.slice(0, 40)}` }))
+    const last = keyed[keyed.length - 1]
+    if (spoken.current?.session !== sessionKey) {
+      spoken.current = { session: sessionKey, key: last?.role === 'assistant' ? last.key : null }
+      return
+    }
+    const reply = replyToSpeak(keyed, chat.status, spoken.current.key, { final: harness === 'claude' })
+    if (!reply) return
+    spoken.current = { session: sessionKey, key: reply.key }
+    // Never over a recording: on iOS, playback can take the mic away mid-take.
+    if (autoSpeak && !recording) void speak(reply.text, `voice:${sessionKey}:${reply.key}`)
+  }, [voiceMode, chat, turns, sessionKey, harness, autoSpeak, recording, speak])
+
   const sendKey = async (key: SessionKey) => {
     if (lockedReason) return
     try {
@@ -416,9 +507,6 @@ export function SessionScreen({
     setChatLimit(next)
   }
 
-  const titleKey = `${host}/${id}`
-  const { title: shownTitle } = useSessionTitle(session, titleKey)
-  const name = session ? shownTitle : chat?.name || id.slice(0, 8)
 
   // Mobile: one drawer at a time — Details closes, then the next one opens.
   const fromMenu = (fn: () => void) => {
@@ -551,6 +639,19 @@ export function SessionScreen({
               </span>
             </div>
           </div>
+          {!embedded && !lockedReason ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={voiceMode ? 'Leave voice mode' : 'Voice mode'}
+              aria-pressed={voiceMode}
+              title={voiceMode ? 'Leave voice mode' : 'Voice mode: talk to the session, replies read aloud'}
+              onClick={() => setVoiceMode(!voiceMode)}
+              className={cn('size-11 shrink-0 rounded-xl', voiceMode && 'text-primary')}
+            >
+              <AudioLinesIcon className="size-5" />
+            </Button>
+          ) : null}
           {detailsW > 0 ? null : (
             <Button
               variant="ghost"
@@ -642,6 +743,20 @@ export function SessionScreen({
         }}
         onPause={(paused) => void queueAction(api.queuePause(host, id, paused))}
       />
+      {voiceMode ? (
+        <VoiceDock
+          voice={voiceRec}
+          speech={speech}
+          thinking={status === 'busy' || outbox.some((it) => it.state !== 'sent')}
+          canRecord={settings.voice}
+          autoSpeak={autoSpeak}
+          onAutoSpeak={setAutoSpeak}
+          onMic={onMic}
+          onType={(t) => void voiceSend(t)}
+          onExit={() => setVoiceMode(false)}
+          lockedReason={lockedReason}
+        />
+      ) : (
       <Composer
         quickReplies={settings.quickReplies}
         lockedReason={lockedReason}
@@ -660,6 +775,7 @@ export function SessionScreen({
         sessionId={id}
         slashCommands={(session?.harness || 'claude') === 'claude'}
       />
+      )}
       <DropOverlay show={drop.dragging} hint={`Uploaded to ${host}; the path goes into the message`} />
       <FilePreview host={host} id={id} file={preview} onClose={() => setPreviewOf(null)} desktop={pane} />
     </>
