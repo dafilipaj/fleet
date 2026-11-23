@@ -39,7 +39,7 @@ const TOUCH = {
 }
 
 /**
- * Sessions | Bots (| Slack | Veranda | GitHub | Apps) toggle, then status and host pickers behind one icon each.
+ * Sessions (| Bots | Slack | Veranda | GitHub | Productive | Apps: each only while it has sessions) toggle, then status and host pickers behind one icon each.
  * `spread`: the pickers sit at the row's right end. `touch`: phone-sized (the mobile list).
  * `hostPicker={false}`: no host menu (the desktop top bar has the HostRail instead).
  */
@@ -47,7 +47,7 @@ export function SessionFilters({ list, spread = false, touch = false, hostPicker
   const seg = cn(segment, touch && TOUCH.segment)
   const trig = cn(trigger, touch && TOUCH.trigger)
   const item = touch ? TOUCH.item : undefined
-  const { fleet, status, setStatus, hostNames, view, fleetCounts } = list
+  const { fleet, status, setStatus, hostNames, view, kindCounts } = list
   const counts = fleet ? view.counts : null
   const kind = KINDS.includes(status) ? status : SESSIONS
   // The status picked under Sessions, restored when coming back from Bots / a link kind / Apps.
@@ -59,8 +59,8 @@ export function SessionFilters({ list, spread = false, touch = false, hostPicker
   }
 
   const statusFilters = STATUS_FILTERS.filter((f) => !KINDS.includes(f.id))
-  // Which kinds get a chip follows every host, not the host filter: the bar keeps its shape.
-  const kinds = visibleStatusFilters(fleet ? fleetCounts : null, status).filter((f) => KINDS.includes(f.id) && f.id !== 'scheduled')
+  // A kind gets a chip only while it has sessions in this view (or is the one picked): no empty chips.
+  const kinds = visibleStatusFilters(fleet ? kindCounts : null, status).filter((f) => KINDS.includes(f.id))
   const current = statusFilters.find((f) => f.id === status)
   const statusActive = kind === SESSIONS && status !== 'all'
 
@@ -77,10 +77,6 @@ export function SessionFilters({ list, spread = false, touch = false, hostPicker
         <ToggleGroupItem value={SESSIONS} className={seg}>
           Sessions
           <span className={kindCount}>{counts?.all ?? ''}</span>
-        </ToggleGroupItem>
-        <ToggleGroupItem value="scheduled" className={seg} title="Sessions started by bots">
-          Bots
-          <span className={kindCount}>{counts?.scheduled ?? ''}</span>
         </ToggleGroupItem>
         {kinds.map((f) => (
           <ToggleGroupItem key={f.id} value={f.id} className={seg} title={f.title}>

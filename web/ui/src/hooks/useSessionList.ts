@@ -55,9 +55,9 @@ export function useSessionList(now: number) {
   const [frozenOrder, setFrozenOrder] = useState<string[] | null>(null)
   const setFrozen = (on: boolean) => setFrozenOrder(on ? live.sessions.map((s) => `${s.host}/${s.session_id}`) : null)
   const view = useMemo(() => (frozenOrder ? { ...live, sessions: keepOrder(live.sessions, frozenOrder) } : live), [live, frozenOrder])
-  // Counts over every host, unfiltered: which kind chips (Slack / Veranda / GitHub / Apps) exist, so picking a host
-  // without such sessions does not drop a chip and shift the bar.
-  const fleetCounts = useMemo(() => listView(fleet, { query: '', hosts: null, status, linked, now: minute }).counts, [fleet, status, linked, minute])
+  // Counts on the hosts picked, before the search: which kind chips (Bots / Slack / … / Apps) show — none
+  // without sessions, and typing a search does not make chips come and go.
+  const kindCounts = useMemo(() => listView(fleet, { query: '', hosts: hostSet, status, linked, now: minute }).counts, [fleet, hostSet, status, linked, minute])
   const hostCounts = useMemo(() => {
     const counts = new Map<string, number>()
     for (const s of allSessions(fleet)) counts.set(s.host, (counts.get(s.host) ?? 0) + 1)
@@ -100,7 +100,7 @@ export function useSessionList(now: number) {
     view,
     /** Snoozed sessions (search + host scope), soonest back first: the Snoozed section. */
     snoozed,
-    fleetCounts,
+    kindCounts,
     setFrozen,
     hostCounts,
     summary,
