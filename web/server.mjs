@@ -47,6 +47,7 @@ import { createVerandaBridge, createVerandaClient } from './lib/veranda.mjs';
 import { createGithubBridge } from './lib/github.mjs';
 import { createProductiveApi, createProductiveBridge } from './lib/productive.mjs';
 import { fetchPeerHost, proxyToPeer, setPeerConnects, setPeerProxies, setPeerTokens } from './lib/peers.mjs';
+import { createRelay } from './lib/relay.mjs';
 import { createDormant } from './lib/dormant.mjs';
 import { createLoadAlerts, createLoadMonitor, readProcessUse, retryWhileBusy } from './lib/load.mjs';
 import { createUsageAlerts } from './lib/usage.mjs';
@@ -513,6 +514,20 @@ for (const s of servers) {
 }
 for (const [i, s] of servers.entries()) if (i > 0) s.listen(config.port, addresses[i]);
 
+// web.relay: the filtered CONNECT proxy (lib/relay.mjs). A listen address that is not up yet (a
+// tailnet IP at boot) or taken is retried every 30 s; it never takes the web server down.
+let relay = null;
+if (config.relay) {
+  const { host, port, via, allow } = config.relay;
+  relay = createRelay({ allow, via, log });
+  const where = `${host.includes(':') ? `[${host}]` : host}:${port}`;
+  relay.on('error', (err) => {
+    log(`[relay] cannot listen on ${where}: ${err.code ?? err.message}; retrying in 30 s`);
+    setTimeout(() => relay.listen(port, host), 30 * 1000).unref();
+  });
+  relay.listen(port, host, () => log(`[relay] listening on ${where} → ${allow.join(', ')}${via ? ` via ${via.url}` : ' (direct)'}`));
+}
+
 servers[0].listen(config.port, addresses[0], () => {
   log(`[fleet-web] self=${config.self} listening on ${addresses.map((a) => `http://${a.includes(':') ? `[${a}]` : a}:${config.port}`).join(', ')}`);
   if (config.allowedHosts.length) log(`[fleet-web] allowedHosts=${config.allowedHosts.join(',')}`);
@@ -672,6 +687,7 @@ function shutdown(signal) {
   operator.stop();
   uploader.stop();
   handleApi.stop();
+  relay?.close();
   const timer = setTimeout(() => process.exit(0), 3000);
   timer.unref?.();
   let open = servers.length;

@@ -58,6 +58,7 @@ lib/stacks.mjs        session stacks: `fleet stack` errors → HTTP, sibling spa
 lib/editor.mjs        "Open in editor" links (vscode:// / cursor://, local folder or Remote-SSH)
 lib/notes.mjs         notes explorer: the `web.notes.root` sandbox, tree, frontmatter, built-in search / `searchCmd`
 lib/peers.mjs         peer fetch + one-hop proxy (JSON bodies; uploads streamed up, files/raw streamed down, unbuffered)
+lib/relay.mjs         web.relay: a CONNECT-only proxy to an allowlist of host:port (via an upstream proxy or direct), on its own listener
 lib/api.mjs           /api/* request handling (no UI knowledge)
 lib/app.mjs           node:http server: /api/* → api, everything else → static UI dir
 lib/http.mjs, util.mjs, run.mjs   helpers (body limit, static path safety, execFile wrapper)

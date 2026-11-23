@@ -8,7 +8,8 @@
 //            grouping: { enabled, intervalMinutes }, uploads: { dir, maxMB, retentionDays },
 //            memos: { dir, audioDir, model, vocabulary },
 //            briefs: { enabled, model, idleMs, minIntervalMs, maxDeltaChars, maxCallsPerHour, … },
-//            stacks: { syncMinutes } },
+//            stacks: { syncMinutes },
+//            relay: { listen, via, allow: [ "host:port" ] } },
 //     stacks: { enabled, model },         (read by the CLI; the server only reports them)
 //     grouping: { enabled, model, host },   (enabled/model are read by the CLI)
 //     inbox: { host, scanMinutes, workHours, workDays, model, briefModel, briefMinutes, language, comms, scanRules, slackMinutes, slackModel, slackRules },
@@ -21,6 +22,7 @@
 // ("local", 127.0.0.1, no peers). A present-but-broken file is a hard error.
 import { usageSettings } from './usage.mjs';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -464,6 +466,47 @@ export function slackSpawn(raw) {
     minutes,
     from,
   };
+}
+
+// An allowlisted relay target: a DNS name or IPv4 address, and a port.
+const RELAY_TARGET_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*:(?<port>[1-9]\d{0,4})$/;
+
+/**
+ * `web.relay`: a CONNECT proxy (lib/relay.mjs) that tunnels only to `allow` (exact `host:port`),
+ * through the HTTP proxy `via` or directly. `{ listen: "<ip>:<port>", via?, allow: [...] }`.
+ * Unset → null (no relay).
+ */
+export function relayConfig(raw) {
+  if (raw == null) return null;
+  if (!isObject(raw)) throw new Error('config.web.relay must be an object { listen, via, allow }');
+  if (typeof raw.listen !== 'string') throw new Error('config.web.relay.listen must be "<ip>:<port>", e.g. "100.x.y.z:1057"');
+  const m = /^(?:\[([^\]]+)\]|([^:]+)):(\d{1,5})$/.exec(raw.listen.trim());
+  const host = m ? (m[1] ?? m[2]) : null;
+  if (!m || !net.isIP(host)) throw new Error(`config.web.relay.listen must be "<ip>:<port>" (an IP address, [..] for IPv6): ${raw.listen}`);
+  if (host === '0.0.0.0' || host === '::') throw new Error('config.web.relay.listen must be a specific address (a tailnet IP), not all interfaces');
+  const port = parsePort(m[3], 'config.web.relay.listen port');
+  let via = null;
+  if (raw.via != null) {
+    let u = null;
+    try {
+      u = new URL(raw.via);
+    } catch {
+      // reported below
+    }
+    if (!u || u.protocol !== 'http:' || !u.hostname || u.username || u.password || (u.pathname !== '/' && u.pathname !== '') || u.search) {
+      throw new Error(`config.web.relay.via must be an http://host:port proxy url (no path, no credentials): ${raw.via}`);
+    }
+    via = { host: u.hostname.replace(/^\[|\]$/g, ''), port: Number(u.port) || 80, url: `http://${u.host}` };
+  }
+  if (!Array.isArray(raw.allow) || raw.allow.length === 0) throw new Error('config.web.relay.allow must be a non-empty array of "host:port" targets');
+  const allow = raw.allow.map((t) => {
+    const v = typeof t === 'string' ? t.trim().toLowerCase() : '';
+    const tm = RELAY_TARGET_RE.exec(v);
+    if (!tm) throw new Error(`config.web.relay.allow entries must be exact "host:port" (no wildcards, no scheme): ${t}`);
+    parsePort(tm.groups.port, `config.web.relay.allow port of ${t}`);
+    return v;
+  });
+  return { host, port, via, allow };
 }
 
 export function normalizeConfig(
@@ -954,6 +997,9 @@ export function normalizeConfig(
   if (wfo.host != null && (typeof wfo.host !== 'string' || !wfo.host.trim())) throw new Error('config.web.focus.host must be a host name');
   const focus = { host: wfo.host?.trim() || null };
 
+  // web.relay: a filtered CONNECT proxy for peers on another network (lib/relay.mjs); null = none.
+  const relay = relayConfig(web.relay);
+
   // restore.onBoot: at start, bring back what the last boot left dormant (lib/dormant.mjs).
   const rs = raw.restore == null ? {} : raw.restore;
   if (!isObject(rs)) throw new Error('config.restore must be an object { onBoot }');
@@ -1019,6 +1065,7 @@ export function normalizeConfig(
     restore,
     operator,
     focus,
+    relay,
   };
 }
 

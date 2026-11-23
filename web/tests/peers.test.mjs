@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 
-import { fetchPeerHost, proxyToPeer, setPeerConnects, setPeerProxies, streamFromPeer } from '../lib/peers.mjs';
+import { fetchPeerHost, proxyToPeer, setPeerConnects, setPeerProxies, setPeerTokens, streamFromPeer, streamToPeer } from '../lib/peers.mjs';
 import { normalizeConfig } from '../lib/config.mjs';
 
 function listen(server) {
@@ -132,4 +132,51 @@ test('config: hosts.<name>.webConnect maps the peer origin to the address and is
   assert.deepEqual(cfg.peerConnects, { 'https://fleet.studio.example': 'studio.tailnet.example' });
   raw.hosts.studio.webConnect = 'https://studio.tailnet.example';
   assert.throws(() => normalizeConfig(raw, { home: '/home/tester', log: { warn() {} } }), /webConnect must be a host or host:port/);
+});
+
+test('every request path honours webConnect and sends the peer token (streamToPeer included)', async () => {
+  const seen = [];
+  const peer = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      seen.push({ path: new URL(req.url, 'http://x').pathname, host: req.headers.host, auth: req.headers.authorization, body });
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ hosts: [{ name: 'studio', ok: true, fetchedAt: 1, sessions: [] }], body }));
+    });
+  });
+  const peerUrl = await listen(peer);
+  const port = new URL(peerUrl).port;
+  const base = `http://fleet.studio.invalid:${port}`;
+  // An upload arrives at this server and is streamed on to the peer.
+  const front = http.createServer(async (req, res) => {
+    const r = await streamToPeer(base, { pathname: '/api/upload', req });
+    res.writeHead(r.status, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(r.body));
+  });
+  const frontUrl = await listen(front);
+  setPeerConnects({ [base]: `127.0.0.1:${port}` });
+  setPeerTokens({ [base]: 'peer-token' });
+  try {
+    assert.equal((await fetchPeerHost('studio', base)).ok, true);
+    assert.equal((await proxyToPeer(base, { method: 'POST', pathname: '/api/echo', body: '{}' })).status, 200);
+    const streamed = await streamFromPeer(base, { pathname: '/api/raw' });
+    assert.equal(streamed.status, 200);
+    streamed.stream.resume();
+    const up = await fetch(`${frontUrl}/api/upload`, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: 'file-bytes' });
+    assert.equal(up.status, 200);
+    assert.equal((await up.json()).body, 'file-bytes');
+    assert.deepEqual(seen.map((s) => s.path), ['/api/fleet', '/api/echo', '/api/raw', '/api/upload']);
+    for (const s of seen) {
+      assert.equal(s.host, `fleet.studio.invalid:${port}`, s.path);
+      assert.equal(s.auth, 'Bearer peer-token', s.path);
+    }
+  } finally {
+    setPeerConnects({});
+    setPeerTokens({});
+    for (const s of [peer, front]) {
+      s.closeAllConnections();
+      await new Promise((r) => s.close(r));
+    }
+  }
 });

@@ -193,7 +193,8 @@ export function streamToPeer(baseUrl, { method = 'POST', pathname, search = '', 
   const target = new URL(`${baseUrl}${pathname}?${withLocalFlag(search)}`);
   const headers = { accept: 'application/json' };
   for (const h of ['content-type', 'content-length']) if (req.headers?.[h]) headers[h] = req.headers[h];
-  Object.assign(headers, withAuth(target));
+  const { url, options } = dialTarget(target);
+  Object.assign(headers, withAuth(target, options.headers));
   return new Promise((resolve) => {
     let settled = false;
     const done = (result) => {
@@ -204,7 +205,7 @@ export function streamToPeer(baseUrl, { method = 'POST', pathname, search = '', 
       if (!req.readableEnded) req.resume();
       resolve(result);
     };
-    const out = (target.protocol === 'https:' ? https : http).request(target, { method, headers, agent: proxyAgentFor(target) }, (res) => {
+    const out = (target.protocol === 'https:' ? https : http).request(url, { ...options, method, headers, agent: proxyAgentFor(target) }, (res) => {
       const chunks = [];
       res.on('data', (c) => chunks.push(c));
       res.on('error', (err) => done({ status: 502, body: { error: `peer ${baseUrl} unreachable: ${err.message}` } }));
