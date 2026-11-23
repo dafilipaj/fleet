@@ -542,10 +542,12 @@ export const api = {
   productive: (o: Opts = {}) => request<ProductiveStatus>('/api/productive', o),
   /** A session on the bridge host follows a PR / a task; the same session again updates its instructions and keep. */
   githubLink: (body: LinkFollowBody, o: Opts = {}) => request<GithubLink & { renewed?: boolean }>('/api/github/link', { ...o, method: 'POST', body }),
-  githubUnlink: (id: string, o: Opts = {}) => request<GithubLink>(`/api/github/links/${enc(id)}/unlink`, { ...o, method: 'POST', body: {} }),
+  githubUnlink: (id: string, bridge?: string, o: Opts = {}) =>
+    request<GithubLink>(`/api/github/links/${enc(id)}/unlink`, { ...o, method: 'POST', body: bridge ? { bridge } : {} }),
   productiveLink: (body: LinkFollowBody, o: Opts = {}) =>
     request<ProductiveLink & { renewed?: boolean }>('/api/productive/link', { ...o, method: 'POST', body }),
-  productiveUnlink: (id: string, o: Opts = {}) => request<ProductiveLink>(`/api/productive/links/${enc(id)}/unlink`, { ...o, method: 'POST', body: {} }),
+  productiveUnlink: (id: string, bridge?: string, o: Opts = {}) =>
+    request<ProductiveLink>(`/api/productive/links/${enc(id)}/unlink`, { ...o, method: 'POST', body: bridge ? { bridge } : {} }),
   /** Veranda links (opt-in): the bridge's state, from the `veranda.host` server (proxied). */
   veranda: (o: Opts = {}) => request<VerandaStatus>('/api/veranda', o),
   /** Open (or reopen) a Veranda room with a new passphrase and link a session to it; the answer carries the passphrase, shown only this once. */

@@ -301,6 +301,18 @@ const SLACK_USER_RE = /^[UW][A-Z0-9]+$/;
 
 const GH_LOGIN_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 
+/** `<section>.bridges`: `{ "<session host>": "<bridge host>" }` — hosts whose sessions another bridge links. */
+function bridgeMap(raw, section) {
+  const bridges = {};
+  if (raw == null) return bridges;
+  if (!isObject(raw)) throw new Error(`config.${section}.bridges must be an object { "<host>": "<bridge host>" }`);
+  for (const [h, b] of Object.entries(raw)) {
+    if (typeof b !== 'string' || !b.trim()) throw new Error(`config.${section}.bridges.${h} must be a host name`);
+    bridges[h] = b.trim();
+  }
+  return bridges;
+}
+
 /**
  * `github.spawn`: a review requested from this host's GitHub account on a PR no session follows
  * opens a new session for it, linked to the PR (lib/github.mjs). Read only on the bridge's own
@@ -746,6 +758,7 @@ export function normalizeConfig(
   if (gr.notifications != null && typeof gr.notifications !== 'boolean') throw new Error('config.github.notifications must be true or false');
   const github = {
     host: gr.host == null ? null : gr.host.trim(),
+    bridges: bridgeMap(gr.bridges, 'github'),
     spawn: githubSpawn(gr.spawn),
     gh: gr.gh ? expandHome(gr.gh.trim(), home) : null,
     cli: gr.cli?.trim() || null,
@@ -768,6 +781,7 @@ export function normalizeConfig(
   }
   const productive = {
     host: pr.host == null ? null : pr.host.trim(),
+    bridges: bridgeMap(pr.bridges, 'productive'),
     org: pr.org == null ? null : String(pr.org).trim(),
     keychain: pr.tokenFile ? (pr.keychain?.trim() ?? null) : (pr.keychain?.trim() ?? 'PRODUCTIVE_AUTH_TOKEN'),
     tokenFile: pr.tokenFile ? expandHome(pr.tokenFile.trim(), home) : null,

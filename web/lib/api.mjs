@@ -972,11 +972,6 @@ export function createApi({
     return { status: 200, body: { host: config.self, ...(await slack.status()) } };
   }
 
-  /**
-   * GitHub links (lib/github.mjs), on the `github.host` server; the others proxy there once.
-   * GET status, POST link `{ url, pane | session | tmuxSession, host, task?, keep? }` (a session
-   * of the bridge's own host only), POST links/:id/unlink.
-   */
   /** The host of a session a GitHub / Productive link is asked for: this one, or a peer with a web URL. */
   function linkHost(raw) {
     const host = typeof raw === 'string' && raw ? raw : config.self;
@@ -984,40 +979,124 @@ export function createApi({
     return host;
   }
 
-  async function handleGithub(req, url, action, id = null) {
+  /** The bridges a follow-link section (`github`, `productive`) names: `host` first, then the others of `bridges`. */
+  function followBridges(cfg) {
+    return [...new Set([cfg?.host, ...Object.values(cfg?.bridges ?? {})].filter(Boolean))];
+  }
+
+  /**
+   * GitHub / Productive links, on their bridges: `host` links every session but those of a host in
+   * `bridges` (`{ "<session host>": "<bridge host>" }`, a host with its own account). GET status
+   * merges every bridge's links (each with its `bridge`), so they show wherever you look; link and
+   * comment go to the bridge of the session's host, unlink to `body.bridge` (default `host`). A
+   * bridge elsewhere is asked once (`?local=1`, never chained).
+   */
+  async function handleFollow(req, url, action, id, { label, cfg, here }) {
     const local = url.searchParams.get('local') === '1';
-    const bridge = config.github?.host ?? null;
-    const body = action === 'status' ? null : await readJsonBody(req);
-    if (!bridge) {
-      if (action === 'status') return { status: 200, body: { enabled: false, host: null, links: [], ended: [] } };
-      return { status: 409, body: { error: 'no server runs GitHub links (github.host)' } };
+    const body = action === 'status' ? null : ((await readJsonBody(req)) ?? {});
+    const all = followBridges(cfg);
+    const off = (error) => ({ enabled: false, host: cfg?.host ?? null, ...(error ? { error } : {}), links: [], ended: [] });
+    if (!all.length) {
+      if (action === 'status') return { status: 200, body: off(null) };
+      return { status: 409, body: { error: `no server runs ${label} links (${label.toLowerCase()}.host)` } };
     }
-    if (bridge !== config.self) {
-      if (local) return { status: 409, body: { error: `this server is not the GitHub bridge ${bridge}` } }; // never chain
+    const at = async (bridge) => {
+      if (bridge === config.self) return here(action, id, body);
+      if (local) return { status: 409, body: { error: `this server is not the ${label} bridge ${bridge}` } };
       const peerUrl = config.peers[bridge];
-      if (!peerUrl) return { status: 409, body: { error: `GitHub bridge "${bridge}" is not a peer with a web URL` } };
+      if (!peerUrl) return { status: 409, body: { error: `${label} bridge "${bridge}" is not a peer with a web URL` } };
       return proxyToPeer(peerUrl, {
         method: action === 'status' ? 'GET' : 'POST',
         pathname: url.pathname,
         ...(body == null ? {} : { body: JSON.stringify(body) }),
         timeoutMs: peerProxyTimeoutMs,
       });
+    };
+    if (action === 'status') {
+      const names = local ? all.filter((b) => b === config.self) : all;
+      if (names.length < 2) return names.length ? at(names[0]) : at(all[0]);
+      const each = await Promise.all(
+        names.map(async (b) => {
+          const r = await at(b).catch((err) => ({ status: 502, body: { error: err.message } }));
+          return [b, r.status === 200 ? r.body : off(r.body?.error ?? `HTTP ${r.status} from ${b}`)];
+        }),
+      );
+      const primary = each.find(([b]) => b === cfg.host)?.[1] ?? each[0][1];
+      const mark = (b, list) => (list ?? []).map((l) => ({ ...l, host: l.host ?? b, bridge: b }));
+      return {
+        status: 200,
+        body: {
+          ...primary,
+          enabled: each.some(([, s]) => s.enabled),
+          links: each.flatMap(([b, s]) => mark(b, s.links)),
+          ended: each.flatMap(([b, s]) => mark(b, s.ended)).sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0)),
+          bridges: each.map(([b, s]) => ({ host: b, enabled: !!s.enabled, ...(s.error ? { error: s.error } : {}), ...(s.login !== undefined ? { login: s.login } : {}), ...(s.me !== undefined ? { me: s.me } : {}) })),
+        },
+      };
     }
-    if (!github) return { status: 409, body: { error: 'GitHub links are off on this server (FLEET_WEB_GITHUB)' } };
-    try {
-      if (action === 'status') return { status: 200, body: await github.status() };
-      if (action === 'unlink') {
-        if (!validGithubLinkId(id)) throw new HttpError('link must look like gl-xxxxxx', 400);
-        return { status: 200, body: await github.unlink(id) };
-      }
-      // A session on any host: the bridge lists and types into a peer's through its web server.
-      const host = linkHost(body?.host);
-      const { url: prUrl, session, pane, tmuxSession, task, keep } = body ?? {};
-      return { status: 200, body: await github.link({ url: prUrl, session, pane, tmuxSession, task, keep, host }) };
-    } catch (err) {
-      if (err instanceof GithubError) throw new HttpError(err.message, err.status);
-      throw err;
+    if (action === 'unlink') {
+      const bridge = typeof body.bridge === 'string' && body.bridge ? body.bridge : cfg.host ?? all[0];
+      if (!all.includes(bridge)) throw new HttpError(`unknown ${label} bridge: ${bridge}`, 404);
+      return at(bridge);
     }
+    // link / comment: the session's host decides; stamp it so the bridge does not take its own.
+    const host = linkHost(body.host);
+    body.host = host;
+    const bridge = cfg?.bridges?.[host] ?? cfg?.host ?? null;
+    if (!bridge) throw new HttpError(`no ${label} bridge links sessions on ${host}`, 409);
+    return at(bridge);
+  }
+
+  async function handleGithub(req, url, action, id = null) {
+    return handleFollow(req, url, action, id, {
+      label: 'GitHub',
+      cfg: config.github,
+      here: async (act, linkId, body) => {
+        if (!github) return { status: 409, body: { error: 'GitHub links are off on this server (FLEET_WEB_GITHUB)' } };
+        try {
+          if (act === 'status') return { status: 200, body: await github.status() };
+          if (act === 'unlink') {
+            if (!validGithubLinkId(linkId)) throw new HttpError('link must look like gl-xxxxxx', 400);
+            return { status: 200, body: await github.unlink(linkId) };
+          }
+          // A session on any host: the bridge lists and types into a peer's through its web server.
+          const host = linkHost(body?.host);
+          const { url: prUrl, session, pane, tmuxSession, task, keep } = body ?? {};
+          return { status: 200, body: await github.link({ url: prUrl, session, pane, tmuxSession, task, keep, host }) };
+        } catch (err) {
+          if (err instanceof GithubError) throw new HttpError(err.message, err.status);
+          throw err;
+        }
+      },
+    });
+  }
+
+  async function handleProductive(req, url, action, id = null) {
+    return handleFollow(req, url, action, id, {
+      label: 'Productive',
+      cfg: config.productive,
+      here: async (act, linkId, body) => {
+        if (!productive) return { status: 409, body: { error: 'Productive links are off on this server (FLEET_WEB_PRODUCTIVE)' } };
+        try {
+          if (act === 'status') return { status: 200, body: await productive.status() };
+          if (act === 'unlink') {
+            if (!validProductiveLinkId(linkId)) throw new HttpError('link must look like pl-xxxxxx', 400);
+            return { status: 200, body: await productive.unlink(linkId) };
+          }
+          const host = linkHost(body?.host);
+          const { url: taskUrl, session, pane, tmuxSession, task, keep, link, body: text } = body ?? {};
+          if (act === 'comment') {
+            if (link != null && !validProductiveLinkId(link)) throw new HttpError('link must look like pl-xxxxxx', 400);
+            return { status: 200, body: await productive.comment({ link, session, pane, tmuxSession, body: text, host }) };
+          }
+          return { status: 200, body: await productive.link({ url: taskUrl, session, pane, tmuxSession, task, keep, host }) };
+        } catch (err) {
+          if (err instanceof ProductiveError) throw new HttpError(err.message, err.status);
+          if (err?.status && err.status >= 400 && err.status < 600) throw new HttpError(err.message, 502);
+          throw err;
+        }
+      },
+    });
   }
 
   /**
@@ -1027,51 +1106,6 @@ export function createApi({
    * machine (not proxied) is stamped with where its caller runs: `host` for a pane-based reply or
    * read, `callerHost` for every action — a proxying server stamps its own name the same way.
    */
-  /**
-   * Productive links (lib/productive.mjs), on the `productive.host` server; the others proxy there
-   * once. GET status, POST link `{ url, pane | session | tmuxSession, host, task?, keep? }`, POST
-   * comment `{ link? | pane | session, host, body }` (a comment as the account), POST links/:id/unlink.
-   */
-  async function handleProductive(req, url, action, id = null) {
-    const local = url.searchParams.get('local') === '1';
-    const bridge = config.productive?.host ?? null;
-    const body = action === 'status' ? null : await readJsonBody(req);
-    if (!bridge) {
-      if (action === 'status') return { status: 200, body: { enabled: false, host: null, links: [], ended: [] } };
-      return { status: 409, body: { error: 'no server runs Productive links (productive.host)' } };
-    }
-    if (bridge !== config.self) {
-      if (local) return { status: 409, body: { error: `this server is not the Productive bridge ${bridge}` } }; // never chain
-      const peerUrl = config.peers[bridge];
-      if (!peerUrl) return { status: 409, body: { error: `Productive bridge "${bridge}" is not a peer with a web URL` } };
-      return proxyToPeer(peerUrl, {
-        method: action === 'status' ? 'GET' : 'POST',
-        pathname: url.pathname,
-        ...(body == null ? {} : { body: JSON.stringify(body) }),
-        timeoutMs: peerProxyTimeoutMs,
-      });
-    }
-    if (!productive) return { status: 409, body: { error: 'Productive links are off on this server (FLEET_WEB_PRODUCTIVE)' } };
-    try {
-      if (action === 'status') return { status: 200, body: await productive.status() };
-      if (action === 'unlink') {
-        if (!validProductiveLinkId(id)) throw new HttpError('link must look like pl-xxxxxx', 400);
-        return { status: 200, body: await productive.unlink(id) };
-      }
-      const host = linkHost(body?.host);
-      const { url: taskUrl, session, pane, tmuxSession, task, keep, link, body: text } = body ?? {};
-      if (action === 'comment') {
-        if (link != null && !validProductiveLinkId(link)) throw new HttpError('link must look like pl-xxxxxx', 400);
-        return { status: 200, body: await productive.comment({ link, session, pane, tmuxSession, body: text, host }) };
-      }
-      return { status: 200, body: await productive.link({ url: taskUrl, session, pane, tmuxSession, task, keep, host }) };
-    } catch (err) {
-      if (err instanceof ProductiveError) throw new HttpError(err.message, err.status);
-      if (err?.status && err.status >= 400 && err.status < 600) throw new HttpError(err.message, 502);
-      throw err;
-    }
-  }
-
   async function handleVeranda(req, url, action) {
     const local = url.searchParams.get('local') === '1';
     const cfg = config.veranda ?? { configured: false };

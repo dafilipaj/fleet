@@ -414,6 +414,8 @@ export interface VerandaStatus {
 export interface GithubLink {
   id: string
   host: string
+  /** The bridge that holds it, when several do (`github.bridges` / `productive.bridges`). */
+  bridge?: string
   session: string
   sessionName: string | null
   repo: string
@@ -439,6 +441,8 @@ export interface GithubLink {
 export interface GithubStatus {
   enabled: boolean
   host: string | null
+  /** Every bridge, when several: each one's state and account. */
+  bridges?: { host: string; enabled: boolean; error?: string; login?: string | null }[]
   /** The account the bridge acts as. */
   login?: string | null
   error?: string | null
@@ -450,6 +454,8 @@ export interface GithubStatus {
 export interface ProductiveLink {
   id: string
   host: string
+  /** The bridge that holds it, when several do (`github.bridges` / `productive.bridges`). */
+  bridge?: string
   session: string
   sessionName: string | null
   taskId: string
@@ -475,6 +481,8 @@ export interface ProductiveLink {
 export interface ProductiveStatus {
   enabled: boolean
   host: string | null
+  /** Every bridge, when several: each one's state and account. */
+  bridges?: { host: string; enabled: boolean; error?: string; me?: { id: string; name: string | null } | null }[]
   /** The account (a person) the bridge acts as. */
   me?: { id: string; name: string | null } | null
   error?: string | null

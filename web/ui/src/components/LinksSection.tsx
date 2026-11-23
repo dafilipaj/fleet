@@ -19,7 +19,7 @@ import {
 import { toast } from 'sonner'
 
 import { api } from '@/api/client'
-import type { GithubLink, ProductiveLink, Session, SlackLink, SlackMinutes, VerandaLink } from '@/api/types'
+import type { GithubLink, GithubStatus, ProductiveLink, ProductiveStatus, Session, SlackLink, SlackMinutes, VerandaLink } from '@/api/types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -170,12 +170,12 @@ export function LinksSection({ host, session: s }: { host: string; session: Sess
     }
   }
 
-  const unlink = (kind: LinkKind, id: string, room?: string) =>
+  const unlink = (kind: LinkKind, id: string, room?: string, bridge?: string) =>
     void act(id, 'Unlink', async () => {
       if (kind === 'slack') await api.slackUnlink(id).then(refreshSlack)
       else if (kind === 'veranda') await api.verandaUnlink(room!).then(refreshVeranda)
-      else if (kind === 'github') await api.githubUnlink(id).then(refreshGithub)
-      else await api.productiveUnlink(id).then(refreshProductive)
+      else if (kind === 'github') await api.githubUnlink(id, bridge).then(refreshGithub)
+      else await api.productiveUnlink(id, bridge).then(refreshProductive)
       toast.success(`Unlinked from ${LINK_LABEL[kind]}`)
     })
 
@@ -277,14 +277,14 @@ export function LinksSection({ host, session: s }: { host: string; session: Sess
         {ghLinks.map((l) => (
           <LinkRow key={l.id} kind="github" href={l.url} title={`${l.repo}#${l.number}${l.title ? ` · ${l.title}` : ''}`} sub={followSub(l, `@${l.login}`)}>
             <EditButton disabled={busy != null} onClick={() => edit('github', l)} />
-            <UnlinkButton busy={busy === l.id} disabled={busy != null} onClick={() => unlink('github', l.id)} />
+            <UnlinkButton busy={busy === l.id} disabled={busy != null} onClick={() => unlink('github', l.id, undefined, l.bridge)} />
           </LinkRow>
         ))}
 
         {ptLinks.map((l) => (
           <LinkRow key={l.id} kind="productive" href={l.url} title={`#${l.number ?? l.taskId}${l.title ? ` · ${l.title}` : ''}`} sub={followSub(l, l.me?.name ?? null)}>
             <EditButton disabled={busy != null} onClick={() => edit('productive', l)} />
-            <UnlinkButton busy={busy === l.id} disabled={busy != null} onClick={() => unlink('productive', l.id)} />
+            <UnlinkButton busy={busy === l.id} disabled={busy != null} onClick={() => unlink('productive', l.id, undefined, l.bridge)} />
           </LinkRow>
         ))}
 
@@ -458,7 +458,7 @@ export function LinksSection({ host, session: s }: { host: string; session: Sess
               />
             ) : null}
 
-            <p className="text-xs text-dimmer">{hint(draft, kind, url, valid, addable, kind === 'github' ? (github?.login ? `@${github.login}` : null) : (productive?.me?.name ?? null))}</p>
+            <p className="text-xs text-dimmer">{hint(draft, kind, url, valid, addable, account(kind, host, github, productive))}</p>
 
             <div className="flex justify-end gap-2">
               <Button variant="ghost" size="lg" onClick={() => setDraft(null)}>
@@ -566,6 +566,15 @@ const followSub = (l: GithubLink | ProductiveLink, as: string | null) => [
   `${l.delivered} in`,
   l.pending ? `${l.pending} waiting` : null,
 ]
+
+/** The account a new link on `host` answers as: the bridge on that host when it has its own, else the main one. */
+function account(kind: LinkKind | null, host: string, github: GithubStatus | null | undefined, productive: ProductiveStatus | null | undefined): string | null {
+  if (kind === 'github') {
+    const login = github?.bridges?.find((b) => b.host === host)?.login ?? github?.login
+    return login ? `@${login}` : null
+  }
+  return productive?.bridges?.find((b) => b.host === host)?.me?.name ?? productive?.me?.name ?? null
+}
 
 function hint(d: Draft, kind: LinkKind | null, url: string, valid: boolean, addable: LinkKind[], account: string | null) {
   if (!kind) return url ? `Not a link this session can have — paste ${joinOr(addable.map((k) => PLACEHOLDER[k]))}.` : `Paste ${joinOr(addable.map((k) => PLACEHOLDER[k]))}.`
