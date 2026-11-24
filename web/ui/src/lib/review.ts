@@ -247,6 +247,23 @@ export const fileKey = (root: string, path: string) => (root ? `${root}\u0000${p
 /** The DOM id of an entry's heading in the diff list. */
 export const entryAnchor = (key: string) => `review-entry-${encodeURIComponent(key)}`
 
+/** A PR description's anchor in the diff list. */
+export const descriptionAnchor = (key: string) => `review-desc-${encodeURIComponent(key)}`
+
+/** The PR description as plain text for a short excerpt: markdown marks, links and images out. */
+export function descriptionExcerpt(body: string): string {
+  return body
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/^\s{0,3}(#{1,6}|>|[-*+]|\d+\.)\s+/gm, '')
+    .replace(/[*_`~]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 /** A review entry's id: its root, or `pr:owner/repo#n` for a PR diffed without a worktree. */
 export const repoKey = (repo: Pick<DiffRepo, 'root' | 'key'>) => repo.key || repo.root
 

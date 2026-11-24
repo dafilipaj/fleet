@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { DiffFile, DiffHunk, DiffRepo, ReviewThread } from '@/api/types'
 
 import { diffPlain } from './plain'
-import { changeBlocks, githubPr, parsePrReviewLocation, prReviewHref, fileKind, kindCounts, allClauses, clauseAt, placeOnClauses, diffBar, fileKey, rowsToRange, fileSignature, fileTree, orphanThreads, orphanThreadsByKey, repoViews, threadKey, repoKey, entrySections, entryBucket, parseReviewLocation, placeThreads, reviewHref, selectLine, selectionCode, splitRows, treeOrder } from './review'
+import { changeBlocks, descriptionExcerpt, githubPr, parsePrReviewLocation, prReviewHref, fileKind, kindCounts, allClauses, clauseAt, placeOnClauses, diffBar, fileKey, rowsToRange, fileSignature, fileTree, orphanThreads, orphanThreadsByKey, repoViews, threadKey, repoKey, entrySections, entryBucket, parseReviewLocation, placeThreads, reviewHref, selectLine, selectionCode, splitRows, treeOrder } from './review'
 
 const file = (path: string, o: Partial<DiffFile> = {}): DiffFile => ({
   path,
@@ -300,5 +300,15 @@ describe('changeBlocks', () => {
       { start: 8, end: 8, kind: '-' },
     ])
     expect(changeBlocks({ hunks: [] })).toEqual([])
+  })
+})
+
+describe('descriptionExcerpt', () => {
+  it('keeps the text and drops markdown marks, links, images, code and comments', () => {
+    const body = '<!-- template -->\n## Why\n\nThe **review** shows [links](https://x.y) too.\n\n![shot](https://x.y/a.png)\n```sh\nrm -rf\n```\n- one\n- `two`'
+    expect(descriptionExcerpt(body)).toBe('Why The review shows links too. one two')
+  })
+  it('is empty for an empty description', () => {
+    expect(descriptionExcerpt('  \n ')).toBe('')
   })
 })

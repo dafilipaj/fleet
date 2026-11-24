@@ -1980,6 +1980,8 @@ export interface ReviewPr {
   headBranch: string | null
   baseBranch: string | null
   headOid: string | null
+  /** the PR's description (markdown); absent from an older server */
+  body?: string
 }
 
 export interface DiffsResponse {
@@ -2004,6 +2006,8 @@ export interface PrReviewInfo {
   baseBranch: string
   headOid: string | null
   draft: boolean
+  /** the PR's description (markdown); null when it could not be read, absent from an older server */
+  body?: string | null
 }
 
 /** GET /api/hosts/:host/prs/:owner/:repo/:n/diff: the PR's diff from the host's clone, as one checkout. */

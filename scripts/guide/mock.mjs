@@ -629,7 +629,7 @@ function wholeFile(f) {
 
 // The reviewer over a PR without a session (…/prs/:o/:r/:n/diff | files | notes | ask): the first checkout of the demo diff, two notes.
 function prReview(host, owner, repo, number, what, b, q) {
-  const pr = { owner, repo, number, title: 'Checkout: retry Stripe confirmation on network errors', url: `https://github.com/${owner}/${repo}/pull/${number}`, author: 'jo', headBranch: 'stripe-retry', baseBranch: 'main', headOid: 'c'.repeat(40), draft: false }
+  const pr = { owner, repo, number, title: 'Checkout: retry Stripe confirmation on network errors', url: `https://github.com/${owner}/${repo}/pull/${number}`, author: 'jo', headBranch: 'stripe-retry', baseBranch: 'main', headOid: 'c'.repeat(40), draft: false, body: '## Why\n\nCheckout fails for ~0.4% of payments when the Stripe confirmation call hits a network error, and the customer sees **Payment failed** although the card was charged.\n\n## What\n\n- Retry `confirmPayment` up to 3 times on network errors (not on card declines)\n- Idempotency key per checkout, so a retry never charges twice\n- Log each retry with the checkout id\n\n## Testing\n\n- [x] Unit tests for the retry policy\n- [ ] e2e against Stripe test mode\n\nCloses #1290' }
   if (what === 'ask') return { host, ask: { ...sideAsk(b), forked: false } }
   if (what === 'files') {
     const want = new Set(q.getAll('path'))
@@ -657,7 +657,7 @@ function diffs(host, id) {
     const stats = { files: files.length, additions: files.reduce((a, f) => a + f.additions, 0), deletions: files.reduce((a, f) => a + f.deletions, 0) }
     return { root, label, branch, head: '9f3c2a1', base: { ref: base, sha: '4e1d0b7c' }, tree: 'demo', fingerprint: `demo-${label}`, files, stats, truncated: false, source: 'worktree', ...extra }
   }
-  const pr = (repoName, number, title, state, headBranch) => ({ owner: 'acme', repo: repoName, number, title, url: `https://github.com/acme/${repoName}/pull/${number}`, state, headBranch, baseBranch: 'main', headOid: 'c'.repeat(40) })
+  const pr = (repoName, number, title, state, headBranch) => ({ owner: 'acme', repo: repoName, number, title, url: `https://github.com/acme/${repoName}/pull/${number}`, state, headBranch, baseBranch: 'main', headOid: 'c'.repeat(40), body: PR_BODIES[number] ?? '' })
   return {
     host, id, cwd: API_WT, fingerprint: 'demo', unchanged: false,
     repos: [
@@ -667,6 +667,10 @@ function diffs(host, id) {
       repo(`${H}/Code/acme-ops`, '~/Code/acme-ops', 'main', 'origin/main', { remote: 'acme/acme-ops', pr: null, local: { uncommitted: 1, unpushed: 0 } }, DIFF_FILES[WEB_WT].slice(0, 1)),
     ],
   }
+}
+const PR_BODIES = {
+  482: '## Why\n\nInvoices with 3+ line items were off by a cent against the PDF: each line was rounded, then summed.\n\n## What\n\n- Sum line totals in integer minor units (`BigInt`), round **once**\n- 0- and 3-decimal currencies (JPY, KWD) use their own minor unit\n- Regression test with INV-2026-0912 and INV-2026-0927\n\nCloses #1777',
+  479: 'Statements recompute every invoice total on each render. This caches them per monthly statement and drops the cache when an invoice in it changes.',
 }
 function review(host, id) {
   const t = now()

@@ -2270,7 +2270,9 @@ export function createApi({
       if (err?.status) throw statusHttpError(err);
       throw err;
     };
-    const info = { owner: pr.owner, repo: pr.repo, number: pr.number, title: pr.title, url: pr.url, author: pr.author, headBranch: pr.headBranch, baseBranch: pr.baseBranch, headOid: pr.headOid ?? null, draft: pr.draft };
+    // `fleet prs` has no description: the PR lookup (cached, shared with the session reviewer) does.
+    const body = typeof pr.body === 'string' ? pr.body : ((await reviewPrs?.byNumber(`${pr.owner}/${pr.repo}`, pr.number).catch(() => null))?.body ?? null);
+    const info = { owner: pr.owner, repo: pr.repo, number: pr.number, title: pr.title, url: pr.url, author: pr.author, headBranch: pr.headBranch, baseBranch: pr.baseBranch, headOid: pr.headOid ?? null, draft: pr.draft, body };
     if (op === 'diff') {
       if (!differ?.prDiff) throw new HttpError('the diff reviewer is not available on this server', 501);
       if (!repoPath) throw new HttpError(`no local clone of ${pr.owner}/${pr.repo} on this host — clone it under the fleet repos roots`, 409);

@@ -15,7 +15,9 @@ const WAIT_MS = 1000;
 const MAX_CACHE = 500;
 /** Brief PRs looked at per session at most. */
 export const MAX_SESSION_PRS = 8;
-const FIELDS = 'number,title,url,state,isDraft,headRefName,baseRefName,headRefOid';
+const FIELDS = 'number,title,body,url,state,isDraft,headRefName,baseRefName,headRefOid';
+/** A PR description longer than this is cut (the reviewer shows it, GitHub has the rest). */
+export const MAX_PR_BODY = 20_000;
 
 /** `gh pr view/list --json …` → the reviewer's PR, or null. */
 export function prOf(json, slug) {
@@ -28,6 +30,7 @@ export function prOf(json, slug) {
     repo,
     number: json.number,
     title: typeof json.title === 'string' ? json.title : '',
+    body: typeof json.body === 'string' ? (json.body.length > MAX_PR_BODY ? `${json.body.slice(0, MAX_PR_BODY)}…` : json.body) : '',
     url: typeof json.url === 'string' ? json.url : `https://github.com/${slug}/pull/${json.number}`,
     state,
     headBranch: typeof json.headRefName === 'string' ? json.headRefName : null,

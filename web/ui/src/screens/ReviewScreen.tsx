@@ -6,6 +6,7 @@ import { useLocation } from 'wouter'
 import { HostBadge } from '@/components/HostBadge'
 import { DiffStat, FileDiff, type DiffView } from '@/components/review/FileDiff'
 import { FileTree } from '@/components/review/FileTree'
+import { PrDescription, PrDescriptionRow } from '@/components/review/PrDescription'
 import { FullFileDialog, type FullFileTarget } from '@/components/review/FullFileDialog'
 import { CommentComposer, ReviewThreadCard, type CommentTarget, type ThreadActions } from '@/components/review/ReviewThread'
 import { EntryHeader, EntryRow } from '@/components/review/ReviewEntry'
@@ -27,7 +28,7 @@ import { useNow } from '@/hooks/useNow'
 import { usePersistentState } from '@/hooks/usePersistentState'
 import { useSessionTitle } from '@/hooks/useTitles'
 import { relTime } from '@/lib/format'
-import { reviewHref, DEFAULT_KINDS, FILE_KINDS, entryAnchor, entryBucket, entrySections, fileAnchor, fileKey, fileSignature, kindCounts, orphanThreadsByKey, parsePrReviewLocation, parseReviewLocation, prRefOf, rangeText, repoKey, repoViews, rowsToRange, selectLine, selectionCode, threadKey, type EntryBucket, type FileKind, type LineRow, type LineSelection, type Side } from '@/lib/review'
+import { reviewHref, descriptionAnchor, DEFAULT_KINDS, FILE_KINDS, entryAnchor, entryBucket, entrySections, fileAnchor, fileKey, fileSignature, kindCounts, orphanThreadsByKey, parsePrReviewLocation, parseReviewLocation, prRefOf, rangeText, repoKey, repoViews, rowsToRange, selectLine, selectionCode, threadKey, type EntryBucket, type FileKind, type LineRow, type LineSelection, type Side } from '@/lib/review'
 import type { DiffFile, DiffRepo, PrNote, ReviewAnchor, ReviewPr, ReviewThread, SideAsk } from '@/api/types'
 import { prHref } from '@/lib/prs'
 import { canSpawnOn, findSession, sessionHref } from '@/lib/sessions'
@@ -85,6 +86,8 @@ interface ReviewSource {
   hint: string
   empty: string
   headerActions?: ReactNode
+  /** a PR's own description, above its files (a session's PRs carry theirs on each entry) */
+  description?: { title: string; number: number; author?: string; body: string } | null
   /** a file whole, its changes marked in place (the full-file view) */
   fullFile?: (repo: DiffRepo, file: DiffFile) => Promise<DiffFile>
   /** A lite diff: fetch a file's lines (`need`), its last fetch failed (`failed`). */
@@ -308,6 +311,7 @@ function PrReview({ host, pr, from, layout }: { host: string; pr: PrKey; from: {
       placeholder: 'What should it do with them? (optional, e.g. “turn the good ones into review comments”)',
       run: handoff,
     },
+    description: typeof info?.body === 'string' ? { title: info.title, number: info.number, author: info.author || undefined, body: info.body } : null,
     fullFile: (repo, file) => fullFileOf(repo, file, (at) => api.prFiles(host, pr, at)),
     hint: 'Notes stay in Fleet: select code (or click a line number) to write one, post any of them to GitHub, or hand them all to a session. Ask asks Claude about the lines on the side.',
     empty: 'This PR changes no files.',
@@ -365,7 +369,24 @@ function ReviewView({ layout, source }: { layout: Layout; source: ReviewSource }
       }),
     [],
   )
+  // PR descriptions, by entry key ('pr' for a PR's own review): open when there is just one.
+  const ownDescription = !!source.description
+  const prEntries = useMemo(() => (ownDescription ? [] : views.filter((v) => typeof v.repo.pr?.body === 'string')), [views, ownDescription])
+  const [descOpen, setDescOpen] = useState<Record<string, boolean>>({})
+  const isDescOpen = (key: string) => descOpen[key] ?? (key === 'pr' || prEntries.length === 1)
+  const toggleDesc = (key: string) => setDescOpen((o) => ({ ...o, [key]: !isDescOpen(key) }))
   const isOpen = (bucket: EntryBucket) => sectionOpen[bucket] ?? (sections.length < 2 || sections[0].bucket === bucket)
+  const openDescription = (key: string, bucket?: EntryBucket) => {
+    setDescOpen((o) => ({ ...o, [key]: true }))
+    if (bucket) setSectionOpen((o) => ({ ...o, [bucket]: true }))
+    requestAnimationFrame(() => document.getElementById(descriptionAnchor(key))?.scrollIntoView({ block: 'start', behavior: 'smooth' }))
+  }
+  // The tree's top: the PR's title and description start, when the review is of one PR.
+  const treeDescription = source.description
+    ? { key: 'pr', title: source.description.title, number: source.description.number, body: source.description.body, bucket: undefined }
+    : prEntries.length === 1 && prEntries[0].repo.pr
+      ? { key: repoKey(prEntries[0].repo), title: prEntries[0].repo.pr.title, number: prEntries[0].repo.pr.number, body: prEntries[0].repo.pr.body ?? '', bucket: entryBucket(prEntries[0].repo) }
+      : null
   const openEntry = (key: string, bucket: EntryBucket) => {
     setSectionOpen((o) => ({ ...o, [bucket]: true }))
     requestAnimationFrame(() => document.getElementById(entryAnchor(key))?.scrollIntoView({ block: 'start', behavior: 'smooth' }))
@@ -731,6 +752,7 @@ function ReviewView({ layout, source }: { layout: Layout; source: ReviewSource }
           {source.hint}
         </p>
       ) : null}
+      {source.description ? <PrDescription entryKey="pr" author={source.description.author} body={source.description.body} open={isDescOpen('pr')} onToggle={() => toggleDesc('pr')} /> : null}
       {error ? <p className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">{error}</p> : null}
       {!data && !error ? <p className="px-1 py-6 text-center text-sm text-muted-foreground">Loading the diff…</p> : null}
       {data && !files.length && hiddenCount ? (
@@ -780,6 +802,7 @@ function ReviewView({ layout, source }: { layout: Layout; source: ReviewSource }
                       return (
                         <div key={k} className="space-y-3">
                           {grouped || v.repo.error ? <EntryHeader repo={v.repo} entryKey={k} onSetUp={v.repo.source === 'pr' && pr && source.prs ? () => source.prs!.setUp(pr) : undefined} /> : null}
+                          {pr && typeof pr.body === 'string' && !source.description ? <PrDescription entryKey={k} body={pr.body} open={isDescOpen(k)} onToggle={() => toggleDesc(k)} /> : null}
                           {!v.files.length && !v.repo.error && !v.repo.pending ? <p className="px-1 text-xs text-dimmer">All changed files here are filtered out.</p> : null}
                           {v.repo.truncated ? <p className="text-xs text-muted-foreground">The diff is very large: later files are listed without their lines.</p> : null}
                           {v.files.map(({ key, file }) => (
@@ -915,6 +938,7 @@ function ReviewView({ layout, source }: { layout: Layout; source: ReviewSource }
         <div className="flex min-h-0 flex-1">
           {showTree && files.length ? (
             <aside aria-label="Changed files" className="w-64 shrink-0 overflow-y-auto border-r px-1.5">
+              {treeDescription ? <PrDescriptionRow title={treeDescription.title} number={treeDescription.number} body={treeDescription.body} onOpen={() => openDescription(treeDescription.key, treeDescription.bucket)} /> : null}
               {sections.map(({ bucket, groups }) => {
                 const open = isOpen(bucket)
                 return (

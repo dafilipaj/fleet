@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { githubSlug } from '../lib/diff.mjs';
-import { createReviewPrs, prOf } from '../lib/review-prs.mjs';
+import { MAX_PR_BODY, createReviewPrs, prOf } from '../lib/review-prs.mjs';
 
 const ghPr = (number, head, extra = {}) => ({ number, title: `PR ${number}`, url: `https://github.com/acme/api/pull/${number}`, state: 'OPEN', isDraft: false, headRefName: head, baseRefName: 'main', headRefOid: 'a'.repeat(40), ...extra });
 
@@ -42,6 +42,12 @@ test('prOf: states as GitHub shows them', () => {
   assert.equal(prOf(ghPr(1, 'x', { isDraft: true }), 'acme/api').state, 'draft');
   assert.equal(prOf(ghPr(1, 'x', { state: 'MERGED' }), 'acme/api').state, 'merged');
   assert.equal(prOf({}, 'acme/api'), null);
+});
+
+test('prOf: the description, cut when very long', () => {
+  assert.equal(prOf(ghPr(1, 'x', { body: '## Why\n\nBecause.' }), 'acme/api').body, '## Why\n\nBecause.');
+  assert.equal(prOf(ghPr(1, 'x'), 'acme/api').body, '');
+  assert.equal(prOf(ghPr(1, 'x', { body: 'a'.repeat(MAX_PR_BODY + 5) }), 'acme/api').body.length, MAX_PR_BODY + 1);
 });
 
 test('plan: a checkout gets the PR on its branch; the default branch is never looked up', async () => {
