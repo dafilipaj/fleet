@@ -833,21 +833,8 @@ export function createSlackBridge({ settings = {}, self = null, call, socket = n
     ended = [l, ...ended].slice(0, MAX_ENDED);
     await save();
     log(`[slack] ${l.id} ended (${reason})${dropped ? `, ${dropped} undelivered` : ''}`);
-    // Tell the thread only when the link ran out on its own (an unlink is deliberate; whoever unlinked knows),
-    // only in a thread or a one-on-one DM (never top-level in a channel), and only if the session ever got
-    // there: an intro never typed in means nobody was told it came.
-    if (reason === 'expired' && (l.threadTs || oneOnOne(l)) && (l.delivered > 0 || l.replies > 0)) {
-      try {
-        await call('chat.postMessage', {
-          channel: l.channel,
-          ...(l.threadTs ? { thread_ts: l.threadTs } : {}),
-          text: '_This Claude Code session has left the conversation._',
-          unfurl_links: false,
-        });
-      } catch (err) {
-        log(`[slack] ${l.id}: goodbye not posted: ${err.message}`);
-      }
-    }
+    // Nothing is posted in Slack when a link ends (unlinked or expired): ending, and linking again,
+    // stays invisible to the people there.
   }
 
   /** POST reply: the linked session (identified by its pane or id, when given) posts in the thread. */

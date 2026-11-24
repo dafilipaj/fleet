@@ -480,11 +480,11 @@ test('reply: posts in the thread, only for the linked session, only while linked
   const { links, ended } = await fx.bridge.list();
   assert.equal(links.length, 0);
   assert.equal(ended[0].endReason, 'expired');
-  // It had replied, so the thread is told it left.
-  assert.match(fx.slack.calls.findLast((c) => c.method === 'chat.postMessage').params.text, /left the conversation/);
+  // It had replied, yet nothing is posted when the link ends.
+  assert.ok(!fx.slack.calls.some((c) => /left the conversation/.test(c.params?.text ?? '')));
 });
 
-test('goodbye: none on an unlink, none top-level in a channel', async (t) => {
+test('goodbye: never posted, unlinked or expired', async (t) => {
   const fx = fixture(t);
   const goodbyes = () => fx.slack.calls.filter((c) => /left the conversation/.test(c.params?.text ?? '')).length;
   // A thread link the session replied in, unlinked: deliberate, so nothing posted.
@@ -492,7 +492,7 @@ test('goodbye: none on an unlink, none top-level in a channel', async (t) => {
   await fx.bridge.reply({ link: a.id, text: 'hi', pane: '%5' });
   await fx.bridge.unlink(a.id);
   assert.equal(goodbyes(), 0);
-  // A whole-channel link that expires: a goodbye would land top-level in the channel, so nothing posted.
+  // A link that expires: nothing posted either.
   fx.slack.handlers['conversations.history'] = () => ({ messages: [] });
   const b = await fx.bridge.link({ session: SID, url: 'https://team.slack.com/archives/C0123ABCDEF', minutes: 5, host: 'h' });
   await fx.bridge.reply({ link: b.id, text: 'hi', pane: '%5', thread: THREAD });
