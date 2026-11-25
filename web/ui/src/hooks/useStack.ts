@@ -1,9 +1,10 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 import { api, isAbortError } from '@/api/client'
 import type { StackView } from '@/api/types'
 import { usePoller } from '@/hooks/usePoller'
 import { stackErrorMessage, stacksMissing } from '@/lib/stacks'
+import { storage } from '@/lib/storage'
 
 /** The Stack sheet refreshes this often while it is open. */
 export const STACK_POLL_MS = 15_000
@@ -47,3 +48,28 @@ export function useStack(host: string | null, id: string | null, enabled: boolea
 }
 
 export type StackState = ReturnType<typeof useStack>
+
+const orderKey = (host: string, id: string) => `fleet.stackOrder.${host}/${id}`
+
+function readOrder(host: string | null, id: string | null | undefined): string[] {
+  if (!host || !id) return []
+  try {
+    const v: unknown = JSON.parse(storage.get(orderKey(host, id)) ?? '[]')
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+/**
+ * A stack's member session ids in StackBrief order, remembered per stack (`fleet.stackOrder.*`)
+ * so a switcher that mounts before its StackView loads already has it and never reshuffles.
+ */
+export function useStackOrder(host: string | null, id: string | null | undefined, stack: StackView | null): string[] {
+  const fresh = stack && stack.host === host && stack.id === id ? stack.members.map((m) => m.session) : null
+  const joined = fresh?.join(' ')
+  useEffect(() => {
+    if (host && id && joined != null) storage.set(orderKey(host, id), JSON.stringify(joined ? joined.split(' ') : []))
+  }, [host, id, joined])
+  return fresh ?? readOrder(host, id)
+}
