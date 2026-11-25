@@ -69,7 +69,7 @@ export function Sidebar({ list, now, cursorKey, selectedKey }: SidebarProps) {
                   stackKey={e.key}
                   sessions={e.sessions}
                   renderRow={(s) => row(s, true)}
-                  forceOpen={e.sessions.slice(1).some((s) => [selectedKey, cursorKey].includes(sessionKey(s)))}
+                  pinned={[selectedKey, cursorKey].filter((k): k is string => !!k)}
                 />
               ) : (
                 row(e.session)

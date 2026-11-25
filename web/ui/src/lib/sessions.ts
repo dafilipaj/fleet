@@ -220,8 +220,22 @@ export function statusSummary(fleet: FleetResponse | null | undefined, hosts: Re
 }
 
 /** A stack's identity across hosts: its home host + id; null when the session is in none. */
-function stackKey(s: Session): string | null {
+export function stackKey(s: Session): string | null {
   return s.stack?.id ? `${s.stack.host || s.host}/${s.stack.id}` : null
+}
+
+/**
+ * The live members of `s`'s stack among `all` (`s` included): its lead first, the others in
+ * `order` (the StackBrief's member session ids, oldest first) and the unknown ones after it by id,
+ * so a switcher's tabs keep their places while activity reorders the list. [] when in none.
+ */
+export function stackMembers(all: Session[], s: Session, order: readonly string[] = []): Session[] {
+  const k = stackKey(s)
+  if (!k) return []
+  const rank = (m: Session) => (isStackLead(m) ? -1 : order.includes(m.session_id) ? order.indexOf(m.session_id) : order.length)
+  return all
+    .filter((m) => stackKey(m) === k)
+    .sort((a, b) => rank(a) - rank(b) || (a.session_id < b.session_id ? -1 : a.session_id > b.session_id ? 1 : 0))
 }
 
 /** Whether `s` is its stack's lead (orchestrator). */

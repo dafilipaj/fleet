@@ -1,19 +1,25 @@
 import { useState } from 'react'
-import { FileTextIcon, GitForkIcon, LayersIcon, Loader2Icon } from 'lucide-react'
+import { CrownIcon, FileTextIcon, GitForkIcon, LayersIcon, Loader2Icon } from 'lucide-react'
+import { Link } from 'wouter'
 
 import type { Session } from '@/api/types'
 import { InlineEdit } from '@/components/InlineEdit'
+import { StatusDot } from '@/components/StatusDot'
 import { Button } from '@/components/ui/button'
+import { useFleet } from '@/hooks/useFleet'
 import { STACK_BAR_POLL_MS, useStack } from '@/hooks/useStack'
 import { useRenameStack, useStackLabel } from '@/hooks/useStackLabels'
 import { openSiblingSpawn, openStackSheet } from '@/hooks/useStackUi'
 import { MAX_STACK_LABEL, memberCountsText, stackHome, stackLabelChanged } from '@/lib/stacks'
+import { allSessions, isStackLead, sessionHref, stackMembers, statusLabel } from '@/lib/sessions'
+import { sessionTitle } from '@/lib/title'
 import { cn } from '@/lib/utils'
 
 /**
  * Under the session header when the session is in a stack: layers icon + label, "2 live · 1
- * closed" once the stack loaded, StackBrief and Spawn sibling. Hidden when the host's server
- * predates stacks. Clicking the label renames the stack (a pointer); a tap on a touch screen, or a
+ * closed" once the stack loaded, StackBrief and Spawn sibling, and below them a switcher: one tab
+ * per live member (lead first) that opens it, without opening the stack in the session list.
+ * Hidden when the host's server predates stacks. Clicking the label renames the stack (a pointer); a tap on a touch screen, or a
  * click anywhere else on the bar, opens the Stack sheet.
  */
 export function StackBar({ session, pane = false }: { session: Session; pane?: boolean }) {
@@ -24,6 +30,8 @@ export function StackBar({ session, pane = false }: { session: Session; pane?: b
   const [editing, setEditing] = useState(false)
   const { label, saving } = useStackLabel(home, ref?.id, st.stack?.label || ref?.label || ref?.id || '')
   const rename = useRenameStack()
+  const { fleet } = useFleet()
+  const members = stackMembers(allSessions(fleet), session, st.stack?.members.map((m) => m.session))
   if (!ref?.id || st.missing) return null
   const open = () => openStackSheet(home, ref.id)
   return (
@@ -90,6 +98,33 @@ export function StackBar({ session, pane = false }: { session: Session; pane?: b
           {pane ? 'Spawn sibling' : null}
         </Button>
       </div>
+      {members.length > 1 ? (
+        <nav
+          aria-label="Stack members"
+          className={cn('mx-auto flex w-full gap-1 overflow-x-auto pb-1.5 [scrollbar-width:none]', pane ? 'px-4' : 'max-w-3xl px-3')}
+        >
+          {members.map((m) => {
+            const current = m.host === session.host && m.session_id === session.session_id
+            const title = sessionTitle(m)
+            return (
+              <Link
+                key={`${m.host}/${m.session_id}`}
+                href={sessionHref(m)}
+                aria-current={current ? 'page' : undefined}
+                title={`${title} — ${statusLabel(m)}`}
+                className={cn(
+                  'flex h-6 max-w-48 shrink-0 items-center gap-1.5 rounded-md border px-2 text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/50',
+                  current ? 'border-primary/50 bg-primary/10 font-medium text-foreground' : 'border-transparent text-muted-foreground hover:bg-primary/10 hover:text-foreground',
+                )}
+              >
+                <StatusDot status={m.status} className="size-2" />
+                {isStackLead(m) ? <CrownIcon aria-label="Lead" className="size-3 shrink-0 fill-current text-yellow-600 dark:text-yellow-300" /> : null}
+                <span className="min-w-0 truncate">{title}</span>
+              </Link>
+            )
+          })}
+        </nav>
+      ) : null}
     </div>
   )
 }

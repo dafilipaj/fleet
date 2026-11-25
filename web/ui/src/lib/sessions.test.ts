@@ -6,6 +6,7 @@ import {
   clusterByStack,
   isStackLead,
   stackRuns,
+  stackMembers,
   findSession,
   sessionDone,
   findSpawned,
@@ -400,4 +401,20 @@ test('spawnTargets / canSpawnOn: a host with spawn: false is never offered', () 
   expect(canSpawnOn(fleet, 'laptop')).toBe(true)
   expect(canSpawnOn(fleet, 'server')).toBe(false)
   expect(canSpawnOn(fleet, 'unknown')).toBe(true)
+})
+
+test('stackMembers: live members of the stack, lead first, then StackBrief order, then by id', () => {
+  const st = { id: 'st-1', label: 'Login fix', lead: 'l' }
+  const rows = [
+    s({ session_id: 'z', stack: st }),
+    s({ session_id: 'b', stack: st }),
+    s({ session_id: 'other', stack: { id: 'st-2', label: 'x' } }),
+    s({ session_id: 'l', stack: st }),
+    s({ session_id: 'a', stack: st }),
+    s({ session_id: 'none' }),
+  ]
+  const ids = (list: Session[]) => list.map((m) => m.session_id)
+  expect(ids(stackMembers(rows, rows[1]))).toEqual(['l', 'a', 'b', 'z'])
+  expect(ids(stackMembers(rows, rows[0], ['z', 'b']))).toEqual(['l', 'z', 'b', 'a'])
+  expect(stackMembers(rows, rows[5])).toEqual([])
 })
