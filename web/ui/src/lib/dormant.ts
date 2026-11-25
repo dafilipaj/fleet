@@ -1,7 +1,7 @@
 // Dormant sessions (a reboot left them; `fleet restore` brings them back) — pure helpers for the
 // Dormant section and the Board's dimmed cards. Unit-tested in dormant.test.ts.
 import { ApiError } from '@/api/client'
-import type { ClosedView, DormantView, GroupMember, RestoreResponse } from '@/api/types'
+import type { ClosedView, DormantView, GroupMember, RestoreResponse, StackView } from '@/api/types'
 import { relTime } from '@/lib/format'
 
 /** One host's answer to GET …/dormant (an empty list when it has none, or predates the route). */
@@ -70,6 +70,31 @@ export function dormantMember(m: GroupMember, index: Map<string, DormantMember>)
   const found = index.get(key(m.host, m.id))
   if (found) return found
   return m.dormant === true ? { host: m.host, id: m.id, title: m.id.slice(0, 8), since: null } : null
+}
+
+/**
+ * The inactive members of each stack, by stack key (`home/id`, lib/sessions.ts `stackKey`): a
+ * member not closed and not live that is dormant (the dormant list, else the StackBrief's
+ * `dormant` flag), most recently down first. Stacks with none are left out.
+ */
+export function stackDormant(stacks: StackView[], index: Map<string, DormantMember>): Map<string, DormantMember[]> {
+  const out = new Map<string, DormantMember[]>()
+  for (const st of stacks) {
+    const list: DormantMember[] = []
+    for (const m of st.members ?? []) {
+      if (m.closed || m.live) continue
+      const d = index.get(key(m.host, m.session)) ?? (m.dormant === true ? { host: m.host, id: m.session, title: m.name || m.session.slice(0, 8), since: null } : null)
+      if (d) list.push(d)
+    }
+    if (list.length) out.set(`${st.host}/${st.id}`, list.sort((a, b) => (b.since ?? -Infinity) - (a.since ?? -Infinity)))
+  }
+  return out
+}
+
+/** Whether every Claude session of a dormant entry already shows in a stack (`shown`: `host/sessionId`). */
+export function shownInStacks(v: DormantView, host: string, shown: ReadonlySet<string>): boolean {
+  const ids = (v.sessions ?? []).filter((s) => s?.sessionId)
+  return ids.length > 0 && ids.every((s) => shown.has(key(host, s.sessionId)))
 }
 
 /** The session search over a dormant / closed entry: its name, target, host, tmux session and Claude titles / cwds. */

@@ -1,11 +1,13 @@
 import type { ReactNode } from 'react'
-import { ChevronDownIcon, ChevronRightIcon, LayersIcon } from 'lucide-react'
+import { ChevronDownIcon, ChevronRightIcon, LayersIcon, MoonIcon } from 'lucide-react'
 
 import type { Session } from '@/api/types'
 import { StackMemberDot } from '@/components/stack/StackMemberDot'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { usePersistentState } from '@/hooks/usePersistentState'
 import { useStackLabel } from '@/hooks/useStackLabels'
 import { openStackSheet } from '@/hooks/useStackUi'
+import type { DormantMember } from '@/lib/dormant'
 import { isStackLead } from '@/lib/sessions'
 import { stackHome } from '@/lib/stacks'
 import { cn } from '@/lib/utils'
@@ -18,7 +20,8 @@ import { cn } from '@/lib/utils'
  * indented on a guide line, behind a toggle ("N siblings"): collapsed by default and remembered
  * per stack. Collapsed, the hidden members are status dots that open them (a hover peeks), and a
  * `pinned` member (selected / under the cursor) still shows its row under the lead, so the stack
- * never has to open to be worked in and collapses in one click from any member.
+ * never has to open to be worked in and collapses in one click from any member. Inactive members
+ * (`dormant`) are part of the stack too: moons while collapsed, dimmed rows with Resume when open.
  * The rows inside drop their stack chip.
  */
 export function StackGroup({
@@ -26,12 +29,17 @@ export function StackGroup({
   sessions,
   renderRow,
   pinned = [],
+  dormant = [],
+  renderDormant,
 }: {
   stackKey: string
   sessions: Session[]
   renderRow: (s: Session) => ReactNode
   /** Keys (`host/session_id`) of hidden members that keep their row while collapsed. */
   pinned?: readonly string[]
+  /** Members a reboot left inactive (or put to sleep): after the live ones, dimmed, with Resume. */
+  dormant?: readonly DormantMember[]
+  renderDormant?: (m: DormantMember) => ReactNode
 }) {
   const first = sessions[0]
   const home = stackHome(first)
@@ -40,7 +48,8 @@ export function StackGroup({
   const [open, setOpen] = usePersistentState(`fleet.stackOpen.${stackKey}`, false, (raw) => raw === 'true')
   const led = isStackLead(first)
   const rest = sessions.slice(1)
-  const noun = led ? (rest.length === 1 ? 'sibling' : 'siblings') : 'more'
+  const others = rest.length + dormant.length
+  const noun = led ? (others === 1 ? 'sibling' : 'siblings') : 'more'
   const key = (s: Session) => `${s.host}/${s.session_id}`
   const shown = open ? rest : rest.filter((s) => pinned.includes(key(s)))
   const dots = open ? [] : rest.filter((s) => !pinned.includes(key(s)))
@@ -54,10 +63,10 @@ export function StackGroup({
       >
         <LayersIcon className="size-3 shrink-0" />
         <span className="min-w-0 truncate">{label}</span>
-        <span className="shrink-0 text-dimmer tabular-nums">· {sessions.length}</span>
+        <span className="shrink-0 text-dimmer tabular-nums">· {sessions.length + dormant.length}</span>
       </button>
       {renderRow(first)}
-      {rest.length ? (
+      {others ? (
         <>
           <div className="mx-1 flex min-w-0 flex-wrap items-center gap-0.5">
             <button
@@ -69,15 +78,38 @@ export function StackGroup({
             >
               {open ? <ChevronDownIcon className="size-3.5" /> : <ChevronRightIcon className="size-3.5" />}
               <span className="tabular-nums">
-                {rest.length} {noun}
+                {others} {noun}
               </span>
             </button>
             {dots.map((s) => (
               <StackMemberDot key={key(s)} session={s} />
             ))}
+            {open
+              ? null
+              : dormant.map((m) => (
+                  <Tooltip key={`${m.host}/${m.id}`}>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        aria-label={`${m.title} (inactive) — show all members`}
+                        onClick={() => setOpen(true)}
+                        className="flex size-5 items-center justify-center rounded-full text-dimmer outline-none hover:bg-primary/15 focus-visible:ring-2 focus-visible:ring-ring/50"
+                      >
+                        <MoonIcon className="size-2.5" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="right" className="flex-col items-start gap-0.5">
+                      <span className="font-medium">{m.title}</span>
+                      <span className="opacity-70">inactive</span>
+                    </TooltipContent>
+                  </Tooltip>
+                ))}
           </div>
-          {shown.length ? (
-            <div className={cn('mb-0.5 ml-3 flex flex-col gap-1 border-l-2 pl-2', led ? 'border-primary/30' : 'border-border')}>{shown.map(renderRow)}</div>
+          {shown.length || (open && dormant.length && renderDormant) ? (
+            <div className={cn('mb-0.5 ml-3 flex flex-col gap-1 border-l-2 pl-2', led ? 'border-primary/30' : 'border-border')}>
+              {shown.map(renderRow)}
+              {open && renderDormant ? dormant.map(renderDormant) : null}
+            </div>
           ) : null}
         </>
       ) : null}

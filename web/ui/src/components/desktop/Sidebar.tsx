@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { NotebookTextIcon } from 'lucide-react'
 
+import { DormantCard } from '@/components/board/DormantCard'
 import { ClosedSection } from '@/components/ClosedSection'
 import { DormantSection } from '@/components/DormantSection'
 import { SnoozedSection } from '@/components/SnoozedSection'
@@ -12,8 +13,10 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { useNotesHosts } from '@/hooks/useNotes'
 import { useFlip } from '@/hooks/useFlip'
+import { useStackDormant } from '@/hooks/useStackDormant'
 import type { SessionListState } from '@/hooks/useSessionList'
 import { allSessions, stackRuns } from '@/lib/sessions'
+import { stackHome } from '@/lib/stacks'
 import { sessionKey, withHint } from '@/lib/shortcuts'
 import { cn } from '@/lib/utils'
 
@@ -29,6 +32,9 @@ export function Sidebar({ list, now, cursorKey, selectedKey }: SidebarProps) {
   const { fleet, error, query, hostSet, view, snoozed, unreachable, setFrozen } = list
   const listRef = useRef<HTMLDivElement>(null)
   useFlip(listRef, view.sessions.map(sessionKey).join(' '))
+  const stackDormant = useStackDormant(view.sessions.filter((s) => s.stack?.id).map(stackHome))
+  const entries = stackRuns(view.sessions, new Set(stackDormant.keys()))
+  const inStacks = new Set(entries.flatMap((e) => (e.kind === 'stack' ? (stackDormant.get(e.key) ?? []).map((m) => `${m.host}/${m.id}`) : [])))
 
   // Keep the cursor row visible (j/k past the edge).
   useEffect(() => {
@@ -58,7 +64,7 @@ export function Sidebar({ list, now, cursorKey, selectedKey }: SidebarProps) {
           <SessionListSkeleton />
         ) : view.sessions.length > 0 ? (
           <nav aria-label="Sessions" className="flex flex-col gap-1.5">
-            {stackRuns(view.sessions).map((e) => {
+            {entries.map((e) => {
               const row = (s: Session, inStack?: boolean) => {
                 const key = sessionKey(s)
                 return <SessionRow key={key} session={s} now={now} selected={key === selectedKey} cursor={key === cursorKey && key !== selectedKey} inStack={inStack} />
@@ -70,6 +76,8 @@ export function Sidebar({ list, now, cursorKey, selectedKey }: SidebarProps) {
                   sessions={e.sessions}
                   renderRow={(s) => row(s, true)}
                   pinned={[selectedKey, cursorKey].filter((k): k is string => !!k)}
+                  dormant={stackDormant.get(e.key)}
+                  renderDormant={(m) => <DormantCard key={`${m.host}/${m.id}`} member={m} now={now} desktop />}
                 />
               ) : (
                 row(e.session)
@@ -82,7 +90,7 @@ export function Sidebar({ list, now, cursorKey, selectedKey }: SidebarProps) {
           </div>
         )}
         {fleet ? <SnoozedSection sessions={snoozed} now={now} query={query} selectedKey={selectedKey} className="mt-4" /> : null}
-        {fleet ? <DormantSection now={now} hosts={hostSet} query={query} desktop className={snoozed.length ? 'mt-3' : 'mt-4'} /> : null}
+        {fleet ? <DormantSection now={now} hosts={hostSet} query={query} inStacks={inStacks} desktop className={snoozed.length ? 'mt-3' : 'mt-4'} /> : null}
         {fleet ? <ClosedSection now={now} hosts={hostSet} query={query} desktop className="mt-3" /> : null}
       </div>
 

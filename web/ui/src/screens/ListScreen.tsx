@@ -2,6 +2,7 @@ import { useRef, useState, type TouchEvent } from 'react'
 import { EllipsisIcon, MicIcon, PlusIcon, SearchIcon, TriangleAlertIcon, XIcon } from 'lucide-react'
 import { useLocation } from 'wouter'
 
+import { DormantCard } from '@/components/board/DormantCard'
 import { GroupedList } from '@/components/board/GroupedList'
 import { GroupsStatus } from '@/components/board/GroupsStatus'
 import { ClosedSection } from '@/components/ClosedSection'
@@ -27,9 +28,11 @@ import { useBoardColumns, useGroups, useViewMode } from '@/hooks/useGroups'
 import { useSettings } from '@/hooks/useSettings'
 import { useNow } from '@/hooks/useNow'
 import { useSessionList } from '@/hooks/useSessionList'
+import { useStackDormant } from '@/hooks/useStackDormant'
 import { DEFAULT_SELECTION, selectionLabel } from '@/lib/hosts'
 import { pullIntent } from '@/lib/gestures'
 import { allSessions, stackRuns, findStatusFilter } from '@/lib/sessions'
+import { stackHome } from '@/lib/stacks'
 import { cn } from '@/lib/utils'
 
 export function ListScreen() {
@@ -44,6 +47,10 @@ export function ListScreen() {
   const groups = useGroups(board)
   const { columns } = useBoardColumns(board, view.sessions, groups.groups, fleet, hostSet, query)
   const rowsRef = useRef<HTMLDivElement>(null)
+  // A stack shows its inactive members too (the flat list only; the board has its own groups).
+  const stackDormant = useStackDormant(board ? [] : view.sessions.filter((s) => s.stack?.id).map(stackHome))
+  const entries = stackRuns(view.sessions, new Set(stackDormant.keys()))
+  const inStacks = new Set(board ? [] : entries.flatMap((e) => (e.kind === 'stack' ? (stackDormant.get(e.key) ?? []).map((m) => `${m.host}/${m.id}`) : [])))
   useFlip(rowsRef, view.sessions.map((s) => `${s.host}/${s.session_id}`).join(' '))
   // The filter rows live in a drawer under the search field, closed by default: swipe down on
   // the header (or tap the handle) opens it, swipe up closes it. Active filters show on the handle.
@@ -235,13 +242,15 @@ export function ListScreen() {
             <GroupedList columns={columns} now={now} />
           ) : view.sessions.length > 0 ? (
             <div ref={rowsRef} className="flex flex-col gap-2">
-              {stackRuns(view.sessions).map((e) =>
+              {entries.map((e) =>
                 e.kind === 'stack' ? (
                   <StackGroup
                     key={e.key}
                     stackKey={e.key}
                     sessions={e.sessions}
                     renderRow={(s) => <SessionRow key={`${s.host}/${s.session_id}`} session={s} now={now} inStack />}
+                    dormant={stackDormant.get(e.key)}
+                    renderDormant={(m) => <DormantCard key={`${m.host}/${m.id}`} member={m} now={now} />}
                   />
                 ) : (
                   <SessionRow key={`${e.session.host}/${e.session.session_id}`} session={e.session} now={now} />
@@ -253,7 +262,7 @@ export function ListScreen() {
           ) : null}
 
           {fleet ? <SnoozedSection sessions={snoozed} now={now} query={query} className="mt-6" /> : null}
-          {fleet ? <DormantSection now={now} hosts={hostSet} query={query} className={snoozed.length ? 'mt-4' : 'mt-6'} /> : null}
+          {fleet ? <DormantSection now={now} hosts={hostSet} query={query} inStacks={inStacks} className={snoozed.length ? 'mt-4' : 'mt-6'} /> : null}
           {fleet ? <ClosedSection now={now} hosts={hostSet} query={query} className="mt-4" /> : null}
         </div>
       </main>

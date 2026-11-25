@@ -347,15 +347,16 @@ export type ListEntry = { kind: 'session'; session: Session } | { kind: 'stack';
 
 /**
  * Split a (clustered) list into entries: each run of 2+ adjacent members of one stack becomes a
- * `stack` entry, a lone member stays a plain `session`. Order is kept as given.
+ * `stack` entry, a lone member stays a plain `session` unless its stack key is in `more` (the stack
+ * has members elsewhere, e.g. inactive ones). Order is kept as given.
  */
-export function stackRuns(sessions: Session[]): ListEntry[] {
+export function stackRuns(sessions: Session[], more: ReadonlySet<string> = new Set()): ListEntry[] {
   const out: ListEntry[] = []
   for (let i = 0; i < sessions.length; ) {
     const k = stackKey(sessions[i])
     let j = i + 1
     while (k && j < sessions.length && stackKey(sessions[j]) === k) j += 1
-    if (k && j - i > 1) out.push({ kind: 'stack', key: k, sessions: sessions.slice(i, j) })
+    if (k && (j - i > 1 || more.has(k))) out.push({ kind: 'stack', key: k, sessions: sessions.slice(i, j) })
     else out.push({ kind: 'session', session: sessions[i] })
     i = j
   }

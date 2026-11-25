@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
 import { ApiError } from '@/api/client'
-import type { ClosedView, DormantView } from '@/api/types'
-import { byActivity, closedCount, closedMeta, dormantCount, dormantErrorMessage, dormantIndex, dormantMember, dormantMeta, dormantMissing, dormantTitles, hasEntries, hostDormant, matchesDormantMember, restoreSummary, searchDormant } from '@/lib/dormant'
+import type { ClosedView, DormantView, StackView } from '@/api/types'
+import { byActivity, closedCount, closedMeta, dormantCount, dormantErrorMessage, dormantIndex, dormantMember, dormantMeta, dormantMissing, dormantTitles, hasEntries, hostDormant, matchesDormantMember, restoreSummary, searchDormant, shownInStacks, stackDormant } from '@/lib/dormant'
 
 const NOW = Date.parse('2026-10-04T12:00:00Z')
 const tmux: DormantView = {
@@ -124,5 +124,35 @@ describe('byActivity', () => {
     ]
     expect(byActivity(hosts, (h) => h.views).map((e) => `${e.host}/${e.view.target}`)).toEqual(['workstation/fix-login', 'laptop/old', 'laptop/bbbb-2'])
     expect(byActivity(hosts, (h) => h.closed).map((e) => e.view.target)).toEqual(['fresh'])
+  })
+})
+
+describe('stackDormant', () => {
+  const member = (session: string, o: Partial<StackView['members'][number]> = {}) => ({ session, host: 'ws', name: null, added: null, closed: null, ...o })
+  const st = { host: 'ws', id: 'st-1', members: [member('live', { live: true }), member('d1'), member('d2'), member('gone', { closed: '2026-01-01T00:00:00Z' }), member('flag', { dormant: true, name: 'Flagged' }), member('unknown')] } as unknown as StackView
+  const index = new Map([
+    ['ws/d1', { host: 'ws', id: 'd1', title: 'One', since: 1 }],
+    ['ws/d2', { host: 'ws', id: 'd2', title: 'Two', since: 2 }],
+    ['ws/gone', { host: 'ws', id: 'gone', title: 'Gone', since: 3 }],
+  ])
+  it('keeps the inactive members (dormant list or flag), newest down first; live, closed and unknown ones are left out', () => {
+    const got = stackDormant([st], index).get('ws/st-1')!
+    expect(got.map((m) => m.id)).toEqual(['d2', 'd1', 'flag'])
+    expect(got[2].title).toBe('Flagged')
+  })
+  it('leaves out stacks with none', () => {
+    expect(stackDormant([st], new Map()).has('ws/st-1')).toBe(true) // the flag alone
+    expect(stackDormant([{ ...st, members: [member('live', { live: true })] } as StackView], index).size).toBe(0)
+  })
+})
+
+describe('shownInStacks', () => {
+  const v = (ids: string[]) => ({ kind: 'tmux', target: 't', name: 't', since: null, windows: 1, panes: 1, sessions: ids.map((sessionId) => ({ sessionId, name: null, title: null, cwd: null })) }) as DormantView
+  it('is true only when every Claude session of the entry shows in a stack', () => {
+    const shown = new Set(['ws/a', 'ws/b'])
+    expect(shownInStacks(v(['a', 'b']), 'ws', shown)).toBe(true)
+    expect(shownInStacks(v(['a', 'c']), 'ws', shown)).toBe(false)
+    expect(shownInStacks(v(['a']), 'other', shown)).toBe(false)
+    expect(shownInStacks(v([]), 'ws', shown)).toBe(false)
   })
 })

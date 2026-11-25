@@ -418,3 +418,11 @@ test('stackMembers: live members of the stack, lead first, then StackBrief order
   expect(ids(stackMembers(rows, rows[0], ['z', 'b']))).toEqual(['l', 'z', 'b', 'a'])
   expect(stackMembers(rows, rows[5])).toEqual([])
 })
+
+test('stackRuns: a lone member becomes a stack when its stack has members elsewhere', () => {
+  const st = { id: 'st-1', label: 'Login fix' }
+  const rows = [s({ session_id: 'a', stack: st }), s({ session_id: 'b' })]
+  expect(stackRuns(rows).map((e) => e.kind)).toEqual(['session', 'session'])
+  const host = rows[0].host
+  expect(stackRuns(rows, new Set([`${host}/st-1`])).map((e) => e.kind)).toEqual(['stack', 'session'])
+})
