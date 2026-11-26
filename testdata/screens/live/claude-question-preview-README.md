@@ -31,11 +31,23 @@ Claude Code asked to call the tool with an exact input.
 | `P2-q1`, `P2-q2`, `P2-review` | the same shape at 80x24: the several-question footer wraps (`… · Tab to switch questions · ` / `Esc to cancel`) |
 | `P3-initial`, `P3-notes-open`, `P3-notes-typed`, `P3-after-esc` | one question at 80x24: the footer wraps; the notes field open (`… · ctrl+g to edit in Vim · Esc` / `to cancel`), a note typed, after the first Esc (closes only the field, the note `a note` stays) |
 | `H2-*`, `H3-*`, `H4-*` | plain questions of 60 to 230 characters: the `│ ` gutter over 80 |
+| `M1-initial`, `M1-submit-row`, `M1-review`, `M1-after` | **2.1.332**: one multi-select question, untouched; options 1 and 2 ticked, the cursor on "Submit"; after Enter there, the review (not the answer); after "Submit answers" |
+| `M2-review` | **2.1.332**: two questions, a multi-select one (options 1 and 3, "milk, cold" typed) and a single-select one: the review |
+| `M3-review` | **2.1.332**: one multi-select question, every option and " padded " typed: the review |
 
 Inputs: `A`, `C`, `H2` to `H4`, `N1`, `P1` to `P3` from their recordings. B and G asked A's
 input; D, E and F are derived from A's in the tests, as their prompts on screen show them. H2's recording asked
 the first three questions of `H2-input.json` (its tab bar shows L60, L90, L120), not L190; the
 tests drop the fourth. `H2-q4` is H2's review.
+
+`M1` to `M3` were recorded on 2026-11-26 with Claude Code 2.1.332 (200x50), each asked the
+input in its `-input.json`. What they show: a lone multi-select question's "Submit" row opens
+the review screen, where "Submit answers" takes one more Enter. On the review and in the
+transcript, a multi-select answer joins its parts with `, ` and writes a part holding a comma
+or a double quote as a JSON string: `"Ham, cooked (Recommended)", Mushrooms`,
+`"Water, still", "Juice \"fresh\"", "milk, cold"`, `Back\slash, "Both\\here, too", It's; fine`.
+A single-select answer is its label as it is (`By the window, left`). The review has no "Ready
+to submit your answers?" line.
 
 Edits: only the blanking above. The first live form (a work question) and its first copy, H1,
 are not here: N1 replaces them.

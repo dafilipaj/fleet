@@ -348,7 +348,8 @@ hook output, bookkeeping entries, subagent (sidechain) messages.
   abandoned,
   `{ "declined": true }`, or `{ "answers": [string|null…], "picked": [[option index…]…] }` (one
   element per question; `picked` matches the recorded answer against the labels, a typed answer
-  picks nothing).
+  picks nothing; Claude Code records a multi-select pick with a comma or a double quote in it as
+  a JSON string, `"Ham, cooked", Mushrooms`, and `answers` has it as recorded).
 - `cursor` (top level): poll with it. It is the newest entry's position plus a read hint, so an
   `--after` call reads only what was appended since. It re-reads from an earlier line only while
   something is still open there — an unanswered question, a reply that may still grow — and never
@@ -804,10 +805,13 @@ with `trust`.
   ≤ 2000 characters, with no control characters or escape sequences. A single-select question with
   previews takes exactly one option and no text (its form has no "Type something" row; notes are
   not typed): anything else is `answer_invalid`. The session must be `waiting`.
-  With two or more questions the answer is checked on the review screen, which joins picks and
-  text with `", "`; an answer it could not tell from another — an option labelled `A, B` against
-  the options `A` and `B`, or text that reads as an option — is refused (`answer_invalid`, nothing
-  typed).
+  A form of two or more questions, and a lone multi-select one (from its "Submit" row; Claude
+  Code 2.1.332), end on the review screen: the answer is checked there, then Enter on "Submit
+  answers" submits it. The review joins a multi-select answer's picks and text with `", "`, a part
+  with a comma or a double quote in it written as a JSON string (`"Ham, cooked", Mushrooms`); an
+  answer it could not tell from another — text that reads as an option — is refused
+  (`answer_invalid`, nothing typed). Where a lone multi-select question's "Submit" row submits it
+  with no review, that last Enter is not pressed.
 
 **Exclusive input.** A terminal binds no answer to a prompt id, so the sources of a race are closed
 instead. With a terminal client attached to the session's tmux session — a human who could be typing

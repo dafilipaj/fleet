@@ -1,0 +1,15 @@
+{
+  "questions": [
+    {
+      "question": "Which labels should the jars get?",
+      "header": "Labels",
+      "multiSelect": true,
+      "options": [
+        { "label": "Back\\slash", "description": "A backslash alone" },
+        { "label": "Both\\here, too", "description": "A backslash and a comma" },
+        { "label": "It's; fine", "description": "An apostrophe and a semicolon" },
+        { "label": "Plain", "description": "Nothing special" }
+      ]
+    }
+  ]
+}

@@ -133,10 +133,52 @@ impl Outcome {
     }
 }
 
+/// One part of a multi-select answer as Claude Code writes it, on the review screen and in the
+/// transcript (2.1.332, captures M1 to M3): a part holding a comma or a double quote is a JSON
+/// string (`"Ham, cooked"`, `"Juice \"fresh\""`, `"Both\\here, too"`), any other part is itself
+/// (a backslash alone quotes nothing). A single-select answer is never quoted.
+pub fn answer_part(part: &str) -> String {
+    if part.contains([',', '"']) {
+        Value::String(part.to_string()).to_string()
+    } else {
+        part.to_string()
+    }
+}
+
+/// The part `rest` starts with when it is one [`answer_part`] quoted, and what follows it (past
+/// the `", "` joining it to the next part). `None`: `rest` does not start with a quoted part
+/// that ends at a separator or at the end.
+fn quoted_part(rest: &str) -> Option<(String, &str)> {
+    if !rest.starts_with('"') {
+        return None;
+    }
+    let mut escaped = false;
+    let close = rest.char_indices().skip(1).find_map(|(i, c)| {
+        if escaped {
+            escaped = false;
+            None
+        } else if c == '\\' {
+            escaped = true;
+            None
+        } else {
+            (c == '"').then_some(i)
+        }
+    })?;
+    let part: String = serde_json::from_str(&rest[..=close]).ok()?;
+    let after = &rest[close + 1..];
+    if after.is_empty() {
+        Some((part, after))
+    } else {
+        after.strip_prefix(", ").map(|a| (part, a))
+    }
+}
+
 /// The option indexes an answer recorded as text selected. Claude Code records a
-/// single-select pick as its label and joins multi-select picks with `", "`; a label may itself
-/// contain `", "`, so at each point the longest label that fits (followed by `", "` or the end)
-/// wins. A segment no label explains is typed text and selects nothing.
+/// single-select pick as its label and joins multi-select picks with `", "`, a pick with a
+/// comma or a double quote in it as a JSON string ([`answer_part`]). A transcript may also
+/// hold such a label unquoted, so where no quoted part reads as a label, the longest label
+/// that fits (followed by `", "` or the end) wins. A segment no label explains is typed text
+/// and selects nothing.
 pub fn picked(q: &Question, answer: &str) -> Vec<usize> {
     if let Some(i) = q.options.iter().position(|o| o.label == answer) {
         return vec![i];
@@ -149,6 +191,13 @@ pub fn picked(q: &Question, answer: &str) -> Vec<usize> {
     let mut out = Vec::new();
     let mut rest = answer;
     while !rest.is_empty() {
+        if let Some((part, after)) = quoted_part(rest)
+            && let Some(i) = q.options.iter().position(|o| o.label == part)
+        {
+            out.push(i);
+            rest = after;
+            continue;
+        }
         let hit = by_len.iter().find_map(|&i| {
             let after = rest.strip_prefix(q.options[i].label.as_str())?;
             if after.is_empty() {
@@ -269,14 +318,14 @@ pub fn validate_answer(answers: &Value, questions: &[Question]) -> Result<Vec<An
             text: (!text.is_empty()).then(|| text.to_string()),
         });
     }
-    // Two or more questions end on the review screen, the last check before the answers are
-    // submitted: it must tell this answer from every other one, or it checks nothing.
-    if questions.len() > 1 {
+    // The review screen is the last check before the answers are submitted: it must tell this
+    // answer from every other one, or it checks nothing.
+    if ends_on_review(questions) {
         for (i, (q, a)) in questions.iter().zip(&out).enumerate() {
             let shown = review_text(q, a);
             if review_readings(q, &shown, a.text.as_deref()) > 1 {
                 return Err(format!(
-                    "answers[{i}]: the review screen would show \"{shown}\" for another choice too (a label with \", \" in it, or text that reads as an option) — pick options whose review cannot be mistaken"
+                    "answers[{i}]: the review screen would show \"{shown}\" for another choice too (text that reads as an option, or two options labelled alike) — pick options whose review cannot be mistaken"
                 ));
             }
         }
@@ -284,16 +333,28 @@ pub fn validate_answer(answers: &Value, questions: &[Question]) -> Result<Vec<An
     Ok(out)
 }
 
+/// Does answering `questions` end on the review screen? A form of two or more questions does,
+/// and so does a lone multi-select one, from its "Submit" row (Claude Code 2.1.332, capture
+/// M1). A lone single-select question is submitted by its pick.
+pub fn ends_on_review(questions: &[Question]) -> bool {
+    questions.len() > 1 || questions.iter().any(|q| q.multi_select)
+}
+
 /// How many answers to `q` the review screen shows as `shown` (see [`review_text`]), counted
 /// up to 2: any options, in option order, then `text` or nothing — `text` being the one this
 /// answer types, since nobody else types into the session. One reading: the review tells the
-/// answer apart; more: an option labelled `A, B` and the options `A` and `B` (or a typed `B`)
-/// look the same there.
+/// answer apart; more: the options `A` and `B` and the option `A` with a typed `B` look the
+/// same there, as two options labelled alike do. (An option labelled `A, B` does not: the
+/// review quotes it, [`answer_part`].)
 fn review_readings(q: &Question, shown: &str, text: Option<&str>) -> usize {
-    let labels: Vec<&str> = q.options.iter().map(|o| o.label.as_str()).collect();
     if !q.multi_select {
-        return labels.iter().filter(|l| **l == shown).count() + usize::from(text == Some(shown));
+        let labels = q.options.iter().filter(|o| o.label == shown).count();
+        return labels + usize::from(text == Some(shown));
     }
+    let labels: Vec<String> = q.options.iter().map(|o| answer_part(&o.label)).collect();
+    let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+    let text = text.map(answer_part);
+    let text = text.as_deref();
     /// Ways to read `rest` as labels from `labels[from..]` (in order), then optionally `text`,
     /// joined with `", "`: at least one part.
     fn ways(rest: &str, labels: &[&str], from: usize, text: Option<&str>) -> usize {
@@ -327,7 +388,9 @@ pub enum Step {
 /// with the cursor on `row`, exactly the rows `ticked` (multi-select), the "Type something"
 /// row holding `typed` when set, and each tab answered (☒) or not as `done` says — or the
 /// review screen listing exactly `expect` (each question with the answer it got), "Submit
-/// answers" focused.
+/// answers" focused. `if_shown`: the review of a lone multi-select question, which a Claude
+/// Code that submits such a form from its "Submit" row never draws; with the form gone
+/// instead, the step is not taken.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum At {
     Form {
@@ -339,18 +402,27 @@ pub enum At {
     },
     Review {
         expect: Vec<(String, String)>,
+        if_shown: bool,
     },
 }
 
-/// An answer as Claude Code's review screen shows it: the picked labels in option order, then
-/// the typed text, joined with `", "`.
+/// An answer as Claude Code's review screen shows it. Multi-select: the picked labels in
+/// option order, then the typed text, each as an [`answer_part`], joined with `", "`.
+/// Single-select: the label or the text, as it is.
 pub fn review_text(q: &Question, a: &Answer) -> String {
-    a.options
+    let parts = a
+        .options
         .iter()
         .map(|&i| q.options[i].label.clone())
-        .chain(a.text.clone())
-        .collect::<Vec<_>>()
-        .join(", ")
+        .chain(a.text.clone());
+    if q.multi_select {
+        parts
+            .map(|p| answer_part(&p))
+            .collect::<Vec<_>>()
+            .join(", ")
+    } else {
+        parts.collect::<Vec<_>>().join(", ")
+    }
 }
 
 /// One step of an answer and what the screen must show before it is taken.
@@ -367,7 +439,8 @@ pub struct Planned {
 /// option + Enter picks it and moves on; option N+1 is "Type something." (typing there fills
 /// it in, Enter picks it). Multi-select: Enter toggles the option under the cursor; typing on
 /// "Type something" fills and checks it; the row after it ("Next" / "Submit") + Enter moves
-/// on. Two or more questions end on a review screen with "Submit answers" focused → Enter.
+/// on. Two or more questions, and a lone multi-select one ([`ends_on_review`]), end on a
+/// review screen with "Submit answers" focused → Enter.
 /// A question in the preview layout ([`Question::preview_layout`]) is answered like a
 /// single-select pick: ↓ to its one option, Enter (its answer has no text); ↓ past the last
 /// option would reach "Chat about this", which the plan never does.
@@ -448,7 +521,7 @@ pub fn answer_plan(questions: &[Question], answers: &[Answer]) -> Vec<Planned> {
         f.down_to(other + 1); // "Next" / "Submit"
         f.push(Step::Key("Enter".into()));
     }
-    if questions.len() > 1 {
+    if ends_on_review(questions) {
         plan.push(Planned {
             step: Step::Key("Enter".into()), // review → "Submit answers"
             at: At::Review {
@@ -457,6 +530,7 @@ pub fn answer_plan(questions: &[Question], answers: &[Answer]) -> Vec<Planned> {
                     .zip(answers)
                     .map(|(q, a)| (q.question.trim().to_string(), review_text(q, a)))
                     .collect(),
+                if_shown: questions.len() == 1,
             },
         });
     }
@@ -664,7 +738,8 @@ mod tests {
                         "Hide full books in the list".into()
                     ),
                     (live[3].question.clone(), "Ask first".into()),
-                ]
+                ],
+                if_shown: false,
             }
         );
     }
@@ -767,7 +842,7 @@ mod tests {
     }
 
     #[test]
-    fn steps_single_select_pick_by_arrows_and_a_lone_question_needs_no_review() {
+    fn steps_single_select_pick_by_arrows_and_a_lone_single_select_question_needs_no_review() {
         let q = qs();
         let one = &q[1..];
         assert_eq!(
@@ -864,8 +939,9 @@ mod tests {
         );
     }
 
-    // The review screen joins picks with ", ": an option labelled "A, B" and the options "A"
-    // and "B" read the same there, so it could not tell one from the other.
+    // The review screen joins picks with ", " and quotes a pick with a comma in it: the option
+    // "A, B" reads `"A, B"`, the options "A" and "B" read `A, B`. What it cannot tell apart is
+    // a typed text from an option labelled the same.
     #[test]
     fn an_answer_the_review_screen_cannot_tell_apart_is_refused() {
         let q = normalize_questions(&json!({
@@ -879,26 +955,108 @@ mod tests {
         .unwrap();
         let check = |v: Value| validate_answer(&v, &q);
         for ambiguous in [
-            json!([{ "options": [0] }, { "options": [0] }]),
-            json!([{ "options": [1, 2] }, { "options": [0] }]),
+            // `A, B`: the options A and B, or A with a typed "B".
             json!([{ "options": [1], "text": "B" }, { "options": [0] }]),
+            // `"A, B"`: that option, or the text typed.
+            json!([{ "text": "A, B" }, { "options": [0] }]),
             json!([{ "options": [3] }, { "text": "Rome" }]),
-            // "A, B, C": the options A, B and C, or "A, B" and C.
-            json!([{ "options": [0, 3] }, { "options": [1] }]),
         ] {
             let e = check(ambiguous.clone()).unwrap_err();
             assert!(e.contains("review screen"), "{ambiguous}: {e}");
         }
-        // Readable one way only: fine.
+        // Readable one way only: fine. The quoted option is told from its two halves.
         for clear in [
+            json!([{ "options": [0] }, { "options": [0] }]),
+            json!([{ "options": [1, 2] }, { "options": [0] }]),
+            json!([{ "options": [0, 3] }, { "options": [1] }]),
             json!([{ "options": [1, 3] }, { "options": [1] }]),
             json!([{ "options": [2, 3] }, { "text": "Zagreb" }]),
             json!([{ "text": "D" }, { "options": [0] }]),
         ] {
             assert!(check(clear.clone()).is_ok(), "{clear}");
         }
-        // A lone question has no review screen: nothing to tell apart.
+        // A lone multi-select question ends on the review too (2.1.332), so it is checked.
         assert!(validate_answer(&json!([{ "options": [0] }]), &q[..1]).is_ok());
+        let e = validate_answer(&json!([{ "options": [1], "text": "B" }]), &q[..1]).unwrap_err();
+        assert!(e.contains("review screen"), "{e}");
+        // A lone single-select one has no review screen: nothing to tell apart.
+        assert!(validate_answer(&json!([{ "text": "Rome" }]), &q[1..]).is_ok());
+    }
+
+    // Claude Code 2.1.332 (captures M1 to M3): a multi-select part with a comma or a double
+    // quote in it is written as a JSON string, on the review and in the transcript.
+    #[test]
+    fn a_multi_select_part_with_a_comma_or_a_quote_is_a_json_string() {
+        assert_eq!(answer_part("Mushrooms"), "Mushrooms");
+        assert_eq!(
+            answer_part("Ham, cooked (Recommended)"),
+            r#""Ham, cooked (Recommended)""#
+        );
+        assert_eq!(answer_part(r#"Juice "fresh""#), r#""Juice \"fresh\"""#);
+        assert_eq!(answer_part(r"Back\slash"), r"Back\slash");
+        assert_eq!(answer_part(r"Both\here, too"), r#""Both\\here, too""#);
+        assert_eq!(answer_part("It's; fine"), "It's; fine");
+        let q = normalize_questions(&json!({
+            "questions": [
+                { "question": "Which drinks?", "header": "Drinks", "multiSelect": true,
+                  "options": [{ "label": "Water, still" }, { "label": "Tea" }, { "label": "Juice \"fresh\"" }] },
+                { "question": "Which table?", "header": "Table", "multiSelect": false,
+                  "options": [{ "label": "By the window, left" }, { "label": "Outside" }] }
+            ]
+        }))
+        .unwrap();
+        let a = ans(
+            json!([{ "options": [0, 2], "text": "milk, cold" }, { "options": [0] }]),
+            &q,
+        );
+        assert_eq!(
+            review_text(&q[0], &a[0]),
+            r#""Water, still", "Juice \"fresh\"", "milk, cold""#
+        );
+        // A single-select answer is its label as it is.
+        assert_eq!(review_text(&q[1], &a[1]), "By the window, left");
+        assert_eq!(
+            review_text(
+                &q[0],
+                &ans(json!([{ "options": [1] }, { "options": [1] }]), &q)[0]
+            ),
+            "Tea"
+        );
+    }
+
+    // Claude Code 2.1.332 (capture M1): a lone multi-select question's "Submit" row opens the
+    // review screen; "Submit answers" there takes one more Enter.
+    #[test]
+    fn a_lone_multi_select_question_ends_on_the_review_screen() {
+        let q = qs();
+        let one = &q[..1];
+        assert!(ends_on_review(one));
+        assert!(ends_on_review(&q));
+        assert!(!ends_on_review(&q[1..]));
+        let plan = answer_plan(one, &ans(json!([{ "options": [0, 1] }]), one));
+        assert_eq!(
+            keys(&plan.iter().map(|p| p.step.clone()).collect::<Vec<_>>()),
+            "Enter Down Enter Down Down Down Enter Enter"
+        );
+        assert_eq!(
+            plan.last().unwrap().at,
+            At::Review {
+                expect: vec![("Which pets do you like?".into(), "Dog, Cat".into())],
+                if_shown: true,
+            }
+        );
+        // The review of two or more questions is always drawn.
+        let both = answer_plan(
+            &q,
+            &ans(json!([{ "options": [0] }, { "options": [0] }]), &q),
+        );
+        assert!(matches!(
+            both.last().unwrap().at,
+            At::Review {
+                if_shown: false,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -963,7 +1121,8 @@ mod tests {
                     expect: vec![
                         ("Which pets do you like?".into(), "Cat, hamster".into()),
                         ("Which city?".into(), "Paris".into()),
-                    ]
+                    ],
+                    if_shown: false,
                 }, // Enter: submit
             ]
         );
@@ -1001,5 +1160,56 @@ mod tests {
         assert_eq!(picked(&single, "No"), vec![1]);
         assert_eq!(picked(&single, "Yes, No"), Vec::<usize>::new());
         assert_eq!(picked(&single, "maybe later"), Vec::<usize>::new());
+    }
+
+    // Claude Code 2.1.332 records a multi-select pick with a comma or a quote in it as a JSON
+    // string (the answers of captures M1 to M3, from their transcripts).
+    #[test]
+    fn picked_reads_a_quoted_part_as_its_label() {
+        let q = |labels: &[&str]| {
+            let options: Vec<Value> = labels.iter().map(|l| json!({ "label": l })).collect();
+            normalize_questions(
+                &json!({ "questions": [{ "question": "Q", "multiSelect": true, "options": options }] }),
+            )
+            .unwrap()
+            .remove(0)
+        };
+        let m1 = q(&[
+            "Ham, cooked (Recommended)",
+            "Mushrooms",
+            "Olives \"black\" ones",
+            "Pineapple",
+        ]);
+        assert_eq!(
+            picked(&m1, r#""Ham, cooked (Recommended)", Mushrooms"#),
+            vec![0, 1]
+        );
+        assert_eq!(picked(&m1, r#""Ham, cooked (Recommended)""#), vec![0]);
+        assert_eq!(
+            picked(&m1, r#"Mushrooms, "Olives \"black\" ones", Pineapple"#),
+            vec![1, 2, 3]
+        );
+        let m2 = q(&["Water, still", "Tea", "Juice \"fresh\""]);
+        // The typed "milk, cold" is quoted too, and selects nothing.
+        assert_eq!(
+            picked(&m2, r#""Water, still", "Juice \"fresh\"", "milk, cold""#),
+            vec![0, 2]
+        );
+        let m3 = q(&["Back\\slash", "Both\\here, too", "It's; fine", "Plain"]);
+        assert_eq!(
+            picked(
+                &m3,
+                r#"Back\slash, "Both\\here, too", It's; fine, Plain,  padded "#
+            ),
+            vec![0, 1, 2, 3]
+        );
+        // Unquoted, as a transcript may still hold it, and a label that only starts with a quote.
+        assert_eq!(
+            picked(&m1, "Ham, cooked (Recommended), Mushrooms"),
+            vec![0, 1]
+        );
+        let odd = q(&["\"Maybe\" later", "Now"]);
+        assert_eq!(picked(&odd, r#""Maybe" later, Now"#), vec![0, 1]);
+        assert_eq!(picked(&odd, r#""\"Maybe\" later", Now"#), vec![0, 1]);
     }
 }

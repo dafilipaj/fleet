@@ -94,18 +94,48 @@ done
 
 /// A Claude Code 2.1 question form (one question, "Which city?", options Paris and Rome) that
 /// behaves like the real one: ↑/↓ move the cursor, typing on "Type something" fills it in,
-/// Enter picks (single-select) or ticks (multi-select; on "Submit" it submits).
-/// Args: single|multi, key log, answer file, mischief (1: the cursor jumps a row by itself
-/// after the first key — a human pressing ↓ mid-answer; 2: Rome starts ticked; 3: the agent
-/// exits on the first key, and with it its pane).
+/// Enter picks (single-select) or ticks (multi-select; on "Submit" it submits). `review` is
+/// `multi` as Claude Code 2.1.332 draws it (capture M1): "Submit" opens the review screen,
+/// where Enter on "Submit answers" submits.
+/// Args: single|multi|review, key log, answer file, mischief (1: the cursor jumps a row by
+/// itself after the first key — a human pressing ↓ mid-answer; 2: Rome starts ticked; 3: the
+/// agent exits on the first key, and with it its pane; 4: the review lists Paris, whatever
+/// was answered).
 const FAKE_FORM: &str = r#"#!/bin/bash
 mode="$1"; log="$2"; out="$3"; mischief="$4"
 labels=("Paris" "Rome"); descs=("The French capital" "The Italian capital")
-cur=0; typed=""; t0=0; t1=0; keys=0
+cur=0; typed=""; t0=0; t1=0; keys=0; review=0
 [ "$mischief" = 2 ] && t1=1
-last=2; [ "$mode" = multi ] && last=3
+multi=0; [ "$mode" != single ] && multi=1
+last=2; [ $multi -eq 1 ] && last=3
 rule="────────────────────────────────────────────────────────────"
+# A multi-select part as the review writes it: a JSON string when it holds a comma or a quote.
+part() {
+  case "$1" in
+    *,*|*\"*) printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+draw_review() {
+  printf '\033[2J\033[H'
+  echo "$rule"
+  echo "←  ☒ City  ✔ Submit  →"
+  echo
+  echo "Review your answers"
+  echo
+  echo " ● Which city?"
+  a=""
+  [ $t0 -eq 1 ] && a="$(part "${labels[0]}")"
+  [ $t1 -eq 1 ] && a="${a:+$a, }$(part "${labels[1]}")"
+  [ -n "$typed" ] && a="${a:+$a, }$(part "$typed")"
+  [ "$mischief" = 4 ] && a="Paris"
+  echo "   → $a"
+  echo
+  echo "❯ 1. Submit answers"
+  echo "  2. Cancel"
+}
 draw() {
+  if [ $review -eq 1 ]; then draw_review; return; fi
   printf '\033[2J\033[H'
   echo "$rule"
   box="☐"; if [ $t0 -eq 1 ] || [ $t1 -eq 1 ] || [ -n "$typed" ]; then box="☒"; fi
@@ -117,7 +147,7 @@ draw() {
   for i in 0 1; do
     m="  "; [ $cur -eq $i ] && m="❯ "
     box=""
-    if [ "$mode" = multi ]; then
+    if [ $multi -eq 1 ]; then
       t=$t0; [ $i -eq 1 ] && t=$t1
       if [ $t -eq 1 ]; then box="[✔] "; else box="[ ] "; fi
     fi
@@ -125,7 +155,7 @@ draw() {
     echo "     ${descs[$i]}"
   done
   m="  "; [ $cur -eq 2 ] && m="❯ "
-  if [ "$mode" = multi ]; then
+  if [ $multi -eq 1 ]; then
     if [ -n "$typed" ]; then echo "${m}3. [✔] $typed"; else echo "${m}3. [ ] Type something"; fi
     m="  "; [ $cur -eq 3 ] && m="❯ "
     echo "${m}   Submit"
@@ -146,7 +176,12 @@ while IFS= read -r -s -n1 -d '' c; do
     [ "$rest" = "[B" ] && [ $cur -lt $last ] && cur=$((cur+1))
     [ "$rest" = "[A" ] && [ $cur -gt 0 ] && cur=$((cur-1))
   elif [ "$c" = $'\n' ] || [ "$c" = $'\r' ]; then
-    if [ "$mode" = single ] || [ $cur -eq $last ]; then
+    if [ $review -eq 1 ]; then
+      echo "row=$cur typed=$typed ticked=$t0$t1 reviewed" > "$out"
+      printf '\033[2J\033[H● answered\n'; sleep 60; exit
+    elif [ "$mode" = review ] && [ $cur -eq $last ]; then
+      review=1
+    elif [ "$mode" = single ] || [ $cur -eq $last ]; then
       echo "row=$cur typed=$typed ticked=$t0$t1" > "$out"
       printf '\033[2J\033[H● answered\n'; sleep 60; exit
     fi
@@ -638,7 +673,85 @@ fn a_multi_select_answer_with_typed_text_is_checked_at_every_key() {
     ]);
     assert_eq!(code, 0, "{err} {v}");
     assert_eq!(read(&out).trim(), "row=3 typed=Oslo ticked=01");
+    // This form's "Submit" row submits it (no review screen): the review's Enter is not
+    // pressed, nor reported.
     assert_eq!(keys(&log), format!("{DOWN}\n{DOWN}Oslo{DOWN}\n"));
+    assert_eq!(v["answered"], true, "{v}");
+    assert_eq!(v["steps"].as_array().map(Vec::len), Some(6), "{v}");
+}
+
+// Claude Code 2.1.332 (capture M1): a lone multi-select question's "Submit" row opens the
+// review screen. The answer goes on to press Enter on "Submit answers", once the review lists
+// exactly what was answered, a part with a comma in it quoted.
+#[test]
+fn a_lone_multi_select_question_is_submitted_from_its_review_screen() {
+    let Some(s) = Server::new() else { return };
+    s.question_transcript("s-review", true);
+    let (log, out) = s.files("review");
+    let pid = s.agent_cmd(
+        "review",
+        &format!(
+            "'{}' review '{}' '{}' 0",
+            s.env.path("bin/form").display(),
+            log.display(),
+            out.display()
+        ),
+        "s-review",
+        "Enter to select",
+    );
+    let (code, v, err) = s.fleet(&[
+        "answer",
+        &pid,
+        "--question",
+        "tq1",
+        "--answers",
+        "[{\"options\":[1],\"text\":\"Oslo, north\"}]",
+        "--json",
+    ]);
+    assert_eq!(code, 0, "{err} {v}");
+    assert_eq!(v["answered"], true, "{v}");
+    assert_eq!(
+        read(&out).trim(),
+        "row=3 typed=Oslo, north ticked=01 reviewed"
+    );
+    assert_eq!(keys(&log), format!("{DOWN}\n{DOWN}Oslo, north{DOWN}\n\n"));
+}
+
+// The review is the last check: one that lists another answer stops the last Enter.
+#[test]
+fn a_review_listing_another_answer_is_not_submitted() {
+    let Some(s) = Server::new() else { return };
+    s.question_transcript("s-wrong", true);
+    let (log, out) = s.files("wrong");
+    let pid = s.agent_cmd(
+        "wrong",
+        &format!(
+            "'{}' review '{}' '{}' 4",
+            s.env.path("bin/form").display(),
+            log.display(),
+            out.display()
+        ),
+        "s-wrong",
+        "Enter to select",
+    );
+    let (code, v, _) = s.fleet(&[
+        "answer",
+        &pid,
+        "--question",
+        "tq1",
+        "--answers",
+        "[{\"options\":[1]}]",
+        "--json",
+    ]);
+    assert_eq!(
+        (code, v["kind"].as_str()),
+        (1, Some("prompt_changed")),
+        "{v}"
+    );
+    assert_eq!(v["detail"], "touched", "{v}");
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(read(&out), "", "nothing was submitted");
+    assert_eq!(keys(&log), format!("{DOWN}\n{DOWN}{DOWN}\n"));
 }
 
 #[test]

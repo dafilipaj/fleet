@@ -3108,4 +3108,54 @@ Ready to submit your answers?
         // The 230-character question wraps on the review: ` │   …` continues the item.
         assert!(captured("H4-review").contains("\n │   foxtrot golf hotel india juliet ki?"));
     }
+
+    // Claude Code 2.1.332 (captures M1 to M3): a lone multi-select question ends on the review
+    // screen, and the review writes a multi-select pick with a comma or a double quote in it
+    // as a JSON string. The answer's last check expects that very screen.
+    #[test]
+    fn m_a_lone_multi_select_question_is_reviewed_and_its_picks_quoted() {
+        use crate::core::questions::{At, answer_plan, validate_answer};
+        let expected = |name: &str, answers: serde_json::Value| {
+            let qs = asked(name);
+            let a = validate_answer(&answers, &qs).unwrap();
+            match answer_plan(&qs, &a).pop().unwrap().at {
+                At::Review { expect, .. } => expect,
+                at @ At::Form { .. } => panic!("{name}: {at:?}"),
+            }
+        };
+        let m1 = asked("M1");
+        // The form of one multi-select question, untouched, then on its "Submit" row.
+        let form = parse_form(&captured("M1-initial")).unwrap();
+        assert!(form.ready(&m1).is_ok());
+        assert_eq!(form.tabs, [("Toppings".to_string(), false)]);
+        let on_submit = parse_form(&captured("M1-submit-row")).unwrap();
+        assert_eq!(on_submit.check(&m1), Ok(0));
+        assert_eq!(on_submit.ticked(), [0, 1]);
+        assert_eq!(on_submit.cursor(), Some(5));
+        assert!(parse_review(&captured("M1-submit-row")).is_none());
+        // Enter there: the review, not the answer.
+        let r = parse_review(&captured("M1-review")).unwrap();
+        assert!(r.submit_focused);
+        assert_eq!(r.items, expected("M1", json!([{ "options": [0, 1] }])));
+        assert_eq!(r.items[0].1, r#""Ham, cooked (Recommended)", Mushrooms"#);
+        // After "Submit answers": no form, no review.
+        let after = captured("M1-after");
+        assert!(parse_form(&after).is_none() && parse_review(&after).is_none());
+        // Two questions: quoted picks and typed text, the single-select label as it is.
+        let r = parse_review(&captured("M2-review")).unwrap();
+        assert_eq!(
+            r.items,
+            expected(
+                "M2",
+                json!([{ "options": [0, 2], "text": "milk, cold" }, { "options": [0] }])
+            )
+        );
+        assert_eq!(r.items[1].1, "By the window, left");
+        // A backslash alone quotes nothing; beside a comma it is escaped as JSON escapes it.
+        let r = parse_review(&captured("M3-review")).unwrap();
+        assert_eq!(
+            r.items[0].1,
+            r#"Back\slash, "Both\\here, too", It's; fine, Plain,  padded"#
+        );
+    }
 }

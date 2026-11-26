@@ -16,7 +16,9 @@
 //! - Otherwise each key is checked for: before the next one the screen must show exactly the
 //!   state the keys so far lead to (cursor row, ticked boxes, typed text, answered tabs; before
 //!   the final Enter the review screen listing every question with exactly the answer planned).
-//!   Anything else stops it: `prompt_changed`.
+//!   Anything else stops it: `prompt_changed`. The review ends a form of two or more questions
+//!   and a lone multi-select one (Claude Code 2.1.332); where a lone multi-select question's
+//!   "Submit" row submits it instead, the form is gone and the final Enter is not pressed.
 //! - **After** the last key the screen is read again: the prompt must be gone, and no prompt
 //!   with the same answers — nor a permission prompt that cannot be read whole, which may be
 //!   either — may have taken its place within a moment. Otherwise the outcome is reported as
@@ -658,7 +660,7 @@ fn choose(s: &Session, n: usize, want: Option<&str>, allow_attached: bool, dry: 
 /// `Touched`).
 fn form_at(screen: &str, qs: &[Question], at: &At) -> std::result::Result<(), Detail> {
     match at {
-        At::Review { expect } => {
+        At::Review { expect, .. } => {
             let Some(r) = prompt::parse_review(screen) else {
                 return Err(match prompt::read_form(screen) {
                     // Still the form (or one): the Enter before the review did not land as planned.
@@ -843,7 +845,7 @@ fn answer_question(
         return refuse(detail, format!("{why} — answer it there; nothing typed"));
     }
     let plan: Vec<Planned> = questions::answer_plan(&qs, &checked);
-    let steps: Vec<Step> = plan.iter().map(|p| p.step.clone()).collect();
+    let mut steps: Vec<Step> = plan.iter().map(|p| p.step.clone()).collect();
     let fields = vec![("id", json!(id))];
     if dry {
         return Ok(outcome(s, "question", &steps, fields, true, None));
@@ -863,6 +865,14 @@ fn answer_question(
             })
             .map_err(after_keys(i, total))?;
             if !ok {
+                // A lone multi-select question whose "Submit" row submitted it: this Claude
+                // Code draws no review for it, so nothing is left to press. Whether the
+                // answer landed is `landed`'s to say.
+                if seen == Detail::NoForm && matches!(planned.at, At::Review { if_shown: true, .. })
+                {
+                    steps.truncate(i);
+                    break;
+                }
                 return changed(
                     seen,
                     format!(

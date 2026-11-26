@@ -1,0 +1,23 @@
+{
+  "questions": [
+    {
+      "question": "Which drinks should be on the table?",
+      "header": "Drinks",
+      "multiSelect": true,
+      "options": [
+        { "label": "Water, still", "description": "A jug" },
+        { "label": "Tea", "description": "A pot" },
+        { "label": "Juice \"fresh\"", "description": "Orange" }
+      ]
+    },
+    {
+      "question": "Which table do you want?",
+      "header": "Table",
+      "multiSelect": false,
+      "options": [
+        { "label": "By the window, left", "description": "Quiet" },
+        { "label": "Outside", "description": "Sunny" }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "questions": [
+    {
+      "question": "Which toppings should the pizza have?",
+      "header": "Toppings",
+      "multiSelect": true,
+      "options": [
+        { "label": "Ham, cooked (Recommended)", "description": "The usual one" },
+        { "label": "Mushrooms", "description": "Fresh ones" },
+        { "label": "Olives \"black\" ones", "description": "From a jar" },
+        { "label": "Pineapple", "description": "If you must" }
+      ]
+    }
+  ]
+}
